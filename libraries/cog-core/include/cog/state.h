@@ -89,7 +89,7 @@ typedef struct cog_dispatch_entry {
  * @brief Search the dispatch table for the handler that matches
  *        (@p state, @p event).
  *
- * This is a low-level lookup helper used by @c cog_core_enqueue.  Most
+ * This is a low-level lookup helper used by @c cog_core_run.  Most
  * callers should dispatch through the core instead.
  *
  * @param[in] table       Static dispatch table.
