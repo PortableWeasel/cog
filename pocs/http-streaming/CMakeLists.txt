@@ -36,6 +36,43 @@ target_include_directories(http-demo PRIVATE
 target_enable_warnings(http-demo)
 
 # -----------------------------------------------------------------------
+# Unit tests: transport-independent layers (conn, sse, http_common).
+# -----------------------------------------------------------------------
+add_executable(http-unit-test
+    tests/unit-test.c
+    conn.c
+    sse.c
+    http_common.c
+)
+target_include_directories(http-unit-test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR})
+target_enable_warnings(http-unit-test)
+
+add_test(NAME http-streaming-unit
+    COMMAND http-unit-test
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+# -----------------------------------------------------------------------
+# Network error-path tests for the hand-rolled client (needs the mock
+# server for the 404 case).
+# -----------------------------------------------------------------------
+add_executable(http-net-test
+    tests/net-test.c
+    conn.c
+    http_common.c
+    http_hand.c
+)
+target_include_directories(http-net-test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR})
+target_enable_warnings(http-net-test)
+
+add_test(NAME http-streaming-net
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/net-test.sh
+            "$<TARGET_FILE:http-mock-server>"
+            "$<TARGET_FILE:http-net-test>"
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+# -----------------------------------------------------------------------
 # Demo test: mock server + both transports across the three scenarios.
 # -----------------------------------------------------------------------
 add_test(NAME http-streaming-demo
