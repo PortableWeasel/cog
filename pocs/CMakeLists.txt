@@ -1,0 +1,9 @@
+# -----------------------------------------------------------------------
+# Proof-of-concept builds
+# -----------------------------------------------------------------------
+
+option(COG_BUILD_POC_IPC_FABRIC "Build PoC 1: IPC fabric over Unix domain sockets" OFF)
+
+if(COG_BUILD_POC_IPC_FABRIC)
+    add_subdirectory(ipc-fabric)
+endif()
