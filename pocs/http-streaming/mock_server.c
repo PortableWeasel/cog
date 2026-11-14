@@ -506,7 +506,18 @@ int main(int argc, char **argv)
 
     (void)signal(SIGPIPE, SIG_IGN); /* client may close mid-write */
     (void)signal(SIGCHLD, SIG_IGN); /* auto-reap children, no zombies */
-    (void)signal(SIGTERM, on_sigterm);
+
+    /* Install SIGTERM with sigaction and NO SA_RESTART. With _GNU_SOURCE,
+     * signal() sets SA_RESTART, so a blocking accept() is transparently
+     * restarted after the handler runs and the while (!g_stop) loop never
+     * re-evaluates — the server would be impossible to stop. Without
+     * SA_RESTART, accept() returns EINTR and the loop re-checks g_stop. */
+    struct sigaction sa;
+    (void)memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_sigterm;
+    (void)sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    (void)sigaction(SIGTERM, &sa, NULL);
 
     int err = 0;
     int fd = bind_listener(port, &err);
