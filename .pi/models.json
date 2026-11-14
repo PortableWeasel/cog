@@ -1,0 +1,33 @@
+{
+  "$schema": "https://pi.dev/schemas/models.schema.json",
+  "providers": {
+    "openrouter": {
+      "modelOverrides": {
+        "~deepseek/deepseek-v4-flash-latest": {
+          "samplingParams": {
+            "temperature": 0.2,
+            "top_p": 0.95
+          },
+          "samplingParamsByThinkingLevel": {
+            "off": { "temperature": 0.15 },
+            "low": { "temperature": 0.2 },
+            "medium": { "temperature": 0.25 },
+            "high": { "temperature": 0.3 }
+          }
+        },
+        "moonshotai/kimi-k2.7-code": {
+          "samplingParams": {
+            "temperature": 0.1,
+            "top_p": 0.95
+          },
+          "samplingParamsByThinkingLevel": {
+            "off": { "temperature": 0.05 },
+            "low": { "temperature": 0.1 },
+            "medium": { "temperature": 0.15 },
+            "high": { "temperature": 0.2 }
+          }
+        }
+      }
+    }
+  }
+}
