@@ -261,6 +261,68 @@ block.
 
 ---
 
+## Provider & Endpoint Registry
+
+The Provider & Endpoint Registry is the boundary between the agent core
+and external LLM services.  It is implemented by the `cog-provider`
+library and follows the same static-table, caller-allocated design as
+`cog-core`.
+
+### Endpoint table
+
+An endpoint is a concrete provider deployment: a base URL, an API
+version, a credential, a pointer to a provider implementation vtable,
+and a pointer to a model table.  Endpoints are stored in a static const
+array (`cog_endpoint_table_t`) and looked up by name.  There is no
+dynamic registration; the caller links the desired provider
+implementations and supplies the table at startup.
+
+### Provider vtable
+
+Each provider implementation exposes a static vtable with four required
+operations:
+
+- **connect** — create and initialise a provider instance for an
+  endpoint.
+- **send** — submit an LLM request.
+- **receive** — read the next response or streaming chunk.
+- **disconnect** — tear down the provider instance.
+
+Both single-turn and streaming calls use the same operations.  A
+streaming request sets `cog_provider_request_t.stream` to true; the
+caller then loops on `cog_provider_receive` until
+`cog_provider_response_t.is_complete` is true.
+
+### Model table
+
+Each endpoint references a static table of models (`cog_model_table_t`).
+A model descriptor carries the endpoint-specific model id, a display
+name, the context window size, and a bitmask of capability flags
+(streaming, tools, vision).  Model lookup is by id within an endpoint.
+
+### Lifecycle and ownership
+
+- Endpoint and model tables are read-only and may be shared by any
+  number of cores and threads.
+- A `cog_provider_t` instance is created by `connect` and destroyed by
+  `disconnect`; the implementation performs the allocation and matching
+  free.
+- Request and response buffers are caller-allocated; the provider never
+  allocates hidden buffers.
+- Provider instances are not thread-safe; a single instance must be used
+  by only one thread at a time.
+
+### Relationship to configuration
+
+The registry holds the *running* view of providers.  The configuration
+system owns the candidate/running lifecycle: a commit of the
+`providers.*` subtree produces the endpoint table that the registry
+uses.  When configuration changes, the running table is replaced
+atomically after validation; in-flight provider instances are not
+affected.
+
+---
+
 ## Next steps
 
 Stage 5 — Research & PoCs. The main unknowns to test:
