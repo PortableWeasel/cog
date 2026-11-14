@@ -8,7 +8,7 @@
  *
  * Threading model: a single producer / single consumer queue is assumed.
  * @c cog_event_queue_push and @c cog_event_queue_pop must not be called
- * concurrently on the same queue.  @c cog_core_dispatch is the intended
+ * concurrently on the same queue.  @c cog_core_enqueue is the intended
  * producer; @c cog_core_run is the intended consumer.  Multi-threaded
  * producers may be layered on top later with an external lock.
  */
@@ -37,8 +37,10 @@ typedef uint16_t cog_state_t;
 /**
  * @brief Event identifier used by the dispatch table.
  *
- * Must fit in 16 bits.  Reserved values are the same as for
- * @c cog_state_t.
+ * Values are unsigned 16-bit integers in the range [0, 0xFFFF].
+ * No event id values are reserved by the core; semantic distinctions
+ * (such as shutdown or system signals) are conveyed by
+ * @c cog_event_kind_t, not by the id.
  */
 typedef uint16_t cog_event_id_t;
 

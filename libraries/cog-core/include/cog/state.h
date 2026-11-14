@@ -89,7 +89,7 @@ typedef struct cog_dispatch_entry {
  * @brief Search the dispatch table for the handler that matches
  *        (@p state, @p event).
  *
- * This is a low-level lookup helper used by @c cog_core_dispatch.  Most
+ * This is a low-level lookup helper used by @c cog_core_enqueue.  Most
  * callers should dispatch through the core instead.
  *
  * @param[in] table       Static dispatch table.
@@ -100,10 +100,12 @@ typedef struct cog_dispatch_entry {
  *                        success; unchanged on failure.  May be NULL if
  *                        only presence is required.
  * @return COG_OK if a matching row was found.
- * @return COG_ERROR_NULL_PTR if @p table is NULL.
- * @return COG_ERROR_NOT_FOUND if no row matches.
+ * @return COG_ERROR_NULL_PTR if @p table is NULL and @p table_size is
+ *         non-zero.
+ * @return COG_ERROR_NOT_FOUND if no row matches or if the table is empty
+ *         (@p table is NULL and @p table_size is zero).
  *
- * @pre @p table_size is zero only when @p table is NULL.
+ * @pre @p table may be NULL only when @p table_size is zero.
  *
  * Threading: the table must not be modified during the call.
  */

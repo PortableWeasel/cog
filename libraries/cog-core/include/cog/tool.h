@@ -29,35 +29,46 @@ typedef struct cog_core cog_core_t;
 /**
  * @brief Tool implementation signature.
  *
- * @param[in,out] core         Core instance that requested the tool.
- * @param[in]     request      Tool request payload (e.g. JSON arguments).
- * @param[in]     request_len  Length of @p request in bytes.
- * @param[out]    out_result   On success, set to a heap-allocated result
- *                             string.  The caller takes ownership and
- *                             must free the buffer.
- * @param[out]    out_result_len On success, set to the length of the
- *                             result string in bytes (excluding any
- *                             terminator).  May be NULL if the caller
- *                             does not need the length.
+ * The caller supplies the result buffer, so no hidden allocation occurs
+ * and ownership never transfers.  If the buffer is too small the tool
+ * reports the required length via @p out_result_len (when non-NULL) and
+ * returns @c COG_ERROR_OVERFLOW.
+ *
+ * @param[in,out] core             Core instance that requested the tool.
+ * @param[in]     request          Tool request payload (e.g. JSON arguments).
+ * @param[in]     request_len      Length of @p request in bytes.
+ * @param[out]    result           Caller-provided buffer that receives the
+ *                                 result string.  May be NULL only when
+ *                                 @p result_capacity is zero.
+ * @param[in]     result_capacity  Size of @p result in bytes, including
+ *                                 space for a NUL terminator.
+ * @param[out]    out_result_len   On success or @c COG_ERROR_OVERFLOW, set
+ *                                 to the length of the result string in
+ *                                 bytes (excluding the terminator).  May be
+ *                                 NULL if the caller does not need the
+ *                                 length.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if a required pointer argument is NULL.
  * @return COG_ERROR_INVALID_ARG if the request is malformed.
  * @return COG_ERROR_NOT_FOUND if the tool is not applicable to the
  *         request.
+ * @return COG_ERROR_OVERFLOW if the result does not fit in
+ *         @p result_capacity.
  * @return Another error code on failure.
  *
  * @pre @p core is a fully initialised core instance.
  * @pre @p request is valid for the duration of the call.
+ * @pre If @p result is non-NULL, @p result_capacity is greater than zero.
  *
- * @post On success, @p *out_result points to a buffer allocated by the
- *       tool implementation and ownership is transferred to the caller.
- *       The caller must release it with the matching allocator.
- * @post On failure, @p *out_result is NULL.
+ * @post On success, @p result contains a NUL-terminated result string
+ *       and ownership remains with the caller.
+ * @post On failure, @p result is unchanged.
  */
 typedef cog_result_t (*cog_tool_fn)(cog_core_t *core,
                                      const char *request,
                                      size_t request_len,
-                                     char **out_result,
+                                     char *result,
+                                     size_t result_capacity,
                                      size_t *out_result_len);
 
 /**

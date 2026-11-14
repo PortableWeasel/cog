@@ -186,12 +186,14 @@ cog_result_t cog_core_run(cog_core_t *core);
 void cog_core_stop(cog_core_t *core);
 
 /**
- * @brief Push an event into the core's internal event queue.
+ * @brief Enqueue an event in the core's internal event queue.
  *
  * This is the primary way external code feeds events into a running core.
+ * The event is copied into the queue; the call returns immediately and
+ * does not invoke the state-machine handler.
  *
  * @param[in,out] core  Core to receive the event.
- * @param[in]     event Event to dispatch.
+ * @param[in]     event Event to enqueue.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p core or @p event is NULL.
  * @return COG_ERROR_OVERFLOW if the internal queue is full.
@@ -203,7 +205,7 @@ void cog_core_stop(cog_core_t *core);
  * from a thread designated as the producer.  Multi-threaded producers
  * require external synchronisation.
  */
-cog_result_t cog_core_dispatch(cog_core_t *core, const cog_event_t *event);
+cog_result_t cog_core_enqueue(cog_core_t *core, const cog_event_t *event);
 
 /**
  * @brief Return the session associated with the core.

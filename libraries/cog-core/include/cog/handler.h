@@ -36,7 +36,7 @@ typedef struct cog_core cog_core_t;
  * The @c transition field tells the dispatcher which state to enter
  * next.  The @c status field tells the dispatcher whether the handler
  * succeeded.  A non-COG_OK status prevents the transition from being
- * applied and is propagated to the caller of @c cog_core_dispatch or
+ * applied and is propagated to the caller of @c cog_core_enqueue or
  * reported by @c cog_core_run.
  */
 typedef struct cog_handler_result {
