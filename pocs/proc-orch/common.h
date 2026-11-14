@@ -85,7 +85,9 @@ int orch_send_message(int fd, const char *msg, size_t len);
 struct orch_frame_reader {
     uint8_t header[ORCH_HEADER_SIZE];
     size_t header_len;
-    uint8_t payload[ORCH_MAX_MESSAGE];
+    /* One extra byte so a max-size (ORCH_MAX_MESSAGE) payload can hold the
+     * NUL terminator written at payload[payload_len] without overflowing. */
+    uint8_t payload[ORCH_MAX_MESSAGE + 1U];
     size_t payload_len;
     size_t payload_received;
     bool in_payload;
