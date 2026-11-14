@@ -19,13 +19,15 @@ static cog_handler_result_t dummy_handler(cog_core_t *core,
 static cog_result_t dummy_tool(cog_core_t *core,
                                 const char *request,
                                 size_t request_len,
-                                char **out_result,
+                                char *result,
+                                size_t result_capacity,
                                 size_t *out_result_len)
 {
     (void)core;
     (void)request;
     (void)request_len;
-    (void)out_result;
+    (void)result;
+    (void)result_capacity;
     (void)out_result_len;
     return COG_ERROR_NOT_FOUND;
 }
