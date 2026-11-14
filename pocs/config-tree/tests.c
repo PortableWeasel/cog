@@ -482,6 +482,303 @@ static void test_validator_node_inspection(void)
     cfg_free(cfg);
 }
 
+/* ------------------------------------------------------------------ */
+/* Critic review additions: show() output, validator ordering, delete,
+ * rollback-slot preservation, buffer boundaries.                    */
+/* ------------------------------------------------------------------ */
+
+static int g_reject_count = 0;   /* validator that always rejects   */
+static int g_after_count = 0;    /* validator registered after it    */
+static int g_first_count = 0;    /* validator registered before it  */
+
+static int val_reject_always(const cog_cfg_node_t *subtree, const char *path,
+                             void *userdata)
+{
+    (void)subtree;
+    (void)path;
+    (void)userdata;
+    g_reject_count++;
+    return -1;
+}
+
+static int val_count_first(const cog_cfg_node_t *subtree, const char *path,
+                           void *userdata)
+{
+    (void)subtree;
+    (void)path;
+    (void)userdata;
+    g_first_count++;
+    return 0;
+}
+
+static int val_count_after(const cog_cfg_node_t *subtree, const char *path,
+                           void *userdata)
+{
+    (void)subtree;
+    (void)path;
+    (void)userdata;
+    g_after_count++;
+    return 0;
+}
+
+/** Verifies show()/show_candidate() output line-by-line (acceptance
+ * criterion: show() works) and that NULL cfg / NULL stream are safe. */
+static void test_show_output(void)
+{
+    cog_cfg_t *cfg = cfg_new();
+    FILE *tf = tmpfile();
+    char line[256];
+
+    CHECK(tf != NULL);
+    if (tf == NULL) { /* tmpfile can fail under constrained sandboxes */
+        cfg_free(cfg);
+        return;
+    }
+    CHECK_EQ(cog_cfg_set(cfg, "providers.openai.base-url",
+                         "https://api.openai.com/v1"), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_set(cfg, "providers.openai.api-key", "sk-1"), COG_CFG_OK);
+
+    /* Nothing committed yet: show() prints nothing, show_candidate()
+     * prints the staged leaves. */
+    cog_cfg_show(cfg, tf);
+    rewind(tf);
+    CHECK(fgets(line, sizeof line, tf) == NULL);
+
+    cog_cfg_show_candidate(cfg, tf);
+    rewind(tf);
+    CHECK(fgets(line, sizeof line, tf) != NULL);
+    CHECK(strstr(line, "providers.openai.base-url =") != NULL);
+    CHECK(fgets(line, sizeof line, tf) != NULL);
+    CHECK(strstr(line, "providers.openai.api-key =") != NULL);
+    CHECK(fgets(line, sizeof line, tf) == NULL); /* containers print nothing */
+
+    /* NULL cfg / NULL stream must be safe no-ops. */
+    cog_cfg_show(NULL, tf);
+    cog_cfg_show(cfg, NULL);
+    cog_cfg_show_candidate(NULL, tf);
+    cog_cfg_show_candidate(cfg, NULL);
+
+    /* After commit, show() reflects the running tree. */
+    CHECK_EQ(cog_cfg_commit(cfg), COG_CFG_OK);
+    rewind(tf);
+    cog_cfg_show(cfg, tf);
+    rewind(tf);
+    {
+        int found_url = 0, found_key = 0, extra = 0;
+        while (fgets(line, sizeof line, tf) != NULL) {
+            if (strstr(line, "base-url =") != NULL) {
+                found_url = 1;
+            } else if (strstr(line, "api-key =") != NULL) {
+                found_key = 1;
+            } else {
+                extra++;
+            }
+        }
+        CHECK(found_url);
+        CHECK(found_key);
+        CHECK(extra == 0);
+    }
+
+    fclose(tf);
+    cfg_free(cfg);
+}
+
+/** Validators run in registration order; the first rejection aborts the
+ * commit and validators registered after it must not run. */
+static void test_validator_ordering_and_abort(void)
+{
+    cog_cfg_t *cfg = cfg_new();
+    char buf[64];
+
+    CHECK_EQ(cog_cfg_register_validator(cfg, "p", val_count_first, NULL),
+             COG_CFG_OK);
+    CHECK_EQ(cog_cfg_register_validator(cfg, "p", val_reject_always, NULL),
+             COG_CFG_OK);
+    CHECK_EQ(cog_cfg_register_validator(cfg, "p", val_count_after, NULL),
+             COG_CFG_OK);
+
+    g_first_count = g_reject_count = g_after_count = 0;
+    CHECK_EQ(cog_cfg_set(cfg, "p.x", "1"), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_commit(cfg), COG_CFG_EVALIDATE);
+    CHECK_EQ(g_first_count, 1);   /* ran, in order */
+    CHECK_EQ(g_reject_count, 1);  /* ran, rejected */
+    CHECK_EQ(g_after_count, 0);   /* aborted before this one */
+
+    /* The rejected candidate is discarded: re-staging the same subtree
+     * and committing again re-runs every validator in order (and fails
+     * again, because the reject-validator is unconditional). */
+    CHECK_EQ(cog_cfg_set(cfg, "p.x", "1"), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_commit(cfg), COG_CFG_EVALIDATE);
+    CHECK_EQ(g_first_count, 2);
+    CHECK_EQ(g_reject_count, 2);
+    CHECK_EQ(g_after_count, 0);
+
+    /* No partial state leaked from the failed commit. */
+    CHECK_EQ(cog_cfg_get(cfg, "q", buf, sizeof buf), COG_CFG_ENOTFOUND);
+    CHECK_EQ(cog_cfg_get(cfg, "p.x", buf, sizeof buf), COG_CFG_ENOTFOUND);
+
+    cfg_free(cfg);
+}
+
+/** Deleting a container removes its value and entire subtree. */
+static void test_delete_valued_container(void)
+{
+    cog_cfg_t *cfg = cfg_new();
+    char buf[64];
+
+    CHECK_EQ(cog_cfg_set(cfg, "a", "1"), COG_CFG_OK); /* valued container */
+    CHECK_EQ(cog_cfg_set(cfg, "a.b", "2"), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_commit(cfg), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_delete(cfg, "a"), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_commit(cfg), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_get(cfg, "a", buf, sizeof buf), COG_CFG_ENOTFOUND);
+    CHECK_EQ(cog_cfg_get(cfg, "a.b", buf, sizeof buf), COG_CFG_ENOTFOUND);
+
+    cfg_free(cfg);
+}
+
+/** Pruning stops at a node whose value is the empty string (a value
+ * node, even an empty value, is not pruned). */
+static void test_prune_stops_at_empty_value(void)
+{
+    cog_cfg_t *cfg = cfg_new();
+    char buf[64];
+
+    CHECK_EQ(cog_cfg_set(cfg, "x", ""), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_set(cfg, "x.y", "1"), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_delete(cfg, "x.y"), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_candidate_get(cfg, "x", buf, sizeof buf), COG_CFG_OK);
+    CHECK(strcmp(buf, "") == 0);
+
+    cfg_free(cfg);
+}
+
+/** An empty commit is a no-op and must NOT consume the rollback slot. */
+static void test_noop_commit_preserves_rollback(void)
+{
+    cog_cfg_t *cfg = cfg_new();
+    char buf[64];
+
+    CHECK_EQ(cog_cfg_set(cfg, "a", "1"), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_commit(cfg), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_commit(cfg), COG_CFG_OK); /* nothing staged: no-op */
+    CHECK_EQ(cog_cfg_rollback(cfg), COG_CFG_OK); /* must still work */
+    CHECK_EQ(cog_cfg_get(cfg, "a", buf, sizeof buf), COG_CFG_ENOTFOUND);
+    CHECK_EQ(cog_cfg_rollback(cfg), COG_CFG_ENOROLLBACK);
+
+    cfg_free(cfg);
+}
+
+/** The initial empty config is the first known-good state: rollback
+ * after the very first commit restores the empty tree (documented in
+ * the header). */
+static void test_rollback_after_first_commit(void)
+{
+    cog_cfg_t *cfg = cfg_new();
+    char buf[64];
+
+    CHECK_EQ(cog_cfg_set(cfg, "a", "1"), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_commit(cfg), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_rollback(cfg), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_get(cfg, "a", buf, sizeof buf), COG_CFG_ENOTFOUND);
+    /* running tree is the clean empty config: further staging works */
+    CHECK_EQ(cog_cfg_set(cfg, "b", "2"), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_commit(cfg), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_get(cfg, "b", buf, sizeof buf), COG_CFG_OK);
+    CHECK(strcmp(buf, "2") == 0);
+
+    cfg_free(cfg);
+}
+
+/** Candidate/commit buffer boundaries: exact fit is OK, one byte short
+ * is EBUFSMALL; empty values need a 1-byte buffer. */
+static void test_buffer_boundaries(void)
+{
+    cog_cfg_t *cfg = cfg_new();
+    char exact[8];   /* 7 chars + NUL */
+    char shortbuf[7];
+    char tiny[1];
+
+    CHECK_EQ(cog_cfg_set(cfg, "k", "1234567"), COG_CFG_OK);
+
+    CHECK_EQ(cog_cfg_candidate_get(cfg, "k", exact, sizeof exact),
+             COG_CFG_OK);
+    CHECK(strcmp(exact, "1234567") == 0);
+    CHECK_EQ(cog_cfg_candidate_get(cfg, "k", shortbuf, sizeof shortbuf),
+             COG_CFG_EBUFSMALL);
+
+    CHECK_EQ(cog_cfg_commit(cfg), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_get(cfg, "k", exact, sizeof exact), COG_CFG_OK);
+    CHECK(strcmp(exact, "1234567") == 0);
+    CHECK_EQ(cog_cfg_get(cfg, "k", shortbuf, sizeof shortbuf),
+             COG_CFG_EBUFSMALL);
+
+    /* Empty value round-trips into a 1-byte buffer. */
+    CHECK_EQ(cog_cfg_set(cfg, "e", ""), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_commit(cfg), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_get(cfg, "e", tiny, sizeof tiny), COG_CFG_OK);
+    CHECK(tiny[0] == '\0');
+
+    cfg_free(cfg);
+}
+
+/** Deep dotted path: multi-segment set/get/delete round trip. */
+static void test_deep_path_roundtrip(void)
+{
+    cog_cfg_t *cfg = cfg_new();
+    char buf[64];
+
+    CHECK_EQ(cog_cfg_set(cfg, "a.b.c.d.e.f.g.h.i.j", "deep"), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_commit(cfg), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_get(cfg, "a.b.c.d.e.f.g.h.i.j", buf, sizeof buf),
+             COG_CFG_OK);
+    CHECK(strcmp(buf, "deep") == 0);
+
+    /* Deleting a shallow ancestor removes the whole deep subtree. */
+    CHECK_EQ(cog_cfg_delete(cfg, "a.b.c"), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_commit(cfg), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_get(cfg, "a.b.c.d.e.f.g.h.i.j", buf, sizeof buf),
+             COG_CFG_ENOTFOUND);
+    CHECK_EQ(cog_cfg_get(cfg, "a.b.c", buf, sizeof buf), COG_CFG_ENOTFOUND);
+
+    /* A missing segment deep in the path is ENOTFOUND, not EINVAL. */
+    CHECK_EQ(cog_cfg_get(cfg, "a.b.nope.x", buf, sizeof buf),
+             COG_CFG_ENOTFOUND);
+
+    cfg_free(cfg);
+}
+
+/** A whole-tree validator fires for a delete-only commit that leaves the
+ * candidate non-empty, and for a pure delete of an existing key. */
+static void test_whole_tree_validator_on_delete(void)
+{
+    cog_cfg_t *cfg = cfg_new();
+    char buf[64];
+
+    CHECK_EQ(cog_cfg_register_validator(cfg, "", count_calls, NULL),
+             COG_CFG_OK);
+    validator_calls = 0;
+
+    /* Warm up the running tree without the validator firing repeatedly. */
+    CHECK_EQ(cog_cfg_set(cfg, "a", "1"), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_set(cfg, "b", "2"), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_commit(cfg), COG_CFG_OK);
+    CHECK_EQ(validator_calls, 1);
+
+    /* Delete-only commit: the whole-tree validator fires once. */
+    CHECK_EQ(cog_cfg_delete(cfg, "b"), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_commit(cfg), COG_CFG_OK);
+    CHECK_EQ(validator_calls, 2);
+    CHECK_EQ(cog_cfg_get(cfg, "b", buf, sizeof buf), COG_CFG_ENOTFOUND);
+
+    /* Re-staging the same key afterwards: validator fires again. */
+    CHECK_EQ(cog_cfg_set(cfg, "c", "3"), COG_CFG_OK);
+    CHECK_EQ(cog_cfg_commit(cfg), COG_CFG_OK);
+    CHECK_EQ(validator_calls, 3);
+
+    cfg_free(cfg);
+}
+
 int main(void)
 {
     test_lifecycle_null();
@@ -496,6 +793,15 @@ int main(void)
     test_rollback_discards_candidate();
     test_commit_noop_and_delete_after_commit();
     test_validator_node_inspection();
+    test_show_output();
+    test_validator_ordering_and_abort();
+    test_delete_valued_container();
+    test_prune_stops_at_empty_value();
+    test_noop_commit_preserves_rollback();
+    test_rollback_after_first_commit();
+    test_buffer_boundaries();
+    test_deep_path_roundtrip();
+    test_whole_tree_validator_on_delete();
 
     if (g_failures != 0) {
         fprintf(stderr, "%d check(s) FAILED\n", g_failures);
