@@ -203,6 +203,43 @@ static struct cog_cfg_node *node_copy(const struct cog_cfg_node *src)
 }
 
 /* ------------------------------------------------------------------ */
+/* Tree comparison                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Structural equality between two trees: same topology and same values.
+ * Children are compared pairwise; both trees are built from the same
+ * copy lineage (candidate is a deep copy of running; mutations append
+ * at the end and remove in place), so identical value sets imply
+ * identical child order.
+ */
+static int node_equal(const struct cog_cfg_node *a, const struct cog_cfg_node *b)
+{
+    if (a == b) {
+        return 1;
+    }
+    if (a == NULL || b == NULL) {
+        return 0;
+    }
+    if (a->child_count != b->child_count) {
+        return 0;
+    }
+    if (a->value == NULL || b->value == NULL) {
+        if (a->value != b->value) {
+            return 0;
+        }
+    } else if (strcmp(a->value, b->value) != 0) {
+        return 0;
+    }
+    for (size_t i = 0U; i < a->child_count; i++) {
+        if (!node_equal(a->children[i], b->children[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* ------------------------------------------------------------------ */
 /* Path handling                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -650,7 +687,18 @@ int cog_cfg_commit(cog_cfg_t *cfg)
         return COG_CFG_EINVAL;
     }
     const struct cog_cfg_node *cand = cfg->candidate;
-    if (cand == NULL || cand->child_count == 0U || !cfg->dirty) {
+    if (cand == NULL) {
+        return cfg->dirty ? COG_CFG_ENOMEM : COG_CFG_OK;
+    }
+    /* Nothing staged iff the candidate is identical to the running tree.
+     * The dirty flag alone is not sufficient: staged set+delete that
+     * cancels out (e.g. delete the last remaining key, or set+delete of
+     * an already-committed key) leaves dirty set with a candidate that
+     * is *empty or equal* to running. Using the dirty flag as a fast
+     * path and tree-equality as the precise test means a delete that
+     * empties the candidate is still applied (populating the rollback
+     * slot), while a genuine no-op leaves the slot untouched. */
+    if (!cfg->dirty || node_equal(cand, cfg->running)) {
         return COG_CFG_OK; /* nothing staged: successful no-op */
     }
 
