@@ -297,8 +297,10 @@ caller then loops on `cog_provider_receive` until
 
 Each endpoint references a static table of models (`cog_model_table_t`).
 A model descriptor carries the endpoint-specific model id, a display
-name, the context window size, and a bitmask of capability flags
-(streaming, tools, vision).  Model lookup is by id within an endpoint.
+name, the context window size, a bitmask of capability flags
+(streaming, tools, vision), and optional per-token cost metadata.
+Model lookup is by id within an endpoint; `cog_endpoint_table_select_by_model`
+resolves a model id to the first endpoint that serves it.
 
 ### Lifecycle and ownership
 

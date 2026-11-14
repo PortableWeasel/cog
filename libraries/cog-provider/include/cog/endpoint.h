@@ -49,6 +49,8 @@ typedef struct cog_model {
     uint32_t context_window; /**< Maximum context length in tokens; zero
                                   if unknown. */
     uint32_t capabilities;   /**< Bitmask of @c cog_model_capability_t. */
+    float input_cost_per_1k;  /**< Input cost per 1k tokens; zero if unknown. */
+    float output_cost_per_1k; /**< Output cost per 1k tokens; zero if unknown. */
 } cog_model_t;
 
 /**
@@ -142,6 +144,34 @@ cog_result_t cog_endpoint_model_lookup(const cog_endpoint_t *endpoint,
  */
 bool cog_model_has_capability(const cog_model_t *model,
                               cog_model_capability_t capability);
+
+/**
+ * @brief Select the endpoint that serves a given model id.
+ *
+ * Searches every endpoint in @p table and, for each endpoint, searches
+ * its model table.  The first endpoint whose model table contains a
+ * model whose @c id equals @p model_id is returned.  This is the
+ * provider-selection helper used by handlers to resolve a request's
+ * model identifier to a concrete endpoint and model descriptor.
+ *
+ * @param[in]  table       Endpoint table to search.
+ * @param[in]  model_id    Model identifier to resolve; NUL-terminated.
+ * @param[out] out_endpoint Receives a pointer to the selected endpoint on
+ *                          success; unchanged on failure.  May be NULL if
+ *                          only the model descriptor is required.
+ * @param[out] out_model    Receives a pointer to the selected model on
+ *                          success; unchanged on failure.  May be NULL if
+ *                          only the endpoint is required.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if @p table or @p model_id is NULL.
+ * @return COG_ERROR_NOT_FOUND if no endpoint serves @p model_id.
+ *
+ * Threading: the table must not be modified during the call.
+ */
+cog_result_t cog_endpoint_table_select_by_model(const cog_endpoint_table_t *table,
+                                                const char *model_id,
+                                                const cog_endpoint_t **out_endpoint,
+                                                const cog_model_t **out_model);
 
 #ifdef __cplusplus
 }
