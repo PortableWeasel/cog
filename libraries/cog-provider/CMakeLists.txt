@@ -16,6 +16,9 @@ target_include_directories(cog-provider
 
 target_compile_features(cog-provider INTERFACE c_std_11)
 
+# cog-provider headers include cog-core headers (e.g. <cog/result.h>).
+target_link_libraries(cog-provider INTERFACE cog::core)
+
 # -----------------------------------------------------------------------
 # Install rules
 # -----------------------------------------------------------------------
