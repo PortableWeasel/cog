@@ -767,3 +767,17 @@ L retains J/K's one immutable configuration/provider generation per application;
 requests and restored-prefix preflight use generation 1. Live reload, generation
 publication/retirement and the core's observable provider lifetime are a separate
 header-first follow-up (`dffc59e`/`af6956a`), not part of session UX acceptance.
+
+### R12 bounded live generation publication (header amendment)
+
+After integrated L, explicit application reload admits only model/base-URL/
+credential-reference changes, retaining fixed store/guard/workspace/policy and
+reservation profiles. A real app-owned config transaction prepares an idle copied
+provider generation and generic compatibility checks before commit, then publishes
+one future generation infallibly. The whole existing model/tool turn keeps its
+old configuration. Safe idle activation updates both app and public core provider
+references before disconnecting the old provider and clearing its secret. The
+new core setter changes a borrowed pointer only; it imports no provider runtime
+link or private-structure dependency. [Reload contract](REAL_CLIENT_RELOAD_CONTRACTS.md)
+records bounds, transaction/error/lifetime semantics and the required three-pass
+plus independent review gate. No runtime reload implementation is claimed here.

@@ -82,3 +82,15 @@ may return LIMIT and finalize only its candidate if reset cannot fit; running
 configuration and the already published provider generation stay unchanged.
 Every config operation, including reads, stays on its owner thread. Delivery J
 must test exact pool/identity limits and retain the old generation on each failure.
+
+## Explicit bounded application reload amendment
+
+The [R12 live application design](../REAL_CLIENT_RELOAD_CONTRACTS.md) supplies an
+explicit owner-thread app API and terminal reload command; no watcher is needed.
+Candidate generation/provider construction and known-prefix preflight precede
+actual config commit, followed only by infallible future publication. One old
+application turn remains pinned through tools/retries/output. Safe idle activation
+updates `cog_core_set_provider` and app aliases before old disconnect/secret free.
+The control tree/reservations and reload attempts are finite, and unrelated
+store/guard/workspace/policy/limits are not changed. This header-only follow-up
+adds no conformance result to the historical snapshot test above.

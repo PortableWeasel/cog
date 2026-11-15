@@ -3,6 +3,7 @@
 #define COG_CLI_APP_INTERNAL_H
 #include "configuration.h"
 #include <cog/workspace.h>
+#include <cog/config.h>
 #include <stdatomic.h>
 #define CLI_NODES 1024U
 #define CLI_CALLS 16U
@@ -14,6 +15,7 @@
 #define CLI_CODEC_BYTES 1048576U
 #define CLI_LIST_IDS 1024U
 #define CLI_EVIDENCE_BYTES 4096U
+#define CLI_RELOAD_ATTEMPTS 64U
 
 enum { CLI_IDLE = 0, CLI_MODEL, CLI_BACKOFF, CLI_POLICY, CLI_TOOL };
 enum { CLI_EVENT_RESUME_POLICY = 0x7f00 };
@@ -32,6 +34,14 @@ typedef struct cli_input {
 struct cog_cli_app {
     cog_cli_configuration_t *configuration;
     cog_cli_options_t opts;
+    /* Active aliases above/below borrow current owner; future is published but
+       never used by active turn work. No third generation may be constructed. */
+    cog_cli_configuration_t *future_configuration;
+    cog_provider_t *future_provider;
+    cog_config_tree_t *reload_tree;
+    uint64_t configuration_generation, future_configuration_generation;
+    unsigned reload_attempts;
+    bool reload_in_progress;
     cog_session_t *session;
     cog_provider_t *provider;
     cog_obs_t *obs;
@@ -93,6 +103,33 @@ cog_result_t cog_cli_drain(cog_cli_app_t *app);
 cog_result_t cog_cli_clock(uint64_t *now);
 cog_result_t cog_cli_tools_json(cog_cli_app_t *app);
 bool cog_cli_text_valid(const char *text, size_t length);
+/** Initialize the bounded three-key control tree after startup config is valid.
+ * app-owned constructor: new_ex/free, limits64 nodes/65536 string bytes/65 txn
+ * identities/1 validator; startup consumes one identity. No raw secrets in tree.
+ * @return OK or constructor/seed/validation error; cleanup via reload_free. */
+cog_result_t cog_cli_reload_init(cog_cli_app_t *app);
+/** Activate the single future generation only at a safe idle owner boundary,
+ * before input or restored proposal admission. Requires no active app/provider
+ * turn, retained delta/event, execution, pending result/assistant, resuming policy,
+ * cancellation, shutdown or frozen admission. Otherwise leave future untouched.
+ * Uses cog_core_set_provider on a valid core (infallible), updates aliases before
+ * old disconnect then secret free. No allocation/callback/wire/session mutation.
+ * @return OK; unexpected disconnect contract violation freezes admission and
+ * retains any still-borrowed generation, surfaced as the original error. */
+cog_result_t cog_cli_reload_activate(cog_cli_app_t *app);
+/** Destroy future/current generation resources after core and turn work drain.
+ * Disconnect every provider before clearing its config. Safe on partial init;
+ * no callback/context ownership transfer; tree_free after all transactions end. */
+void cog_cli_reload_free(cog_cli_app_t *app);
+/** Handle only /reload model VALUE, /reload base-url VALUE and
+ * /reload credential-ref VALUE, preserving the whole suffix as one field.
+ * @param app Owner app; @param text Complete UTF-8 line; @param handled Output.
+ * Reload commands are checked before policy answers; never reinterpret them as
+ * ALLOW/DENY, user prompts or model tool instructions. No secret/value echo.
+ * @return reload result; NOT_FOUND/INVALID_ARG for unknown key/missing value;
+ * IO only for checked output. Owner thread between dispatches, no callbacks. */
+cog_result_t cog_cli_reload_command(cog_cli_app_t *app, const char *text,
+    bool *handled);
 bool cog_cli_metadata(const cog_cli_app_t *app);
 cog_result_t cog_cli_sessions_open(cog_cli_app_t *app);
 cog_result_t cog_cli_sessions_prepare(cog_cli_app_t *app);

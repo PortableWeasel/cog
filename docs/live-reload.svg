@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="440" viewBox="0 0 1040 440">
+ <rect width="1040" height="440" fill="white"/>
+ <g font-family="sans-serif" fill="#172554">
+  <text x="25" y="30" font-size="21">R12 / original08: one owner thread, at most two generations</text>
+  <rect x="15" y="50" width="1010" height="310" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-dasharray="7 4"/>
+  <text x="30" y="74" font-size="15">Application process — explicit reload, no file watcher</text>
+  <rect x="35" y="100" width="280" height="140" rx="8" fill="#fef3c7" stroke="#d97706"/>
+  <text x="50" y="128" font-size="17">Candidate constructor + config txn</text>
+  <text x="50" y="157" font-size="14">model / URL / credential reference</text>
+  <text x="50" y="184" font-size="14">copied owner + idle provider</text>
+  <text x="50" y="211" font-size="14">preflight before commit; rollback</text>
+  <rect x="355" y="100" width="280" height="140" rx="8" fill="#dbeafe" stroke="#2563eb"/>
+  <text x="370" y="128" font-size="17">Published future generation</text>
+  <text x="370" y="157" font-size="14">one bounded pending slot</text>
+  <text x="370" y="184" font-size="14">infallible postcommit publication</text>
+  <text x="370" y="211" font-size="14">activate before next idle turn</text>
+  <rect x="675" y="100" width="325" height="140" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="690" y="128" font-size="17">Pinned current → retiring owner</text>
+  <text x="690" y="157" font-size="14">whole model/tool turn stays old</text>
+  <text x="690" y="184" font-size="14">app + core provider refs switch</text>
+  <text x="690" y="211" font-size="14">disconnect before secret clearing</text>
+  <path d="M315 171H355 M635 171H675" stroke="#172554" stroke-width="3"/>
+  <text x="35" y="285" font-size="15">No store/guard/workspace/policy switch; no replay or hidden runtime growth.</text>
+  <text x="35" y="321" font-size="15">Known opaque preflight now; future bytes revalidated by ordinary COMPLETE send.</text>
+  <text x="25" y="390" font-size="14">App headers: cli.h / configuration.h / app_internal.h — own config + provider constructors.</text>
+  <text x="25" y="419" font-size="14">Core: core.h set_provider — pointer only. Libraries: config.h transaction; provider_vtable.h generic preflight.</text>
+ </g>
+</svg>
