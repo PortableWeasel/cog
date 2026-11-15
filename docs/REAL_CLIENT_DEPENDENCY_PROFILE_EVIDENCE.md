@@ -5,8 +5,8 @@ The R18 author found that the earlier development curl RUNPATH and pkg-config
 metadata referenced `/tmp/cog-dns-research`; ordinary install changed the curl
 bytes that Cog had admitted. This delivery supplies a genuine normal-install and
 relocation profile without changing net admission, public headers, app code or
-system installations. Independent profile review and final P acceptance remain
-pending.
+system installations. Independent profile review and scoped integration passed;
+final P acceptance remains pending.
 
 The [recipe](../libraries/cog-net/cmake/relocatable/README.md) and its explicit
 source-template patches build authenticated curl 8.23.0 and c-ares 1.34.9.
@@ -157,3 +157,31 @@ manifest races with R18.
 No profile blocker was found. Existing host OS/OpenSSL/trust-store requirements
 remain explicit; this is not a self-contained OS bundle or an admission-policy
 change. Main integration, the R18 join and full P/O validation remain separate.
+
+## Joined main integration
+
+Root-authorized merge `34f34ff49343aa118c86396987d3da8ed149e34e` integrated
+approved profile `76a4d98` into main `b0da8a6`. The immediately following merge
+`3dabd8780a1cadf3f36d7d675cc8f591bcc50e8c` integrated independently approved
+installed fixture `66527d0`, including the config export-name fix and both
+application-owned relative-RPATH/default-policy patches. Both merges were
+conflict-free and preserved their original histories.
+
+Fresh main `build-review-installed-profile` completed the full strict Clang
+Release producer build without warnings and passed **30/30** focused checks:
+the prior 29 profile/net/provider/app cases plus the genuine installed embedder
+and CLI fixture. Normal dependency/full Cog install, two prefix relocations,
+installed-only C11 imports, ELF/loader audits and both final runtime digest
+comparisons passed without loader overrides or manual header staging. The main
+receipt `build-review-installed-profile/installed-embedder-report.json` has
+SHA-256 `efef6bdcdda4beccf266458a207795904fce52d7ba19ad995346b84f08cdcac5`.
+The 205 final installed-file hashes and both dependency cache digests were
+rechecked unchanged after execution. Normal installer-manifest bookkeeping
+remains the disclosed exception to whole-build-tree immutability.
+
+The independent R18 GCC/Clang/ASan receipts and this postmerge receipt all use
+the exact accepted curl and c-ares digests above. This closes only `ba50799`,
+installed fixture `8f13685`, its final profile join `b61fb1b`, and confirmed
+packaging defects `7527e7d`/`4d68a50`. It does not complete all R18/38 scenarios,
+P, O or M. Frozen dependency artifacts remain available for those later gates;
+existing `build_user/` and the active app-observability worktree are preserved.

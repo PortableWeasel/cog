@@ -3,8 +3,8 @@
 Ticket `8f13685`, based on R12-integrated main `b0da8a6`. The permanent
 [integration fixture](../tests/external-consumer/README.md) owns a separate CMake
 project, public C11 host and normal-install/relocation driver. Independent
-acceptance remains required. Final profile approval is tracked by `ba50799` and
-integration join `b61fb1b`; this evidence does not close release gate P.
+source review and the final `ba50799`/`b61fb1b` profile join passed as recorded
+below; this evidence does not close release gate P.
 
 ## Concrete packaging defects and approved scope
 
@@ -93,3 +93,34 @@ inputs; absence of that registration is not passing release evidence.
 
 Original20/all R01-R18, standalone C++ headers, broad sparse-ID/audit restore edge
 cases, final O APIs and full release P remain separate obligations.
+
+## Independent joined acceptance and integration
+
+Different fixture critic review passed cycle 1 at `66527d0`; different dependency
+profile review passed cycle 1 at `76a4d98`. Independent full strict producer
+builds and genuine installed/relocated fixture runs passed under GCC Release,
+Clang Release and Clang Release ASan/UBSan with leak detection/halt-on-error.
+Their preserved receipts are `/tmp/cog-r18-critic-{gcc,clang,asan}-report.json`:
+
+| Profile | Receipt SHA-256 |
+|---|---|
+| GCC | `69b8c6e6ae49f568ef4225432787951d2c1f103e1200417338b9064faaab2163` |
+| Clang | `004a5de54b786141d2f447698d3b4e55c792cc0b6997e35d362231db1e4f8324` |
+| ASan/UBSan | `15aa6b2f58c2deb74240ac66454c4a0a7fc9463cd54e985b86ab371462452c80` |
+
+Every receipt records exactly the accepted curl/c-ares SHA-256 values above and
+actual loader paths under the final relocated prefix. This supplies the final
+join rather than accepting historical development-library results.
+
+Main merged profile `76a4d98` as `34f34ff`, then fixture `66527d0` as `3dabd87`.
+The config `EXPORT_NAME config` fix `16a4f19` and application-owned RPATH patches
+`5ab8867`/`9a337f5` remain ancestors with their caller-policy compatibility.
+A fresh postmerge full strict Clang Release build and **30/30** scoped tests
+passed, including the complete installed fixture. Its main receipt SHA-256 is
+`efef6bdcdda4beccf266458a207795904fce52d7ba19ad995346b84f08cdcac5`.
+No paid/live request or loader override was used.
+
+Normal `cmake --install` updates dependency generated `install_manifest.txt`;
+accepted runtime bytes, cache and source/recipe identity remain unchanged.
+The frozen runtime artifacts are preserved for M/P. Only scoped fixture/profile
+and packaging-defect tickets close; all38/full R18, O, M and P remain open.
