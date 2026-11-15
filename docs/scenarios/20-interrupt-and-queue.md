@@ -1,229 +1,73 @@
-# Scenario 20: User Interrupt and Queued Message
+# Scenario 20: User interrupt and queued input
 
-## Sequence Diagram
+Stage 14.D pass-2 retrace from public-contract baseline `29b41e8`.
+This replaces the earlier schematic SVG as the normative call trace. The SVG is
+retained as historical design material and is not current API coverage.
 
-![Sequence Diagram](svg/20-interrupt-and-queue.svg)
+## Sequence diagram
 
-## Overview
-
-The user submits a prompt, the LLM starts streaming a response, and then
-the user either:
-
-- **(a) Interrupts immediately** — cancels the in-flight request, discards
-  the partial response, returns to IDLE
-- **(b) Queues a message** — lets the current response finish, then sends
-  the queued message as the next turn
-
-Both paths must preserve session consistency: no orphaned nodes, no
-corrupted history, no leaked provider resources.
-
----
-
-## Path A: Immediate Interrupt
-
-```
-User                UI                  Main Core             Provider           Session
- │                   │                       │                     │                 │
- │ "Explain X"       │                       │                     │                 │
- │──────────────────>│                       │                     │                 │
- │                   │ COG_EVENT_USER_INPUT  │                     │                 │
- │                   │──────────────────────>│                     │                 │
- │                   │                       │ add user msg        │                 │
- │                   │                       │────────────────────>│                 │
- │                   │                       │                     │                 │
- │                   │                       │ cog_provider_send() │                 │
- │                   │                       │────────────────────>│                 │
- │                   │                       │                     │                 │
- │                   │                       │ state=AWAITING_LLM  │                 │
- │                   │                       │                     │                 │
- │                   │                       │   ... streaming ... │                 │
- │                   │<──────────────────────│ COG_EVENT_LLM_CHUNK │                 │
- │                   │                       │                     │                 │
- │ [user hits ESC]   │                       │                     │                 │
- │──────────────────>│                       │                     │                 │
- │                   │ COG_EVENT_CANCEL      │                     │                 │
- │                   │──────────────────────>│                     │                 │
- │                   │                       │                     │                 │
- │                   │                       │ cog_provider_cancel()                 │
- │                   │                       │────────────────────>│                 │
- │                   │                       │                     │ abort stream    │
- │                   │                       │<────────────────────│ COG_ERROR_ABORTED
- │                   │                       │                     │                 │
- │                   │                       │ discard partial     │                 │
- │                   │                       │ response node       │                 │
- │                   │                       │                     │                 │
- │                   │                       │ state=IDLE          │                 │
- │                   │<──────────────────────│ COG_EVENT_CANCELLED │                 │
- │ cancelled         │                       │                     │                 │
- │<──────────────────│                       │                     │                 │
- │                   │                       │                     │                 │
- │                   │                       │ [session tree:      │                 │
- │                   │                       │  user msg preserved,│                 │
- │                   │                       │  no assistant node] │                 │
+```mermaid
+sequenceDiagram
+    participant User
+    participant App
+    participant Core
+    participant Provider
+    participant Session
+    User->>App: submit prompt
+    App->>Provider: send then fair poll/next
+    alt Immediate cancel
+      User->>App: cog_cli_app_cancel()
+      App->>Provider: cog_provider_cancel()
+      Provider-->>App: accepted deltas then one CANCELLED terminal
+      App->>Session: append explicit cancelled/incomplete assistant
+      App-->>User: cancellation acknowledged after owned cleanup
+    else Queue next prompt
+      User->>App: cog_cli_app_queue(text,len)
+      App->>Core: cog_core_queue_message(session_id,text,len)
+      Provider-->>App: complete current turn
+      App->>Core: cog_core_dequeue_message(buffer,capacity,length)
+      App->>Provider: send next turn only after safe completion
+    end
 ```
 
-### Path A Header Coverage
+## Exact public-header coverage
 
-| Step | Function | Header | Status |
-|------|----------|--------|--------|
-| User submits | `COG_EVENT_USER_INPUT` | `event.h` | ✅ |
-| Add user message | `cog_session_add_message()` | `session.h` | ✅ |
-| Send to provider | `cog_provider_send()` | `provider_vtable.h` | ✅ |
-| State transition | `(IDLE, USER_INPUT) → AWAITING_LLM` | `state.h` | ✅ |
-| Stream chunk | `COG_EVENT_LLM_CHUNK` | `event.h` | ✅ |
-| User cancels | `COG_EVENT_CANCEL` | `event.h` | ✅ |
-| Cancel provider | `cog_provider_cancel()` | `provider_vtable.h` | ✅ |
-| Provider aborted | `COG_ERROR_ABORTED` | `result.h` | ✅ |
-| Discard partial | `cog_session_discard_node()` | `session.h` | ✅ |
-| Cancelled event | `COG_EVENT_CANCELLED` | `event.h` | ✅ |
-| State transition | `(AWAITING_LLM, CANCEL) → IDLE` | `state.h` | ✅ |
+Names below are exact declared functions, types, enum members or struct fields;
+application-only policy/envelope steps are identified explicitly rather than
+presented as library calls. Each header path names the declaring public file.
 
----
+| Trace step | Exact declaration / member | Declaring header |
+|---|---|---|
+| Application entry points | `cog_cli_app_submit`; `cog_cli_app_cancel`; `cog_cli_app_queue`; `cog_cli_app_stop` | [applications/cog-cli/include/cog_cli/cli.h](../../applications/cog-cli/include/cog_cli/cli.h) |
+| Request cancel / retained terminal | `cog_provider_cancel`; `cog_provider_next`; `cog_provider_poll` | [libraries/cog-provider/include/cog/provider_vtable.h](../../libraries/cog-provider/include/cog/provider_vtable.h) |
+| Interrupt and queue events | `COG_EVENT_USER_INPUT`; `COG_EVENT_CANCEL`; `COG_EVENT_CANCELLED`; `COG_EVENT_QUEUE_MSG`; `COG_EVENT_MSG_QUEUED`; `COG_EVENT_LLM_COMPLETE` | [libraries/cog-core/include/cog/event.h](../../libraries/cog-core/include/cog/event.h) |
+| Per-session FIFO | `cog_core_queue_message`; `cog_core_dequeue_message`; `cog_core_pending_count` | [libraries/cog-core/include/cog/core.h](../../libraries/cog-core/include/cog/core.h) |
+| Constructor-reserved input FIFO bounds | `cog_core_config_t.pending_session_capacity`; `cog_core_config_t.pending_messages_per_session`; `cog_core_config_t.pending_message_bytes` | [libraries/cog-core/include/cog/core.h](../../libraries/cog-core/include/cog/core.h) |
+| Safe event-loop progress | `cog_core_config_t.service_interval`; `cog_core_config_t.idle_fn`; `cog_core_config_t.max_idle_wait_ms`; `cog_core_stop` | [libraries/cog-core/include/cog/core.h](../../libraries/cog-core/include/cog/core.h) |
+| Preserved partial turn | `cog_message_t.status`; `COG_MESSAGE_CANCELLED`; `COG_MESSAGE_INCOMPLETE` | [libraries/cog-core/include/cog/message.h](../../libraries/cog-core/include/cog/message.h) |
+| Append final status / narrow discard | `cog_session_append`; `cog_session_discard_node` | [libraries/cog-core/include/cog/session.h](../../libraries/cog-core/include/cog/session.h) |
+| Durable cancellation state | `cog_store_save` | [libraries/cog-core/include/cog/session_store.h](../../libraries/cog-core/include/cog/session_store.h) |
 
-## Path B: Queue Message for Next Turn
+## Ownership, errors and adversarial branches
 
-```
-User                UI                  Main Core             Provider           Session
- │                   │                       │                     │                 │
- │ "Explain X"       │                       │                     │                 │
- │──────────────────>│                       │                     │                 │
- │                   │ COG_EVENT_USER_INPUT  │                     │                 │
- │                   │──────────────────────>│                     │                 │
- │                   │                       │ ... streaming ...   │                 │
- │                   │                       │                     │                 │
- │ "Also explain Y"  │                       │                     │                 │
- │ [user types while │                       │                     │                 │
- │  streaming]       │                       │                     │                 │
- │──────────────────>│                       │                     │                 │
- │                   │ COG_EVENT_QUEUE_MSG   │                     │                 │
- │                   │──────────────────────>│                     │                 │
- │                   │                       │                     │                 │
- │                   │                       │ enqueue in pending  │                 │
- │                   │                       │ queue (session-     │                 │
- │                   │                       │ scoped FIFO)        │                 │
- │                   │                       │                     │                 │
- │                   │<──────────────────────│ COG_EVENT_MSG_QUEUED│                 │
- │ "queued"          │                       │                     │                 │
- │<──────────────────│                       │                     │                 │
- │                   │                       │                     │                 │
- │                   │                       │   ... streaming     │                 │
- │                   │                       │    completes ...    │                 │
- │                   │                       │                     │                 │
- │                   │                       │ COG_EVENT_LLM_COMPLETE                │
- │                   │                       │ add assistant msg   │                 │
- │                   │                       │ state=IDLE          │                 │
- │                   │                       │                     │                 │
- │                   │                       │ dequeue pending msg │                 │
- │                   │                       │ COG_EVENT_USER_INPUT│                 │
- │                   │                       │ (auto-injected)     │                 │
- │                   │                       │                     │                 │
- │                   │                       │ add user msg        │                 │
- │                   │                       │ cog_provider_send() │                 │
- │                   │                       │ state=AWAITING_LLM  │                 │
- │                   │                       │                     │                 │
- │                   │<──────────────────────│ COG_EVENT_LLM_CHUNK │                 │
- │ sees response     │                       │                     │                 │
- │<──────────────────│                       │                     │                 │
-```
+- Only app_stop/core_stop are signal/thread-safe; app_cancel and provider_cancel run on the owner thread. Interrupt progress remains bounded under a perpetually nonempty queue.
+- Provider cancellation preserves accepted queued deltas and emits one terminal unless successful completion already won. Do not report success and cancellation for the same turn.
+- Accepted visible output is recorded explicitly as cancelled/incomplete. The historical unconditional "discard partial assistant and keep no node" behavior is not the real-client durability policy; discard is limited to safe uncommitted leaves under its contract.
+- Pending messages are copied, bounded, per-session FIFO. A short dequeue destination must not lose the next input or change order. Queue overflow is explicit, not silent eviction.
+- A queued prompt starts after the current turn and required tool/result durability complete. Cancelled or unresolved tool intent cannot be silently bypassed by dequeuing the next message.
 
-### Path B Header Coverage
+## Gap analysis and release amendment
 
-| Step | Function | Header | Status |
-|------|----------|--------|--------|
-| Queue message | `COG_EVENT_QUEUE_MSG` | `event.h` | ✅ |
-| Enqueue pending | `cog_core_queue_message()` | `core.h` | ✅ |
-| Queued ack | `COG_EVENT_MSG_QUEUED` | `event.h` | ✅ |
-| LLM complete | `COG_EVENT_LLM_COMPLETE` | `event.h` | ✅ |
-| Add assistant msg | `cog_session_add_message()` | `session.h` | ✅ |
-| Dequeue pending | `cog_core_dequeue_message()` | `core.h` | ✅ |
-| Auto-inject | `COG_EVENT_USER_INPUT` (re-enqueued) | `event.h` | ✅ |
-| Next turn | `cog_provider_send()` | `provider_vtable.h` | ✅ |
+The original obsolete discard-only interruption policy is superseded by explicit incomplete status. Pass-2 pending-queue amendments require transactional capacity retry: a short dequeue leaves the oldest entry and destination bytes unchanged; failed automatic event enqueue retains that same entry through subsequent service steps, so no prompt is lost or duplicated. Cancellation/terminal ordering and default persistence behavior are also traced in the R-series.
 
----
+## Executable evidence and required follow-up
 
-## Gaps Found → FIXED
+Existing baseline test: [`applications/cog-cli/tests/test_20_interrupt_and_queue.c`](../../applications/cog-cli/tests/test_20_interrupt_and_queue.c). It exists as historical
+engine/mock application evidence. It was not rerun in this design-only pass and
+does not prove the new mandatory headers, real transport or durable-tool behavior.
 
-### 1. ✅ `cog_session_discard_node()` — added to `session.h`
+Future conformance requirements: Busy-queue cancel latency, completion-vs-cancel race, retained delta overflow, FIFO dequeue capacity retry, explicit cancelled persistence and no next turn after indeterminate effects.
 
-When the user cancels mid-stream, the partial assistant response node
-must be removed from the session tree. Without this, cancelled turns
-leave orphaned nodes with incomplete data.
-
-**Proposed signature:**
-```c
-cog_result_t cog_session_discard_node(cog_session_t *session,
-                                       cog_session_node_t *node);
-```
-
-**Contract:**
-- Only leaf nodes can be discarded
-- The node must have role `COG_MESSAGE_ROLE_ASSISTANT`
-- Parent's child list is updated
-- Node's memory is freed
-- Returns `COG_ERROR_INVALID_STATE` if node has children
-
-### 2. ✅ `COG_EVENT_CANCELLED` — added to `event.h`
-
-The core needs to notify the UI that cancellation completed. Without
-this, the UI doesn't know when to re-enable input.
-
-**Proposed:** add `COG_EVENT_CANCELLED` to `cog_event_kind_t`
-
-### 3. ✅ `COG_EVENT_QUEUE_MSG` — added to `event.h`
-
-User wants to queue a message while streaming. The core holds it in
-a session-scoped FIFO and auto-injects it when the current turn ends.
-
-**Proposed:** add `COG_EVENT_QUEUE_MSG` to `cog_event_kind_t`
-
-### 4. ✅ `COG_EVENT_MSG_QUEUED` — added to `event.h`
-
-Acknowledge to the UI that the message was queued.
-
-**Proposed:** add `COG_EVENT_MSG_QUEUED` to `cog_event_kind_t`
-
-### 5. ✅ `cog_core_queue_message()` / `cog_core_dequeue_message()` — added to `core.h`
-
-Session-scoped pending message queue.
-
-**Proposed signatures:**
-```c
-cog_result_t cog_core_queue_message(cog_core_t *core,
-                                     const char *session_id,
-                                     const char *text,
-                                     size_t text_len);
-
-cog_result_t cog_core_dequeue_message(cog_core_t *core,
-                                       const char *session_id,
-                                       char *out_buf,
-                                       size_t buf_capacity,
-                                       size_t *out_len);
-```
-
-**Contract:**
-- Messages are queued per session_id
-- FIFO order preserved
-- `cog_core_dequeue_message` returns `COG_ERROR_NOT_FOUND` when empty
-- Queue depth is bounded (configurable, default 8)
-- Overflow returns `COG_ERROR_OVERFLOW`
-
----
-
-## Session Tree State
-
-### After interrupt (Path A):
-```
-root → node1 (user: "Explain X")
-       
-(no assistant node — discarded)
-```
-
-### After queue + complete (Path B):
-```
-root → node1 (user: "Explain X")
-     → node2 (assistant: "X is...")
-     → node3 (user: "Also explain Y")
-     → node4 (assistant: "Y is...")
-```
-
-Both paths preserve tree integrity. No orphaned nodes, no missing parents.
+Header tracing is complete only where the gap analysis says so. Production
+implementation and executable scenario migration remain gated by pass 3 and the
+independent final review; no passing runtime result is inferred from these tables.

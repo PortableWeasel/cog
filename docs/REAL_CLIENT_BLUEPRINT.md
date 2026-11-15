@@ -109,11 +109,24 @@ provider matrix. These are follow-on scope, not silent release requirements.
     traffic before conversation-loop delivery K; do not introduce core link
     dependencies on provider, net or toolkit implementations.
 
+## Pass 2 contract trace status
+
+Stage D now supplies [all 38 individual traces and the amendment register](REAL_CLIENT_SCENARIO_PASS2.md).
+The writer reports no remaining required public-call gap; independent pass 3/E
+must verify that closure. No production implementation or new runtime scenario
+pass is claimed. REAL defaults to a durable store; explicit no-store is text-only.
+Shared-net request-local retention, bounded nonblocking IPC, remote update ingress,
+active-display snapshots and quiescent same-host guarded migration are public
+contracts, with delivery ownership recorded in that register. Opaque streaming
+reconstruction and safe committed-prefix recovery are explicit amendments to the
+initial contracts. The dynamic dependency allocation profile still awaits E.
+
 ## Scenario and header gap register
 
-These are planning traces, not a claim of header coverage. Each row becomes
-an individual sequence diagram, call-to-header table and executable test in
-the header/scenario work package. Re-trace all existing scenarios 01–20 too.
+The rows below preserve the original planning gap list. Stage D now maps each
+to an individual sequence/call/type/event trace and re-traces original01–20.
+The linked pass-2 register records contract coverage and future executable tests
+separately; runtime conformance remains gated.
 
 | ID | Flow | Existing contract anchor | Required amendment / assertion |
 |---|---|---|---|

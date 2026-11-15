@@ -263,3 +263,45 @@ Local documentation links and diff whitespace pass. No live request, production
 runtime test, sanitizer adoption claim or executable scenario completion is
 part of this design-only pass; existing implementations must migrate to the
 new mandatory contracts in the gated delivery packages.
+
+## Pass 2 scenario amendments (345a536)
+
+[The full pass-2 register and all 38 traces](REAL_CLIENT_SCENARIO_PASS2.md) amend
+this initial pass. Their exact public-header contracts take precedence over
+pass-1 shorthand above. D provides no production `.c` implementation.
+
+REAL now defaults to a durable state-directory file store; explicit no-store
+is text-only. CLI presence includes store mode/directory and an independent
+base URL. Null-store save/append cannot satisfy durable admission. Owned-session
+contexts require a current same-host execution guard, held across tools and all
+other owned work; async execution constructors borrow it through destruction.
+Legacy unguarded or synchronous paths cannot bypass this profile.
+
+Shared transport consumers use request-local retained peek/ack. Typed queue
+expansion has a bounded resumable cursor and an independent terminal slot; an
+intrinsically oversized callback/item fails instead of permanently pausing.
+Tool ID/name fragments are assembled before the one full BEGIN. Opaque stream
+reconstruction is pinned in `openrouter.h`; blindly preserving separate streamed
+text/summary fragments is insufficient. The synthetic pass-2 fixture specifies
+complete exact bytes through persistence, fork and resend without displaying them.
+
+Remote child updates now have public bounded apply/copy/ack/release and CGA1
+encoding; cancellation still accepts the matching drained terminal acknowledgement.
+IPC framing is uniformly nonblocking and constructor-bounded. Replay uses CGR1
+DATA/GAP/CURSOR plus session/generation identity. A GAP during active streaming
+uses the CGD1 atomically anchored full visible-display snapshot, which includes
+incomplete text independently of ordinary replay-safe history.
+
+Original17 is a quiescent same-host shared-store handoff, not live transfer.
+Persistent owner tuple and exact checkpoint tokens, independent-open-description
+OS guards, durable epoch compare/exchange, CGH1 correlation and advisory route
+publication close its call contract. Source stays frozen after guard release;
+target stages exact state, acquires the new owner guard, publishes initial route,
+then starts work. Uncertain fsync/publication is INDETERMINATE, never assumed
+rollback. Restart must fence/reap old owned processes and refuses unresolved
+intents. Cross-host/live-handle migration is explicitly unsupported.
+
+Q owns the nonblocking IPC profile needed by fair core scheduling before K.
+G owns checkpoint/guard persistence; K/O own display snapshot/replay; N/O own
+public child and same-host handoff integration. These assignments do not waive
+E or permit implementation before the final header gate.

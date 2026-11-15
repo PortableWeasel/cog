@@ -27,6 +27,7 @@ extern "C" {
 
 /* Forward declaration to break the core/tool include cycle. */
 typedef struct cog_core cog_core_t;
+typedef struct cog_store_owner_guard cog_store_owner_guard_t;
 
 /**
  * @brief Tool implementation signature.
@@ -83,6 +84,8 @@ typedef struct cog_tool_async_config {
     uint32_t timeout_ms; /**< Nonzero monotonic execution deadline. */
     uint32_t terminate_grace_ms; /**< TERM-to-KILL grace, zero means immediate KILL. */
     void *user; /**< Borrowed workspace/policy config; valid until destroy. */
+    cog_store_owner_guard_t *owner_guard; /**< Required for owned-session effects;
+       borrowed by execution constructor until destroy, validated before start. */
 } cog_tool_async_config_t;
 
 /** @brief Borrowed final tool outcome, retained until destroy. */

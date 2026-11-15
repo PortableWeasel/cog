@@ -202,7 +202,12 @@ typedef enum cog_toolkit_policy_decision {
  * @param[in] config Explicit nonzero runtime/output bounds and borrowed user.
  * @return COG_OK; NULL_PTR; INVALID_ARG for malformed arguments/schema; NOT_FOUND;
  * UNSUPPORTED for no async vtable or schema keyword; LIMIT/NOMEM for capacity.
- * @note Owner thread. Constructor reserves all runtime Cog storage and invokes
+ * @note If the core store requires ownership, config.owner_guard is mandatory
+ * and must match this session. Constructor borrows it; start validates it before
+ * effects; free returns it only after terminal cleanup. Missing/stale guard
+ * returns INVALID_STATE. Legacy synchronous execute/execute_all refuse such
+ * contexts with UNSUPPORTED; they cannot bypass the fenced async profile.
+ * Owner thread. Constructor reserves all runtime Cog storage and invokes
  * only tool.new_, whose contract forbids external effects. Schema subset:
  * type/object/array/string/number/integer/boolean/null, properties, required,
  * additionalProperties=false, items, enum, minimum/maximum, min/maxLength and

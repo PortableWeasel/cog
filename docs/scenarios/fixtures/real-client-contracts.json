@@ -1,0 +1,154 @@
+{
+  "notice": "Synthetic design fixture; no production codec/store executable claim",
+  "tool_identity_fragments": [
+    {
+      "index": 0,
+      "id": "call_",
+      "function": {
+        "name": "edit_",
+        "arguments": "{\"path\":"
+      },
+      "type": "function"
+    },
+    {
+      "index": 0,
+      "id": "7",
+      "function": {
+        "name": "file",
+        "arguments": "\"demo.txt\",\"old\":\"a\",\"new\":\"b\"}"
+      }
+    }
+  ],
+  "expected_tool": {
+    "index": 0,
+    "id": "call_7",
+    "name": "edit_file",
+    "arguments": {
+      "path": "demo.txt",
+      "old": "a",
+      "new": "b"
+    }
+  },
+  "opaque_stream_updates": [
+    {
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "synthetic ",
+          "format": "test-v1",
+          "index": 0
+        }
+      ]
+    },
+    {
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "opaque fragments",
+          "signature": "test-signature",
+          "index": 0
+        }
+      ]
+    },
+    {
+      "reasoning_details": [
+        {
+          "type": "reasoning.encrypted",
+          "data": "c3ludGhldGljLWJsb2I=",
+          "id": "opaque-1",
+          "format": "test-v1"
+        }
+      ]
+    }
+  ],
+  "expected_opaque": {
+    "namespace_id": "openrouter.chat-completions",
+    "format": "json-v1",
+    "utf8": "{\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"synthetic opaque fragments\",\"signature\":\"test-signature\",\"format\":\"test-v1\",\"index\":0},{\"type\":\"reasoning.encrypted\",\"data\":\"c3ludGhldGljLWJsb2I=\",\"id\":\"opaque-1\",\"format\":\"test-v1\"}]}",
+    "size": 239,
+    "base64": "eyJyZWFzb25pbmdfZGV0YWlscyI6W3sidHlwZSI6InJlYXNvbmluZy50ZXh0IiwidGV4dCI6InN5bnRoZXRpYyBvcGFxdWUgZnJhZ21lbnRzIiwic2lnbmF0dXJlIjoidGVzdC1zaWduYXR1cmUiLCJmb3JtYXQiOiJ0ZXN0LXYxIiwiaW5kZXgiOjB9LHsidHlwZSI6InJlYXNvbmluZy5lbmNyeXB0ZWQiLCJkYXRhIjoiYzNsdWRHaGxkR2xqTFdKc2IyST0iLCJpZCI6Im9wYXF1ZS0xIiwiZm9ybWF0IjoidGVzdC12MSJ9XX0="
+  },
+  "required_roundtrip": [
+    "OPAQUE delta complete bytes",
+    "assistant owned message",
+    "v2 base64/namespace/format/length",
+    "loaded/forked history exact byte equality",
+    "send request assistant.reasoning_details equal reconstructed array"
+  ],
+  "expected_visible_text": "",
+  "effect_overflow": {
+    "operation": "edit_file",
+    "destination_capacities": [
+      1,
+      65537
+    ],
+    "expected_invocations": 1
+  },
+  "crash_after_started": {
+    "loaded_state": "INDETERMINATE",
+    "expected_automatic_invocations": 0
+  },
+  "config_precedence_cases": [
+    {
+      "cli": {
+        "max_retries": 0,
+        "present": true
+      },
+      "environment": 2,
+      "config": 3,
+      "expected": 0
+    },
+    {
+      "cli": {
+        "max_retries": 1,
+        "present": false
+      },
+      "environment": 2,
+      "config": 3,
+      "expected": 2
+    },
+    {
+      "cli": {
+        "tool_policy": "ASK",
+        "present": true
+      },
+      "environment": "ALLOW",
+      "expected": "ASK"
+    }
+  ],
+  "replay_cases": [
+    {
+      "generation": 2,
+      "client_generation": 1,
+      "first": 0,
+      "last": 0,
+      "expected": "GAP",
+      "gap_sequence": 0
+    },
+    {
+      "generation": 2,
+      "client_generation": 2,
+      "after": 1,
+      "first": 3,
+      "last": 5,
+      "expected": "GAP",
+      "gap_sequence": 2
+    }
+  ],
+  "migration_case": {
+    "old_owner": {
+      "epoch": 7,
+      "instance_id": 100
+    },
+    "next_owner": {
+      "epoch": 8,
+      "instance_id": 200
+    },
+    "checkpoint_generation": 12,
+    "source_after_guard_release": "FROZEN",
+    "target_before_guard_and_route": "STAGED",
+    "stale_prepared_ack": "INVALID_STATE",
+    "uncertain_publish": "INDETERMINATE",
+    "automatic_tool_replay": false
+  }
+}

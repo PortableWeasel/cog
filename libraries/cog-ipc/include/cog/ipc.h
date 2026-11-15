@@ -113,8 +113,40 @@ cog_result_t cog_ipc_message_new(cog_ipc_message_t *msg, size_t capacity);
  */
 cog_result_t cog_ipc_message_free(cog_ipc_message_t *msg);
 
+/** @brief Constructor-reserved nonblocking framing limits; zero selects defaults. */
+typedef struct cog_ipc_endpoint_config {
+    size_t max_frame_bytes; /**< Default 1 MiB; oversized peer frame is LIMIT. */
+    size_t receive_frames; /**< Default 8 complete+partial retained frames. */
+    size_t send_frames; /**< Default 8 copied output frames. */
+    size_t service_quantum; /**< Default 16 bounded read/write/frame units. */
+    size_t max_routes; /**< Default 64 copied session routes; ID max 127 bytes. */
+    uint32_t connect_timeout_ms; /**< Default 1000; asynchronous handshake timer. */
+} cog_ipc_endpoint_config_t;
 /**
- * @brief Allocate a new IPC endpoint.
+ * @brief Reserve bounded framing/routing storage; all sockets are nonblocking.
+ * @param[out] out Owned unbound endpoint, NULL on failure.
+ * @param[in] config NULL selects documented defaults; checked size arithmetic.
+ * @return OK; NULL_PTR; INVALID_ARG; NOMEM. No socket/peer activity on failure.
+ * @note Owner thread. Accepted endpoints copy listener limits and use explicit
+ * constructor allocation released by endpoint_free. No runtime buffer growth.
+ */
+cog_result_t cog_ipc_endpoint_new_ex(cog_ipc_endpoint_t **out,
+                                     const cog_ipc_endpoint_config_t *config);
+/**
+ * @brief Advance bounded partial framing/connect/output work without waiting.
+ * @param[in,out] endpoint Bound/connecting endpoint (listener accepts separately).
+ * @param[in] now_ms Nondecreasing caller monotonic clock.
+ * @param[out] out_deadline_ms Absolute next timer or UINT64_MAX.
+ * @return OK; AGAIN no progress; NULL_PTR; INVALID_ARG clock; IO/PROTOCOL/LIMIT
+ * terminal peer failure. Partial prefixes and payloads stay endpoint-owned;
+ * no read_full/send_full loops wait for peer. Full input queue pauses that peer,
+ * not unrelated endpoints; an over-limit declared frame fails before allocation.
+ * @note Owner thread, no positive poll wait. Core calls this at fairness steps.
+ */
+cog_result_t cog_ipc_endpoint_service(cog_ipc_endpoint_t *endpoint,
+                                      uint64_t now_ms, uint64_t *out_deadline_ms);
+/**
+ * @brief Allocate a nonblocking endpoint; equivalent to new_ex(out,NULL).
  *
  * @param[out] out Uninitialised pointer; set to the new endpoint on success.
  * @return COG_OK on success.
@@ -185,8 +217,7 @@ cog_result_t cog_ipc_endpoint_listen(cog_ipc_endpoint_t *endpoint,
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p listener or @p client is NULL.
  * @return COG_ERROR_INVALID_STATE if @p listener is not listening.
- * @return COG_ERROR_AGAIN if no connection is pending and the listener
- *         is non-blocking.
+ * @return COG_ERROR_AGAIN if no connection is pending; never waits for a peer.
  * @return COG_ERROR_IO if accept fails.
  *
  * @pre @p listener is listening.
@@ -209,7 +240,9 @@ cog_result_t cog_ipc_endpoint_accept(cog_ipc_endpoint_t *listener,
  * @param[in]     path     Path of the listener's socket.
  * @param[out]    peer_id  Optional; if non-NULL, receives the identifier
  *                         assigned to the local end of the connection.
- * @return COG_OK on success.
+ * @return COG_OK if connected immediately; AGAIN while one retained
+ * nonblocking connect/identity handshake is pending (peer_id unchanged). Drive
+ * endpoint_service, then get_peer_id; do not call connect again on that socket.
  * @return COG_ERROR_NULL_PTR if @p endpoint or @p path is NULL.
  * @return COG_ERROR_INVALID_STATE if @p endpoint is already associated
  *         with a socket.
@@ -241,12 +274,15 @@ cog_result_t cog_ipc_endpoint_connect(cog_ipc_endpoint_t *endpoint,
  *         @p msg->len > @p msg->capacity.
  * @return COG_ERROR_INVALID_STATE if @p endpoint is not connected.
  * @return COG_ERROR_IO if the send fails.
- * @return COG_ERROR_AGAIN if the operation would block and the endpoint
- *         is non-blocking.
+ * @return COG_ERROR_AGAIN if the constructor output queue is temporarily full;
+ * no part of this new message is accepted. LIMIT if it exceeds max_frame_bytes.
  *
  * @pre @p endpoint is connected.
  *
- * @post On success, the message payload has been queued or transmitted.
+ * @post OK copies one whole frame into reserved output storage exactly once;
+ * caller may release msg immediately. endpoint_service flushes partial writes
+ * from an internal cursor. Retrying send after OK would enqueue a second frame;
+ * retry only AGAIN, which accepted nothing. No blocking peer I/O or growth.
  *
  * Threading: not thread-safe.
  */
@@ -268,10 +304,12 @@ cog_result_t cog_ipc_endpoint_send(cog_ipc_endpoint_t *endpoint,
  * @return COG_ERROR_INVALID_STATE if @p endpoint is not connected.
  * @return COG_ERROR_IO if the receive fails or the remote closed the
  *         connection.
- * @return COG_ERROR_AGAIN if no complete frame is available and the
- *         endpoint is non-blocking.
+ * @return COG_ERROR_AGAIN if no complete retained frame is available. This
+ * call never waits or drives peer I/O; service retains partial frame prefixes.
  * @return COG_ERROR_OVERFLOW if the next frame is larger than
- *         @p msg->capacity.
+ *         @p msg->capacity; only msg->len changes to required bytes. Metadata
+ * and destination bytes remain unchanged; the SAME complete frame stays
+ * retained across service for a larger-buffer retry.
  *
  * @pre @p endpoint is connected.
  *
@@ -287,7 +325,8 @@ cog_result_t cog_ipc_endpoint_recv(cog_ipc_endpoint_t *endpoint,
  *
  * @param[in,out] endpoint    Endpoint to poll.
  * @param[in]     events      Bitmask of @c cog_ipc_poll_event_t values.
- * @param[in]     timeout_ms  Timeout in milliseconds.  A negative value
+ * @param[in]     timeout_ms  Timeout in milliseconds; core service uses zero.
+ * Legacy positive/indefinite waits are excluded from responsive service hooks.  A negative value
  *                            waits indefinitely; zero returns immediately.
  * @param[out]    revents     Optional; if non-NULL, receives the bitmask
  *                            of events that are ready.
@@ -348,6 +387,11 @@ cog_result_t cog_ipc_endpoint_get_peer_id(const cog_ipc_endpoint_t *endpoint,
  *
  * @param[in,out] endpoint Endpoint to send from (must be a listener).
  * @param[in]     msg      Message to broadcast.
+ * Admission is transactional across the current connected-peer set: reserve
+ * every copied output entry before accepting any. AGAIN if any queue is full
+ * accepts nothing; LIMIT for oversized payload. OK accepts one per peer, then
+ * bounded endpoint_service flushes them. Do not repeat an accepted broadcast
+ * after a later peer failure; per-peer effect/epoch IDs still deduplicate control.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p endpoint or @p msg is NULL.
  * @return COG_ERROR_INVALID_STATE if @p endpoint is not a listener.
@@ -409,6 +453,110 @@ cog_result_t cog_ipc_send_to_session(cog_ipc_endpoint_t *endpoint,
  */
 cog_result_t cog_ipc_unregister_session(cog_ipc_endpoint_t *endpoint,
                                          const char *session_id);
+
+/** @brief Bounded application-owned per-session replay ring, no socket ownership. */
+typedef struct cog_ipc_replay cog_ipc_replay_t;
+/** @brief Versioned reconnect envelope; CURSOR is client acknowledgement/request. */
+typedef enum cog_ipc_replay_kind {
+    COG_IPC_REPLAY_DATA = 1,
+    COG_IPC_REPLAY_GAP,
+    COG_IPC_REPLAY_CURSOR
+} cog_ipc_replay_kind_t;
+/** @brief Replay envelope; input pointers borrowed, copied outputs caller-owned. */
+typedef struct cog_ipc_replay_record {
+    cog_ipc_replay_kind_t kind;
+    const char *session_id;
+    uint64_t generation; /**< Nonzero stream lifetime; never reused across restart. */
+    uint64_t sequence; /**< DATA ID; CURSOR last rendered ID; GAP oldest-1. */
+    uint64_t first_sequence; /**< Current retained window; empty: first=last=0. */
+    uint64_t last_sequence;
+    uint16_t type; /**< Application payload type; zero for GAP/CURSOR. */
+    const void *payload;
+    size_t payload_len;
+} cog_ipc_replay_record_t;
+/**
+ * @brief Reserve one replay ring; never allocates while appending/copying.
+ * @param[out] out Owned ring, NULL on failure; match replay_free.
+ * @param[in] session_id Nonempty UTF-8 ID, copied, maximum 127 bytes.
+ * @param[in] generation Host-selected nonzero lifetime ID, not reused after
+ * restart; clients deduplicate by (session,generation,sequence), never sequence alone.
+ * @param[in] max_entries Nonzero retained record bound.
+ * @param[in] max_bytes Nonzero total copied payload bound.
+ * @return OK; NULL_PTR; INVALID_ARG for bounds/arithmetic/ID; NOMEM.
+ * @note One owner thread, no implicit dependency/global state or network I/O.
+ */
+cog_result_t cog_ipc_replay_new(cog_ipc_replay_t **out, const char *session_id,
+                                uint64_t generation, size_t max_entries,
+                                size_t max_bytes);
+/** @brief Release constructor storage. @param[in,out] replay NULL is a no-op.
+ * @note Owner thread; caller copies all views before release. */
+void cog_ipc_replay_free(cog_ipc_replay_t *replay);
+/**
+ * @brief Copy one record and assign monotonic sequence starting at 1.
+ * @param[in,out] replay Ring. @param[in] type Nonzero application type.
+ * @param[in] payload Bytes; NULL iff payload_len=0. @param[in] payload_len Bytes.
+ * @param[out] out_sequence Assigned sequence, unchanged on failure.
+ * @return OK; NULL_PTR; INVALID_ARG; LIMIT if a single record exceeds max_bytes
+ * or sequence would wrap. Failure changes nothing. On success evicts only as
+ * many oldest records as needed; the window exposes a detectable replay gap.
+ * @note No effects are executed by replay; dropping display records never
+ * deletes durable session/ledger data or authorizes tool/request replay.
+ */
+cog_result_t cog_ipc_replay_append(cog_ipc_replay_t *replay, uint16_t type,
+                                   const void *payload, size_t payload_len,
+                                   uint64_t *out_sequence);
+/**
+ * @brief Copy next DATA or explicit GAP after a client cursor, no consumption.
+ * @param[in] replay Ring. @param[in] generation Client's last known lifetime.
+ * @param[in] after_sequence Last rendered DATA ID (0 for fresh matching lifetime).
+ * @param[out] out_record Metadata unchanged except on OK; pointers use storage.
+ * @param[out] storage Caller bytes for session ID+NUL and payload; NULL iff capacity=0.
+ * @param[in] capacity Available bytes. @param[out] out_required Exact required bytes.
+ * @return OK for DATA/GAP; AGAIN at current tail (required=0); OVERFLOW changes
+ * required only; NULL_PTR; INVALID_ARG for cursor beyond matching generation tail.
+ * Mismatched generation or evicted prefix returns GAP with current window,
+ * never silently resumes as if data were contiguous. Copying does not mutate a
+ * shared cursor; caller advances only after successful render/ack. No allocation.
+ * @note Owner thread. GAP requires explicit full resynchronization/reload before
+ * rendering further deltas; it never triggers provider/tool re-execution.
+ */
+cog_result_t cog_ipc_replay_copy_after(const cog_ipc_replay_t *replay,
+                                       uint64_t generation, uint64_t after_sequence,
+                                       cog_ipc_replay_record_t *out_record,
+                                       void *storage, size_t capacity,
+                                       size_t *out_required);
+/**
+ * @brief Encode a replay record for endpoint_send; never send native structs.
+ * @param[in] record Valid record, strings/bytes borrowed until return.
+ * @param[out] output Wire bytes; NULL iff capacity=0. @param[in] capacity Bytes.
+ * @param[out] out_required Exact encoded size on OK/OVERFLOW.
+ * @return OK; OVERFLOW (no writes); NULL_PTR; INVALID_ARG; LIMIT for uint32 length.
+ * @note Version 1: magic CGR1, kind u8, generation/sequence/first/last u64,
+ * type u16, session length/payload length u32, then exact session/payload bytes;
+ * all integers big-endian, no padding/native pointers or session NUL on wire.
+ * DATA requires 1<=first<=sequence<=last and nonzero type. GAP has no
+ * payload/type, sequence=first-1 for nonempty window; empty GAP uses all three
+ * sequence/first/last=0 (including generation mismatch before first append).
+ * CURSOR has no payload/type, first=last=0 and sequence=last rendered ID.
+ * Session ID nonempty UTF-8 <=127 bytes; generation nonzero for every kind.
+ * Owner thread; no allocation, credentials or implicit transport activity.
+ */
+cog_result_t cog_ipc_replay_encode(const cog_ipc_replay_record_t *record,
+                                   void *output, size_t capacity,
+                                   size_t *out_required);
+/**
+ * @brief Decode one complete replay envelope transactionally into caller storage.
+ * @param[in] input Wire bytes. @param[in] input_len Exact frame length.
+ * @param[out] out_record Metadata. @param[out] storage Owned copied payload/ID.
+ * @param[in] capacity Bytes. @param[out] out_required Exact storage on OK/OVERFLOW.
+ * @return OK; OVERFLOW (required only); NULL_PTR; UNSUPPORTED version/kind;
+ * PROTOCOL for invalid bounds/UTF-8/trailing bytes. Failure writes no outputs
+ * except required on OVERFLOW. No borrowed input survives; no allocation.
+ */
+cog_result_t cog_ipc_replay_decode(const void *input, size_t input_len,
+                                   cog_ipc_replay_record_t *out_record,
+                                   void *storage, size_t capacity,
+                                   size_t *out_required);
 
 #ifdef __cplusplus
 }

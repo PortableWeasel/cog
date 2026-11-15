@@ -6,7 +6,8 @@
  * The CLI wires the real cog-core / cog-provider / cog-obs / cog-store
  * libraries into a functional single-process agent: a static const
  * dispatch table drives the (IDLE, AWAITING_LLM) state machine, the mock
- * provider streams scripted chunks, and the session tree records every
+ * provider (REAL by default, explicit mock for fixtures) is polled fairly,
+ * and the session tree records every
  * exchange.  Scenario tests link @c cog::cli and drive this API directly
  * instead of spawning the binary.
  *
@@ -16,7 +17,8 @@
  * provider, the obs context, the store, the mock script storage, and the
  * optional IPC listener.  The core borrows the session / provider / obs /
  * store and owns the IPC endpoint once configured, so teardown order is
- * fixed: core first, then provider, obs, store, session, then owned
+ * fixed: drain/release executions, workspace, core, provider, obs, store,
+ * session, then owned
  * storage.  @c cog_cli_app_free performs exactly that order.
  *
  * @section cli_states States and events
@@ -30,8 +32,10 @@
  * | IDLE | SHUTDOWN | request the run loop to stop |
  * | AWAITING_LLM | LLM_CHUNK | receive next chunk, append/print, continue or finish |
  * | AWAITING_LLM | LLM_COMPLETE | close the turn, return to IDLE |
- * | AWAITING_LLM | CANCEL | arm provider cancellation; next receive aborts |
- * | AWAITING_LLM | SHUTDOWN | request the run loop to stop |
+ * | AWAITING_LLM | CANCEL | cancel/drain; retain explicit cancelled turn |
+ * | AWAITING_LLM | SHUTDOWN | cancel/drain/reap owned work then stop |
+ * | TOOL_POLICY | policy decision | deny or persist STARTED before ALLOW |
+ * | TOOL_RUNNING | service/cancel | poll bounded output/reap; commit result+ledger |
  *
  * A retryable provider error (e.g. rate limit) is retried once with a
  * bounded backoff derived from the error's @c retry_after_ms; a
@@ -89,6 +93,12 @@ typedef enum cog_cli_tool_policy {
     COG_CLI_TOOL_POLICY_DENY,
     COG_CLI_TOOL_POLICY_ALLOW /**< Explicit autonomous opt-in, still validates paths/limits. */
 } cog_cli_tool_policy_t;
+/** @brief Real mode defaults to durable history; disabled mode cannot run tools. */
+typedef enum cog_cli_store_mode {
+    COG_CLI_STORE_DEFAULT = 0, /**< DURABLE for REAL, DISABLED for MOCK. */
+    COG_CLI_STORE_DURABLE,
+    COG_CLI_STORE_DISABLED
+} cog_cli_store_mode_t;
 /**
  * @brief Credential resolver callback; only called during config construction.
  * @param[in,out] arg Host-owned resolver context.
@@ -121,7 +131,10 @@ typedef enum cog_cli_option_bit {
     COG_CLI_OPT_TOOL_OUTPUT = 1u << 10,
     COG_CLI_OPT_CONTEXT = 1u << 11,
     COG_CLI_OPT_RETRIES = 1u << 12,
-    COG_CLI_OPT_RETRY_MS = 1u << 13
+    COG_CLI_OPT_RETRY_MS = 1u << 13,
+    COG_CLI_OPT_STORE_MODE = 1u << 14,
+    COG_CLI_OPT_STORE_DIR = 1u << 15,
+    COG_CLI_OPT_BASE_URL = 1u << 16
 } cog_cli_option_bit_t;
 
 /**
@@ -137,8 +150,10 @@ typedef struct cog_cli_options {
     const char *prompt;
     /** Session identifier; NULL generates one. */
     const char *session_id;
-    /** Store base directory; NULL disables persistence. */
+    /** Durable store directory override; NULL selects the mode-specific default. */
     const char *store_dir;
+    cog_cli_store_mode_t store_mode; /**< --store DIR selects DURABLE;
+       --no-store selects DISABLED; supplying both flags is INVALID_ARG. */
     /** Log file path; NULL logs to stderr. */
     const char *log_path;
     /** Unix domain socket path; NULL runs single-process. */
@@ -147,6 +162,7 @@ typedef struct cog_cli_options {
     const char *model_id;
     /** Endpoint name to connect through (default openrouter; mock explicit). */
     const char *endpoint_name;
+    const char *base_url; /**< HTTPS OpenRouter base URL; explicit --base-url. */
     /** Comma-separated mock chunks. */
     const char *chunks;
     /** Mock behaviour. */
@@ -188,6 +204,73 @@ typedef struct cog_cli_options {
  * @brief Opaque CLI application context.
  */
 typedef struct cog_cli_app cog_cli_app_t;
+
+/** @brief Visible display state; never provider history or opaque continuation. */
+typedef struct cog_cli_display_item {
+    uint64_t node_id; /**< Durable node ID; 0 for a not-yet-inserted active aggregate. */
+    cog_message_role_t role;
+    cog_message_status_t status;
+    const char *text;
+    size_t text_len;
+} cog_cli_display_item_t;
+/** @brief Atomic full-display snapshot at one replay cursor boundary. */
+typedef struct cog_cli_display_snapshot {
+    const char *session_id; /**< Nonempty UTF-8, max 127 bytes; part of identity. */
+    uint64_t generation;
+    uint64_t through_sequence; /**< Includes all display DATA through this ID. */
+    const cog_cli_display_item_t *items;
+    size_t item_count;
+} cog_cli_display_snapshot_t;
+/**
+ * @brief View full bounded visible history plus the active/incomplete aggregate.
+ * @param[in,out] app Owner thread, outside callbacks; no concurrent app mutation.
+ * @param[out] snapshot Constructor-scratch view, unchanged on failure.
+ * @return OK; NULL_PTR; LIMIT if complete snapshot cannot fit reserved app limits.
+ * @note Valid until the next mutating app call/service/free. Encode/copy before
+ * returning to service. Snapshot and replay anchor are sampled atomically on
+ * the owner thread; no append can occur between them. Includes display text
+ * from incomplete/unresolved tool rounds even when copy_history refuses replay.
+ * Excludes opaque bytes/secrets and never authorizes provider/tool execution.
+ * UI rejects any snapshot for a different session ID; replaces visible state
+ * and sets cursor to (generation,through_sequence),
+ * then requests DATA after it. On another gap repeat snapshot; never skip data
+ * silently. App constructors reserve snapshot items/text within context/output
+ * limits; exhaustion fails clearly instead of returning a partial snapshot.
+ */
+cog_result_t cog_cli_app_display_snapshot(cog_cli_app_t *app,
+                                          cog_cli_display_snapshot_t *snapshot);
+/**
+ * @brief Encode one CGD1 full-display snapshot for IPC without native structs.
+ * @param[in] snapshot Valid borrowed view. @param[out] output Wire bytes.
+ * @param[in] capacity Bytes, output NULL iff zero. @param[out] required Wire bytes.
+ * @return OK; OVERFLOW changes required only; NULL_PTR; INVALID_ARG; LIMIT.
+ * @note CGD1 magic, session ID length u8 and exact UTF-8 bytes (no NUL),
+ * generation/through_sequence u64, item count u32, then each
+ * node_id u64, role/status u8, text length u32 and exact UTF-8 bytes. Integers
+ * big-endian, no pointers/padding/opaque data. No allocation or app mutation.
+ */
+cog_result_t cog_cli_display_snapshot_encode(const cog_cli_display_snapshot_t *snapshot,
+                                             void *output, size_t capacity,
+                                             size_t *required);
+/**
+ * @brief Decode full display snapshot into caller-owned items and text storage.
+ * @param[in] input Wire bytes. @param[in] input_len Exact bytes.
+ * @param[out] snapshot Metadata, points into items. @param[out] items Output array.
+ * @param[in] item_capacity Entries. @param[out] text Text storage including NULs.
+ * @param[in] text_capacity Bytes including copied session ID+NUL and item texts.
+ * @param[out] required_items Required entries.
+ * @param[out] required_text Required bytes. Destinations may be NULL iff capacity=0.
+ * @return OK; OVERFLOW changes required counts only; NULL_PTR; UNSUPPORTED
+ * version; PROTOCOL invalid role/status/UTF-8/length or trailing bytes. Outputs
+ * independent of input/app lifetime. No allocation, provider replay or effects.
+ */
+cog_result_t cog_cli_display_snapshot_decode(const void *input, size_t input_len,
+                                             cog_cli_display_snapshot_t *snapshot,
+                                             cog_cli_display_item_t *items,
+                                             size_t item_capacity, char *text,
+                                             size_t text_capacity,
+                                             size_t *required_items,
+                                             size_t *required_text);
 
 /* ------------------------------------------------------------------ */
 /* Options                                                             */
@@ -247,6 +330,29 @@ const char *cog_cli_result_name(cog_result_t rc);
  * COG_ENDPOINT, COG_CREDENTIAL_REF, COG_WORKSPACE, COG_TOOL_POLICY and
  * COG_MAX_OUTPUT_TOKENS/TOOL_ROUNDS/TURN_MS/TOOL_MS/TOOL_OUTPUT_BYTES/
  * CONTEXT_BYTES/RETRIES/RETRY_ELAPSED_MS (COG_MAX_ prefix on each suffix).
+ * Backend config key is client.backend; endpoint-name key is providers.selected.
+ * --base-url / COG_BASE_URL / providers.openrouter.base-url independently resolve
+ * base_url (default https://openrouter.ai/api/v1); endpoint_name is a registry
+ * name, never overloaded as a URL.
+ * Store keys are store.mode (durable/disabled) and store.directory; environment
+ * COG_STORE_MODE and COG_STORE_DIR. Presence resolves each field separately:
+ * an explicit CLI policy ASK or retries=0 wins; absent bits do not override
+ * environment/config with parse-filled defaults. Empty/malformed PRESENT values
+ * fail, not fall through; unknown option bits fail INVALID_ARG. Backend has no
+ * environment override (CLI/config backend then REAL default); --mock sets its
+ * explicit backend bit. Config path/host callbacks/net are constructor inputs,
+ * not secret environment-discovered pointers.
+ * REAL without --store uses the file backend at $XDG_STATE_HOME/cog when that
+ * variable is nonempty absolute, otherwise $HOME/.local/state/cog (HOME must
+ * be absolute). REAL durable mode enables require_owner, admits a fresh process
+ * incarnation/epoch, and holds its guard for the entire session execution.
+ * Restart never reuses a dead incarnation or bypasses unresolved effects.
+ * Missing usable location returns NOT_FOUND; creation/open errors
+ * return IO, never silently disable persistence. MOCK defaults DISABLED.
+ * Explicit DISABLED allows text conversation only: omit tools from requests,
+ * refuse every tool ALLOW regardless of policy and return identified denial for
+ * unsolicited calls. No null-backend save can satisfy durable STARTED admission.
+ * Existing explicit --store directories remain supported; no cwd-based default.
  * Invalid values fail rather than being ignored. Resolves secret references only
  * during construction, validates the full candidate generation and atomically
  * adopts it. Failure retains no partial app and never falls back to mock.
@@ -361,7 +467,8 @@ cog_result_t cog_cli_app_queue(cog_cli_app_t *app,
  * @brief Request cancellation of the in-flight turn.
  *
  * Enqueues a @c COG_EVENT_CANCEL; the handler arms provider cancellation
- * and the next receive aborts the stream.
+ * and tools while preserving queued deltas; fair service drains one terminal
+ * outcome and persists an explicit incomplete/cancelled turn.
  *
  * @param[in,out] app App to cancel into.
  * @return COG_OK on success.
@@ -373,7 +480,8 @@ cog_result_t cog_cli_app_cancel(cog_cli_app_t *app);
 /**
  * @brief Request graceful shutdown.
  *
- * Enqueues a @c COG_EVENT_SHUTDOWN; the handler stops the run loop.
+ * Enqueues a @c COG_EVENT_SHUTDOWN; the handler begins cancel/drain/reap.
+ * It stops only after owned work reaches releasable terminal state.
  *
  * @param[in,out] app App to shut down.
  * @return COG_OK on success.

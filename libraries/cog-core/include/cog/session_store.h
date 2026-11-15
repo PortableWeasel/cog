@@ -42,12 +42,23 @@ typedef enum cog_store_load_mode {
 /** @brief Facts returned by version-aware load; never stored credentials. */
 typedef struct cog_store_load_report {
     uint32_t source_version;
+    uint64_t checkpoint_generation; /**< Exact v2 immutable generation; 0 for v1. */
     bool migrated_in_memory;
     bool recovered_truncated_tail;
     size_t discarded_tail_bytes;
     bool replay_safe;
     size_t indeterminate_tools;
 } cog_store_load_report_t;
+
+/** @brief Immutable checkpoint identity scoped by store+session; 0 is absent. */
+typedef struct cog_store_checkpoint { uint64_t generation; } cog_store_checkpoint_t;
+/** @brief Durable execution owner, independent of ephemeral socket peer IDs. */
+typedef struct cog_store_owner {
+    uint64_t epoch; /**< Monotonic, checked increment; 0 only for absent owner. */
+    uint64_t instance_id; /**< Nonzero process incarnation, never reused on restart. */
+} cog_store_owner_t;
+/** @brief Explicit constructor-owned same-host execution guard. */
+typedef struct cog_store_owner_guard cog_store_owner_guard_t;
 
 /* ------------------------------------------------------------------ */
 /* Opaque types                                                        */
@@ -154,6 +165,25 @@ typedef struct cog_store_vtable {
      * upgraded rather than losing structured fields. */
     cog_result_t (*load_ex)(void *store, const char *id, cog_store_load_mode_t mode,
                             cog_session_t **out, cog_store_load_report_t *report);
+    /** Optional fenced-checkpoint profile. All must exist when require_owner;
+     * backend handle acquire/release is an explicit constructor pair, never
+     * exposes private wrapper layout. Errors/lifetimes match public operations. */
+    cog_result_t (*checkpoint_save)(void *store, const cog_session_t *session,
+                                    const void *guard, cog_store_checkpoint_t *out);
+    cog_result_t (*checkpoint_load)(void *store, const char *id,
+                                    cog_store_checkpoint_t checkpoint,
+                                    cog_store_load_mode_t mode, cog_session_t **out,
+                                    cog_store_load_report_t *report);
+    cog_result_t (*owner_read)(void *store, const char *id,
+                               cog_store_owner_t *owner, cog_store_checkpoint_t *checkpoint);
+    cog_result_t (*owner_compare_exchange)(void *store, const char *id,
+                                           cog_store_owner_t expected,
+                                           cog_store_owner_t next,
+                                           cog_store_checkpoint_t checkpoint);
+    cog_result_t (*owner_acquire)(void *store, const char *id,
+                                  cog_store_owner_t expected, void **out_guard);
+    cog_result_t (*owner_release)(void *store, void *guard);
+
 } cog_store_vtable_t;
 
 /* ------------------------------------------------------------------ */
@@ -194,13 +224,20 @@ typedef struct cog_store_config {
      */
     bool compress;
     /** Recover only one unterminated final JSONL record after a fully valid
-     * committed prefix. Default false (IO on any truncation). A malformed
+     * committed prefix. Recovery may discard ONLY bytes beyond the manifest's
+     * committed record count/checksum (v1: validated metadata count). A missing
+     * byte/record inside that prefix always fails IO; never drop a committed
+     * result or ledger intent. Default false (IO on any truncation). A malformed
      * complete line, invalid association, bad checksum/version/index metadata
      * or middle corruption always fails IO/PROTOCOL; never skip records. */
     bool recover_truncated_tail;
     /** Constructor-reserved read/write/codec workspace; 0 selects 16 MiB.
      * Above capacity returns LIMIT, never hidden growth or partial publication. */
     size_t max_record_bytes;
+    bool require_owner; /**< Same-host fenced execution profile. Legacy save/append
+       consult this context's live guard and return INVALID_STATE without one;
+       unguarded APIs cannot bypass ownership. File backend supports it; null or
+       incapable custom backend returns UNSUPPORTED at construction. */
 } cog_store_config_t;
 
 /* ------------------------------------------------------------------ */
@@ -250,7 +287,11 @@ void cog_store_free(cog_store_t *store);
  * without an atomic generation commit is insufficient. Save failure before
  * publication leaves the old generation; a failed final durability sync returns
  * IO and caller treats effects as uncertain, never authorizing tool execution.
- * No credential/raw authorization bytes may be persisted.
+ * No credential/raw authorization bytes may be persisted. In require_owner
+ * mode this context MUST hold the live matching session guard; otherwise
+ * INVALID_STATE, including legacy save/append and auto-save paths. Normal saves
+ * preserve current owner and advance immutable checkpoint generation. A context
+ * without require_owner cannot modify any already-owned session (INVALID_STATE).
  *
  * @param[in] store   Store instance.
  * @param[in] session Session to save.
@@ -368,6 +409,121 @@ bool cog_store_exists(cog_store_t *store, const char *id);
  */
 bool cog_store_auto_save(const cog_store_t *store);
 
+/**
+ * @brief Save an exact immutable checkpoint under a live matching owner guard.
+ * @param[in,out] store Store with require_owner enabled.
+ * @param[in] session Quiescent complete replay-safe session, no active handles
+ * or unresolved effects. @param[in] guard Live guard for this session/context.
+ * @param[out] checkpoint Exact newly committed generation, unchanged on failure.
+ * @return OK; NULL_PTR; INVALID_STATE stale/mismatched guard; INDETERMINATE
+ * unresolved effects; LIMIT/IO/UNSUPPORTED. Same generation durability rules
+ * as save; failure never authorizes activation or rollback based on assumption.
+ * @note Guard remains held on return; no runtime workspace growth.
+ */
+cog_result_t cog_store_checkpoint_save(cog_store_t *store,
+                                        const cog_session_t *session,
+                                        const cog_store_owner_guard_t *guard,
+                                        cog_store_checkpoint_t *checkpoint);
+/**
+ * @brief Load exactly one immutable checkpoint; never substitute latest.
+ * @param[in,out] store Store. @param[in] id Session ID.
+ * @param[in] checkpoint Nonzero generation. @param[in] mode REPLAY/INSPECT.
+ * @param[out] out Owned session, NULL on failure. @param[out] report Load facts.
+ * @return Same load_ex errors, NOT_FOUND for absent generation/zero token;
+ * no disk writes, activation, effects or ordinary replay of unresolved history.
+ * @note Target loads STAGED while source is quiescent; exact bytes/ledger checked.
+ */
+cog_result_t cog_store_checkpoint_load(cog_store_t *store, const char *id,
+                                        cog_store_checkpoint_t checkpoint,
+                                        cog_store_load_mode_t mode,
+                                        cog_session_t **out,
+                                        cog_store_load_report_t *report);
+/**
+ * @brief Read committed owner/checkpoint for diagnostics, not an activation grant.
+ * @param[in,out] store Store. @param[in] id Session ID.
+ * @param[out] owner Current tuple. @param[out] checkpoint Latest immutable data.
+ * @return OK (both zero if absent); NULL_PTR; IO; PROTOCOL; UNSUPPORTED.
+ * Outputs unchanged on failure. Owner publication and checkpoint are one
+ * checksummed/fsynced local manifest; corrupt state never resets to absent.
+ */
+cog_result_t cog_store_owner_read(cog_store_t *store, const char *id,
+                                   cog_store_owner_t *owner,
+                                   cog_store_checkpoint_t *checkpoint);
+/**
+ * @brief Durably compare/exchange quiescent ownership, never execute a task.
+ * @param[in,out] store Store. @param[in] id Session ID.
+ * @param[in] expected Exact old tuple (0,0 only for bootstrap).
+ * @param[in] next Nonzero instance and epoch=expected.epoch+1, no wrap.
+ * @param[in] checkpoint MUST equal current committed data generation; no rollback.
+ * @return OK; AGAIN while any guard owns the same-host session lock;
+ * INVALID_STATE stale owner/checkpoint; NULL_PTR; INVALID_ARG; UNSUPPORTED;
+ * INDETERMINATE on uncertain publish/fsync; IO on known prepublication failure.
+ * CAS takes the same exclusive independent-open-description lock as acquire,
+ * atomically/fsyncs owner+checkpoint manifest, then releases it. Bootstrap
+ * (absent->epoch1,checkpoint0) only when no owner/data exists. An existing
+ * unowned v2 checkpoint may be adopted at epoch1 only when its exact current
+ * token is supplied, replay-safe data validates and all old writers are quiescent.
+ * v1 must first be explicitly saved as unowned v2; load alone never rewrites it.
+ * All new-profile file save/append operations take this same session lock,
+ * including unowned contexts; an unguarded context cannot modify owned data.
+ * Identical retries
+ * whose next+checkpoint are already committed revalidate/fsync before OK.
+ * @note Source stops new work, drains/reaps, checkpoints, then releases its guard
+ * and remains frozen BEFORE CAS. Target is inactive until it acquires next guard.
+ * Aborting a prepared handoff resumes source only through a NEW epoch, including
+ * same-instance return. Uncertain IO never permits either side to guess or undo.
+ */
+cog_result_t cog_store_owner_compare_exchange(cog_store_t *store, const char *id,
+                                               cog_store_owner_t expected,
+                                               cog_store_owner_t next,
+                                               cog_store_checkpoint_t checkpoint);
+/**
+ * @brief Explicit execution-guard constructor after durable owner admission.
+ * @param[in,out] store Store requiring ownership. @param[in] id Session ID.
+ * @param[in] expected Current admitted process-incarnation owner tuple.
+ * @param[out] out_guard Owned guard, NULL on failure; match owner_release.
+ * @return OK; AGAIN lock busy; INVALID_STATE stale owner; INDETERMINATE if
+ * unresolved/crashed tool intent or uncertain manifest durability; NOMEM/IO;
+ * NULL_PTR; UNSUPPORTED absent independent-open-description locking/backend.
+ * @note Acquisition validates/fsync-confirms durable owner and current ledger
+ * UNDER the lock. Owner_read alone never grants activation. Guard uses Linux
+ * flock/OFD-style independently opened locks so two contexts in one process
+ * also contend; no process-global lock table or process-scoped fcntl shortcut.
+ * No lock descriptor inheritance into commands/aux cores: CLOEXEC and explicit
+ * close in fork child. The OS releases it on owner death. Restart first fences/
+ * reaps prior owned processes; unverified child effects remain INDETERMINATE,
+ * never automatic failover/replay. A new incarnation requires a fresh epoch.
+ */
+cog_result_t cog_store_owner_acquire(cog_store_t *store, const char *id,
+                                      cog_store_owner_t expected,
+                                      cog_store_owner_guard_t **out_guard);
+/**
+ * @brief Borrow a live guard for one bounded execution constructor.
+ * @param[in,out] guard Live owner guard. @param[in] session_id Matching ID.
+ * @return OK; NULL_PTR; INVALID_STATE wrong session/inactive; LIMIT count overflow.
+ * @note Owner thread, no allocation. Pair each success with guard_return after
+ * execution is prepared/terminal and destroyed. Release refuses any borrowers.
+ */
+cog_result_t cog_store_owner_guard_borrow(cog_store_owner_guard_t *guard,
+                                          const char *session_id);
+/** @brief Return a constructor borrow after owned execution is drained/destroyed.
+ * @param[in,out] guard Live guard. @return OK; NULL_PTR; INVALID_STATE unbalanced.
+ * @note Owner thread; never releases the actual ownership lock. */
+cog_result_t cog_store_owner_guard_return(cog_store_owner_guard_t *guard);
+/** @brief Query whether a context requires fenced execution.
+ * @param[in] store Context or NULL. @return true only when require_owner enabled.
+ * @note Owner thread; no allocation or activation grant. */
+bool cog_store_requires_owner(const cog_store_t *store);
+/**
+ * @brief Release/free one execution guard after quiescing every borrower.
+ * @param[in,out] guard NULL is OK; live guard owned by caller.
+ * @return OK; INVALID_STATE if still borrowed by active owned work.
+ * @pre No provider/tool/child execution remains; source stays application-frozen
+ * after release until a new durable epoch and guard are acquired.
+ * @note Owner thread; no implicit handoff, rollback, task retry or peer wait.
+ */
+cog_result_t cog_store_owner_release(cog_store_owner_guard_t *guard);
+
 /* ------------------------------------------------------------------ */
 /* Built-in backends                                                   */
 /* ------------------------------------------------------------------ */
@@ -391,7 +547,9 @@ extern const cog_store_vtable_t cog_store_file_backend;
  * @brief Null backend (no persistence).
  *
  * Useful for testing or when persistence is not needed.
- * All operations return COG_OK but do nothing.
+ * Non-durable inspection/test backend. It cannot satisfy a durable STARTED
+ * precondition; save/append return UNSUPPORTED instead of a false durable OK.
+ * Loading nonexistent data returns NOT_FOUND; listing is empty.
  */
 extern const cog_store_vtable_t cog_store_null_backend;
 

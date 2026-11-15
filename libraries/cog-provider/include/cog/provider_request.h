@@ -172,7 +172,8 @@ typedef enum cog_provider_delta_kind {
  *
  * Sequence starts at one for each send and is contiguous. tool_index is a
  * request-local bounded slot; TOOL_BEGIN establishes nonempty ID/name once,
- * ARGUMENTS appends bytes, END means the assembled object is syntactically
+ * wire identity fragments must be assembled before BEGIN; no fragment may
+ * redefine an emitted ID/name. ARGUMENTS appends bytes, END means the assembled object is syntactically
  * valid (tool schema/policy still pending). No tool runs before FINISH with
  * TOOL_CALLS and COG_OK, after wire terminal/EOF validation. FINISH occurs
  * exactly once and outcome reports errors/cancel; usage is optional and never
@@ -202,7 +203,11 @@ typedef struct cog_provider_delta {
  *
  * Every field must be nonzero. connect reserves all Cog-owned request copies,
  * strict JSON parser/writer pools, depth preflight, event retention and turn
- * assembly storage. No runtime Cog malloc/realloc. Checked size arithmetic and
+ * assembly storage, plus one independent reserved FINISH/error slot. A full
+ * ordinary queue cannot suppress cancellation/failure delivery after retained
+ * earlier items. A frame expanding into more items than queue entries is
+ * resumed from a private bounded cursor as next() frees entries, not reparsed
+ * or committed twice. No runtime Cog malloc/realloc. Checked size arithmetic and
  * impossible layouts fail INVALID_ARG; reservation failure returns NOMEM.
  * Peer data above a ceiling terminates with LIMIT and retains an incomplete
  * turn. A full event queue pauses transport; it never drops or reorders data.

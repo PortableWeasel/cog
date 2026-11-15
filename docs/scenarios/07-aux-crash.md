@@ -1,27 +1,73 @@
-# Scenario 7: Aux Core Crash → Detection → Recovery
+# Scenario 07: Auxiliary core crash → detection → safe recovery
 
-## Sequence Diagram
+Stage 14.D pass-2 retrace from public-contract baseline `29b41e8`.
+This replaces the earlier schematic SVG as the normative call trace. The SVG is
+retained as historical design material and is not current API coverage.
 
-![Sequence Diagram](svg/07-aux-crash.svg)
+## Sequence diagram
 
-## Header Coverage
+```mermaid
+sequenceDiagram
+    participant Parent
+    participant Core
+    participant Orchestrator
+    participant IPC
+    participant Store
+    Orchestrator->>Orchestrator: heartbeat/health check
+    IPC-->>Parent: COG_EVENT_IPC_DISCONNECTED
+    Parent->>Orchestrator: service/reap and cog_orchestrator_sessions(dead_peer)
+    Parent->>Parent: fence/reap failed attempt before synthesizing failure
+    Parent->>Core: cog_agent_apply_update(FAILED with INDETERMINATE outcome)
+    Parent->>Store: cog_store_load_ex(REPLAY,report)
+    Store-->>Parent: STARTED becomes INDETERMINATE
+    alt Existing attempt may have effects
+      Parent->>Parent: report failure; no automatic child/tool replay
+    else Safe new placement explicitly admitted
+      Parent->>Orchestrator: cog_orchestrator_spawn(replacement core)
+    end
+    Note over Parent,Orchestrator: Core replacement is distinct from replaying a child task
+```
 
-| Step | Function/Event | Header | Status |
-|------|---------------|--------|--------|
-| Health check | `cog_orchestrator_health()` | `orchestrator.h` | ✅ (6i) |
-| Heartbeat | `cog_orchestrator_heartbeat()` | `orchestrator.h` | ✅ (6i) |
-| Dead status | `COG_HEALTH_DEAD` | `orchestrator.h` | ✅ (6i) |
-| Disconnect event | `COG_EVENT_IPC_DISCONNECTED` | `event.h` | ✅ (6h) |
-| Find subagents | `cog_session_parent_id()` | `session.h` | ✅ (6h) |
-| Mark failed | `cog_agent_status()` | `agent.h` | ✅ (6j) |
-| Respawn | `cog_orchestrator_spawn()` | `orchestrator.h` | ✅ (6i) |
+## Exact public-header coverage
 
-## Gaps Found → ALL FIXED
+Names below are exact declared functions, types, enum members or struct fields;
+application-only policy/envelope steps are identified explicitly rather than
+presented as library calls. Each header path names the declaring public file.
 
-1. ✅ **Finding affected subagents** — added `cog_orchestrator_sessions()`
-2. **State persistence** — crashed subagents are marked FAILED and restarted from scratch
-3. ✅ **Replacement core** — added `auto_replace` to orchestrator config
+| Trace step | Exact declaration / member | Declaring header |
+|---|---|---|
+| Health / affected sessions | `cog_orchestrator_health`; `cog_orchestrator_heartbeat`; `cog_orchestrator_sessions`; `COG_HEALTH_DEAD` | [libraries/cog-orchestrator/include/cog/orchestrator.h](../../libraries/cog-orchestrator/include/cog/orchestrator.h) |
+| Replacement process | `cog_orchestrator_config_t.auto_replace`; `cog_orchestrator_spawn` | [libraries/cog-orchestrator/include/cog/orchestrator.h](../../libraries/cog-orchestrator/include/cog/orchestrator.h) |
+| Disconnect notification | `COG_EVENT_IPC_DISCONNECTED`; `cog_event_ipc_t` | [libraries/cog-core/include/cog/event.h](../../libraries/cog-core/include/cog/event.h) |
+| Portable lifecycle envelope | `cog_agent_update_encode`; `cog_agent_update_decode` | [libraries/cog-core/include/cog/agent.h](../../libraries/cog-core/include/cog/agent.h) |
+| Atomic attempt ingestion | `cog_agent_apply_update`; `cog_agent_update_t.owner_peer`; `cog_agent_update_t.execution_epoch`; `cog_agent_update_t.sequence`; `cog_agent_update_t.status`; `cog_agent_update_t.outcome`; `cog_agent_update_t.data`; `cog_agent_update_t.data_len` | [libraries/cog-core/include/cog/agent.h](../../libraries/cog-core/include/cog/agent.h) |
+| Stable notification delivery / release | `cog_agent_copy_update`; `cog_agent_ack_update`; `cog_agent_release` | [libraries/cog-core/include/cog/agent.h](../../libraries/cog-core/include/cog/agent.h) |
+| Read-only child state | `cog_agent_status`; `cog_agent_is_cancelled`; `cog_agent_status_t` | [libraries/cog-core/include/cog/agent.h](../../libraries/cog-core/include/cog/agent.h) |
+| Durable crash report | `cog_store_load_ex`; `cog_store_load_report_t.indeterminate_tools`; `cog_store_load_report_t.replay_safe` | [libraries/cog-core/include/cog/session_store.h](../../libraries/cog-core/include/cog/session_store.h) |
+| No effect replay | `COG_TOOL_EXECUTION_STARTED`; `COG_TOOL_EXECUTION_INDETERMINATE`; `cog_session_tool_state` | [libraries/cog-core/include/cog/session.h](../../libraries/cog-core/include/cog/session.h) |
+| Nonblocking owned-process lifecycle | `cog_orchestrator_service`; `cog_orchestrator_request_shutdown`; `cog_orchestrator_config_t.service_quantum`; `cog_orchestrator_config_t.max_sessions` | [libraries/cog-orchestrator/include/cog/orchestrator.h](../../libraries/cog-orchestrator/include/cog/orchestrator.h) |
 
-## Verdict
+## Ownership, errors and adversarial branches
 
-✅ All gaps fixed. Headers fully cover the flow.
+- Orchestrator spawn/stop admit nonblocking intent; readiness, heartbeat, timeout and reap progress through `cog_orchestrator_service`. UNKNOWN peers receive no session work. The legacy blocking shutdown helper is excluded from responsive hooks; use request_shutdown/service and free only after all owned children are reaped. Auto-replacement creates idle capacity, never restarts an unresolved task.
+
+- An owned auxiliary process may be replaced after crash; that is not authorization to replay its task or tool effects.
+- STARTED means the side effect may or may not have occurred. Normal load converts it to INDETERMINATE and ordinary replay is refused.
+- Losing a peer invalidates current routing; stale status/results from an earlier attempt cannot mutate a replacement attempt.
+- `cog_agent_status` is a query, not a "mark failed" setter. Preserve the distinction between observed process health and durable child execution outcome.
+
+## Gap analysis and release amendment
+
+**O07-G1 resolved by pass-2 attempt ingress:** after fencing/reaping the failed attempt, the parent may synthesize a FAILED/TIMEOUT update with the bound peer/epoch/sequence and uncertain-effects outcome. apply/copy/ack preserves one immutable terminal notification and rejects stale child messages. Core replacement is distinct from effect replay. No remaining contract gap is claimed; public orchestrator service drives process cleanup.
+
+## Executable evidence and required follow-up
+
+Existing baseline test: [`tests/scenarios/test_07_aux_crash.c`](../../tests/scenarios/test_07_aux_crash.c). It exists as historical
+engine/mock application evidence. It was not rerun in this design-only pass and
+does not prove the new mandatory headers, real transport or durable-tool behavior.
+
+Future conformance requirements: Crash before/after durable STARTED, before/after effect, stale late results, safe replacement without task replay; public-only lifecycle ingestion.
+
+Header tracing is complete only where the gap analysis says so. Production
+implementation and executable scenario migration remain gated by pass 3 and the
+independent final review; no passing runtime result is inferred from these tables.

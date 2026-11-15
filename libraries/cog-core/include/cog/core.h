@@ -167,7 +167,7 @@ typedef struct cog_core_config {
      * be bound (listening or connected) before it is passed to the
      * core; an unbound endpoint is accepted but never drained.
      *
-     * Ownership transfers to the core at @c cog_core_new: the caller
+     * Ownership transfers to the core only on successful @c cog_core_new: the caller
      * must not use or free the endpoint after that call.
      */
     cog_ipc_endpoint_t *ipc_endpoint;
@@ -219,7 +219,14 @@ typedef struct cog_core_config {
     cog_idle_fn idle_fn; /**< Bounded wait; NULL uses bounded platform wait/yield. */
     void *idle_arg; /**< Borrowed idle context. */
     uint32_t max_idle_wait_ms; /**< Default 10; reduced to earliest deadline. */
+    size_t ipc_peer_capacity; /**< Maximum accepted peers; default 16. */
     size_t ipc_service_quantum; /**< Max IPC units per fairness step; default 16. */
+    size_t max_agents; /**< Constructor-reserved agent records; default 16. */
+    size_t max_agent_message_bytes; /**< Per-agent copied task/status/result bytes;
+       default 65536. Replacement/ingestion never grows it; LIMIT is atomic. */
+    size_t pending_session_capacity; /**< Reserved pending FIFO owners; default 17. */
+    size_t pending_messages_per_session; /**< Reserved entries/owner; default 8. */
+    size_t pending_message_bytes; /**< Bytes/entry including NUL; default 65536. */
 } cog_core_config_t;
 
 /**
@@ -283,6 +290,9 @@ void cog_core_free(cog_core_t *core);
  * remains explicitly owned; the application cancels/drains/releases it.
  * @note Hooks/handlers must perform bounded CPU/I/O work. Fairness bounds
  * dispatch counts and requested waits, not arbitrary handler or OS latency.
+ * IPC uses endpoint_service plus nonblocking retained recv/send; readiness of
+ * a frame prefix never authorizes a blocking full-frame read. Accepted peer
+ * count and per-step work are constructor-bounded; excess peers are refused.
  *
  * Threading: single-threaded driver.  Only one thread may call
  * @c cog_core_run at a time.  @c cog_core_stop may be called from
@@ -446,7 +456,8 @@ cog_store_t *cog_core_store(cog_core_t *core);
  * @return COG_ERROR_NULL_PTR if @p core, @p session_id, or @p text is NULL.
  * @return COG_ERROR_OVERFLOW if the session's pending queue is full
  *         (default capacity: 8 messages).
- * @return COG_ERROR_NOMEM if allocation fails.
+ * @return COG_ERROR_LIMIT if text/session capacity exceeds the core constructor
+ * reservation. No runtime allocation; failure leaves the FIFO unchanged.
  *
  * @post On success, the message is appended to the session's pending
  *       queue and will be delivered after the current turn.
@@ -480,8 +491,11 @@ cog_result_t cog_core_queue_message(cog_core_t *core,
  * @return COG_ERROR_NOT_FOUND if the session's pending queue is empty.
  * @return COG_ERROR_OVERFLOW if the message does not fit in
  *         @p buf_capacity.  On this error @p *out_len receives the
- *         required capacity, excluding the terminator.
+ *         required capacity, excluding the terminator. No output bytes are
+ *         written; the same oldest entry remains queued across service calls.
  *
+ * @post Auto-injection removes an entry only after successful core enqueue;
+ *       full event queues retain it without duplicate injection.
  * @post On success, the message is removed from the queue and copied
  *       into @p out_buf.
  *

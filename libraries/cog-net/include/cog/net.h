@@ -159,8 +159,10 @@ cog_result_t cog_net_request_release(cog_net_ctx_t *ctx, cog_request_id_t id);
  * @return COG_OK; NULL_PTR; INVALID_ARG for backwards clock; fatal driver error.
  * Request errors/OOM become terminal outcomes; driver errors propagate. Full
  * rings pause reads without dropping accepted data. A body callback is split
- * transactionally into available slots or wholly paused; oversized headers or
- * configured per-item ceilings terminate LIMIT. No silent truncation.
+ * transactionally into available slots or wholly paused. A callback larger than
+ * the TOTAL reserved body-ring capacity cannot become writable and terminates
+ * LIMIT instead of pausing forever; temporary lack of free slots pauses only
+ * that request. Oversized headers or configured per-item ceilings terminate LIMIT. No silent truncation.
  * @note Owner thread. CPU/syscall/dependency work is bounded by quantum, but
  * cannot promise a hard elapsed-time bound under arbitrary OS/TLS allocation.
  */
@@ -176,12 +178,29 @@ cog_result_t cog_net_service(cog_net_ctx_t *ctx, uint64_t now_ms,
  */
 cog_result_t cog_net_peek(cog_net_ctx_t *ctx, cog_net_response_t *out_response);
 /**
- * @brief Consume exactly the currently peeked sequence after downstream copy.
+ * @brief Peek one request independently of the global fair selector.
+ * @param[in,out] ctx Context; no transport service or positive wait.
+ * @param[in] id Retained request ID owned by this consumer.
+ * @param[out] out_response Oldest unacknowledged item for id; unchanged on failure.
+ * @return COG_OK; AGAIN when this request has none; NOT_FOUND for unknown or
+ * released id; NULL_PTR. No allocation or consumption. View lifetime is the
+ * same as peek, including across other-request ack/service/cancel calls.
+ * @note Owner thread. A full/selected item on another request cannot prevent
+ * this operation. Repeated calls retain this id/sequence until ack/release.
+ * Providers sharing a net context MUST use this surface for their own ID,
+ * never consume another provider's item through the global selector.
+ */
+cog_result_t cog_net_peek_request(cog_net_ctx_t *ctx, cog_request_id_t id,
+                                  cog_net_response_t *out_response);
+/**
+ * @brief Consume an id's oldest peeked sequence after downstream copy.
  * @param[in,out] ctx Context.
- * @param[in] id Selected request.
- * @param[in] sequence Selected sequence.
+ * @param[in] id Request selected through peek or peek_request.
+ * @param[in] sequence Oldest sequence exposed for that request.
  * @return COG_OK; NULL_PTR; NOT_FOUND for unknown ID; INVALID_STATE for stale or
- * out-of-order acknowledgement. Failure consumes nothing. Owner thread.
+ * out-of-order/unpeeked acknowledgement. Failure consumes nothing. An id-local
+ * ack does not disturb a globally selected different id; ack of the selected
+ * id advances that selector fairly. Owner thread.
  */
 cog_result_t cog_net_ack(cog_net_ctx_t *ctx, cog_request_id_t id, uint64_t sequence);
 /**
