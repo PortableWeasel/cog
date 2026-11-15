@@ -30,6 +30,7 @@
 
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -323,7 +324,7 @@ test_auto_replace_repeated(void)
 
 static cog_orchestrator_t *g_stop_orch = NULL;
 static cog_peer_id_t g_stop_peer = COG_PEER_ID_INVALID;
-static volatile int g_stop_done = 0;
+static atomic_int g_stop_done = 0;
 
 static void *
 stop_runner(void *arg)
@@ -397,7 +398,7 @@ test_stop_ackhang(void)
 /* ------------------------------------------------------------------ */
 
 static cog_orchestrator_t *g_sd_orch = NULL;
-static volatile int g_sd_done = 0;
+static atomic_int g_sd_done = 0;
 
 static void *
 shutdown_runner(void *arg)
