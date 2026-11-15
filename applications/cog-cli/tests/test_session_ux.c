@@ -227,8 +227,21 @@ static cog_result_t synthetic_secret(void *arg,const char *ref,char *out,size_t 
     if(capacity<sizeof(value))return COG_ERROR_OVERFLOW;
     memcpy(out,value,sizeof(value));return COG_OK;
 }
+static int unchanged_effect_marker(const char *path)
+{
+    FILE *file=fopen(path,"r");CHECK(file!=NULL);
+    char bytes[16]={0};size_t length=fread(bytes,1,sizeof(bytes),file);
+    CHECK(!ferror(file));CHECK(fclose(file)==0);
+    CHECK(length==8U && memcmp(bytes,"sentinel",8U)==0);return 0;
+}
 static int real_preflight(const char *store,const char *workspace)
 {
+    /* Both restored commands append to this exact file if effect admission
+       accidentally precedes compatibility validation. Check bytes, not wire only. */
+    char marker[512];CHECK(snprintf(marker,sizeof(marker),"%s/resumed-effect",workspace)>0);
+    FILE *file=fopen(marker,"w");CHECK(file!=NULL);
+    CHECK(fwrite("sentinel",1,8U,file)==8U);CHECK(fclose(file)==0);
+    CHECK(unchanged_effect_marker(marker)==0);
     CHECK(seed_proposed(store,"unsupported-opaque","foreign.required",NULL)==0);
     CHECK(seed_proposed(store,"supported-opaque","openrouter.chat-completions",NULL)==0);
     CHECK(seed_proposed(store,"malformed-opaque","openrouter.chat-completions",
@@ -241,13 +254,14 @@ static int real_preflight(const char *store,const char *workspace)
     o.net=net;o.credential_read=synthetic_secret;o.workspace_root=workspace;o.tool_policy=COG_CLI_TOOL_POLICY_ALLOW;
     o.explicit_options|=COG_CLI_OPT_MODEL|COG_CLI_OPT_BASE_URL|COG_CLI_OPT_WORKSPACE|COG_CLI_OPT_POLICY;
     cog_cli_app_t *app=NULL;CHECK(cog_cli_app_new(&app,&o)==COG_ERROR_UNSUPPORTED && app==NULL);
-    CHECK(cog_net_active_count(net)==0U);
+    CHECK(cog_net_active_count(net)==0U);CHECK(unchanged_effect_marker(marker)==0);
     o.source_session_id="malformed-opaque";
     CHECK(cog_cli_app_new(&app,&o)==COG_ERROR_PROTOCOL && app==NULL);
-    CHECK(cog_net_active_count(net)==0U);
+    CHECK(cog_net_active_count(net)==0U);CHECK(unchanged_effect_marker(marker)==0);
     o.source_session_id="supported-opaque";CHECK(cog_cli_app_new(&app,&o)==COG_OK);
     CHECK(cog_net_active_count(net)==0U);CHECK(cog_cli_app_shutdown(app)==COG_OK);CHECK(cog_cli_app_run(app)==COG_OK);
-    CHECK(cog_net_active_count(net)==0U);cog_cli_app_free(app);cog_net_free(net);curl_global_cleanup();return 0;
+    CHECK(cog_net_active_count(net)==0U);CHECK(unchanged_effect_marker(marker)==0);
+    cog_cli_app_free(app);cog_net_free(net);curl_global_cleanup();return 0;
 }
 #endif
 static int output_and_limits(const char *store)
