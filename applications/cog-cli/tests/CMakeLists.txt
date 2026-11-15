@@ -133,3 +133,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang
     target_enable_warnings(test_configuration_memory)
     add_test(NAME cli-configuration-memory COMMAND test_configuration_memory)
 endif()
+
+add_executable(test_app_loop test_app_loop.c)
+target_include_directories(test_app_loop PRIVATE ../src)
+target_link_libraries(test_app_loop PRIVATE cog::cli)
+target_enable_warnings(test_app_loop)
+add_test(NAME cli-app-loop COMMAND test_app_loop)
+set_tests_properties(cli-app-loop PROPERTIES TIMEOUT 30)

@@ -443,6 +443,8 @@ cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
     c->options.queue_text = input->queue_text;
     c->options.mock_mode = input->mock_mode;
     c->options.script = input->script;
+    c->options.mock_deltas = input->mock_deltas;
+    c->options.mock_delta_count = input->mock_delta_count;
     c->options.interactive = input->interactive;
     c->options.verbose = input->verbose;
     c->options.net = input->net;
