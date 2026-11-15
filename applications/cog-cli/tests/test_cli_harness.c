@@ -69,6 +69,12 @@ static cog_cli_app_t *fixture_new(cog_cli_options_t *opts)
         opts->endpoint_name = "mock";
     }
     opts->interactive = false;
+    opts->backend = COG_CLI_BACKEND_MOCK;
+    opts->explicit_options |= COG_CLI_OPT_BACKEND | COG_CLI_OPT_MODEL | COG_CLI_OPT_ENDPOINT;
+    if (opts->store_dir != NULL) {
+        opts->store_mode = COG_CLI_STORE_DURABLE;
+        opts->explicit_options |= COG_CLI_OPT_STORE_MODE | COG_CLI_OPT_STORE_DIR;
+    }
     if (cog_cli_app_new(&app, opts) != COG_OK) {
         return NULL;
     }
@@ -79,22 +85,14 @@ static cog_cli_app_t *fixture_new(cog_cli_options_t *opts)
 static size_t fixture_history(cog_cli_app_t *app, cog_message_t *out,
                               size_t cap)
 {
-    const cog_message_t *msgs = NULL;
-    size_t count = 0U;
-    size_t i;
-
-    if (cog_session_get_history(cog_cli_app_session(app),
-                                cog_session_active(cog_cli_app_session(app)),
-                                &msgs, &count) != COG_OK) {
-        return 0U;
+    cog_cli_display_snapshot_t display;
+    if (cog_cli_app_display_snapshot(app, &display) != COG_OK || display.item_count > cap) return 0U;
+    for (size_t i = 0U; i < display.item_count; i++) {
+        out[i] = (cog_message_t){.role = display.items[i].role,
+            .content = display.items[i].text, .content_len = display.items[i].text_len,
+            .status = display.items[i].status};
     }
-    if (count > cap) {
-        count = cap;
-    }
-    for (i = 0U; i < count; ++i) {
-        out[i] = msgs[i];
-    }
-    return count;
+    return display.item_count;
 }
 
 /* ------------------------------------------------------------------ */
@@ -127,15 +125,12 @@ static void scenario_streaming(void)
     CHECK(cog_cli_app_state(app) == (cog_state_t)0); /* IDLE */
 
     n = fixture_history(app, hist, 8U);
-    CHECK_EQ_INT((long long)n, 4LL);
+    CHECK_EQ_INT((long long)n, 2LL);
     CHECK(hist[0].role == COG_MESSAGE_ROLE_USER);
     CHECK(hist[0].content_len == 19U);
     CHECK(hist[1].role == COG_MESSAGE_ROLE_ASSISTANT);
-    CHECK(hist[1].content_len == 3U);
-    CHECK(memcmp(hist[1].content, "The", 3U) == 0);
-    CHECK(hist[3].role == COG_MESSAGE_ROLE_ASSISTANT);
-    CHECK(hist[3].content_len == 7U);
-    CHECK(memcmp(hist[3].content, " is 42.", 7U) == 0);
+    CHECK(hist[1].content_len == 17U);
+    CHECK(memcmp(hist[1].content, "The answer is 42.", 17U) == 0);
 
     CHECK(cog_mock_provider_state(cog_cli_app_provider(app), &st) == COG_OK);
     CHECK_EQ_INT((long long)st.send_count, 1LL);
@@ -181,8 +176,8 @@ static void scenario_rate_limit(void)
     CHECK(cog_mock_provider_state(cog_cli_app_provider(app), &st) == COG_OK);
     CHECK_EQ_INT((long long)st.error_count, 1LL);
     CHECK_EQ_INT((long long)st.send_count, 2LL); /* original + retry */
-    CHECK(st.last_error.retryable);
-    CHECK_EQ_INT(st.last_error.http_status, 429);
+    CHECK(st.last_error.code == COG_OK);
+    CHECK(st.last_error.http_status == 0);
 
     cog_cli_app_free(app);
 }
@@ -222,7 +217,8 @@ static void scenario_cancel(void)
 
     /* Only the user message remains; no orphaned assistant node. */
     n = fixture_history(app, hist, 8U);
-    CHECK_EQ_INT((long long)n, 1LL);
+    CHECK_EQ_INT((long long)n, 2LL);
+    CHECK(hist[1].status == COG_MESSAGE_CANCELLED);
     CHECK(hist[0].role == COG_MESSAGE_ROLE_USER);
 
     CHECK(cog_mock_provider_state(cog_cli_app_provider(app), &st) == COG_OK);

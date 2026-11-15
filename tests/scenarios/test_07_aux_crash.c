@@ -246,6 +246,8 @@ static void scenario_recovery_restart(void)
     opts.model_id = "mock-model";
     opts.endpoint_name = "mock";
     opts.interactive = false;
+    opts.backend = COG_CLI_BACKEND_MOCK;
+    opts.explicit_options |= COG_CLI_OPT_BACKEND | COG_CLI_OPT_MODEL | COG_CLI_OPT_ENDPOINT;
     CHECK(cog_cli_app_new(&app, &opts) == COG_OK);
     if (app == NULL) {
         return;

@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "app_internal.h"
 #include <errno.h>
+#include <assert.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
@@ -238,7 +239,6 @@ cog_result_t cog_cli_app_new(cog_cli_app_t **out, const cog_cli_options_t *input
     if (app == NULL) return COG_ERROR_NOMEM;
     app->signal_fd = -1;
     app->out = stdout;
-    atomic_init(&app->stop_requested, false);
     cog_result_t rc = cog_cli_configuration_new(&app->configuration, input, 1U);
     if (rc != COG_OK) goto fail;
     app->opts = *cog_cli_configuration_options(app->configuration);
@@ -314,7 +314,13 @@ cog_result_t cog_cli_app_new(cog_cli_app_t **out, const cog_cli_options_t *input
     app->ipc = NULL;
     rc = cog_cli_clock(&app->now);
     if (rc != COG_OK) goto fail;
-    app->generation = app->now != 0U ? app->now : 1U;
+    int random_fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (random_fd < 0) { rc = COG_ERROR_IO; goto fail; }
+    ssize_t random_size = read(random_fd, &app->generation, sizeof(app->generation));
+    (void)close(random_fd);
+    if (random_size != (ssize_t)sizeof(app->generation) || app->generation == 0U) {
+        rc = COG_ERROR_IO; goto fail;
+    }
     *out = app;
     return COG_OK;
 fail:
@@ -325,7 +331,14 @@ void cog_cli_app_free(cog_cli_app_t *app)
 {
     if (app == NULL) return;
     /* app_run drains on every exit. Never destroy an active borrowed handle. */
-    if (app->execution != NULL && cog_toolkit_execution_free(app->execution) != COG_OK) return;
+    if (app->execution != NULL) {
+        cog_result_t released = cog_toolkit_execution_free(app->execution);
+        assert(released == COG_OK);
+        if (released != COG_OK) {
+            (void)fprintf(stderr, "cog-cli: active execution must be drained before app_free\n");
+            return;
+        }
+    }
     if (app->workspace != NULL) (void)cog_workspace_free(app->workspace);
     if (app->core != NULL) cog_core_free(app->core);
     if (app->provider != NULL) (void)cog_provider_disconnect(app->provider);
@@ -346,7 +359,6 @@ cog_result_t cog_cli_app_run(cog_cli_app_t *app)
 {
     if (app == NULL) return COG_ERROR_NULL_PTR;
     app->shutdown = false;
-    atomic_store_explicit(&app->stop_requested, false, memory_order_release);
     cog_result_t rc = COG_OK;
     if (!app->prompt_submitted) {
         if (app->opts.prompt != NULL) rc = cog_cli_app_submit(app, app->opts.prompt, strlen(app->opts.prompt));
@@ -362,7 +374,6 @@ cog_result_t cog_cli_app_run(cog_cli_app_t *app)
 void cog_cli_app_stop(cog_cli_app_t *app)
 {
     if (app != NULL) {
-        atomic_store_explicit(&app->stop_requested, true, memory_order_release);
         cog_core_stop(app->core);
     }
 }

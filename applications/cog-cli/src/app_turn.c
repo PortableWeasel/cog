@@ -13,7 +13,7 @@ static void reset_turn(cog_cli_app_t *app)
     app->text_len = 0U; app->text[0] = '\0';
     app->opaque_count = 0U; app->opaque_used = 0U;
     app->call_count = 0U; app->tool_index = 0U;
-    app->sequence = 0U; app->delta_ready = false;
+    app->sequence = 0U; app->delta_ready = false; app->assistant = NULL;
     memset(&app->usage, 0, sizeof(app->usage));
     for (size_t i = 0U; i < CLI_CALLS; i++) {
         app->calls[i].begun = false; app->calls[i].ended = false;
@@ -63,9 +63,11 @@ cog_result_t cog_cli_begin_request(cog_cli_app_t *app, bool reset)
     if (app->workspace != NULL) {
         request.tools_json = app->tools_json; request.tools_json_len = app->tools_json_len;
     }
+    if (app->request_serial == UINT64_MAX) return COG_ERROR_LIMIT;
     rc = cog_provider_send(app->provider, &request);
     if (rc != COG_OK) return rc;
     if (reset) reset_turn(app);
+    app->request_serial++;
     app->provider_active = true;
     return COG_OK;
 }
@@ -116,7 +118,7 @@ static cog_result_t process_finish(cog_cli_app_t *app, cog_state_t *next)
             return COG_OK;
         }
     }
-    if (outcome == COG_OK && app->deferred_error != COG_OK) outcome = app->deferred_error;
+    if ((outcome == COG_OK || outcome == COG_ERROR_ABORTED) && app->deferred_error != COG_OK) outcome = app->deferred_error;
     if (outcome == COG_OK && (delta->finish_reason == COG_FINISH_REASON_LENGTH ||
         delta->finish_reason == COG_FINISH_REASON_CONTENT_FILTER)) outcome = COG_ERROR_LIMIT;
     if (outcome == COG_OK && delta->finish_reason != COG_FINISH_REASON_STOP &&
@@ -127,6 +129,7 @@ static cog_result_t process_finish(cog_cli_app_t *app, cog_state_t *next)
             if (!app->calls[i].begun || !app->calls[i].ended) outcome = COG_ERROR_PROTOCOL;
     } else if (outcome == COG_OK && app->call_count != 0U) outcome = COG_ERROR_PROTOCOL;
     if (outcome != COG_OK) {
+        if (outcome != COG_ERROR_ABORTED) (void)fprintf(stderr, "cog-cli: provider error: %s\n", cog_cli_result_name(outcome));
         cog_result_t saved = cog_cli_finish_partial(app, outcome);
         *next = CLI_IDLE;
         return saved != COG_OK ? saved : outcome == COG_ERROR_ABORTED ? COG_OK : outcome;
@@ -256,10 +259,10 @@ static cog_handler_result_t advance(cog_core_t *core, const cog_event_t *event)
 {
     cog_cli_app_t *app = cog_core_user(core);
     cog_handler_result_t r = {cog_core_state(core), COG_OK};
-    (void)event;
+    if (event->source_id != app->request_serial) return (cog_handler_result_t){COG_TRANSITION_SELF, COG_OK};
     app->event_queued = false;
     if (r.transition == CLI_MODEL) {
-        if (!app->delta_ready) { r.status = COG_ERROR_INVALID_STATE; return r; }
+        if (!app->delta_ready) return (cog_handler_result_t){COG_TRANSITION_SELF, COG_OK};
         r.status = accept_delta(app, &r.transition);
         app->delta_ready = false;
     } else if (r.transition == CLI_BACKOFF) {
@@ -321,7 +324,7 @@ const cog_dispatch_entry_t *cog_cli_dispatch_table(size_t *count)
 static cog_result_t schedule(cog_cli_app_t *app, cog_event_kind_t kind)
 {
     if (app->event_queued) return COG_OK;
-    cog_event_t event = {.id = (cog_event_id_t)kind, .kind = kind};
+    cog_event_t event = {.id = (cog_event_id_t)kind, .kind = kind, .source_id = app->request_serial};
     cog_result_t rc = cog_core_enqueue(app->core, &event);
     if (rc == COG_OK) app->event_queued = true;
     return rc == COG_ERROR_OVERFLOW ? COG_OK : rc;
@@ -366,14 +369,14 @@ cog_result_t cog_cli_service(void *arg, uint64_t now, uint64_t *deadline)
             else if (rc != COG_ERROR_AGAIN) return rc == COG_ERROR_OVERFLOW ? COG_ERROR_LIMIT : rc;
         }
         if (app->delta_ready) return schedule(app, COG_EVENT_LLM_CHUNK);
-    } else if (state == CLI_BACKOFF) {
+    } else if (state == CLI_BACKOFF && app->active) {
         if (app->cancelling) return schedule(app, COG_EVENT_RETRY);
         if (app->retry_at < *deadline) *deadline = app->retry_at;
         if (now >= app->retry_at) return schedule(app, COG_EVENT_RETRY);
-    } else if (state == CLI_POLICY) {
+    } else if (state == CLI_POLICY && app->active) {
         if (!app->policy_prompt || app->policy_decision != COG_TOOLKIT_POLICY_UNDECIDED || app->cancelling)
             return schedule(app, COG_EVENT_TOOL_RESULT);
-    } else if (state == CLI_TOOL) {
+    } else if (state == CLI_TOOL && app->execution != NULL) {
         rc = cog_toolkit_execution_poll(app->execution, now, &app->tool_done, &next);
         if (rc != COG_OK) return rc;
         if (next < *deadline) *deadline = next;
@@ -453,30 +456,40 @@ cog_result_t cog_cli_drain(cog_cli_app_t *app)
     if (app->provider_active) {
         rc = cog_provider_cancel(app->provider);
         if (rc != COG_OK) return rc;
-        /* Every retained delta is bounded by provider limits. Preserve visible
-           text and opaque snapshots, then store an explicit incomplete turn. */
+        bool terminal = false;
         for (size_t i = 0U; i < CLI_CALLS * 8U + 64U; i++) {
-            size_t required = 0U;
-            rc = cog_provider_next(app->provider, &app->delta, app->delta_storage,
-                app->delta_capacity, &required);
-            if (rc == COG_ERROR_AGAIN) {
-                uint64_t deadline;
-                rc = cog_provider_poll(app->provider, app->now, &deadline);
-                if (rc != COG_OK) return rc;
-                continue;
+            if (!app->delta_ready) {
+                size_t required = 0U;
+                rc = cog_provider_next(app->provider, &app->delta, app->delta_storage,
+                    app->delta_capacity, &required);
+                if (rc == COG_ERROR_AGAIN) {
+                    uint64_t deadline;
+                    rc = cog_provider_poll(app->provider, app->now, &deadline);
+                    if (rc != COG_OK) return rc;
+                    continue;
+                }
+                if (rc != COG_OK) break;
             }
-            if (rc != COG_OK) break;
-            if (app->delta.kind == COG_PROVIDER_DELTA_FINISH) break;
+            app->delta_ready = false;
             cog_state_t next = CLI_MODEL;
+            terminal = app->delta.kind == COG_PROVIDER_DELTA_FINISH;
             rc = accept_delta(app, &next);
-            if (rc != COG_OK) break;
+            if (rc != COG_OK || terminal) break;
         }
         app->provider_active = false;
-        cog_result_t saved = cog_cli_finish_partial(app,
+        if (!terminal) {
+            cog_result_t saved = cog_cli_finish_partial(app,
+                app->deferred_error != COG_OK ? app->deferred_error : COG_ERROR_ABORTED);
+            if (saved != COG_OK) return saved;
+        }
+        if (rc != COG_OK && rc != COG_ERROR_ABORTED && rc != COG_ERROR_INVALID_STATE) return rc;
+    } else if (app->active && app->assistant == NULL) {
+        rc = cog_cli_finish_partial(app,
             app->deferred_error != COG_OK ? app->deferred_error : COG_ERROR_ABORTED);
-        if (saved != COG_OK) return saved;
-        if (rc != COG_OK && rc != COG_ERROR_INVALID_STATE) return rc;
+        if (rc != COG_OK) return rc;
     }
+    app->delta_ready = false; app->event_queued = false;
+    if (app->request_serial != UINT64_MAX) app->request_serial++;
     if (app->execution != NULL) {
         rc = cog_cli_tools_cancel(app);
         if (rc != COG_OK) return rc;

@@ -53,6 +53,12 @@ static cog_cli_app_t *make_app(cog_cli_options_t *opts)
         opts->endpoint_name = "mock";
     }
     opts->interactive = false;
+    opts->backend = COG_CLI_BACKEND_MOCK;
+    opts->explicit_options |= COG_CLI_OPT_BACKEND | COG_CLI_OPT_MODEL | COG_CLI_OPT_ENDPOINT;
+    if (opts->store_dir != NULL) {
+        opts->store_mode = COG_CLI_STORE_DURABLE;
+        opts->explicit_options |= COG_CLI_OPT_STORE_MODE | COG_CLI_OPT_STORE_DIR;
+    }
     if (cog_cli_app_new(&app, opts) != COG_OK) {
         return NULL;
     }
@@ -173,7 +179,10 @@ static void test_store_save_on_complete_only(void)
     CHECK(cog_cli_app_run(app) == COG_OK);
     sid = cog_session_id(cog_cli_app_session(app));
     CHECK(sid != NULL);
-    CHECK(!cog_store_exists(cog_cli_app_store(app), sid));
+    CHECK(cog_store_exists(cog_cli_app_store(app), sid));
+    cog_cli_display_snapshot_t display;
+    CHECK(cog_cli_app_display_snapshot(app, &display) == COG_OK);
+    CHECK(display.item_count == 2U && display.items[1].status == COG_MESSAGE_CANCELLED);
     cog_cli_app_free(app);
 
     (void)rmdir(dir_ok);

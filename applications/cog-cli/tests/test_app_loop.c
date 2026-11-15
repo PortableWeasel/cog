@@ -54,6 +54,28 @@ static int stream_and_partial(void)
     REQUIRE(retained);
     cog_cli_app_free(app); return 0;
 }
+static int cancel_then_queue(void)
+{
+    const cog_mock_step_t steps[]={
+        {COG_MOCK_STEP_CHUNK,"partial",COG_OK,0,false,0,NULL},
+        {COG_MOCK_STEP_CANCEL,NULL,COG_OK,0,false,0,NULL},
+        {COG_MOCK_STEP_CHUNK,"continued",COG_OK,0,false,0,NULL}};
+    const cog_mock_script_t script={steps,3,0,COG_OK,0};
+    cog_cli_options_t opts=options();opts.script=&script;opts.queue_text="new authorization";
+    cog_cli_app_t *app=NULL;REQUIRE(cog_cli_app_new(&app,&opts)==COG_OK);
+    REQUIRE(cog_cli_app_run(app)==COG_OK);
+    cog_message_t history[8];size_t count=0;
+    REQUIRE(cog_session_copy_history(app->session,NULL,history,8,&count)==COG_OK && count==3U);
+    REQUIRE(strcmp(history[1].content,"new authorization")==0);
+    REQUIRE(strcmp(history[2].content,"continued")==0);
+    cog_session_snapshot_t snapshot;REQUIRE(cog_session_snapshot_view(app->session,&snapshot)==COG_OK);
+    bool retained=false;
+    for(size_t i=0;i<snapshot.node_count;i++)
+        if(snapshot.nodes[i].message->status==COG_MESSAGE_CANCELLED && snapshot.nodes[i].content_len==7U)retained=true;
+    REQUIRE(retained);
+    cog_mock_state_t state;REQUIRE(cog_mock_provider_state(app->provider,&state)==COG_OK && state.send_count==2U);
+    cog_cli_app_free(app);return 0;
+}
 static int retries(void)
 {
     const cog_mock_step_t errors[] = {
@@ -155,7 +177,7 @@ static int bounds_and_cancel(void)
 }
 int main(void)
 {
-    REQUIRE(stream_and_partial()==0);REQUIRE(retries()==0);
+    REQUIRE(stream_and_partial()==0);REQUIRE(cancel_then_queue()==0);REQUIRE(retries()==0);
     REQUIRE(tool_round(true,true)==0);REQUIRE(tool_round(false,true)==0);
     REQUIRE(tool_round(true,false)==0);REQUIRE(display_codec()==0);REQUIRE(bounds_and_cancel()==0);
     return 0;

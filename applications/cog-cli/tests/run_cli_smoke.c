@@ -57,7 +57,7 @@ static void test_stream(void)
 {
     char out[8192];
 
-    CHECK(run_binary("--prompt hello", out, sizeof(out)) == 0);
+    CHECK(run_binary("--mock --prompt hello", out, sizeof(out)) == 0);
     CHECK(strstr(out, "Hello from cog-cli!") != NULL);
 }
 
@@ -65,7 +65,7 @@ static void test_error_retry(void)
 {
     char out[8192];
 
-    CHECK(run_binary("--prompt hello --mock-mode error", out, sizeof(out))
+    CHECK(run_binary("--mock --prompt hello --mock-mode error", out, sizeof(out))
           == 0);
     CHECK(strstr(out, "retried ok") != NULL);
 }
@@ -75,7 +75,7 @@ static void test_cancel(void)
     char out[8192];
 
     /* A cancelled stream produces no assistant output. */
-    CHECK(run_binary("--prompt hello --mock-mode cancel", out, sizeof(out))
+    CHECK(run_binary("--mock --prompt hello --mock-mode cancel", out, sizeof(out))
           == 0);
     CHECK(strstr(out, "Hello from cog-cli!") == NULL);
 }
@@ -84,7 +84,7 @@ static void test_custom_chunks(void)
 {
     char out[8192];
 
-    CHECK(run_binary("--prompt hi --chunks \"a,b,c\"", out, sizeof(out))
+    CHECK(run_binary("--mock --prompt hi --chunks \"a,b,c\"", out, sizeof(out))
           == 0);
     CHECK(strstr(out, "abc") != NULL);
 }

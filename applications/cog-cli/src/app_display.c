@@ -61,7 +61,7 @@ cog_result_t cog_cli_display_snapshot_encode(const cog_cli_display_snapshot_t *s
     for (size_t i = 0U; i < snapshot->item_count; i++) {
         const cog_cli_display_item_t *item = &snapshot->items[i];
         if (!visible_valid(item)) return COG_ERROR_INVALID_ARG;
-        if (item->text_len > SIZE_MAX - size - 14U) return COG_ERROR_LIMIT;
+        if (size > SIZE_MAX - 14U || item->text_len > SIZE_MAX - size - 14U) return COG_ERROR_LIMIT;
         size += 14U + item->text_len;
     }
     *required = size;

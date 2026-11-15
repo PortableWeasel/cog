@@ -233,6 +233,8 @@ static void scenario_fan_out_fan_in(void)
     opts.model_id = "mock-model";
     opts.endpoint_name = "mock";
     opts.interactive = false;
+    opts.backend = COG_CLI_BACKEND_MOCK;
+    opts.explicit_options |= COG_CLI_OPT_BACKEND | COG_CLI_OPT_MODEL | COG_CLI_OPT_ENDPOINT;
     CHECK(cog_cli_app_new(&app, &opts) == COG_OK);
     if (app == NULL) {
         return;
@@ -386,7 +388,9 @@ static void scenario_broadcast_cancel(void)
         opts.model_id = "mock-model";
         opts.endpoint_name = "mock";
         opts.interactive = false;
-        CHECK(cog_cli_app_new(&app, &opts) == COG_OK);
+        opts.backend = COG_CLI_BACKEND_MOCK;
+    opts.explicit_options |= COG_CLI_OPT_BACKEND | COG_CLI_OPT_MODEL | COG_CLI_OPT_ENDPOINT;
+    CHECK(cog_cli_app_new(&app, &opts) == COG_OK);
         if (app != NULL) {
             core = cog_cli_app_core(app);
             CHECK(core != NULL);

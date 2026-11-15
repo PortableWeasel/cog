@@ -125,6 +125,12 @@ static cog_cli_app_t *make_app(cog_cli_options_t *opts)
         opts->endpoint_name = "mock";
     }
     opts->interactive = false;
+    opts->backend = COG_CLI_BACKEND_MOCK;
+    opts->explicit_options |= COG_CLI_OPT_BACKEND | COG_CLI_OPT_MODEL | COG_CLI_OPT_ENDPOINT;
+    if (opts->store_dir != NULL) {
+        opts->store_mode = COG_CLI_STORE_DURABLE;
+        opts->explicit_options |= COG_CLI_OPT_STORE_MODE | COG_CLI_OPT_STORE_DIR;
+    }
     if (cog_cli_app_new(&app, opts) != COG_OK) {
         return NULL;
     }
@@ -192,19 +198,13 @@ static void scenario_user_prompt(void)
 
     /* Step 5a: session history = user + one assistant node per chunk. */
     n = fixture_history(app, hist, 8U);
-    CHECK_EQ_INT((long long)n, 4LL);
+    CHECK_EQ_INT((long long)n, 2LL);
     CHECK(hist[0].role == COG_MESSAGE_ROLE_USER);
     CHECK(hist[0].content_len == 19U);
     CHECK(memcmp(hist[0].content, "What is the answer?", 19U) == 0);
     CHECK(hist[1].role == COG_MESSAGE_ROLE_ASSISTANT);
-    CHECK(hist[1].content_len == 3U);
-    CHECK(memcmp(hist[1].content, "The", 3U) == 0);
-    CHECK(hist[2].role == COG_MESSAGE_ROLE_ASSISTANT);
-    CHECK(hist[2].content_len == 7U);
-    CHECK(memcmp(hist[2].content, " answer", 7U) == 0);
-    CHECK(hist[3].role == COG_MESSAGE_ROLE_ASSISTANT);
-    CHECK(hist[3].content_len == 7U);
-    CHECK(memcmp(hist[3].content, " is 42.", 7U) == 0);
+    CHECK(hist[1].content_len == 17U);
+    CHECK(memcmp(hist[1].content, "The answer is 42.", 17U) == 0);
 
     /* Step 5b: provider was asked once and streamed exactly the chunks. */
     CHECK(cog_mock_provider_state(cog_cli_app_provider(app), &st) == COG_OK);

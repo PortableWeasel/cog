@@ -3,7 +3,6 @@
 #define COG_CLI_APP_INTERNAL_H
 #include "configuration.h"
 #include <cog/workspace.h>
-#include <stdatomic.h>
 #define CLI_NODES 1024U
 #define CLI_CALLS 16U
 #define CLI_OPAQUE 16U
@@ -45,14 +44,13 @@ struct cog_cli_app {
     FILE *out, *log_file;
     cog_obs_sink_t log_sink;
     cog_obs_sink_table_t sink_table;
-    atomic_bool stop_requested;
     bool prompt_submitted, shutdown, cancelling, active, provider_active;
     bool delta_ready, event_queued, tool_done, effects, accepted, policy_prompt;
     bool recovery, stdin_eof;
     int signal_fd;
     cog_result_t deferred_error;
     cog_toolkit_policy_decision_t policy_decision;
-    uint64_t now, started_at, retry_at, sequence, display_sequence, generation;
+    uint64_t now, started_at, retry_at, sequence, display_sequence, generation, request_serial;
     uint32_t retries, rounds;
     char *text, *opaque_storage, *delta_storage, *result_storage, *tools_json;
     size_t text_len, opaque_used, opaque_count, call_count, tool_index;
