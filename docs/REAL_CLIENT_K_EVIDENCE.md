@@ -191,3 +191,19 @@ M/P all-unit and runtime acceptance remains dependent on that work. K's scoped
 PASS does not close O, the timing follow-up, L, M or the full release gate.
 All review requests used deterministic local fixtures and disposable processes;
 no paid/provider calls or credentials were used.
+
+## Main integration
+
+Authorized integration merged the reviewed K checkpoint plus independent evidence
+(`b7bf456`) into main as `b20ac9e4097707d3b0b4f278aad783c4eb7d4bd3`, without
+conflicts. The integration preserves the preceding Release assertion-policy
+merge `db60296`. A fresh supported-curl Release/Werror configuration in
+`build-k-main-merge` compiled every target and passed the exact 28-test K
+selection above (28/28), plus all six `build-policy` checks (6/6). The application
+capacity test's actual compile flags include `-O3 -DNDEBUG ... -UNDEBUG`, so
+assertion-contained workloads remain enabled in this combined Release tree.
+
+Only K delivery, its independent review and integration/finalize children close
+with this result. O nonblocking orchestration migration (`d5280b7`), P process
+fixture determinism (`b4c9ca3`), L/M and full release acceptance remain separate.
+The existing untracked `build_user/` directory was preserved.

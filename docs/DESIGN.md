@@ -3,8 +3,9 @@
 > Stage 14.H provider delivery passed independent revision review and is
 > integrated. [H evidence](REAL_CLIENT_H_EVIDENCE.md) records bounded JSON/SSE,
 > retained typed output, final opaque preservation, mock conformance, offline
-> TLS and installed link closure. K conversation-loop migration and full release
-> validation remain pending.
+> TLS and installed link closure. K conversation-loop delivery is also integrated;
+> its [independent evidence](REAL_CLIENT_K_EVIDENCE.md) records the scoped result.
+> Broader application and full release validation remain pending.
 
 > Stage 14.Q runtime implementation passed independent revision review and is integrated;
 > [Q evidence](REAL_CLIENT_Q_EVIDENCE.md) records bounded nonblocking IPC,
