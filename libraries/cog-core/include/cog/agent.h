@@ -42,6 +42,7 @@ typedef enum cog_agent_status {
     COG_AGENT_STATUS_COMPLETED,    /**< Finished successfully. */
     COG_AGENT_STATUS_FAILED,       /**< Finished with an error. */
     COG_AGENT_STATUS_CANCELLED,    /**< Cancelled by parent or timeout. */
+    COG_AGENT_STATUS_TIMEOUT,      /**< Exceeded its time limit. */
 } cog_agent_status_t;
 
 /**
@@ -60,6 +61,10 @@ typedef struct cog_agent_config {
     /** If true, the subagent runs locally.  If false, the orchestrator
      *  decides placement (may be remote). */
     bool force_local;
+
+    /** Optional fan-out group identifier.  Agents spawned with the same
+     *  group id are part of the same fan-out operation.  Zero = no group. */
+    uint64_t group_id;
 } cog_agent_config_t;
 
 /**
@@ -164,6 +169,43 @@ cog_result_t cog_agent_result(cog_core_t *core,
                                char *out_result,
                                size_t result_capacity,
                                size_t *out_result_len);
+
+/**
+ * @brief Get the session id for an agent.
+ *
+ * Used for IPC session-routed messaging between subagents.
+ *
+ * @param[in]  core           Core instance.
+ * @param[in]  agent_id       Agent to query.
+ * @param[out] out_session_id Receives the session id string.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if @p core or @p out_session_id is NULL.
+ * @return COG_ERROR_NOT_FOUND if @p agent_id does not exist.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_agent_session_id(cog_core_t *core,
+                                   cog_agent_id_t agent_id,
+                                   const char **out_session_id);
+
+/**
+ * @brief Check if an agent has been cancelled.
+ *
+ * Used by handlers to discard late results from cancelled agents
+ * (e.g. after a fan-out winner is selected).
+ *
+ * @param[in]  core          Core instance.
+ * @param[in]  agent_id      Agent to check.
+ * @param[out] out_cancelled Receives true if the agent is cancelled.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if @p core or @p out_cancelled is NULL.
+ * @return COG_ERROR_NOT_FOUND if @p agent_id does not exist.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_agent_is_cancelled(cog_core_t *core,
+                                     cog_agent_id_t agent_id,
+                                     bool *out_cancelled);
 
 #ifdef __cplusplus
 }

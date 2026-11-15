@@ -27,6 +27,8 @@
 #include <cog/event.h>
 #include <cog/handler.h>
 #include <cog/ipc.h>
+#include <cog/obs.h>
+#include <cog/provider_vtable.h>
 #include <cog/result.h>
 #include <cog/session.h>
 #include <cog/state.h>
@@ -134,6 +136,23 @@ typedef struct cog_core_config {
      * connection.  Non-zero values must be unique across the fabric.
      */
     cog_peer_id_t local_peer_id;
+
+    /**
+     * @brief Active LLM provider instance.
+     *
+     * Must be non-NULL.  The provider is used by handlers to make LLM
+     * calls.  The caller creates the provider with cog_provider_connect
+     * and retains ownership; the core does not free it.
+     */
+    cog_provider_t *provider;
+
+    /**
+     * @brief Optional observability context.
+     *
+     * If non-NULL, the core logs lifecycle events and errors through
+     * this context.  The caller retains ownership.
+     */
+    cog_obs_t *obs;
 } cog_core_config_t;
 
 /**
@@ -272,6 +291,27 @@ bool cog_core_is_running(const cog_core_t *core);
  * Threading: not thread-safe.
  */
 cog_ipc_endpoint_t *cog_core_ipc(cog_core_t *core);
+
+/**
+ * @brief Return the active LLM provider.
+ *
+ * @param[in] core Core to query; may be NULL.
+ * @return The provider instance, or NULL if @p core is NULL.
+ *
+ * Threading: not thread-safe.
+ */
+cog_provider_t *cog_core_provider(cog_core_t *core);
+
+/**
+ * @brief Return the observability context.
+ *
+ * @param[in] core Core to query; may be NULL.
+ * @return The observability context, or NULL if not configured or
+ *         @p core is NULL.
+ *
+ * Threading: not thread-safe.
+ */
+cog_obs_t *cog_core_obs(cog_core_t *core);
 
 #ifdef __cplusplus
 }

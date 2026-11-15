@@ -65,6 +65,8 @@ typedef enum cog_event_kind {
     COG_EVENT_IPC_MESSAGE,        /**< Framed message received from a peer. */
     COG_EVENT_IPC_CONNECTED,      /**< New peer connected to the IPC fabric. */
     COG_EVENT_IPC_DISCONNECTED,   /**< Peer disconnected from the IPC fabric. */
+    COG_EVENT_CONFIG_CHANGED,     /**< Configuration was reloaded. */
+    COG_EVENT_SUBAGENT_TIMEOUT,   /**< Subagent exceeded its time limit. */
     COG_EVENT_SHUTDOWN,           /**< Request for graceful shutdown. */
 } cog_event_kind_t;
 

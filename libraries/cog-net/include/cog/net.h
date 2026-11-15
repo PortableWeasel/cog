@@ -65,6 +65,11 @@ typedef struct cog_net_response {
     /** HTTP status code (e.g. 200, 429, 500). */
     int http_status;
 
+    /** Response headers (newline-separated key:value pairs).
+     *  May be NULL if no headers are available.  Used for
+     *  Retry-After and other metadata. */
+    const char *headers;
+
     /** Response body chunk (may be a partial/streaming chunk). */
     const char *chunk;
 
@@ -189,6 +194,25 @@ int cog_net_fd(const cog_net_ctx_t *ctx);
  * Threading: not thread-safe.
  */
 size_t cog_net_active_count(const cog_net_ctx_t *ctx);
+
+/**
+ * @brief Get the ids of all active requests.
+ *
+ * Used for bulk cancellation during shutdown.
+ *
+ * @param[in]  ctx       Network context.
+ * @param[out] out_ids   Caller-provided array for request ids.
+ * @param[in]  max_ids   Maximum entries in @p out_ids.
+ * @param[out] out_count Receives the actual number of active requests.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if @p ctx, @p out_ids, or @p out_count is NULL.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_net_active_ids(const cog_net_ctx_t *ctx,
+                                 cog_request_id_t *out_ids,
+                                 size_t max_ids,
+                                 size_t *out_count);
 
 /**
  * @brief Query the status of a specific request.

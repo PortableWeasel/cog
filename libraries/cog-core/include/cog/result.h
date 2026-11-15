@@ -39,6 +39,9 @@ typedef enum cog_result {
     COG_ERROR_IO = -10,             /**< An input/output operation failed. */
     COG_ERROR_ABORTED = -11,        /**< The operation was cancelled or the run loop
                                          was stopped. */
+    COG_ERROR_TIMEOUT = -12,        /**< The operation exceeded its time limit. */
+    COG_ERROR_UNAVAILABLE = -13,    /**< The requested resource is temporarily
+                                         unavailable (e.g. rate limited). */
 } cog_result_t;
 
 #ifdef __cplusplus

@@ -170,6 +170,30 @@ cog_result_t cog_provider_request_validate(const cog_provider_request_t *request
  */
 cog_result_t cog_provider_response_validate(const cog_provider_response_t *response);
 
+/**
+ * @brief Detailed error information from a provider call.
+ *
+ * Used with COG_EVENT_PROVIDER_ERROR to describe what went wrong.
+ */
+typedef struct cog_provider_error {
+    /** Error code from the provider or transport. */
+    cog_result_t code;
+
+    /** HTTP status code (if applicable, e.g. 429, 500). */
+    int http_status;
+
+    /** Human-readable error message. */
+    const char *message;
+
+    /** If true, the error is transient and the request may be retried
+     *  after a backoff period (e.g. rate limit, temporary network issue). */
+    bool retryable;
+
+    /** Suggested retry delay in milliseconds (from Retry-After header).
+     *  Zero if not specified. */
+    uint32_t retry_after_ms;
+} cog_provider_error_t;
+
 #ifdef __cplusplus
 }
 #endif

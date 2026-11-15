@@ -72,6 +72,9 @@ typedef struct cog_orchestrator_config {
 
     /** Maximum subagents per core (for placement decisions). */
     size_t default_core_capacity;
+
+    /** If true, automatically spawn a replacement when a core dies. */
+    bool auto_replace;
 } cog_orchestrator_config_t;
 
 /* ── Lifecycle ──────────────────────────────────────────────────── */
@@ -224,6 +227,50 @@ cog_result_t cog_orchestrator_heartbeat(cog_orchestrator_t *orch,
  */
 cog_peer_id_t cog_orchestrator_place(const cog_orchestrator_t *orch,
                                       size_t estimated_load);
+
+/* ── Shutdown ───────────────────────────────────────────────────── */
+
+/**
+ * @brief Gracefully shut down all managed cores.
+ *
+ * Sends shutdown commands to all aux cores and waits for acknowledgments
+ * up to the timeout.  Cores that don't respond are force-killed.
+ *
+ * @param[in,out] orch       Orchestrator.
+ * @param[in]     timeout_ms Maximum time to wait for graceful shutdown.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if @p orch is NULL.
+ * @return COG_ERROR_TIMEOUT if not all cores acknowledged in time.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_orchestrator_shutdown(cog_orchestrator_t *orch,
+                                        uint32_t timeout_ms);
+
+/* ── Session tracking ───────────────────────────────────────────── */
+
+/**
+ * @brief List sessions running on a specific peer.
+ *
+ * Used during crash recovery to find affected subagents.
+ *
+ * @param[in]  orch         Orchestrator.
+ * @param[in]  peer_id      Peer to query.
+ * @param[out] out_sessions Caller-provided array for session ids.
+ * @param[in]  max_sessions Maximum entries in @p out_sessions.
+ * @param[out] out_count    Receives the actual number of sessions.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if @p orch, @p out_sessions, or
+ *         @p out_count is NULL.
+ * @return COG_ERROR_NOT_FOUND if the peer is unknown.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_orchestrator_sessions(const cog_orchestrator_t *orch,
+                                        cog_peer_id_t peer_id,
+                                        const char **out_sessions,
+                                        size_t max_sessions,
+                                        size_t *out_count);
 
 #ifdef __cplusplus
 }
