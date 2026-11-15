@@ -205,3 +205,17 @@ if(COG_BUILD_BENCHMARKS)
     target_link_libraries(bench_session_append PRIVATE cog::core)
     target_enable_warnings(bench_session_append)
 endif()
+
+add_executable(test_ipc_replay test_ipc_replay.c)
+target_link_libraries(test_ipc_replay PRIVATE cog::ipc)
+target_include_directories(test_ipc_replay PRIVATE ${PROJECT_SOURCE_DIR}/libraries/cog-ipc/src)
+target_link_options(test_ipc_replay PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc)
+target_enable_warnings(test_ipc_replay)
+add_test(NAME unit-ipc-replay COMMAND test_ipc_replay)
+
+# Independent bounded-window model and adversarial CGR1 validation.
+add_executable(test_ipc_replay_critic test_ipc_replay_critic.c)
+target_link_libraries(test_ipc_replay_critic PRIVATE cog::ipc)
+target_link_options(test_ipc_replay_critic PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=free)
+target_enable_warnings(test_ipc_replay_critic)
+add_test(NAME unit-ipc-replay-critic COMMAND test_ipc_replay_critic)
