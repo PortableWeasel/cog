@@ -330,6 +330,10 @@ durable guard admission and complete application-loop migration.
 
 ## Bounded agent lifecycle
 
+Core-local delivery passed independent review and is integrated;
+[local-agent integration evidence](REAL_CLIENT_LOCAL_AGENT_INTEGRATION.md)
+records the focused checks and remaining K/N/O application/runtime gaps.
+
 The core reserves agent records and copied strings at construction. Spawn and
 cancel admit leased intent events atomically to the core queue; application
 dispatch owns execution or forwarding. The handler copies configuration and
