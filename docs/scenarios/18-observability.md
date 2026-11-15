@@ -73,3 +73,18 @@ the minimal production bridge; net.h supplies a numeric constructor-borrowed
 observer and checked latched status, with no payload/URL/secret pointers.
 Implementation and actual-path oracles are delivery `b64ee7c`, serialized after
 R12. No runtime passing claim follows from this header amendment.
+
+## Runtime pass 2: typed application facts
+
+The app brackets actual admitted provider/tool work with existing span APIs or
+typed duration/status records; sequential CLI work follows stack nesting.
+Reported usage has explicit availability and omitted unknown values. Numeric
+request/configuration-generation and assistant/ordinal identities survive label
+omission. Optional labels use bounded safe copies and availability, so valid
+long configuration strings cannot overflow logging or be silently truncated.
+Arguments, commands, paths, output, model text, opaque continuation and secrets
+never become fields. Sink/clock/format failures are checked and latched; normal
+owned drain/persistence precedes failure reporting, without replaying an effect
+to regenerate telemetry. The concurrent R12 generations share app/host obs
+lifetime but never borrow diagnostic strings from retired configuration storage.
+The dedicated contract pins this composition; no new public obs API is needed.

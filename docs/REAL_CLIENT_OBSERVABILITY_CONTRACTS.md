@@ -86,7 +86,10 @@ cleanup. Only the host owns dependency global initialization/cleanup.
 
 The reference CLI has one app on its host net context. At OPEN, the bridge
 copies the active request's pinned session/model/configuration generation and
-application attempt number into a fixed row. Later events use that row, never
+application attempt number into a fixed row. The owner prepares this scope
+before calling provider_send; OPEN can occur synchronously inside that call.
+A send failure clears the prepared scope without inventing a network row.
+Later events use the copied row, never
 whatever generation was most recently published. Candidate connect/preflight
 has no wire request and produces no transport observation. R12 publication
 cannot relabel old requests or clear labels while diagnostics borrow them.
@@ -107,6 +110,21 @@ The host obtains event timestamps from the existing monotonic obs clock at
 callback time. Net observations do not mix the caller-supplied service clock
 with real timestamps or report a fabricated request timestamp before first
 service. Clock failure follows the same latched observer-error path.
+
+Label reservations use fixed per-row capacities: session ID128 bytes including
+NUL, model label128 bytes including NUL, and static endpoint/provider/tool names.
+Long/unsafe/unavailable labels are represented as absent with explicit typed
+availability flags, never silently truncated and never a new failure of an
+otherwise valid4096-byte configuration field. Model labels allow ASCII letters,
+digits and `._:/-` only; session labels use the same safe alphabet. Before output,
+compare candidate labels with the pinned credential bytes/reference and omit a
+label containing either. Real endpoint/provider names are static `openrouter`;
+mock uses static `mock`. Request/generation/node/ordinal numeric identities remain
+available even when a human-readable label is omitted. These rules constrain
+logging labels only; they do not rewrite stored sessions, model configuration,
+call identity or network input. Typed records have a bounded subset of fields
+and fit the existing obs formatting reservation; oversized optional labels cannot
+force a valid request to fail simply because the obs scratch is1024bytes.
 
 Endpoint/provider labels use bounded approved names, not arbitrary base URLs;
 never log URL userinfo, query, path or raw peer error text. Session/model labels
@@ -159,6 +177,38 @@ retain the first observation error for explicit reporting. Cleanup never retries
 an effect merely to regenerate a missing record. If a sink rejects trace_end,
 its documented unchanged stack may be discarded during failed cleanup, rather
 than retrying a partially delivered record blindly.
+
+## Pass 2: scenario traces and amendments
+
+Tracing the initial draft against release/cancel/quantum and actual obs capacity
+found three gaps: active release lacked an explicit observer terminal boundary;
+terminal totals could hide a final upload delta; and a valid4096-byte configured
+model could overflow the existing1024-byte obs scratch. net.h now pins active
+release/completion precedence and final progress flush; this document bounds
+optional labels with explicit availability, not truncation/config rejection.
+The callback budget and accounting-error policy are now explicit as well.
+
+| Trace | Public calls / existing authority | Required observation/result |
+|---|---|---|
+| 1 successful HTTP | net_request -> service -> peek/ack/release | OPEN1 -> actual CONNECTED -> coalesced PROGRESS -> CLOSED; callback values contain no payload |
+| 2 invalid request/setup failure | net_request fails before ID publication | out_id unchanged, no OPEN/row, no request/effect |
+| 3 HTTP429 + retry admission | net CLOSED/HTTP429; provider_get_error; app budget; provider_send | transport OK is distinct from provider error; app RETRY only on admitted attempt; next request has fresh ID |
+| 4 DNS/TLS/connect failure | service fixes failure, cancel/release cleanup | OPEN -> FAILED without fake CONNECTED; sanitized error enum only |
+| 5 response inactivity | service timeout after response progress | STALLED then FAILED/TIMEOUT; connect timeout has no STALLED and pause/backpressure is excluded |
+| 6 callback rejection | any observer call returns nonOK; observer_status | first error latches, no retry/no later callbacks, ordinary transport/response outcome unchanged |
+| 7 body-ring pause | service -> retained peek, later ack -> service | count body bytes once after transactional acceptance; no repeated callback progress for the same paused input |
+| 8 active cancel/release | cancel/release after partial upload/body | flush final PROGRESS, FAILED/ABORTED once; ID remains owned until release |
+| 9 already captured completion | service captures DONE at quantum boundary; cancel/release before terminal response publish | captured success/error wins; no second terminal or ABORTED replacement, even while body views stay retained |
+| 10 fatal driver error | service returns driver failure; caller drains owned IDs | no fabricated request terminal while still live; explicit cancel/release supplies actual final cleanup |
+| 11 two contexts/shared net | constructor callback receives ctx and request ID | distinct keys/obs IDs, no global peek/ack stealing, no cross-context cancel on sink failure |
+| 12 reload during active old turn | existing R12 pinning; prepared provider has no wire; old send/poll/cleanup | copied row keeps old generation/model/session through retirement; subsequent OPEN gets new scope |
+| 13 tool success/deny/cancel | toolkit_new/start/poll/result, existing guarded STARTED/result saves | typed timing/status, identified ordinal, no arguments/output; span ends after joined reap |
+| 14 unknown usage/long labels | provider_next USAGE -> bounded typed app record | availability false and numeric omitted; no guessed zero or truncation; stored usage/model unchanged |
+| 15 teardown/constructor unwind | app drain, bridge clear, app_free; net_free; host cleanup | observer target alive through explicit releases; free itself emits nothing and host clears domain keys |
+
+The existing original18/19 diagrams are amended to route through the host bridge
+and map each newly required call to its public header. No special provider/tool
+log helper or private transport layout becomes part of the design.
 
 ## Delivery ownership and proof plan
 

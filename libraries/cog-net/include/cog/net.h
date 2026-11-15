@@ -126,8 +126,19 @@ typedef enum cog_net_observation_kind {
  *
  * Observer values never consume body-ring space or alter peek/ack selection.
  * No Cog runtime allocation or event queue is introduced. Progress delivery is
- * bounded/coalesced per service call. Sequence/counter exhaustion latches LIMIT
- * and disables this observer, without corrupting transfer outcomes.
+ * bounded/coalesced per service call: at most one CONNECTED, one PROGRESS, one
+ * STALLED and one terminal callback per request in a service call. Before a
+ * terminal callback, any final unreported body progress is emitted first, so
+ * its totals equal the terminal totals. No callback is retried after pause.
+ * Sequence/counter exhaustion latches LIMIT; unavailable/inconsistent upload
+ * accounting latches IO. Both disable observation without changing transfers.
+ *
+ * A dependency completion captured before cancel/release wins even if response
+ * terminal publication is pending behind service quantum/retention. Observation
+ * terminal follows that fixed wire outcome, not later peek/ack consumption.
+ * Driver errors that leave owned requests live do not fabricate a wire terminal;
+ * the caller still cancels/releases them. Context destruction ends the whole
+ * observation domain without callbacks (see free).
  */
 typedef struct cog_net_observation {
     cog_net_observation_kind_t kind;
@@ -223,6 +234,10 @@ cog_result_t cog_net_cancel(cog_net_ctx_t *ctx, cog_request_id_t id);
  * @param[in] id Known ID. Discards retained data, closes dependency easy handle.
  * @return COG_OK, NULL_PTR or NOT_FOUND. Slot reusable only after this call.
  * @note Owner thread; no peer waits. Invalidates all views for this ID.
+ * With a healthy observer, active release emits any final PROGRESS then exactly
+ * one FAILED/ABORTED before invalidating the ID. Already captured completion
+ * wins, including a terminal pending response publication. A known terminal ID
+ * emits nothing again. Callback failure never prevents destructor cleanup.
  */
 cog_result_t cog_net_request_release(cog_net_ctx_t *ctx, cog_request_id_t id);
 /**
@@ -293,7 +308,8 @@ cog_result_t cog_net_poll(cog_net_ctx_t *ctx, cog_net_response_t *out_response);
  * @param[in] ctx Context; owner thread, outside callbacks.
  * @return COG_OK if disabled by configuration or still healthy; NULL_PTR for
  * NULL ctx; otherwise the observer's first error, or LIMIT for observation
- * sequence/counter exhaustion. No allocation, network work or state change.
+ * sequence/counter exhaustion, or IO for unavailable/inconsistent upload
+ * accounting. No allocation, network work or state change.
  * @note Transport APIs keep their ordinary results. An observer-enabled host
  * must check this status after net operations before authorizing subsequent
  * application work. The host chooses whether to stop its owned work; unrelated

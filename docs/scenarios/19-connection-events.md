@@ -8,18 +8,28 @@ retained as historical design material and is not current API coverage.
 
 ```mermaid
 sequenceDiagram
-    participant Transport
+    participant App
+    participant Net
+    participant Bridge
     participant Obs
-    participant Observer
-    Transport->>Obs: cog_obs_conn_event_emit(OPEN)
-    Obs->>Observer: configured conn_event_sink(event)
-    Transport->>Obs: CONNECTED then bounded PROGRESS deltas/totals
-    Obs->>Observer: update row by conn_id
-    alt Stall / new application-admitted attempt
-      Transport->>Obs: STALLED / RETRY with explicit attempt
+    App->>Net: request -> successful ID publication
+    Net->>Bridge: observer(ctx,OPEN numeric value)
+    Bridge->>Obs: conn_event_emit + diag_publish (copied sanitized row)
+    App->>Net: service
+    Net->>Bridge: actual CONNECTED, coalesced PROGRESS
+    Note over Net,Bridge: no payload/URL/header/opaque pointers
+    alt response inactivity timeout
+      Net->>Bridge: STALLED then FAILED/TIMEOUT
+    else fixed wire terminal
+      Net->>Bridge: final PROGRESS then CLOSED/FAILED once
     end
-    Transport->>Obs: CLOSED or FAILED terminal event
-    Observer->>Observer: retain/prune application table with finite policy
+    App->>Net: observer_status after provider/net operations
+    alt application actually admits another attempt
+      App->>Obs: RETRY explicit attempt
+      App->>Net: new request -> fresh OPEN identity
+    end
+    App->>Net: cancel/release owned requests before free
+    Bridge->>Obs: clear/reuse bounded terminal rows
 ```
 
 ## Exact public-header coverage
@@ -30,6 +40,8 @@ presented as library calls. Each header path names the declaring public file.
 
 | Trace step | Exact declaration / member | Declaring header |
 |---|---|---|
+| Numeric source and callback | `cog_net_config_t.observer`; `observer_user`; `cog_net_observer_fn`; `cog_net_observation_t` | [net.h](../../libraries/cog-net/include/cog/net.h) |
+| Actual lifecycle / failure status | `cog_net_request`; `cog_net_service`; `cog_net_cancel`; `cog_net_request_release`; `cog_net_observer_status` | [net.h](../../libraries/cog-net/include/cog/net.h) |
 | Configured event callback | `cog_obs_config_t.conn_event_sink`; `cog_obs_config_t.conn_event_user`; `cog_obs_conn_event_sink_fn` | [libraries/cog-obs/include/cog/obs.h](../../libraries/cog-obs/include/cog/obs.h) |
 | Emit immutable event | `cog_obs_conn_event_emit`; `cog_obs_conn_event_t` | [libraries/cog-obs/include/cog/obs.h](../../libraries/cog-obs/include/cog/obs.h) |
 | Lifecycle kinds | `COG_OBS_CONN_EVENT_OPEN`; `COG_OBS_CONN_EVENT_CONNECTED`; `COG_OBS_CONN_EVENT_PROGRESS`; `COG_OBS_CONN_EVENT_STALLED`; `COG_OBS_CONN_EVENT_RETRY`; `COG_OBS_CONN_EVENT_CLOSED`; `COG_OBS_CONN_EVENT_FAILED` | [libraries/cog-obs/include/cog/obs.h](../../libraries/cog-obs/include/cog/obs.h) |
@@ -70,3 +82,17 @@ the minimal production bridge; net.h supplies a numeric constructor-borrowed
 observer and checked latched status, with no payload/URL/secret pointers.
 Implementation and actual-path oracles are delivery `b64ee7c`, serialized after
 R12. No runtime passing claim follows from this header amendment.
+
+## Runtime pass 2: concrete production bridge
+
+The net callback supplies only actual numeric facts. The host bridge assigns
+monotonic callback timestamps, copied safe labels, globally distinct obs IDs and
+pinned application attempt/generation scope. HTTP429 CLOSED/OK stays distinct
+from provider failure and later admitted RETRY. Captured completion wins cancel
+even before retained terminal publication; an active release flushes progress and
+ABORTED once. The existing body selector/ack is never used to collect telemetry.
+A failed callback latches separately and is not retried; app admission checks it
+and joins cleanup. Context free ends the whole observation domain without a
+callback; observable terminal evidence uses explicit cancel/release before free.
+The dedicated contract traces15 success/failure/lifetime cases and actual-path
+required oracles. Existing hand-emitted test19 remains component-only evidence.
