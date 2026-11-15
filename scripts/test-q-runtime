@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Isolated strict Q checks while G persistence is migrated. The explicit test
+# store double aborts if a scheduler fixture accidentally supplies a store.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+q_tmp=$(mktemp -d /tmp/cog-q-runtime.XXXXXX)
+trap 'rm -rf "$q_tmp"' EXIT
+q_cc=${CC:-cc}
+q_flags=(-std=c11 -g -O1 -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+  -Wsign-conversion -Wmissing-prototypes -Wstrict-prototypes -Wundef
+  -Wpointer-arith -Wcast-align -Wwrite-strings -Wformat=2 -Werror)
+if ! "$q_cc" --version | head -1 | rg -qi clang; then q_flags+=(-Wlogical-op); fi
+case "${Q_SANITIZER:-none}" in
+  none) ;;
+  address) q_flags+=(-fsanitize=address,undefined -fno-omit-frame-pointer) ;;
+  thread) q_flags+=(-fsanitize=thread -fno-omit-frame-pointer) ;;
+  *) echo 'Q_SANITIZER must be none, address, or thread' >&2; exit 2 ;;
+esac
+q_includes=(-I libraries/cog-core/include -I libraries/cog-ipc/include
+  -I libraries/cog-obs/include -I libraries/cog-provider/include)
+q_sources=(libraries/cog-core/src/core.c libraries/cog-core/src/agent.c
+  libraries/cog-core/src/session.c libraries/cog-core/src/event.c
+  libraries/cog-core/src/state.c libraries/cog-ipc/src/ipc.c
+  libraries/cog-obs/src/obs.c libraries/cog-obs/src/obs_types.c
+  tests/unit/fixtures/core_service_store_double.c)
+for q_test in test_ipc test_ipc_critic test_ipc_nonblocking; do
+  "$q_cc" "${q_flags[@]}" "${q_includes[@]}" "tests/unit/$q_test.c" \
+    libraries/cog-ipc/src/ipc.c -pthread -o "$q_tmp/$q_test"
+  timeout 30 "$q_tmp/$q_test"
+done
+for q_test in test_core test_core_service; do
+  q_link=()
+  if [[ "$q_test" == test_core ]]; then q_link+=(-Wl,--wrap=cog_event_queue_push); fi
+  "$q_cc" "${q_flags[@]}" "${q_includes[@]}" "tests/unit/$q_test.c" \
+    "${q_sources[@]}" "${q_link[@]}" -pthread -o "$q_tmp/$q_test"
+  timeout 30 "$q_tmp/$q_test"
+done
+"$q_cc" "${q_flags[@]}" "${q_includes[@]}" tests/integration/test_core_ipc.c \
+  "${q_sources[@]}" -pthread -o "$q_tmp/test_core_ipc"
+timeout 30 "$q_tmp/test_core_ipc"

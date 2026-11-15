@@ -107,7 +107,7 @@ static cog_handler_result_t on_llm_complete(cog_core_t *core,
                                             const cog_event_t *event)
 {
     static const cog_message_t asst = {
-        COG_MESSAGE_ROLE_ASSISTANT, "ok", 2U, NULL
+        .role = COG_MESSAGE_ROLE_ASSISTANT, .content = "ok", .content_len = 2U
     };
     cog_handler_result_t r = {ST_IDLE, COG_OK};
 
@@ -815,7 +815,7 @@ static void test_queue_message_size_max(void)
 
     /* A length of SIZE_MAX would wrap text_len + 1 to zero and then write
      * past the allocation; it must be rejected, not corrupt memory. */
-    CHECK(cog_core_queue_message(core, sid, "x", SIZE_MAX) == COG_ERROR_NOMEM);
+    CHECK(cog_core_queue_message(core, sid, "x", SIZE_MAX) == COG_ERROR_LIMIT);
 
     /* The FIFO is unchanged. */
     CHECK(cog_core_pending_count(core, sid, &pc) == COG_OK);

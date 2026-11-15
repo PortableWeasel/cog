@@ -40,6 +40,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "../unit/fixtures/ipc_driver.h"
+
 /* ------------------------------------------------------------------ */
 /* Test application vocabulary.                                        */
 /* ------------------------------------------------------------------ */
@@ -260,7 +262,7 @@ static void *client_thread(void *arg)
     struct timespec ts;
 
     (void)cog_ipc_endpoint_new(&ep);
-    if (cog_ipc_endpoint_connect(ep, c->path, NULL) != COG_OK) {
+    if (cog_ipc_endpoint_connect(ep, c->path, NULL) != COG_ERROR_AGAIN) {
         (void)cog_ipc_endpoint_free(ep);
         return NULL;
     }
@@ -289,7 +291,7 @@ static void *bulk_client_thread(void *arg)
     int i;
 
     (void)cog_ipc_endpoint_new(&ep);
-    if (cog_ipc_endpoint_connect(ep, b->path, NULL) != COG_OK) {
+    if (cog_ipc_endpoint_connect(ep, b->path, NULL) != COG_ERROR_AGAIN) {
         (void)cog_ipc_endpoint_free(ep);
         return NULL;
     }
@@ -445,7 +447,7 @@ static void test_connected_endpoint(void)
 
     /* The core connects to the already-listening server. */
     CHECK(cog_ipc_endpoint_new(&conn) == COG_OK);
-    CHECK(cog_ipc_endpoint_connect(conn, path, NULL) == COG_OK);
+    CHECK(cog_ipc_endpoint_connect(conn, path, NULL) == COG_ERROR_AGAIN);
 
     CHECK(cog_session_new(&session, NULL) == COG_OK);
 
@@ -561,6 +563,7 @@ static void test_malformed_frame(void)
     ctx.core = core;
 
     CHECK(pthread_create(&tid, NULL, malformed_client_thread, path) == 0);
+    CHECK(cog_core_run(core) == COG_ERROR_LIMIT);
     CHECK(cog_core_run(core) == COG_OK);
     CHECK(pthread_join(tid, NULL) == 0);
 
