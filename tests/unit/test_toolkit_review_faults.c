@@ -29,6 +29,12 @@ static size_t term_attempts;
 static size_t kill_attempts;
 static size_t term_accepted;
 static size_t kill_accepted;
+/* Public caller timestamps keep the relaxed TERM/KILL outcome from hiding
+   premature escalation. */
+static uint64_t poll_time;
+static uint64_t kill_not_before;
+static uint32_t control_grace;
+static bool control_deadline_set;
 ssize_t __wrap_send(int fd, const void *bytes, size_t length, int flags)
 {
     char command = length == 1U ? *(const char *)bytes : '\0';
@@ -40,6 +46,7 @@ ssize_t __wrap_send(int fd, const void *bytes, size_t length, int flags)
             return -1;
         }
     } else if (command == 'K') {
+        assert(control_deadline_set && poll_time >= kill_not_before);
         kill_attempts++;
         if (kill_failures != 0U) { kill_failures--; errno = kill_error; return -1; }
     }
@@ -86,7 +93,12 @@ static cog_toolkit_result_t finish(cog_toolkit_execution_t *execution)
     while (!done) {
         uint64_t deadline;
         size_t before = term_attempts + kill_attempts;
-        assert(cog_toolkit_execution_poll(execution, now_ms(), &done, &deadline) == COG_OK);
+        poll_time = now_ms();
+        if (!control_deadline_set) {
+            kill_not_before = poll_time + control_grace;
+            control_deadline_set = true;
+        }
+        assert(cog_toolkit_execution_poll(execution, poll_time, &done, &deadline) == COG_OK);
         /* Transient errors must yield to the caller, not spin on send. */
         assert(term_attempts + kill_attempts - before <= 1U);
         assert(now_ms() < limit);
@@ -136,6 +148,8 @@ static void cancellation_case(cog_workspace_t *workspace, int directory, int err
     kill_failures = persistent ? 2U : 0U;
     term_attempts = 0U; kill_attempts = 0U;
     term_accepted = 0U; kill_accepted = 0U;
+    control_grace = grace;
+    control_deadline_set = false;
     static const char command[] =
         "{\"command\":\"trap 'printf term > term; exit 0' TERM; "
         "printf start >> starts; printf '%s' $$ > shell; "
@@ -150,7 +164,10 @@ static void cancellation_case(cog_workspace_t *workspace, int directory, int err
     long shell = read_pid(directory, "shell");
     long child = read_pid(directory, "child");
     if (!timeout) {
-        assert(cog_toolkit_execution_cancel(execution, now_ms()) == COG_OK);
+        uint64_t admitted_at = now_ms();
+        kill_not_before = admitted_at + grace;
+        control_deadline_set = true;
+        assert(cog_toolkit_execution_cancel(execution, admitted_at) == COG_OK);
         assert(cog_toolkit_execution_cancel(execution, now_ms()) == COG_OK);
         /* Cancellation admission queues the command; it never busy-retries. */
         assert(term_attempts == 0U && kill_attempts == 0U);
