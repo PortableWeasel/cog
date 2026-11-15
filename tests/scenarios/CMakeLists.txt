@@ -56,7 +56,7 @@ add_dependencies(test_07_aux_crash aux_core)
 
 cog_add_scenario(test_08_config_reload test_08_config_reload
     test_08_config_reload.c)
-target_link_libraries(test_08_config_reload PRIVATE cog::core cog::config)
+target_link_libraries(test_08_config_reload PRIVATE cog::core cog::config cog::cli)
 
 cog_add_scenario(test_09_subagent_messaging test_09_subagent_messaging
     test_09_subagent_messaging.c)

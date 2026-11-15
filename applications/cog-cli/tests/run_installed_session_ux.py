@@ -20,6 +20,11 @@ with tempfile.TemporaryDirectory(prefix='cog-l-installed-') as root:
     history=run(*common,'--resume','story','--interactive',text='/history\n/usage\n/quit\n').stdout
     assert '[node=1 user complete] first' in history and 'branch' in history and 'three' in history
     assert 'second' not in history and 'two' not in history and 'usage unavailable' in history
+    reloaded=run(*common,'--resume','story','--interactive','--chunks','after reload',text='/reload model installed/new\nfresh after reload\n/quit\n')
+    assert reloaded.stdout=='after reload\n' and 'configuration published generation=2' in reloaded.stderr
+    assert 'installed/new' not in reloaded.stderr
+    eof_reload=run(*common,'--resume','story','--interactive',text='/reload model eof/new')
+    assert eof_reload.stdout=='' and 'configuration published generation=2' in eof_reload.stderr
     assert run(*common,'--resume','story','--interactive','--chunks','eof',text='last line').stdout=='eof\n'
     missing=root/'does-not-exist'/'store'
     assert run('--sessions','--store',str(missing)).stdout=='' and not missing.exists()

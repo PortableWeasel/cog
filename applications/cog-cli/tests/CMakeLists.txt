@@ -216,7 +216,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang
     target_link_options(test_app_reload PRIVATE
         -Wl,--wrap=cog_cli_service -Wl,--wrap=cog_config_commit
         -Wl,--wrap=cog_provider_connect -Wl,--wrap=cog_provider_disconnect
-        -Wl,--wrap=cog_provider_send -Wl,--wrap=cog_cli_configuration_free)
+        -Wl,--wrap=cog_provider_send -Wl,--wrap=cog_provider_preflight -Wl,--wrap=cog_cli_configuration_free)
 endif()
 if(COG_NET_CURL_BUILD_DIR AND COG_NET_CURL_LIBRARY)
     target_compile_definitions(test_app_reload PRIVATE COG_RELOAD_REAL_PROFILE)
