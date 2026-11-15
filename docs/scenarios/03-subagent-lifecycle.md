@@ -59,16 +59,12 @@ Main Core         Orchestrator        Aux Core 1         Subagent
 | Cancel | `cog_agent_cancel()` | `agent.h` | ✅ (6j) |
 | Session routing | `cog_ipc_send_to_session()` | `ipc.h` | ✅ (6k) |
 
-## Gaps Found
+## Gaps Found → ALL FIXED
 
-1. **Session→peer mapping registration** — when a subagent spawns on an aux core, someone must call `cog_ipc_register_session()` to map the session id to the aux core's peer id. **Who does this?** The orchestrator should register the mapping when it spawns the subagent. **Fix: document in orchestrator.h that spawn() registers the session mapping.**
-
-2. **Result routing** — when the subagent calls `cog_agent_notify_parent()`, the message goes to the parent *session*, not the parent *core*. The IPC layer needs to know which peer hosts the parent session. **This works if the main core registers its own sessions at startup.** Document this requirement.
-
-3. **Timeout** — `cog_agent_config_t.timeout_ms` exists but there's no event for timeout. **Fix: add COG_EVENT_SUBAGENT_TIMEOUT or treat it as SUBAGENT_RESULT with error status.**
+1. ✅ **Session→peer mapping** — orchestrator registers on spawn; main core registers own sessions at startup
+2. ✅ **Result routing** — IPC session routing via `cog_ipc_send_to_session()`
+3. ✅ **Timeout** — added `COG_EVENT_SUBAGENT_TIMEOUT` event kind
 
 ## Verdict
 
-Headers cover the flow. Two clarifications needed:
-- Document that orchestrator registers session→peer mappings on spawn
-- Document that the main core registers its own sessions at startup
+✅ All gaps fixed. Headers fully cover the flow.

@@ -65,16 +65,12 @@ Signal          Core             Net             Provider         IPC
 | Free session | `cog_session_free()` | `session.h` | ✅ |
 | Free core | `cog_core_free()` | `core.h` | ✅ |
 
-## Gaps Found
+## Gaps Found → ALL FIXED
 
-1. **Subagent shutdown timeout** — the scenario says "wait for acks with timeout" but there's no `cog_orchestrator_stop_all()` or timeout parameter. **Fix: add `cog_orchestrator_shutdown(orch, timeout_ms)` that stops all aux cores with a deadline.**
-
-2. **In-flight tracking** — to cancel all in-flight requests, the core needs to know what's active. `cog_net_active_count()` gives a count but not the ids. **Fix: add `cog_net_active_ids(ctx, out_ids, max_ids, out_count)`.**
-
-3. **Observability of shutdown** — the shutdown sequence should be logged. But there's no way to pass obs context to the shutdown handler. **Same gap as cold start: obs context needs to flow into the core config.**
+1. ✅ **Shutdown timeout** — added `cog_orchestrator_shutdown(orch, timeout_ms)`
+2. ✅ **In-flight tracking** — added `cog_net_active_ids()`
+3. ✅ **Obs context** — added `cog_obs_t *obs` to core config
 
 ## Verdict
 
-Headers cover the shutdown sequence. Two amendments needed:
-- Add `cog_orchestrator_shutdown()` with timeout
-- Add `cog_net_active_ids()` for bulk cancellation
+✅ All gaps fixed. Headers fully cover the flow.

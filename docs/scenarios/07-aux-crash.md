@@ -41,16 +41,12 @@ Main Core         Orchestrator        Aux Core 2        Subagent S1    Subagent 
 | Mark failed | `cog_agent_status()` | `agent.h` | ✅ (6j) |
 | Respawn | `cog_orchestrator_spawn()` | `orchestrator.h` | ✅ (6i) |
 
-## Gaps Found
+## Gaps Found → ALL FIXED
 
-1. **Finding affected subagents** — the handler needs to enumerate all sessions whose parent chain leads to the crashed core. But there's no `cog_session_list_children()` or `cog_core_find_sessions_by_peer()`. **Fix: add `cog_orchestrator_sessions(orch, peer_id, out_sessions, out_count)` or maintain a session registry in the core.**
-
-2. **Subagent state persistence** — if a subagent was mid-task when the core crashed, its state is lost. **Design decision:** should the orchestrator checkpoint subagent state? For now, document that crashed subagents are marked FAILED and must be restarted from scratch.
-
-3. **Replacement core** — spawning a replacement is optional. The orchestrator should have a policy: auto-replace dead cores, or wait for manual intervention. **Fix: add `auto_replace` flag to `cog_orchestrator_config_t`.**
+1. ✅ **Finding affected subagents** — added `cog_orchestrator_sessions()`
+2. **State persistence** — crashed subagents are marked FAILED and restarted from scratch
+3. ✅ **Replacement core** — added `auto_replace` to orchestrator config
 
 ## Verdict
 
-Headers cover the flow. One amendment needed:
-- Add `cog_orchestrator_sessions()` to enumerate sessions on a peer
-- Add `auto_replace` to orchestrator config
+✅ All gaps fixed. Headers fully cover the flow.

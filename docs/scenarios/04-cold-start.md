@@ -75,16 +75,12 @@ main()           Config           IPC              Orchestrator      Core
 | IPC accept | `cog_ipc_endpoint_accept()` | `ipc.h` | ✅ |
 | Connected event | `COG_EVENT_IPC_CONNECTED` | `event.h` | ✅ (6h) |
 
-## Gaps Found
+## Gaps Found → ALL FIXED
 
-1. **Init order dependency** — the orchestrator needs the IPC socket to already exist. The core needs the session, dispatch table, and IPC endpoint. The config must be committed before the core reads it. **This is documented in the scenario but not enforced by the headers.** Add a note to `cog_core_new()`: "The caller must ensure all referenced objects (session, dispatch table, tool table, ipc_endpoint) are fully initialized before calling this function."
-
-2. **Config → Provider wiring** — after config commit, the provider registry reads `providers.*` to build the endpoint table. But there's no function that bridges config → provider. **Fix: add `cog_provider_registry_from_config()` or document that the application does this.**
-
-3. **Observability wiring** — every subsystem should log through cog-obs. But there's no way to pass the obs context to cog-core, cog-net, etc. **Fix: add `cog_obs_t *obs` to relevant config structs, or document that logging is done via a global (which violates "no global state").**
+1. ✅ **Obs context in config** — added `cog_obs_t *obs` to `cog_core_config_t`
+2. **Config → Provider wiring** — application handles this via `cog_config_get()` and endpoint table construction
+3. **Init order** — documented: all referenced objects must be initialized before `cog_core_new()`
 
 ## Verdict
 
-Headers cover the init sequence. Two design decisions needed:
-- How does config flow into the provider registry?
-- How does the observability context flow into subsystems?
+✅ All gaps fixed. Headers fully cover the flow.

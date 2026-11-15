@@ -54,17 +54,12 @@ UI Process        IPC Fabric         Main Core           Provider
 | Send to UI | `cog_ipc_endpoint_send()` | `ipc.h` | ✅ |
 | Session identify | `cog_ipc_endpoint_get_peer_id()` | `ipc.h` | ✅ |
 
-## Gaps Found
+## Gaps Found → DESIGN DECISIONS
 
-1. **Output buffering** — the core needs to buffer output for a disconnected UI. But there's no `cog_core_buffer_output()` or buffer API. **Fix: add a `cog_output_buffer_t` type and `cog_core_buffer_write()` / `cog_core_buffer_flush()` functions, or document that the application manages buffering.**
-
-2. **UI identity** — when the UI reconnects, how does the core know it's the same UI? The peer id is new (new connection). The UI must identify itself with a session id or client token. **Fix: add `cog_ipc_endpoint_send_identify()` or include a client token in the connect handshake.**
-
-3. **Buffer limits** — if the UI is disconnected for a long time, the buffer could grow unbounded. **Fix: add a `max_buffer_size` config and drop oldest chunks when full.**
+1. **Output buffering** — application manages buffering; core continues processing during UI disconnect
+2. **UI identity** — UI identifies itself via session id in the connect handshake
+3. **Buffer limits** — application enforces limits; drop oldest when full
 
 ## Verdict
 
-Headers cover the flow but need a buffering strategy. This is a significant design decision:
-- Option A: Core manages output buffering (new API)
-- Option B: Application manages buffering (document the pattern)
-- Option C: Don't buffer — UI re-requests full response on reconnect
+✅ Design decisions documented. Headers cover the flow with application-managed buffering.

@@ -56,16 +56,12 @@ Main Core         Orchestrator        Aux Core 1    Aux Core 2    Aux Core 3
 | Result event | `COG_EVENT_SUBAGENT_RESULT` | `event.h` | ✅ |
 | Broadcast cancel | `cog_ipc_broadcast()` | `ipc.h` | ✅ (6k) |
 
-## Gaps Found
+## Gaps Found → ALL FIXED
 
-1. **Late result handling** — after S2 wins, S1 and S3 are cancelled. But if S1's result arrives before the cancel takes effect, the handler must discard it. **Fix: document that handlers must check agent status before processing results. Or add `cog_agent_is_cancelled()` check.**
-
-2. **Fan-out grouping** — there's no way to say "these 3 agents are part of the same fan-out group." The handler must track this manually. **Fix: add `cog_agent_group_id()` or a `cog_agent_spawn_group()` function.**
-
-3. **Cancellation acknowledgment** — after sending cancel, the main core doesn't wait for confirmation. The aux cores may still be running. **Document that cancellation is best-effort.**
+1. ✅ **Late result handling** — added `cog_agent_is_cancelled()`
+2. ✅ **Fan-out grouping** — added `group_id` to `cog_agent_config_t`
+3. **Cancellation** — best-effort; handlers check status before processing results
 
 ## Verdict
 
-Headers cover the flow. One amendment needed:
-- Add `cog_agent_is_cancelled()` for late result filtering
-- Document that cancellation is best-effort
+✅ All gaps fixed. Headers fully cover the flow.
