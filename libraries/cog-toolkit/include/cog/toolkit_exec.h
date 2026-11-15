@@ -69,18 +69,23 @@ typedef struct cog_toolkit_exec_opts {
  *
  * Looks up @p call->name in @p table, invokes the matching tool function
  * with the request payload recorded in @p call, and writes the outcome
- * into @p result.  The caller must provide a writable output buffer in
- * @p result->output with @p result->output_capacity greater than zero.
+ * into @p result.  The caller must provide a writable output buffer via
+ * @p result->output with a capacity of at least @p result_capacity bytes.
  *
- * @param[in,out] core   Core instance that requested the tool.
- * @param[in]     table  Static const tool table.
- * @param[in,out] call   Tool call context; carries name, request,
- *                       timeout, and cancellation state.
- * @param[out]    result Receives the execution result.
+ * @param[in,out] core            Core instance that requested the tool.
+ * @param[in]     table           Static const tool table.
+ * @param[in,out] call            Tool call context; carries name, request,
+ *                                timeout, and cancellation state.
+ * @param[in,out] result          Receives the execution result; the caller
+ *                                must set @p result->output to a writable
+ *                                buffer of size @p result_capacity.
+ * @param[in]     result_capacity Size of the output buffer in bytes,
+ *                                including space for a NUL terminator.
+ *                                Must be greater than zero.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p core, @p table, @p call, or
  *         @p result is NULL, or if @p result->output is NULL.
- * @return COG_ERROR_INVALID_ARG if @p result->output_capacity is zero.
+ * @return COG_ERROR_INVALID_ARG if @p result_capacity is zero.
  * @return COG_ERROR_NOT_FOUND if @p call->name does not appear in
  *         @p table.
  * @return COG_ERROR_ABORTED if the call was cancelled before or during
@@ -90,7 +95,7 @@ typedef struct cog_toolkit_exec_opts {
  * @pre @p core is a fully initialised core instance.
  * @pre @p table is valid for the duration of the call.
  * @pre @p result->output points to a writable buffer of at least
- *      @p result->output_capacity bytes.
+ *      @p result_capacity bytes.
  *
  * @post On success, @p result->status is @c COG_OK and @p result->output
  *       contains a NUL-terminated result string.
@@ -102,7 +107,8 @@ typedef struct cog_toolkit_exec_opts {
 cog_result_t cog_toolkit_execute(cog_core_t *core,
                                  const cog_tool_table_t *table,
                                  cog_toolkit_call_t *call,
-                                 cog_toolkit_result_t *result);
+                                 cog_toolkit_result_t *result,
+                                 size_t result_capacity);
 
 /**
  * @brief Execute multiple tool calls.
@@ -117,7 +123,7 @@ cog_result_t cog_toolkit_execute(cog_core_t *core,
  * @param[in]     call_count  Number of entries in @p calls; may be zero.
  * @param[in]     opts        Execution options; may be NULL for defaults.
  * @param[out]    out_results Receives the result collection on success;
- *                            unchanged on failure.
+ *                            set to NULL on failure.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p core, @p table, @p calls, or
  *         @p out_results is NULL.
