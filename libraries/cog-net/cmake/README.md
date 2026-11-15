@@ -81,3 +81,15 @@ The standalone net export depends on the shared public `cog/result.h` installed
 by cog-core. Net-only staging for development must provide that header as well;
 it is not evidence of a full project install. Full packaging is validated once
 sibling packages are migrated.
+
+## Final installed/relocatable profile
+
+Gate-P dependency delivery `ba50799` adds a [normal-install relocatable recipe](relocatable/README.md)
+for these exact authenticated source versions. Use its final installed curl bytes
+and real audited build/cache for admission. The older development paths above
+alone do not establish a shipped runtime closure: their RUNPATH/pkg-config paths
+and install-time ELF changes motivated this separate delivery. The new recipe
+sets deliberate `$ORIGIN` paths at link time, packages adjacent c-ares and source
+notices, audits every normal-installed byte after relocation, and records host TLS/
+OS requirements. [Writer evidence](../../../docs/REAL_CLIENT_DEPENDENCY_PROFILE_EVIDENCE.md)
+separates those results from independent acceptance and the remaining P/R18 gates.
