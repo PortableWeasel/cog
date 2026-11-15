@@ -42,3 +42,14 @@ for authentication challenge, redirect and proxy-auth challenge with hostile
 proxy environment settings. New dependency versions require the same source
 and behavioral revalidation; this profile is not a generic promise about every
 possible curl build or protocol.
+
+The optional constructor-borrowed numeric observer is independent of response
+retention. Actual prerequisite readiness, transactionally accepted inbound body
+bytes and queried uploaded body totals produce bounded/coalesced observations.
+Fixed wire completion emits final progress and one terminal before later response
+publication/ack; explicit cancel/release fixes active cleanup, while context free
+emits nothing. Callback/accounting errors latch only observer_status and disable
+the feed without altering real outcomes or replaying work. Checked numeric
+limits, owner-thread/no-reentry preconditions and host-owned callback lifetimes
+follow net.h. Test mapping and scoped validation are recorded in
+[network observation evidence](../../../docs/REAL_CLIENT_NET_OBSERVATION_EVIDENCE.md).
