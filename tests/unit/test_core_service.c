@@ -20,6 +20,7 @@ typedef struct fixture {
     uint32_t idle_budget;
     int mode;
     cog_result_t failure;
+    char drained[16], delivered[16];
 } fixture_t;
 static cog_handler_result_t handle(cog_core_t *core, const cog_event_t *event)
 {
@@ -34,6 +35,11 @@ static cog_handler_result_t handle(cog_core_t *core, const cog_event_t *event)
         ++f->messages;
     } else {
         cog_event_t next = *event;
+        if (f->mode == 4) {
+            assert(event->payload_len < sizeof(f->delivered));
+            memcpy(f->delivered, event->payload, event->payload_len);
+            f->delivered[event->payload_len] = '\0';
+        }
         ++f->handled;
         if (f->mode == 1 || f->mode == 3) {
             assert(cog_core_enqueue(core, &next) == COG_OK);
@@ -61,6 +67,13 @@ static cog_result_t service(void *arg, uint64_t now, uint64_t *deadline)
     f->last_dispatch = f->handled;
     ++f->services;
     *deadline = UINT64_MAX;
+    if (f->mode == 4) {
+        *deadline = now;
+        if (f->services == 2U) {
+            assert(cog_core_dequeue_message(f->core, cog_session_id(f->session),
+                                             f->drained, sizeof(f->drained), NULL) == COG_OK);
+        }
+    }
     if (f->peer != NULL) {
         uint64_t next;
         cog_result_t rc = cog_ipc_endpoint_service(f->peer, now, &next);
@@ -258,8 +271,28 @@ static void agent_reservations(void)
     assert(unchanged == 777U && second != first);
     destroy(&f);
 }
+static void pending_drain_during_injection(void)
+{
+    fixture_t f = {0};
+    cog_core_config_t cfg = {0};
+    size_t remaining;
+    f.mode = 4;
+    f.stop_at = 1U;
+    create(&f, &cfg);
+    assert(cog_core_queue_message(f.core, cog_session_id(f.session), "first", 5U) == COG_OK);
+    assert(cog_core_queue_message(f.core, cog_session_id(f.session), "second", 6U) == COG_OK);
+    assert(cog_core_run(f.core) == COG_OK);
+    /* Public draining at the service boundary must neither deliver the
+     * already injected prompt twice nor discard a different FIFO entry. */
+    assert((strcmp(f.drained, "first") == 0 && strcmp(f.delivered, "second") == 0) ||
+           (strcmp(f.drained, "second") == 0 && strcmp(f.delivered, "first") == 0));
+    assert(cog_core_pending_count(f.core, cog_session_id(f.session), &remaining) == COG_OK);
+    assert(remaining == 0U);
+    destroy(&f);
+}
 int main(void)
 {
+    pending_drain_during_injection();
     agent_reservations();
     queued_fairness();
     hook_errors();

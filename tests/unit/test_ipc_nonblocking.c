@@ -318,8 +318,25 @@ static void independent_fabrics(void)
     pair_free(&a);
     pair_free(&b);
 }
+static void reconnect_resets_handshake_timer(void)
+{
+    fixture_t f;
+    uint64_t deadline;
+    cog_result_t rc;
+    pair(&f, 16U); /* First clock is 100, first deadline is 1100. */
+    assert(cog_ipc_endpoint_disconnect(f.client) == COG_OK);
+    assert(cog_ipc_endpoint_free(f.accepted) == COG_OK);
+    assert(cog_ipc_endpoint_connect(f.client, f.path, NULL) == COG_ERROR_AGAIN);
+    assert(cog_ipc_endpoint_accept(f.listener, &f.accepted, NULL) == COG_OK);
+    rc = cog_ipc_endpoint_service(f.accepted, 2000U, &deadline);
+    assert(rc == COG_OK || rc == COG_ERROR_AGAIN);
+    rc = cog_ipc_endpoint_service(f.client, 2000U, &deadline);
+    assert(rc == COG_OK || rc == COG_ERROR_AGAIN);
+    pair_free(&f);
+}
 int main(void)
 {
+    reconnect_resets_handshake_timer();
     independent_fabrics();
     fragmented();
     copied_queues();
