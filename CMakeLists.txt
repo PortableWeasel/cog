@@ -50,7 +50,7 @@ add_subdirectory(tests)
 # Applications
 # -----------------------------------------------------------------------
 if(COG_BUILD_CLI)
-    # add_subdirectory(applications/cog-cli)
+    add_subdirectory(applications/cog-cli)
 endif()
 
 # -----------------------------------------------------------------------

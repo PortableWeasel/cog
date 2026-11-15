@@ -100,6 +100,8 @@ struct cog_core {
     cog_event_queue_t *event_queue;
     cog_wait_fn wait_fn;
     void *wait_arg;
+    void *user;               /**< Borrowed caller-owned context; stored
+                                   verbatim, never freed/mutated. */
     cog_ipc_endpoint_t *ipc_endpoint;
     cog_peer_id_t local_peer_id;
     int ipc_is_listener;          /**< 1=listener, 2=connected, 0=unbound. */
@@ -739,6 +741,7 @@ cog_result_t cog_core_new(cog_core_t **out, const cog_core_config_t *config)
     core->tool_table = config->tool_table;
     core->wait_fn = config->wait_fn;
     core->wait_arg = config->wait_arg;
+    core->user = config->user;
     core->ipc_endpoint = config->ipc_endpoint;
     core->local_peer_id = config->local_peer_id;
     core->provider = config->provider;
@@ -963,6 +966,11 @@ bool cog_core_is_running(const cog_core_t *core)
 {
     return (core != NULL) &&
            atomic_load_explicit(&core->running, memory_order_relaxed);
+}
+
+void *cog_core_user(const cog_core_t *core)
+{
+    return (core != NULL) ? core->user : NULL;
 }
 
 cog_ipc_endpoint_t *cog_core_ipc(cog_core_t *core)
