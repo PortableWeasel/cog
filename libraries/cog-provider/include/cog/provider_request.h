@@ -35,6 +35,8 @@ typedef enum cog_finish_reason {
     COG_FINISH_REASON_LENGTH,        /**< Token limit reached. */
     COG_FINISH_REASON_TOOL_CALLS,    /**< Model requested tool calls. */
     COG_FINISH_REASON_ERROR,         /**< Provider reported an error. */
+    COG_FINISH_REASON_CONTENT_FILTER, /**< Provider refused/filtered output. */
+    COG_FINISH_REASON_CANCELLED,     /**< Explicit cancellation. */
 } cog_finish_reason_t;
 
 /**
@@ -82,7 +84,8 @@ typedef struct cog_provider_request {
     /**
      * @brief Maximum tokens to generate.
      *
-     * Zero leaves the choice to the provider.
+     * Real adapters require a finite nonzero value. Zero is legacy/mock only;
+     * no implicit context truncation or model substitution.
      */
     uint32_t max_tokens;
 
@@ -97,10 +100,21 @@ typedef struct cog_provider_request {
      * @brief Length of @p tools_json in bytes.
      */
     size_t tools_json_len;
+
+    /** Must match the endpoint's immutable generation when send validates it.
+     * Zero is permitted only for legacy/mock generations; values are not reused
+     * while an older generation remains live. */
+    uint64_t configuration_generation;
 } cog_provider_request_t;
 
 /**
- * @brief Response or streaming chunk received from a provider.
+ * @brief Legacy text-only response. Use cog_provider_next for structured turns.
+ *
+ * Receiving a tool/opaque delta through this interface returns UNSUPPORTED
+ * without consuming it. OVERFLOW retains the same text delta for retry;
+ * content_len reports required bytes excluding NUL and no text is written.
+ * A provider's configured retention ceiling instead fails the request with
+ * LIMIT; a larger caller destination cannot recover that terminal failure.
  *
  * The caller provides the @p content buffer.  The provider writes the
  * generated text (or delta) into it and reports whether more data is
@@ -142,6 +156,73 @@ typedef struct cog_provider_response {
     bool is_complete;
 } cog_provider_response_t;
 
+/** @brief Exactly one typed event is delivered by each successful next(). */
+typedef enum cog_provider_delta_kind {
+    COG_PROVIDER_DELTA_TEXT = 0,
+    COG_PROVIDER_DELTA_TOOL_BEGIN,
+    COG_PROVIDER_DELTA_TOOL_ARGUMENTS,
+    COG_PROVIDER_DELTA_TOOL_END,
+    COG_PROVIDER_DELTA_OPAQUE,
+    COG_PROVIDER_DELTA_USAGE,
+    COG_PROVIDER_DELTA_FINISH
+} cog_provider_delta_kind_t;
+
+/**
+ * @brief Typed, ordered view copied into next()'s caller-provided storage.
+ *
+ * Sequence starts at one for each send and is contiguous. tool_index is a
+ * request-local bounded slot; TOOL_BEGIN establishes nonempty ID/name once,
+ * ARGUMENTS appends bytes, END means the assembled object is syntactically
+ * valid (tool schema/policy still pending). No tool runs before FINISH with
+ * TOOL_CALLS and COG_OK, after wire terminal/EOF validation. FINISH occurs
+ * exactly once and outcome reports errors/cancel; usage is optional and never
+ * guessed. USAGE is a replacement cumulative snapshot, never an increment;
+ * repeated identical finish/usage frames must not double-count. Conflicting
+ * terminal metadata or nonempty post-finish content fails PROTOCOL before
+ * successful FINISH. OPAQUE carries one complete namespace/format blob; implementations
+ * assemble any wire fragments privately within configured limits. All pointer
+ * members refer to caller storage and survive later provider service calls.
+ */
+typedef struct cog_provider_delta {
+    cog_provider_delta_kind_t kind;
+    uint64_t sequence;
+    size_t tool_index;
+    const char *tool_call_id; /**< BEGIN/ARGUMENTS/END identity. */
+    const char *tool_name;    /**< BEGIN name; NULL otherwise. */
+    const char *data;         /**< TEXT or ARGUMENTS bytes; may be empty. */
+    size_t data_len;
+    cog_message_opaque_t opaque;
+    cog_usage_t usage;
+    cog_finish_reason_t finish_reason;
+    cog_result_t outcome;     /**< FINISH only; COG_OK, ABORTED or failure. */
+} cog_provider_delta_t;
+
+/**
+ * @brief Constructor-owned provider workspace ceilings, not growth hints.
+ *
+ * Every field must be nonzero. connect reserves all Cog-owned request copies,
+ * strict JSON parser/writer pools, depth preflight, event retention and turn
+ * assembly storage. No runtime Cog malloc/realloc. Checked size arithmetic and
+ * impossible layouts fail INVALID_ARG; reservation failure returns NOMEM.
+ * Peer data above a ceiling terminates with LIMIT and retains an incomplete
+ * turn. A full event queue pauses transport; it never drops or reorders data.
+ */
+typedef struct cog_provider_limits {
+    size_t request_bytes;
+    size_t parser_bytes;
+    size_t writer_bytes;
+    size_t max_json_depth;
+    size_t max_frame_bytes;
+    size_t retained_delta_bytes;
+    size_t retained_delta_count;
+    size_t max_text_bytes;
+    size_t max_tool_calls;
+    size_t max_tool_id_bytes;
+    size_t max_tool_name_bytes;
+    size_t max_tool_arguments_bytes;
+    size_t max_opaque_bytes;
+} cog_provider_limits_t;
+
 /**
  * @brief Validate that a request is well-formed.
  *
@@ -151,7 +232,11 @@ typedef struct cog_provider_response {
  * @return COG_ERROR_INVALID_ARG if @p request->model_id is NULL, if
  *         @p request->messages is NULL while @p request->message_count
  *         is non-zero, or if @p request->tools_json is NULL while
- *         @p request->tools_json_len is non-zero.
+ *         @p request->tools_json_len is non-zero, model_id is empty, a nested
+ *         message is structurally invalid or sampling
+ *         parameters are nonfinite/out of range. Provider-specific protocol/schema
+ *         validation and finite output/context limits are enforced before send.
+ * @note No allocation. Does not retain any input or initiate network activity.
  *
  * Threading: the request must not be modified during the call.
  */
@@ -169,6 +254,20 @@ cog_result_t cog_provider_request_validate(const cog_provider_request_t *request
  * Threading: the response must not be modified during the call.
  */
 cog_result_t cog_provider_response_validate(const cog_provider_response_t *response);
+
+/** @brief Stable sanitized provider failure classification. */
+typedef enum cog_provider_error_kind {
+    COG_PROVIDER_ERROR_NONE = 0,
+    COG_PROVIDER_ERROR_DNS,
+    COG_PROVIDER_ERROR_TLS,
+    COG_PROVIDER_ERROR_CONNECT,
+    COG_PROVIDER_ERROR_TIMEOUT,
+    COG_PROVIDER_ERROR_HTTP,
+    COG_PROVIDER_ERROR_PROTOCOL,
+    COG_PROVIDER_ERROR_CAPACITY,
+    COG_PROVIDER_ERROR_CANCELLED,
+    COG_PROVIDER_ERROR_DEPENDENCY
+} cog_provider_error_kind_t;
 
 /**
  * @brief Detailed error information from a provider call.
@@ -192,6 +291,14 @@ typedef struct cog_provider_error {
     /** Suggested retry delay in milliseconds (from Retry-After header).
      *  Zero if not specified. */
     uint32_t retry_after_ms;
+
+    /** Accepted output makes transparent retry unsafe even if retryable. */
+    bool output_accepted;
+    /** True only before any accepted output or tool side effect. The
+     * application owns the sole elapsed-time/attempt retry budget. */
+    bool replay_safe;
+    /** Sanitized stable protocol/transport classification. */
+    cog_provider_error_kind_t kind;
 } cog_provider_error_t;
 
 #ifdef __cplusplus

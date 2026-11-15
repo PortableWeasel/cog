@@ -14,6 +14,16 @@
 > explicit pools and records two synthetic live requests; opaque continuation
 > and recoverable delta-capacity contracts remain required header work.
 
+> [Stage 14.C public contracts](REAL_CLIENT_CONTRACTS.md) now define initial
+> amendments to the baseline below: public provider base plus typed nonblocking
+> operations, structured messages/continuation, v2 durable tool intent, async
+> policy-gated tools, explicit c-ares transport ownership and fair core service.
+> These amendments supersede corresponding baseline four-operation provider,
+> synchronous toolkit, unversioned-message and automatic transport retry text.
+> Cog workspaces are constructor-bounded; third-party handle runtime allocation
+> is explicitly declared and total dependency-memory caps are unsupported. Gate E
+> must review adoption. No production implementation or scenario gate is complete.
+
 This document captures the software blueprint for Cog, an LLM harness and
 agent framework written in C. It follows the Jeep Method: the fewest
 essential parts that still make a working, maintainable system.

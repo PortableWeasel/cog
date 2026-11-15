@@ -6,7 +6,11 @@
  * version, credentials) and which provider implementation handles the
  * connection.  Each endpoint references a static table of models that
  * the endpoint can serve.  All tables are read-only after construction
- * and resolved at compile or link time.
+ * and owned by one immutable configuration generation. Implementation tables
+ * are static const; endpoint values may be constructed from committed config.
+ * Never mutate a generation while an instance borrows it. The application
+ * retains old generations until every borrowing instance disconnects; Cog has
+ * no global registry/refcount. Failed reload retains the previous generation.
  *
  * Threading model: endpoint and model tables are read-only after
  * construction and may be shared by multiple provider instances and
@@ -78,10 +82,14 @@ typedef struct cog_endpoint {
     const char *base_url;    /**< Provider base URL; may be NULL if the
                                   provider does not use one. */
     const char *api_version; /**< Provider API version; may be NULL. */
-    const char *api_key;     /**< Credential; may be NULL.  Provider-specific
-                                  interpretation. */
+    const char *api_key;     /**< Resolved credential; may be NULL. Never a reference
+                                  to a secret file, never logged/persisted. Generation
+                                  owner clears its memory after last disconnect. */
     const cog_provider_vtable_t *vtable; /**< Provider implementation. */
     const cog_model_table_t *models;     /**< Models served by this endpoint. */
+    const void *implementation_config; /**< Vtable-specific immutable config;
+       real adapter requires cog_openrouter_config_t. Borrowed until disconnect. */
+    uint64_t generation; /**< Application generation identity, never reused live. */
 } cog_endpoint_t;
 
 /**

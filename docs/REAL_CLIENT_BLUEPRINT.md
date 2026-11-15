@@ -4,6 +4,8 @@ Status: planning baseline, 2026-11-15. Parent ticket: `2b9d0ea`.
 The user authorized autonomous design decisions and testing. This supersedes
 Stage 14's earlier scope-confirmation requirement. Header and implementation
 gates remain technical requirements, not repeated user approval requests.
+The [Stage 14.C contract record](REAL_CLIENT_CONTRACTS.md) specifies public
+header pass 1; actual scenario pass 2 and independent pass 3 remain outstanding.
 
 ## Release boundary and goals
 
@@ -52,25 +54,28 @@ provider matrix. These are follow-on scope, not silent release requirements.
    embedding solution. Use maintained security-patched dependencies and rerun
    the controlled cancellation suite for the actual shipped profile; empirical
    latency ceilings are not universal scheduling/allocator guarantees.
-4. Keep JSON behind a private provider boundary. The accepted
+4. Keep JSON private to provider protocol and toolkit argument/schema validation
+   boundaries; expose no parser types. The accepted
    [protocol research](research/provider-wire.md) selects yyjson 0.12.0 over
    pinned jsmn, using explicit caller pools, strict parsing and separate
    quote/escape-aware depth preflight. Parser and writer both use explicit
    allocators; no fallback allocation or ad hoc JSON string concatenation.
-   Production workspace ownership, duplicate-key policy and dependency packaging
-   remain header/implementation decisions; the standalone PoC is not library code.
-5. Constructor-owned bounded workspaces hold asynchronous request copies,
-   parser state and deltas. send() must not retain borrowed request pointers.
-   Document third-party allocations and explicit handle lifetimes; measure
-   whether they satisfy the allocation contract before adopting a backend.
-   The research observed 72 curl allocation calls during successful polling;
-   constructor-only allocation and a total memory ceiling are not established.
-   Before gate E, specify third-party handle lifetimes, OOM and memory-limit
-   semantics compatible with the allocation contract, or reject the backend.
-6. Add provider-neutral polling, cancellation, error metadata, typed content
-   and tool deltas, usage/finish metadata. Names and ABI are to be settled in
-   headers, not inferred from this document. Overflow must not consume an
-   unrecoverable delta; specify required-capacity and retry semantics.
+   Pass 1 reserves constructor-owned pools and rejects duplicate keys at every
+   level. Toolkit separately reserves its schema/parser pool. Dependency packaging
+   remains delivery work; the standalone PoC is not library code.
+5. Constructor-owned bounded Cog workspaces hold asynchronous request copies,
+   JSON state, deltas, sessions and tool results, with no runtime Cog growth.
+   Pass 1 explicitly declares constructor-owned dependency handles may allocate
+   inside curl/c-ares/TLS during service until matching destruction. Hosts must
+   acknowledge dynamic dependency memory; a requested total dependency byte cap
+   is unsupported. No per-context quota or constructor-only allocation claim is
+   made from the 72 measured polling allocations. Header gate E must independently
+   review this visible ownership profile before adoption, or reject the backend.
+6. Pass 1 defines generic nonblocking poll/cancel/next/get_error, typed deltas,
+   usage/finish metadata and the public first-member provider base. next reports
+   exact storage capacity without consuming an overflowed item; retained queues
+   pause upstream work. The contract record fixes initial names/ABI; pass 2 must
+   trace and amend actual call coverage before final review.
 7. Assemble one assistant message per completed model turn, with identified
    tool calls. Streaming display is separate from durable conversation
    history. Preserve provider-required opaque continuation metadata when

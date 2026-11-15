@@ -49,6 +49,8 @@
 #include <cog/core.h>
 #include <cog/obs.h>
 #include <cog/provider.h>
+#include <cog/net.h>
+#include <cog/toolkit_exec.h>
 #include <cog/result.h>
 #include <cog/session.h>
 #include <cog/session_store.h>
@@ -76,6 +78,52 @@ typedef enum cog_cli_mock_mode {
     COG_CLI_MOCK_RATE_LIMIT,     /**< A 429 retryable error, then a chunk. */
 } cog_cli_mock_mode_t;
 
+/** @brief Explicit backend selection; real setup never falls back to mock. */
+typedef enum cog_cli_backend {
+    COG_CLI_BACKEND_REAL = 0,
+    COG_CLI_BACKEND_MOCK
+} cog_cli_backend_t;
+/** @brief Command/workspace policy, applied to every complete identified call. */
+typedef enum cog_cli_tool_policy {
+    COG_CLI_TOOL_POLICY_ASK = 0, /**< Interactive prompt; noninteractive denies. */
+    COG_CLI_TOOL_POLICY_DENY,
+    COG_CLI_TOOL_POLICY_ALLOW /**< Explicit autonomous opt-in, still validates paths/limits. */
+} cog_cli_tool_policy_t;
+/**
+ * @brief Credential resolver callback; only called during config construction.
+ * @param[in,out] arg Host-owned resolver context.
+ * @param[in] reference Credential reference, never credential contents.
+ * @param[out] output Secret destination; no logging/printing/persistence.
+ * @param[in] capacity Available bytes including NUL.
+ * @param[out] out_required Required capacity, including NUL.
+ * @return OK; OVERFLOW (no writes); NOT_FOUND; DENIED; IO. Constructor never
+ * passes the secret as process arguments. Default resolves env:NAME only;
+ * other schemes require this explicit callback and never execute a shell.
+ * @note Owner thread. Caller clears temporary secret copies before release.
+ */
+typedef cog_result_t (*cog_cli_credential_read_fn)(void *arg,
+                                                  const char *reference,
+                                                  char *output, size_t capacity,
+                                                  size_t *out_required);
+
+/** @brief Presence bits preserve explicit default/zero values across precedence. */
+typedef enum cog_cli_option_bit {
+    COG_CLI_OPT_BACKEND = 1u << 0,
+    COG_CLI_OPT_MODEL = 1u << 1,
+    COG_CLI_OPT_ENDPOINT = 1u << 2,
+    COG_CLI_OPT_CREDENTIAL = 1u << 3,
+    COG_CLI_OPT_WORKSPACE = 1u << 4,
+    COG_CLI_OPT_POLICY = 1u << 5,
+    COG_CLI_OPT_OUTPUT_TOKENS = 1u << 6,
+    COG_CLI_OPT_TOOL_ROUNDS = 1u << 7,
+    COG_CLI_OPT_TURN_MS = 1u << 8,
+    COG_CLI_OPT_TOOL_MS = 1u << 9,
+    COG_CLI_OPT_TOOL_OUTPUT = 1u << 10,
+    COG_CLI_OPT_CONTEXT = 1u << 11,
+    COG_CLI_OPT_RETRIES = 1u << 12,
+    COG_CLI_OPT_RETRY_MS = 1u << 13
+} cog_cli_option_bit_t;
+
 /**
  * @brief Parsed CLI options.
  *
@@ -97,7 +145,7 @@ typedef struct cog_cli_options {
     const char *socket_path;
     /** Model identifier sent in provider requests. */
     const char *model_id;
-    /** Endpoint name to connect through (only "mock" exists). */
+    /** Endpoint name to connect through (default openrouter; mock explicit). */
     const char *endpoint_name;
     /** Comma-separated mock chunks. */
     const char *chunks;
@@ -113,6 +161,27 @@ typedef struct cog_cli_options {
     bool interactive;
     /** Enable debug logging. */
     bool verbose;
+    cog_cli_backend_t backend; /**< Real default; --mock selects fixture backend. */
+    const char *config_path; /**< Optional config tree file. */
+    const char *credential_ref; /**< Default env:OPENROUTER_API_KEY; never raw key. */
+    const char *workspace_root; /**< Required for workspace tool enablement. */
+    cog_cli_tool_policy_t tool_policy;
+    cog_cli_credential_read_fn credential_read; /**< Optional non-env resolver. */
+    void *credential_arg; /**< Borrowed for config construction only. */
+    cog_net_ctx_t *net; /**< Explicit host-created real transport, borrowed until
+       app_free. Host initializes dependencies before creating net and cleans
+       them up after app_free and cog_net_free. Required for REAL, not MOCK. */
+    uint32_t max_output_tokens; /**< Real default 4096, must be finite/nonzero. */
+    uint32_t max_tool_rounds; /**< Default 8; exhaustion is LIMIT, no new request. */
+    uint32_t max_turn_ms; /**< Default 120000, includes backoff and tools. */
+    uint32_t max_tool_ms; /**< Default 30000. */
+    size_t max_tool_output_bytes; /**< Default 65536, truncation explicitly recorded. */
+    size_t max_context_bytes; /**< Default 1 MiB; never silently drop history. */
+    uint32_t max_retries; /**< Default 1 additional attempt, application-owned. */
+    uint32_t max_retry_elapsed_ms; /**< Default 10000 within max_turn_ms. */
+    uint32_t explicit_options; /**< cog_cli_option_bit_t bits set by parse for
+       supplied flags. Programmatic callers set bits for intended overrides;
+       otherwise environment/config/defaults apply, even if parse filled defaults. */
 } cog_cli_options_t;
 
 /**
@@ -170,8 +239,20 @@ const char *cog_cli_result_name(cog_result_t rc);
 /**
  * @brief Create a CLI application from parsed options.
  *
- * Builds the session, mock script, provider, obs context, optional store
- * and optional IPC listener, then the core.  Fails closed: on any error
+ * Resolves configuration with CLI > environment > config file > defaults.
+ * CLI presence is tracked by explicit_options, including explicit zero retries
+ * or ASK policy; config uses
+ * dotted providers.openrouter.base-url/credential-ref, models.default,
+ * workspace.root, tools.policy and limits.*. Environment names are COG_MODEL,
+ * COG_ENDPOINT, COG_CREDENTIAL_REF, COG_WORKSPACE, COG_TOOL_POLICY and
+ * COG_MAX_OUTPUT_TOKENS/TOOL_ROUNDS/TURN_MS/TOOL_MS/TOOL_OUTPUT_BYTES/
+ * CONTEXT_BYTES/RETRIES/RETRY_ELAPSED_MS (COG_MAX_ prefix on each suffix).
+ * Invalid values fail rather than being ignored. Resolves secret references only
+ * during construction, validates the full candidate generation and atomically
+ * adopts it. Failure retains no partial app and never falls back to mock.
+ * Builds bounded session/provider/tool workspaces, obs/store/IPC and the core.
+ * REAL requires opts.net with explicit host dependency lifecycle; MOCK alone
+ * uses fixture scripts. Secret memory is cleared on failed/successful teardown.  Fails closed: on any error
  * every resource created so far is released and @p *out is NULL.
  *
  * @param[out] out  Uninitialised pointer; set to the new app on success.
@@ -180,8 +261,10 @@ const char *cog_cli_result_name(cog_result_t rc);
  * @return COG_ERROR_NULL_PTR if @p out or @p opts is NULL.
  * @return COG_ERROR_INVALID_ARG if @p opts->model_id or
  *         @p opts->endpoint_name is NULL.
- * @return COG_ERROR_NOT_FOUND if @p opts->endpoint_name is not a known
- *         endpoint.
+ * @return COG_ERROR_NOT_FOUND if endpoint/model/credential reference is missing.
+ * @return COG_ERROR_DENIED for refused credential access or unavailable policy.
+ * @return COG_ERROR_LIMIT for invalid/exhausted finite limits; UNSUPPORTED for
+ * backend capabilities/unknown config fields/unsafe continuation format.
  * @return COG_ERROR_IO if the log file cannot be opened or the IPC
  *         listener cannot bind.
  * @return Another error code from the underlying libraries.
@@ -197,7 +280,10 @@ cog_result_t cog_cli_app_new(cog_cli_app_t **out,
  *
  * @param[in,out] app App to destroy; may be NULL (no-op).
  *
- * @post All owned resources are released in the documented order.  The
+ * @pre app_run has returned and no active tool execution remains; graceful
+ * shutdown must cancel/poll/reap before this nonblocking destructor.
+ * @post All owned resources are released in the documented order. Borrowed
+ * net and host dependency runtime remain the caller's responsibility.  The
  *       app must not be used after this call.
  */
 void cog_cli_app_free(cog_cli_app_t *app);
@@ -210,6 +296,15 @@ void cog_cli_app_free(cog_cli_app_t *app);
  * reads stdin; in single-prompt mode it stops the loop when the turn
  * completes.  May be called again after a stop.
  *
+ * Uses generic provider/tool poll/next/cancel/error through the fair service
+ * hook, including during queued input and timer backoff. One assistant message
+ * is assembled per turn; complete tool call IDs, opaque continuation and usage
+ * are saved. No tool starts before terminal validation, schema and policy.
+ * Persist STARTED before side effects; result+ledger before next model request.
+ * Retry only before accepted output/effects, within attempt and elapsed limits;
+ * transport never retries. Partial failures persist INCOMPLETE and require an
+ * explicit user continuation; no replay of executed or indeterminate tools.
+ * Shutdown cancels and services tool process-group drain/reap before freeing.
  * @param[in,out] app App to run.
  * @return COG_OK if the loop exited via stop.
  * @return COG_ERROR_NULL_PTR if @p app is NULL.

@@ -66,6 +66,11 @@ typedef struct cog_toolkit_result {
      * owner as @p output.
      */
     const char *error_message;
+    const char *tool_call_id; /**< Stable correlation ID; borrowed/copied with owner. */
+    bool truncated; /**< Explicit capture truncation at configured ceiling. */
+    bool side_effects_possible; /**< Failure/overflow never implies safe replay. */
+    int exit_status;
+    bool exit_status_known;
 } cog_toolkit_result_t;
 
 /**

@@ -1,194 +1,162 @@
 /**
  * @file provider_vtable.h
- * @brief Provider abstraction interface.
+ * @brief Public provider base and static, nonblocking dispatch contract.
  *
- * A provider is a concrete implementation of an LLM endpoint accessed
- * through a static vtable.  The four required operations are connect,
- * send, receive, and disconnect.  Both single-turn and streaming calls
- * are expressed with the same operations: a streaming request sets
- * @c cog_provider_request_t.stream to true and the caller loops on
- * @c cog_provider_receive until @c cog_provider_response_t.is_complete
- * is true.
+ * An implementation embeds cog_provider_t as its FIRST member, initializes
+ * base.vtable to its static const table before publishing it, and returns
+ * &implementation->base from connect. No private Cog header or guessed prefix
+ * is required. The implementation owns its constructor allocation and matching
+ * disconnect. Never copy or change a live base or dynamically register tables.
  *
- * Threading model: a @c cog_provider_t instance is not thread-safe.  All
- * access happens on the thread that owns the provider.  Provider
- * implementations must be re-entrant: distinct instances created by
- * @c cog_provider_connect may be used concurrently, but a single
- * instance may not.
+ * Threading: one owner thread per instance, no signal-safe calls. Independent
+ * instances may run on different threads; immutable tables may be shared.
+ * No callbacks may recursively drive/disconnect the same provider.
  */
 #ifndef COG_PROVIDER_VTABLE_H
 #define COG_PROVIDER_VTABLE_H
-
 #include <cog/provider_request.h>
 #include <cog/result.h>
-
 #include <stddef.h>
-
+#include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* Forward declaration to break the endpoint/provider include cycle. */
 typedef struct cog_endpoint cog_endpoint_t;
+typedef struct cog_provider_vtable cog_provider_vtable_t;
+
+/** @brief Supported public first-member base for provider implementations. */
+typedef struct cog_provider {
+    const cog_provider_vtable_t *vtable; /**< Immutable static dispatch table. */
+} cog_provider_t;
 
 /**
- * @brief Opaque provider instance.
- *
- * Created by a provider-specific @c cog_provider_connect_fn and
- * destroyed by the matching @c cog_provider_disconnect_fn.
- */
-typedef struct cog_provider cog_provider_t;
-
-/**
- * @brief Create and initialise a provider instance for an endpoint.
- *
- * @param[in]  endpoint    Endpoint to connect to.  Must be non-NULL.
- * @param[out] out_provider Uninitialised pointer; set to the new provider
- *                          on success.
- * @return COG_OK on success.
- * @return COG_ERROR_NULL_PTR if @p endpoint or @p out_provider is NULL.
- * @return COG_ERROR_NOMEM if allocation fails.
- * @return Another error code if the endpoint cannot be reached.
- *
- * @post On success, @p *out_provider is a valid provider and the caller
- *       owns it.
- * @post On failure, @p *out_provider is NULL and no resources are held.
+ * @brief Reserve instance/workspaces; do not wait for DNS/connect/HTTP.
+ * @param[in] endpoint Immutable generation, credential and config kept alive
+ * until disconnect. Constructor validates backend capability and all limits.
+ * @param[out] out_provider NULL on failure; owned instance on COG_OK.
+ * @return NULL_PTR, INVALID_ARG, UNSUPPORTED, NOMEM or COG_OK. No wire effects
+ * on failure. Called only on owner thread; no lazy dependency global init.
  */
 typedef cog_result_t (*cog_provider_connect_fn)(const cog_endpoint_t *endpoint,
-                                                cog_provider_t **out_provider);
-
+                                               cog_provider_t **out_provider);
 /**
- * @brief Tear down a provider instance.
- *
- * @param[in,out] provider Provider to disconnect; may be NULL (no-op).
- *
- * @post All storage owned by @p provider is released.  @p provider must
- *       not be used after this call.
+ * @brief Release instance including active requests and all owned buffers.
+ * @param[in,out] provider NULL is COG_OK. No use after success.
+ * @return COG_OK, or backend cleanup error after resources are released.
+ * @note Owner thread, outside callbacks; never sends/retries or waits for peer.
+ * Uses the explicitly selected bounded-cancellation dependency backend.
  */
 typedef cog_result_t (*cog_provider_disconnect_fn)(cog_provider_t *provider);
-
 /**
- * @brief Submit a request to the provider.
- *
- * This call initiates the LLM call but does not necessarily wait for the
- * full response.  The caller reads the response with
- * @c cog_provider_receive.
- *
- * @param[in,out] provider Provider instance.
- * @param[in]     request  Request to send.  Must be non-NULL.
- * @return COG_OK on success.
- * @return COG_ERROR_NULL_PTR if @p provider or @p request is NULL.
- * @return COG_ERROR_INVALID_STATE if no connection is open.
- * @return Another error code on failure.
- *
- * @pre @p provider has been connected.
- * @pre @p request has been validated with
- *      @c cog_provider_request_validate.
+ * @brief Copy validated request transitively and start one asynchronous turn.
+ * @param[in,out] provider Idle instance (prior FINISH consumed).
+ * @param[in] request Borrowed only until return, including nested messages,
+ * tools, opaque bytes, model and strings. Caller may free/change after return.
+ * @return COG_OK; NULL_PTR; INVALID_ARG/UNSUPPORTED before network effects;
+ * LIMIT if request/workspace cannot fit; INVALID_STATE if a turn is active.
+ * @post Failure leaves instance idle and sends nothing. No runtime Cog allocation.
+ * @note Owner thread; no blocking I/O or automatic retry/model substitution.
  */
 typedef cog_result_t (*cog_provider_send_fn)(cog_provider_t *provider,
-                                             const cog_provider_request_t *request);
-
+                                            const cog_provider_request_t *request);
 /**
- * @brief Read the next response or streaming chunk.
- *
- * For single-turn requests this returns the complete response in one
- * call and sets @p response->is_complete to true.  For streaming
- * requests the caller loops until @p response->is_complete is true.
- *
- * @param[in,out] provider Provider instance.
- * @param[in,out] response Caller-provided response buffer.  Must be
- *                         non-NULL and validated with
- *                         @c cog_provider_response_validate.
- * @return COG_OK on success.
- * @return COG_ERROR_NULL_PTR if @p provider or @p response is NULL.
- * @return COG_ERROR_INVALID_STATE if no request is in flight.
- * @return COG_ERROR_OVERFLOW if the response does not fit in
- *         @p response->content_capacity.
- * @return COG_ERROR_ABORTED if the stream was cancelled.
- * @return Another error code on failure.
- *
- * @pre @p provider has sent a request.
- * @post On success, @p response contains the next response text or
- *       chunk and indicates whether the response is complete.
- * @post On failure, @p response is unchanged.
+ * @brief Legacy text receive, nonblocking; typed clients use next().
+ * @param[in,out] provider Instance with a turn; services no blocking wait.
+ * @param[in,out] response Destination. OVERFLOW changes only content_len to
+ * required text bytes; destination text and pending item stay unchanged.
+ * @return COG_OK, AGAIN, NULL_PTR, INVALID_STATE, OVERFLOW, UNSUPPORTED for a
+ * structured pending item, or terminal outcome. Error detail via error().
+ * @note Owner thread. Do not mix receive/next within a turn.
  */
 typedef cog_result_t (*cog_provider_receive_fn)(cog_provider_t *provider,
-                                                cog_provider_response_t *response);
-
+                                               cog_provider_response_t *response);
 /**
- * @brief Static provider vtable.
- *
- * All function pointers must be non-NULL.  The table is stored in
- * read-only memory and shared by every endpoint that uses the same
- * provider implementation.
+ * @brief Advance transport/parser without waiting, with a bounded work quantum.
+ * @param[in,out] provider Connected instance, including idle.
+ * @param[in] now_ms Caller monotonic milliseconds, nondecreasing per instance.
+ * @param[out] out_next_deadline_ms Absolute next timer; UINT64_MAX if none.
+ * @return COG_OK for progress/no progress, NULL_PTR or INVALID_ARG for backwards
+ * time. Per-request failures become one retained FINISH and error snapshot;
+ * a fatal driver failure is returned and must be propagated by the core hook.
+ * @note Owner thread; never sleeps or invokes tools. Poll even with queue work.
  */
-typedef struct cog_provider_vtable {
-    cog_provider_connect_fn connect;       /**< Create a provider instance. */
-    cog_provider_disconnect_fn disconnect; /**< Destroy a provider instance. */
-    cog_provider_send_fn send;             /**< Submit a request. */
-    cog_provider_receive_fn receive;       /**< Read the next response. */
-} cog_provider_vtable_t;
-
+typedef cog_result_t (*cog_provider_poll_fn)(cog_provider_t *provider,
+                                            uint64_t now_ms,
+                                            uint64_t *out_next_deadline_ms);
 /**
- * @brief Connect to an endpoint using its registered vtable.
- *
- * This is a convenience wrapper that calls
- * @p endpoint->vtable->connect.
- *
- * @param[in]  endpoint    Endpoint to connect to.  Must be non-NULL.
- * @param[out] out_provider Uninitialised pointer; set to the new provider
- *                          on success.
- * @return COG_OK on success.
- * @return COG_ERROR_NULL_PTR if @p endpoint, @p endpoint->vtable, or
- *         @p out_provider is NULL.
- * @return Another error code from the provider's connect function.
- *
- * Threading: not thread-safe.
+ * @brief Cancel the current turn idempotently without waiting for the peer.
+ * @param[in,out] provider Instance. A completed/idle turn is a COG_OK no-op.
+ * @return COG_OK or NULL_PTR. Detaches network work, preserves queued deltas,
+ * then enqueues exactly one FINISH/ABORTED; no post-cancel wire output/retry.
+ * @note Owner thread; completion already queued wins, no second terminal item.
  */
+typedef cog_result_t (*cog_provider_cancel_fn)(cog_provider_t *provider);
+/**
+ * @brief Copy the oldest retained typed delta, with transactional capacity retry.
+ * @param[in,out] provider Instance with a turn.
+ * @param[out] out_delta Metadata; unchanged unless COG_OK.
+ * @param[out] storage Caller bytes; may be NULL iff capacity is zero.
+ * @param[in] capacity Writable storage bytes; includes string terminators.
+ * @param[out] out_required Exact complete storage requirement (may be zero).
+ * @return COG_OK consumes exactly one item; AGAIN if none ready (required=0);
+ * OVERFLOW sets only required, writes no storage and retains SAME item/sequence;
+ * NULL_PTR/INVALID_ARG for invalid pointers; INVALID_STATE before send or after
+ * terminal consumed. Failed/cancelled turns deliver FINISH with outcome.
+ * @note No allocation or service side effects. Owner thread. Lifetime of all
+ * output pointers is caller storage, independent of provider destruction.
+ */
+typedef cog_result_t (*cog_provider_next_fn)(cog_provider_t *provider,
+                                            cog_provider_delta_t *out_delta,
+                                            void *storage, size_t capacity,
+                                            size_t *out_required);
+/**
+ * @brief Snapshot sanitized detail of the most recent terminal turn error.
+ * @param[in] provider Connected instance.
+ * @param[out] out_error Shallow snapshot; message valid until next send/free.
+ * @return COG_OK; NOT_FOUND if no error; NULL_PTR on NULL. No mutation/wait.
+ * @note Owner thread; caller copies strings before persisting or sharing.
+ */
+typedef cog_result_t (*cog_provider_error_fn)(const cog_provider_t *provider,
+                                             cog_provider_error_t *out_error);
+
+/** @brief All eight callbacks are required; table is static const. */
+struct cog_provider_vtable {
+    cog_provider_connect_fn connect;
+    cog_provider_disconnect_fn disconnect;
+    cog_provider_send_fn send;
+    cog_provider_receive_fn receive;
+    cog_provider_poll_fn poll;
+    cog_provider_cancel_fn cancel;
+    cog_provider_next_fn next;
+    cog_provider_error_fn error;
+};
+
+/** @copydoc cog_provider_connect_fn */
 cog_result_t cog_provider_connect(const cog_endpoint_t *endpoint,
                                   cog_provider_t **out_provider);
-
-/**
- * @brief Disconnect a provider instance.
- *
- * Convenience wrapper that calls the provider's disconnect function.
- *
- * @param[in,out] provider Provider to disconnect; may be NULL (no-op).
- *
- * Threading: not thread-safe.
- */
+/** @copydoc cog_provider_disconnect_fn */
 cog_result_t cog_provider_disconnect(cog_provider_t *provider);
-
-/**
- * @brief Send a request through a provider instance.
- *
- * Convenience wrapper that calls the provider's send function.
- *
- * @param[in,out] provider Provider instance.
- * @param[in]     request  Request to send.
- * @return Result from the provider's send function.
- *
- * Threading: not thread-safe.
- */
+/** @copydoc cog_provider_send_fn */
 cog_result_t cog_provider_send(cog_provider_t *provider,
                                const cog_provider_request_t *request);
-
-/**
- * @brief Receive the next response from a provider instance.
- *
- * Convenience wrapper that calls the provider's receive function.
- *
- * @param[in,out] provider Provider instance.
- * @param[in,out] response Response buffer.
- * @return Result from the provider's receive function.
- *
- * Threading: not thread-safe.
- */
+/** @copydoc cog_provider_receive_fn */
 cog_result_t cog_provider_receive(cog_provider_t *provider,
                                   cog_provider_response_t *response);
-
+/** @copydoc cog_provider_poll_fn */
+cog_result_t cog_provider_poll(cog_provider_t *provider, uint64_t now_ms,
+                               uint64_t *out_next_deadline_ms);
+/** @copydoc cog_provider_cancel_fn */
+cog_result_t cog_provider_cancel(cog_provider_t *provider);
+/** @copydoc cog_provider_next_fn */
+cog_result_t cog_provider_next(cog_provider_t *provider,
+                               cog_provider_delta_t *out_delta,
+                               void *storage, size_t capacity,
+                               size_t *out_required);
+/** @copydoc cog_provider_error_fn */
+cog_result_t cog_provider_get_error(const cog_provider_t *provider,
+                                cog_provider_error_t *out_error);
 #ifdef __cplusplus
 }
 #endif
-
 #endif /* COG_PROVIDER_VTABLE_H */
