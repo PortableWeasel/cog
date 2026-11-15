@@ -200,6 +200,34 @@ static bool unresolved(const cog_session_t *s)
     return false;
 }
 
+static size_t path_results(const cog_session_node_t *leaf,
+    const cog_session_node_t *assistant, const char *id)
+{
+    size_t count_ = 0U;
+    for (const cog_session_node_t *n = leaf; n != NULL && n != assistant; n = n->parent) {
+        if (n->data.message == NULL || n->message.role != COG_MESSAGE_ROLE_TOOL ||
+            n->message.tool_call_id == NULL || strcmp(n->message.tool_call_id, id) != 0) continue;
+        const cog_session_node_t *a = n->parent;
+        while (a != NULL && a->data.role != COG_NODE_ASSISTANT) a = a->parent;
+        if (a == assistant) ++count_;
+    }
+    return count_;
+}
+
+/* A result on a sibling branch never completes the selected provider context. */
+static bool path_complete(const cog_session_t *s, const cog_session_node_t *leaf)
+{
+    for (const cog_session_node_t *n = leaf; n != NULL; n = n->parent)
+        if (n->data.message == NULL || n->message.status != COG_MESSAGE_COMPLETE) return false;
+    for (size_t i = 0U; i < s->ledger_count; ++i) {
+        const cog_tool_ledger_record_t *l = &s->ledger[i];
+        const cog_session_node_t *assistant = find_node(s, l->assistant_node_id);
+        if (on_path(leaf, assistant) && (!final_state(l->state) ||
+            path_results(leaf, assistant, l->call_id) != 1U)) return false;
+    }
+    return true;
+}
+
 static bool indeterminate(const cog_session_t *s)
 {
     for (size_t i = 0U; i < s->ledger_count; ++i)
@@ -246,6 +274,8 @@ static cog_result_t insert(cog_session_t *s, cog_session_node_t *parent,
     if (m->tool_call_count > SIZE_MAX / sizeof(cog_message_tool_call_t) ||
         m->opaque_count > SIZE_MAX / sizeof(cog_message_opaque_t)) return COG_ERROR_LIMIT;
     if (unresolved(s) && (m->role != COG_MESSAGE_ROLE_TOOL || parent != s->active))
+        return COG_ERROR_INVALID_STATE;
+    if (m->role != COG_MESSAGE_ROLE_TOOL && !path_complete(s, parent))
         return COG_ERROR_INVALID_STATE;
     if (m->role == COG_MESSAGE_ROLE_TOOL) {
         cog_session_node_t *a = parent;
@@ -408,7 +438,7 @@ cog_result_t cog_session_copy_history(const cog_session_t *s, const cog_session_
     if (s == NULL || count == NULL || (messages == NULL && cap != 0U)) return COG_ERROR_NULL_PTR;
     if (n == NULL) n = s->active;
     if (n != NULL && !contains(s, n)) return COG_ERROR_INVALID_ARG;
-    if (s->inspection_only || unresolved(s)) return COG_ERROR_INVALID_STATE;
+    if (s->inspection_only || unresolved(s) || !path_complete(s, n)) return COG_ERROR_INVALID_STATE;
     for (const cog_session_node_t *a = n; a != NULL; a = a->parent) {
         if (a->data.message == NULL || a->message.status != COG_MESSAGE_COMPLETE) return COG_ERROR_INVALID_STATE;
         ++depth;
@@ -522,6 +552,7 @@ cog_result_t cog_session_discard_node(cog_session_t *s, cog_session_node_t *n)
         n->message.tool_call_count != 0U || n->message.role == COG_MESSAGE_ROLE_TOOL)
         return COG_ERROR_INVALID_STATE;
     cog_session_node_t *p = n->parent;
+    if (s->active == n && p != NULL && p->child_count > 1U) return COG_ERROR_INVALID_STATE;
     if (p == NULL) s->root = NULL;
     else {
         if (p->first_child == n) p->first_child = n->next_sibling;
@@ -873,6 +904,23 @@ static size_t snapshot_results(const cog_session_snapshot_t *s, const cog_tool_l
     return count_;
 }
 
+static size_t snapshot_path_results(const cog_session_snapshot_t *s, uint64_t leaf,
+    const cog_tool_ledger_record_t *l)
+{
+    size_t count_ = 0U;
+    for (size_t depth = 0U; leaf != 0U && depth < s->node_count; ++depth) {
+        const cog_node_data_t *n = snapshot_node(s, leaf);
+        if (n == NULL) break;
+        if (n->message != NULL && n->message->role == COG_MESSAGE_ROLE_TOOL &&
+            n->message->tool_call_id != NULL && strcmp(n->message->tool_call_id, l->call_id) == 0) {
+            const cog_node_data_t *a = snapshot_assistant(s, n->parent_id);
+            if (a != NULL && a->node_id == l->assistant_node_id) ++count_;
+        }
+        leaf = n->parent_id;
+    }
+    return count_;
+}
+
 cog_result_t cog_session_snapshot_validate(const cog_session_snapshot_t *s)
 {
     if (s == NULL || s->session_id == NULL) return COG_ERROR_NULL_PTR;
@@ -958,6 +1006,24 @@ cog_result_t cog_session_snapshot_validate(const cog_session_snapshot_t *s)
     }
     for (size_t i = 0U; i < s->node_count; ++i) {
         const cog_node_data_t *n = &s->nodes[i];
+        bool leaf = true;
+        for (size_t k = i + 1U; k < s->node_count; ++k)
+            if (s->nodes[k].parent_id == n->node_id) leaf = false;
+        const bool new_work = n->message == NULL || n->message->role != COG_MESSAGE_ROLE_TOOL;
+        for (size_t k = 0U; k < s->ledger_count; ++k) {
+            const cog_tool_ledger_record_t *l = &s->ledger[k];
+            /* Starting another message requires a completed parent context. */
+            if (new_work && snapshot_path(s, n->parent_id, l->assistant_node_id) &&
+                (!final_state(l->state) || snapshot_path_results(s, n->parent_id, l) != 1U))
+                return COG_ERROR_PROTOCOL;
+            /* Every retained leaf includes its own finalized results. Only the
+             * active leaf may carry an unresolved assistant turn. */
+            if (leaf && snapshot_path(s, n->node_id, l->assistant_node_id)) {
+                if (final_state(l->state)) {
+                    if (snapshot_path_results(s, n->node_id, l) != 1U) return COG_ERROR_PROTOCOL;
+                } else if (n->node_id != s->active_node_id) return COG_ERROR_PROTOCOL;
+            }
+        }
         if (n->message == NULL || n->message->role != COG_MESSAGE_ROLE_TOOL) continue;
         const cog_node_data_t *a = snapshot_assistant(s, n->parent_id);
         if (a == NULL || n->message->status != COG_MESSAGE_COMPLETE ||
