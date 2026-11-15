@@ -466,6 +466,73 @@ test_shutdown_ackhang(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 6. auto-replace must not orphan an acked-but-alive child           */
+/* ------------------------------------------------------------------ */
+
+static void
+test_auto_replace_ackhang(void)
+{
+    char path[128];
+    cog_orchestrator_config_t cfg;
+    cog_orchestrator_t *orch = NULL;
+    cog_peer_id_t peer = COG_PEER_ID_INVALID;
+    cog_peer_id_t replacement = COG_PEER_ID_INVALID;
+    cog_core_info_t infos[4];
+    size_t count = 0U;
+    pid_t old_pid = -1;
+
+    if (make_socket_path(path, sizeof(path)) != 0) {
+        CHECK("arah path", 0);
+        return;
+    }
+    (void)memset(&cfg, 0, sizeof(cfg));
+    cfg.socket_path = path;
+    cfg.max_aux_cores = 4;
+    cfg.health_interval_ms = 200;
+    cfg.unhealthy_threshold = 3;
+    cfg.default_core_capacity = 8;
+    cfg.auto_replace = true;
+    CHECK_RESULT("arah new", COG_OK, cog_orchestrator_new(&orch, &cfg));
+    if (orch == NULL) {
+        return;
+    }
+
+    /* ackhang core acks shutdown but never exits */
+    set_aux_env("ackhang");
+    CHECK_RESULT("arah spawn", COG_OK,
+                 cog_orchestrator_spawn(orch, COG_AUX_CORE_BIN, &peer));
+    g_healthy_peer = peer;
+    CHECK("arah healthy", poll_until(orch, pred_healthy, 3000) == 0);
+
+    /* record the original pid */
+    CHECK_RESULT("arah list", COG_OK,
+                 cog_orchestrator_list(orch, infos, 4U, &count));
+    CHECK("arah count", count == 1U);
+    old_pid = (pid_t)infos[0].pid;
+    CHECK("arah old pid", old_pid > 0);
+
+    /* stop returns OK (bounded) but the child is still alive */
+    CHECK_RESULT("arah stop", COG_OK, cog_orchestrator_stop(orch, peer));
+
+    /* drive auto-replace: a replacement must connect and reuse the slot */
+    CHECK("arah one core", poll_until(orch, pred_one_core, 3000) == 0);
+    CHECK_RESULT("arah list2", COG_OK,
+                 cog_orchestrator_list(orch, infos, 4U, &count));
+    CHECK("arah count2", count == 1U);
+    replacement = infos[0].peer_id;
+    CHECK("arah replaced", replacement != peer);
+    g_healthy_peer = replacement;
+    CHECK("arah replacement healthy",
+          poll_until(orch, pred_healthy, 3000) == 0);
+
+    /* the original acked-but-alive child must NOT be orphaned: it must be
+     * reaped (no longer a live process) once the slot is reused. */
+    CHECK("arah old reaped", kill(old_pid, 0) == -1);
+
+    cog_orchestrator_free(orch);
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -477,6 +544,7 @@ main(void)
     test_auto_replace_repeated();
     test_stop_ackhang();
     test_shutdown_ackhang();
+    test_auto_replace_ackhang();
 
     if (g_failures != 0U) {
         (void)fprintf(stderr, "test_orchestrator_stress: %u failure(s)\n",
