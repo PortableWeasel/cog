@@ -171,6 +171,16 @@ typedef enum cog_node_role {
  */
 typedef struct cog_node_data {
     /**
+     * @brief Unique node identifier (for persistence).
+     */
+    uint64_t node_id;
+
+    /**
+     * @brief Parent node identifier (0 for root).
+     */
+    uint64_t parent_id;
+
+    /**
      * @brief Role of this node.
      */
     cog_node_role_t role;
@@ -408,6 +418,28 @@ cog_result_t cog_session_add_message(cog_session_t *session,
                                       cog_session_node_t *parent,
                                       const cog_message_t *msg,
                                       cog_session_node_t **out_node);
+
+/**
+ * @brief Append a message to the active branch.
+ *
+ * Convenience wrapper that adds a message as a child of the current
+ * active node. Equivalent to:
+ * @code
+ * cog_session_add_message(session, cog_session_active(session), msg, out_node);
+ * @endcode
+ *
+ * @param[in,out] session Session to modify.
+ * @param[in]     msg     Message to append; must be non-NULL.
+ * @param[out]    out_node Receives the new node; may be NULL.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if @p session or @p msg is NULL.
+ * @return COG_ERROR_NOMEM if allocation fails.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_session_append(cog_session_t *session,
+                                 const cog_message_t *msg,
+                                 cog_session_node_t **out_node);
 
 /**
  * @brief Add a tool call node.
