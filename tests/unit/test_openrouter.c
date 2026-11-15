@@ -505,6 +505,29 @@ static void additional_capacity_checks(void)
     assert(cog_provider_send(p, &invalid) == COG_ERROR_INVALID_ARG);
     stop(p);
 }
+
+/* A nonstream array contains final entries, not streaming fragments. */
+static void nonstream_opaque_final_array(void)
+{
+    static const char expected[] =
+        "{\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"a\","
+        "\"id\":\"one\"},{\"type\":\"reasoning.text\",\"text\":\"b\",\"id\":\"two\"}]}";
+    request.stream = false;
+    cog_provider_t *p = start(
+        "{\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
+        "\"content\":\"\",\"reasoning_details\":[{\"type\":\"reasoning.text\","
+        "\"text\":\"a\",\"id\":\"one\"},{\"type\":\"reasoning.text\",\"text\":\"b\","
+        "\"id\":\"two\"}]},\"finish_reason\":\"stop\"}]}");
+    char bytes[20000];
+    cog_provider_delta_t d = obtain(p, bytes, sizeof(bytes));
+    assert(d.kind == COG_PROVIDER_DELTA_OPAQUE);
+    assert(d.opaque.size == sizeof(expected) - 1U);
+    assert(memcmp(d.opaque.data, expected, sizeof(expected) - 1U) == 0);
+    d = obtain(p, bytes, sizeof(bytes));
+    assert(d.kind == COG_PROVIDER_DELTA_FINISH && d.outcome == COG_OK);
+    stop(p);
+    request.stream = true;
+}
 static void constructor_failures(void)
 {
     size_t before = allocations;
@@ -615,6 +638,7 @@ int main(void)
     valid();
     overflow_cancel();
     failures();
+    nonstream_opaque_final_array();
     printf("OpenRouter retained fixture checks passed (%zu constructor "
            "allocations)\n",
            allocations);

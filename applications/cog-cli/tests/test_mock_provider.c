@@ -390,8 +390,109 @@ static void test_poll_delay_and_request_copy(void)
     CHECK(cog_provider_next(p,&d,storage,sizeof(storage),&required)==COG_OK&&d.kind==COG_PROVIDER_DELTA_FINISH);
     CHECK(cog_provider_disconnect(p)==COG_OK);
 }
+
+/* Retrying retained legacy text must not hide the cancellation terminal. */
+static void test_receive_overflow_then_cancel(void)
+{
+    static const cog_mock_step_t steps[] = {
+        {COG_MOCK_STEP_CHUNK, "retained", COG_OK, 0, false, 0U, NULL},
+        {COG_MOCK_STEP_CHUNK, "unconsumed", COG_OK, 0, false, 0U, NULL},
+    };
+    static const cog_mock_script_t script = {steps, 2U, 0U, COG_OK, 0U};
+    cog_provider_t *p = NULL;
+    char bytes[32];
+    cog_provider_response_t response = {.content = bytes,
+                                        .content_capacity = 1U};
+    CHECK(cog_mock_provider_new(&script, &p) == COG_OK);
+    CHECK(do_send(p, "mock-model") == COG_OK);
+    CHECK(cog_provider_receive(p, &response) == COG_ERROR_OVERFLOW);
+    CHECK(cog_provider_cancel(p) == COG_OK);
+    CHECK(cog_provider_cancel(p) == COG_OK);
+    response.content_capacity = sizeof(bytes);
+    CHECK(cog_provider_receive(p, &response) == COG_OK);
+    CHECK(strcmp(bytes, "retained") == 0);
+    CHECK(!response.is_complete);
+    CHECK(response.finish_reason == COG_FINISH_REASON_NONE);
+    CHECK(cog_provider_receive(p, &response) == COG_ERROR_ABORTED);
+    CHECK(response.is_complete);
+    CHECK(response.finish_reason == COG_FINISH_REASON_CANCELLED);
+    CHECK(cog_provider_receive(p, &response) == COG_ERROR_INVALID_STATE);
+    CHECK(cog_provider_disconnect(p) == COG_OK);
+}
+
+static void test_typed_cancel_error_after_retained_output(void)
+{
+    static const cog_provider_delta_t script[] = {
+        {.kind = COG_PROVIDER_DELTA_TEXT, .data = "retained", .data_len = 8U},
+        {.kind = COG_PROVIDER_DELTA_FINISH, .finish_reason = COG_FINISH_REASON_STOP},
+    };
+    cog_provider_t *p = NULL;
+    char bytes[32];
+    size_t required;
+    cog_provider_delta_t delta;
+    cog_provider_error_t error;
+    CHECK(cog_mock_provider_new_deltas(script, 2U, &p) == COG_OK);
+    CHECK(do_send(p, "mock-model") == COG_OK);
+    CHECK(cog_provider_next(p, &delta, NULL, 0U, &required) == COG_ERROR_OVERFLOW);
+    CHECK(cog_provider_cancel(p) == COG_OK);
+    CHECK(cog_provider_next(p, &delta, bytes, sizeof(bytes), &required) == COG_OK);
+    CHECK(delta.kind == COG_PROVIDER_DELTA_TEXT);
+    CHECK(cog_provider_next(p, &delta, bytes, sizeof(bytes), &required) == COG_OK);
+    CHECK(delta.kind == COG_PROVIDER_DELTA_FINISH && delta.outcome == COG_ERROR_ABORTED);
+    CHECK(cog_provider_get_error(p, &error) == COG_OK);
+    CHECK(error.output_accepted);
+    CHECK(!error.replay_safe);
+    CHECK(cog_provider_disconnect(p) == COG_OK);
+}
+
+static void test_nested_request_copy(void)
+{
+    char model[] = "mock-model", tools[] = "[]", content[] = "assistant";
+    char name[] = "named", id[] = "call_1", function[] = "echo";
+    char arguments[] = "{}", ns[] = "example", format[] = "binary", currency[] = "USD";
+    unsigned char data[] = {0U, 255U, 1U};
+    cog_message_tool_call_t call = {id, function, arguments, 2U};
+    cog_message_opaque_t opaque = {ns, format, data, sizeof(data)};
+    cog_message_t message = {.role = COG_MESSAGE_ROLE_ASSISTANT,
+                             .content = content, .content_len = 9U,
+                             .name = name, .tool_calls = &call, .tool_call_count = 1U,
+                             .opaque = &opaque, .opaque_count = 1U,
+                             .usage = {.currency = currency}};
+    cog_provider_request_t request = {.model_id = model, .messages = &message,
+                                      .message_count = 1U, .tools_json = tools,
+                                      .tools_json_len = 2U};
+    cog_provider_t *p = NULL;
+    CHECK(cog_mock_provider_new(NULL, &p) == COG_OK);
+    CHECK(cog_provider_send(p, &request) == COG_OK);
+    memset(model, 'X', sizeof(model)); memset(tools, 'X', sizeof(tools));
+    memset(content, 'X', sizeof(content)); memset(name, 'X', sizeof(name));
+    memset(id, 'X', sizeof(id)); memset(function, 'X', sizeof(function));
+    memset(arguments, 'X', sizeof(arguments)); memset(ns, 'X', sizeof(ns));
+    memset(format, 'X', sizeof(format)); memset(currency, 'X', sizeof(currency));
+    memset(data, 0, sizeof(data)); memset(&call, 0, sizeof(call));
+    memset(&opaque, 0, sizeof(opaque)); memset(&message, 0, sizeof(message));
+    memset(&request, 0, sizeof(request));
+    cog_mock_state_t state;
+    CHECK(cog_mock_provider_state(p, &state) == COG_OK);
+    const cog_provider_request_t *saved = state.last_request;
+    CHECK(strcmp(saved->model_id, "mock-model") == 0);
+    CHECK(strcmp(saved->tools_json, "[]") == 0);
+    const cog_message_t *m = &saved->messages[0];
+    CHECK(strcmp(m->content, "assistant") == 0 && strcmp(m->name, "named") == 0);
+    CHECK(strcmp(m->tool_calls[0].id, "call_1") == 0);
+    CHECK(strcmp(m->tool_calls[0].name, "echo") == 0);
+    CHECK(strcmp(m->tool_calls[0].arguments, "{}") == 0);
+    CHECK(strcmp(m->opaque[0].namespace_id, "example") == 0);
+    CHECK(strcmp(m->opaque[0].format, "binary") == 0);
+    CHECK(m->opaque[0].size == 3U && m->opaque[0].data[1] == 255U);
+    CHECK(strcmp(m->usage.currency, "USD") == 0);
+    CHECK(cog_provider_disconnect(p) == COG_OK);
+}
 int main(void)
 {
+    test_nested_request_copy();
+    test_typed_cancel_error_after_retained_output();
+    test_receive_overflow_then_cancel();
     test_poll_delay_and_request_copy();
     test_typed_contract();
     test_stream_chunks();
