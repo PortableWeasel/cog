@@ -539,6 +539,69 @@ test_auto_replace_ackhang(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 7. real-crash auto-replace (reap_children-detected, not kill)      */
+/* ------------------------------------------------------------------ */
+
+static cog_peer_id_t g_orig_peer = COG_PEER_ID_INVALID;
+static int
+pred_replaced(cog_orchestrator_t *orch)
+{
+    cog_core_info_t infos[4];
+    size_t count = 0U;
+
+    if (cog_orchestrator_list(orch, infos, 4U, &count) != COG_OK) {
+        return 0;
+    }
+    return count == 1U && infos[0].peer_id != g_orig_peer;
+}
+
+static void
+test_auto_replace_real_crash(void)
+{
+    char path[128];
+    cog_orchestrator_config_t cfg;
+    cog_orchestrator_t *orch = NULL;
+    cog_peer_id_t peer = COG_PEER_ID_INVALID;
+    cog_core_info_t infos[4];
+    size_t count = 0U;
+
+    if (make_socket_path(path, sizeof(path)) != 0) {
+        CHECK("arc path", 0);
+        return;
+    }
+    (void)memset(&cfg, 0, sizeof(cfg));
+    cfg.socket_path = path;
+    cfg.max_aux_cores = 4;
+    cfg.health_interval_ms = 200;
+    cfg.unhealthy_threshold = 3;
+    cfg.default_core_capacity = 8;
+    cfg.auto_replace = true;
+    CHECK_RESULT("arc new", COG_OK, cog_orchestrator_new(&orch, &cfg));
+    if (orch == NULL) {
+        return;
+    }
+
+    /* crash-mode core sends one heartbeat then exits on its own.  With
+     * auto_replace, reap_children must detect the exit (reaped=true) and
+     * auto_replace must reuse the slot with a fresh replacement. */
+    set_aux_env("crash");
+    CHECK_RESULT("arc spawn", COG_OK,
+                 cog_orchestrator_spawn(orch, COG_AUX_CORE_BIN, &peer));
+    CHECK("arc peer", peer != COG_PEER_ID_INVALID);
+    g_orig_peer = peer;
+
+    /* the crashed core's slot must be reused by a replacement (new peer
+     * id), with core_count staying at 1 (no duplicate registration). */
+    CHECK("arc replaced", poll_until(orch, pred_replaced, 3000) == 0);
+    CHECK_RESULT("arc list", COG_OK,
+                 cog_orchestrator_list(orch, infos, 4U, &count));
+    CHECK("arc count", count == 1U);
+    CHECK("arc new peer", infos[0].peer_id != g_orig_peer);
+
+    cog_orchestrator_free(orch);
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -551,6 +614,7 @@ main(void)
     test_stop_ackhang();
     test_shutdown_ackhang();
     test_auto_replace_ackhang();
+    test_auto_replace_real_crash();
 
     if (g_failures != 0U) {
         (void)fprintf(stderr, "test_orchestrator_stress: %u failure(s)\n",
