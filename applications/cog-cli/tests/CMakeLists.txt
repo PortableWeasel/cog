@@ -196,3 +196,12 @@ add_test(NAME cli-installed-session-ux COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/run_installed_session_ux.py ${PROJECT_BINARY_DIR}
     $<TARGET_FILE:test_session_ux>)
 set_tests_properties(cli-installed-session-ux PROPERTIES TIMEOUT 45)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    add_executable(test_session_recovery_faults test_session_recovery_faults.c)
+    target_include_directories(test_session_recovery_faults PRIVATE ../src)
+    target_link_libraries(test_session_recovery_faults PRIVATE cog::cli)
+    target_link_options(test_session_recovery_faults PRIVATE -Wl,--wrap=cog_store_save)
+    target_enable_warnings(test_session_recovery_faults)
+    add_test(NAME cli-session-recovery-faults COMMAND test_session_recovery_faults)
+    set_tests_properties(cli-session-recovery-faults PROPERTIES TIMEOUT 20)
+endif()

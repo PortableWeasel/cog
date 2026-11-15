@@ -330,6 +330,24 @@ cog_result_t cog_cli_usage(cog_cli_app_t *app, const cog_session_node_t *node,
         return COG_ERROR_IO;
     return fputc('\n', stream) != EOF && fflush(stream) == 0 ? COG_OK : COG_ERROR_IO;
 }
+static cog_result_t escaped_id(FILE *stream, const char *text)
+{
+    if (fputc('"', stream) == EOF) return COG_ERROR_IO;
+    for (const unsigned char *p = (const unsigned char *)text; *p != 0U; p++) {
+        if (*p == '"' || *p == '\\') {
+            if (fputc('\\', stream) == EOF || fputc(*p, stream) == EOF) return COG_ERROR_IO;
+        } else if (*p == '\n') {
+            if (fputs("\\n", stream) < 0) return COG_ERROR_IO;
+        } else if (*p == '\r') {
+            if (fputs("\\r", stream) < 0) return COG_ERROR_IO;
+        } else if (*p == '\t') {
+            if (fputs("\\t", stream) < 0) return COG_ERROR_IO;
+        } else if (*p < 32U || *p >= 127U) {
+            if (fprintf(stream, "\\x%02x", (unsigned int)*p) < 0) return COG_ERROR_IO;
+        } else if (fputc(*p, stream) == EOF) return COG_ERROR_IO;
+    }
+    return fputc('"', stream) == EOF ? COG_ERROR_IO : COG_OK;
+}
 static cog_result_t tools(cog_cli_app_t *app)
 {
     cog_session_snapshot_t snapshot;
@@ -338,8 +356,18 @@ static cog_result_t tools(cog_cli_app_t *app)
     static const char *const states[] = {"proposed", "started", "succeeded", "failed", "denied", "cancelled", "indeterminate", "acknowledged"};
     for (size_t i = 0U; i < snapshot.ledger_count; i++) {
         const cog_tool_ledger_record_t *entry = &snapshot.ledger[i];
-        if (fprintf(app->out, "node=%" PRIu64 " call=%s state=%s\n",
-            entry->assistant_node_id, entry->call_id, states[entry->state]) < 0) return COG_ERROR_IO;
+        cog_session_node_t *node = cog_cli_session_node(app, entry->assistant_node_id);
+        if (node == NULL) return COG_ERROR_PROTOCOL;
+        const cog_message_t *message = cog_node_data(node)->message;
+        size_t ordinal = 0U;
+        for (size_t j = 0U; j < message->tool_call_count; j++)
+            if (strcmp(message->tool_calls[j].id, entry->call_id) == 0) { ordinal = j + 1U; break; }
+        if (ordinal == 0U) return COG_ERROR_PROTOCOL;
+        if (fprintf(app->out, "node=%" PRIu64 " ordinal=%zu call=",
+            entry->assistant_node_id, ordinal) < 0) return COG_ERROR_IO;
+        rc = escaped_id(app->out, entry->call_id);
+        if (rc != COG_OK) return rc;
+        if (fprintf(app->out, " state=%s\n", states[entry->state]) < 0) return COG_ERROR_IO;
     }
     return fflush(app->out) == 0 ? COG_OK : COG_ERROR_IO;
 }
@@ -360,15 +388,17 @@ cog_result_t cog_cli_session_command(cog_cli_app_t *app, const char *text, bool 
     if (strcmp(text, "/history") == 0) return history(app);
     if (strcmp(text, "/tools") == 0) return tools(app);
     if (strcmp(text, "/help") == 0) {
-        const char *help = recovery ? "/tools /history /reconcile NODE CALL succeeded|failed|cancelled|acknowledged EVIDENCE /quit\n" :
+        const char *help = recovery ? "/tools /history /reconcile NODE CALL OUTCOME EVIDENCE /reconcile-index NODE ORDINAL OUTCOME EVIDENCE /quit\n" :
             "/sessions /history /tools /fork NODE /usage /cancel /quit\n";
         return fputs(help, app->out) >= 0 && fflush(app->out) == 0 ? COG_OK : COG_ERROR_IO;
     }
-    if (strncmp(text, "/reconcile ", 11U) == 0) {
+    bool indexed = strncmp(text, "/reconcile-index ", sizeof("/reconcile-index ") - 1U) == 0;
+    if (indexed || strncmp(text, "/reconcile ", sizeof("/reconcile ") - 1U) == 0) {
         if (!recovery) return COG_ERROR_INVALID_STATE;
-        char copy[4096]; size_t n = strlen(text + 11);
+        const char *arguments = text + (indexed ? sizeof("/reconcile-index ") - 1U : sizeof("/reconcile ") - 1U);
+        char copy[4096]; size_t n = strlen(arguments);
         if (n >= sizeof(copy)) return COG_ERROR_LIMIT;
-        memcpy(copy, text + 11, n + 1U);
+        memcpy(copy, arguments, n + 1U);
         char *node = copy, *call = strchr(node, ' ');
         if (call == NULL) return COG_ERROR_INVALID_ARG;
         *call++ = '\0'; char *outcome = strchr(call, ' ');
@@ -383,7 +413,18 @@ cog_result_t cog_cli_session_command(cog_cli_app_t *app, const char *text, bool 
         else if (strcmp(outcome, "cancelled") == 0) state = COG_TOOL_EXECUTION_CANCELLED;
         else if (strcmp(outcome, "acknowledged") == 0) state = COG_TOOL_EXECUTION_ACKNOWLEDGED;
         else return COG_ERROR_INVALID_ARG;
-        return cog_cli_app_reconcile(app, id, call, state, evidence, strlen(evidence));
+        const char *call_id = call;
+        if (indexed) {
+            uint64_t ordinal;
+            if (!decimal(call, &ordinal) || ordinal == 0U) return COG_ERROR_INVALID_ARG;
+            cog_session_node_t *assistant = cog_cli_session_node(app, id);
+            if (assistant == NULL) return COG_ERROR_NOT_FOUND;
+            const cog_message_t *message = cog_node_data(assistant)->message;
+            if (message->role != COG_MESSAGE_ROLE_ASSISTANT || ordinal > message->tool_call_count)
+                return COG_ERROR_NOT_FOUND;
+            call_id = message->tool_calls[(size_t)ordinal - 1U].id;
+        }
+        return cog_cli_app_reconcile(app, id, call_id, state, evidence, strlen(evidence));
     }
     if (recovery) return COG_ERROR_INVALID_STATE;
     if (strcmp(text, "/sessions") == 0) return list_sessions(app);
@@ -423,7 +464,8 @@ cog_result_t cog_cli_metadata_run(cog_cli_app_t *app)
     if (!app->opts.interactive) return COG_ERROR_INDETERMINATE;
     if (app->recovery_write_failed) return COG_ERROR_INVALID_STATE;
     if (fputs("Recovery is offline. Your --fenced assertion does not stop old processes.\n"
-        "Use /tools, /history, /reconcile NODE CALL OUTCOME EVIDENCE, or /quit.\n", stderr) < 0 ||
+        "Use /tools, /history, /reconcile NODE CALL OUTCOME EVIDENCE, or /quit.\n"
+        "For escaped IDs use /reconcile-index NODE ORDINAL OUTCOME EVIDENCE (1-based original call order).\n", stderr) < 0 ||
         fflush(stderr) != 0) return COG_ERROR_IO;
     cog_result_t rc = COG_OK;
     while (!atomic_load_explicit(&app->stop_requested, memory_order_acquire)) {

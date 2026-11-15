@@ -3,8 +3,10 @@
 Stage 14.K composes the integrated core, provider, toolkit, store and J
 [effective configuration](CONFIGURATION.md). Its independent review and exact
 verification scope are recorded in [K evidence](../../docs/REAL_CLIENT_K_EVIDENCE.md).
-This is the single-process conversation/tool client. Session recovery commands
-belong to L; remote IPC, replay and subagent application wiring remain N/O work.
+This is the single-process conversation/tool client. L adds session selection,
+terminal history/usage and explicit offline recovery, with its own header gate
+and independent review. Remote IPC, replay and subagent application wiring remain
+N/O work.
 
 The executable parses options and explicitly initializes the dependency runtime
 and audited c-ares-only transport for REAL. It blocks SIGINT/SIGTERM and uses a
@@ -77,9 +79,9 @@ No context truncation, token-count guessing or model substitution occurs.
 REAL defaults to a durable XDG/HOME store. Every required parent directory is
 created without following symlinks and new directory entries are fsynced before
 store construction. Durable MOCK fixtures use the same fenced store profile.
-K creates fresh sessions and refuses an existing durable session ID with
-INVALID_STATE; it does not replace history or impersonate an old incarnation.
-L owns explicit load/recovery/fork interaction. The guard remains borrowed by
+NEW creates fresh sessions and refuses an existing durable identity; it does not
+replace history or impersonate an old incarnation. RESUME/FORK explicitly select
+existing data through the guarded workflow below. The guard remains borrowed by
 all executions until their terminal destruction.
 
 Tools are advertised only with both a workspace and durable store. Explicit
@@ -119,3 +121,69 @@ eligibility. Opaque data is excluded. CGD1 encodes big-endian integers and exact
 UTF-8 text, with no native structures. Encode/decode capacity failure is
 transactional; malformed roles/statuses, UTF-8, lengths, generation or trailing
 bytes fail. O's CGR1 reconnect/GAP protocol consumes this snapshot contract later.
+
+
+L session selection uses the public session_action and source_session_id fields:
+`--sessions`, `--resume ID`, `--fork ID --from-node N`, or `--recover ID --fenced`.
+These selectors are explicit CLI/host inputs, outside configuration precedence.
+NEW alone accepts `--session ID`. Every non-NEW action requires DURABLE; DEFAULT
+becomes durable even for MOCK. LIST/RECOVER bypass credentials, net, provider,
+workspace and core creation. Malformed present configuration remains an error.
+LIST reports sorted metadata names, with no claim of generation integrity or
+replay health. Its temporary `cog_store_list` output constructor can allocate
+proportionally to enumeration; there is no fixed pre-enumeration byte ceiling.
+Before any output, IDs must all be valid UTF-8/store-safe 1..127-byte names, at
+most 1024 entries, and fit aggregate max_context_bytes. No partial/truncated
+successful list is returned. A missing store lists empty without creating it.
+
+RESUME reads owner/checkpoint, loads that exact immutable generation, restores
+current explicit app reservations, admits a fresh incarnation/checked epoch and
+acquires a matching exclusive guard. A live guard or stale checkpoint refuses
+activation. Completed ancestor effects are never reconstructed as new executions.
+A partial text turn retains K's fresh-input continuation rule. A final assistant
+with PROPOSED calls receives no-wire provider preflight over the full selected
+prefix, including any already-recorded results and current model/tools/settings,
+before policy admission. Already closed calls are skipped. Actual later send
+revalidates completed history. Unknown/unsupported or malformed continuation
+fails before a remaining tool starts; no synthetic results are manufactured.
+
+FORK selects an existing replay-safe point in the same durable session tree.
+The next fresh message is explicitly added at that parent; other branches,
+node IDs, tool/results/audits and opaque bytes remain intact. Selecting a nonleaf
+alone does not overwrite the active leaf or durably create a branch. Active or
+queued work refuses selection, and unresolved/unsafe history cannot be forked.
+
+Unowned v1/v2 adoption requires `--fenced`, the operator assertion that old writers
+are quiescent and prior command processes stopped/reaped or externally fenced.
+The application does not verify or perform that cleanup from an opaque owner ID.
+Text-only v1 migration uses a temporary unowned store for explicit v2 publication,
+releases it, then activates a fenced owner against the exact resulting checkpoint.
+Unidentified legacy tools and unowned uncertain effects are refused. Already-owned
+uncertain v2 uses only RECOVER plus its explicit assertion and a recovery guard.
+
+Recovery is offline. `/tools`, `/history` and
+`/reconcile NODE CALL succeeded|failed|cancelled|acknowledged EVIDENCE` identify one
+specific call and operator statement. For arbitrary IDs, `/reconcile-index NODE
+ORDINAL OUTCOME EVIDENCE` uses the 1-based original assistant tool_calls order,
+which never changes when earlier entries close. `/tools` escapes IDs and reports
+these stable ordinals. Literal CALL is never reinterpreted as an index, including
+IDs that look like `@2`. Acknowledgement explicitly preserves unknown
+effects. Ordinary text, policy ALLOW, queued input, fork and cancel cannot execute
+work in recovery. Only successful result+audit save reports reconciliation success;
+failed or uncertain save freezes later reconciliation and retains the guard until
+teardown. Even after all calls close, the app stays recovery-only. A later explicit
+RESUME admits another epoch and normal guard before ordinary work.
+
+Normal terminal commands add `/sessions`, `/history`, `/tools`, `/fork NODE` and
+`/usage` beside K's `/cancel` and `/quit`. Entire input lines are validated as UTF-8
+without NUL before command parsing. Known usage is reported per assistant node;
+unknown availability is stated rather than billed as zero. `--usage` reports known
+turn usage to stderr while streamed stdout stays text-only. Output and flush
+failures propagate, including unknown-usage output. Recovery handles invalid/error
+input descriptors as IO and honors the app's constructor-verified lock-free stop
+flag without requiring a core. Main suppresses SIGPIPE for its explicit lifetime
+so EPIPE reaches cleanup, then restores its prior disposition.
+
+The `cog-cli-runtime` install component installs the actual executable for the
+offline installed-binary restart tests. Shipped real transport dependency closure
+remains P's packaging gate; installing this component alone makes no such claim.

@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix='cog-l-installed-') as root:
     assert run(*common,'--resume','uncertain','--prompt','must not send',code=1).stdout==''
     recover=['--store',str(store),'--recover','uncertain','--fenced','--interactive']
     first=run(*recover,'--tool-policy','allow',text='ordinary text must not execute\n/tools\n/reconcile 2 first acknowledged fixture fenced; effects unknown\n/quit\n',code=1)
-    assert 'first state=indeterminate' in first.stdout and 'second state=indeterminate' in first.stdout
+    assert 'ordinal=1 call="first" state=indeterminate' in first.stdout and 'ordinal=2 call="second" state=indeterminate' in first.stdout
     assert 'does not stop old processes' in first.stderr
     assert run(*common,'--resume','uncertain','--prompt','still blocked',code=1).stdout==''
     run(*recover,text='/reconcile 2 second failed fixture verified no tool started\n/quit\n')

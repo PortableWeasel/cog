@@ -79,3 +79,31 @@ those assertions while O supplies their remaining runtime composition. The full
 release gate still runs every original scenario plus R01–R18; this selection is
 not that gate. Sanitizers use separate build directories. The focused TSan run
 covers `cli-app-stop` and `cli-app-limits` with real cross-thread stop calls.
+
+
+L's `cli-session-ux` uses disposable durable stores through the actual app and
+public G operations. It tests exact restart, fresh epochs, lock contention,
+same-tree divergent branches, partial-turn authorization, per-call recovery,
+legacy migration, known/unknown usage and output/input errors. Its seed mode
+constructs coherent synthetic prior intent; it never executes those historical
+fixture commands. The pending-phase cases retain a completed first result and
+prove only the remaining PROPOSED call can start after provider preflight.
+Audited-profile cases use actual OpenRouter preflight with synthetic credentials
+and a local refused-port endpoint; unsupported/malformed opaque history must fail
+with no wire request or tool effect. A valid known opaque form is cancelled before
+policy and also starts no request.
+
+`cli-installed-session-ux` uses `cmake --install --component cog-cli-runtime` into
+an owned temporary prefix and drives the installed executable. It covers offline
+credential-free listing, restart/fork/history, EOF, explicit per-call recovery,
+known usage, broken stdout and metadata recovery signals. All conversations use
+explicit MOCK; no paid/live request or model substitution is used. The fixture
+helper creates uncertain v2 records with public store APIs and then exits, so the
+test harness can honestly assert its old fixture processes are quiescent.
+
+`cli-session-recovery-faults` wraps failed/uncertain recovery saves. It verifies
+that the guard remains held, a competing app refuses admission, the checkpoint
+has not been replaced by the injected failure, no call is reexecuted, and only a
+new explicit recovery decision after restart can close the durable uncertainty.
+Use separate sanitizer directories and preserve these failure paths in Release;
+assertion workloads are kept enabled by the shared test build policy.

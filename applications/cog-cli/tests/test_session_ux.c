@@ -165,7 +165,7 @@ static int metadata_edges(const char *base)
     CHECK(cog_store_load_ex(app->store,"legacy",COG_STORE_LOAD_REPLAY,&loaded,&report)==COG_OK && report.source_version==2U);
     cog_session_free(loaded);cog_cli_app_free(app);return 0;
 }
-static int seed_proposed(const char *base,const char *id,const char *namespace_id)
+static int seed_proposed(const char *base,const char *id,const char *namespace_id,const char *payload)
 {
     cog_store_config_t config={.base_dir=base,.require_owner=true};cog_store_t *store=NULL;
     CHECK(cog_store_new(&store,&config)==COG_OK);
@@ -177,7 +177,8 @@ static int seed_proposed(const char *base,const char *id,const char *namespace_i
     const cog_message_tool_call_t calls[]={{"first","run_command",old_args,sizeof(old_args)-1U},
         {"second","run_command",new_args,sizeof(new_args)-1U}};
     static const unsigned char bytes[]="{\"reasoning_details\":[]}";
-    const cog_message_opaque_t opaque={namespace_id,"json-v1",bytes,sizeof(bytes)-1U};
+    const cog_message_opaque_t opaque={namespace_id,"json-v1",payload==NULL?bytes:(const unsigned char *)payload,
+        payload==NULL?sizeof(bytes)-1U:strlen(payload)};
     const cog_message_t message={.role=COG_MESSAGE_ROLE_ASSISTANT,.tool_calls=calls,.tool_call_count=2,
         .opaque=&opaque,.opaque_count=1};
     cog_session_node_t *assistant=NULL;CHECK(cog_session_append(session,&message,&assistant)==COG_OK);
@@ -193,7 +194,7 @@ static int seed_proposed(const char *base,const char *id,const char *namespace_i
 }
 static int proposed(const char *store,const char *workspace)
 {
-    CHECK(seed_proposed(store,"proposed","openrouter.chat-completions")==0);
+    CHECK(seed_proposed(store,"proposed","openrouter.chat-completions",NULL)==0);
     cog_cli_options_t o=options(store);o.session_action=COG_CLI_SESSION_RESUME;o.source_session_id="proposed";
     o.workspace_root=workspace;o.tool_policy=COG_CLI_TOOL_POLICY_ALLOW;o.chunks="continued";
     o.explicit_options|=COG_CLI_OPT_WORKSPACE|COG_CLI_OPT_POLICY;
@@ -206,13 +207,13 @@ static int proposed(const char *store,const char *workspace)
     CHECK(snapshot.ledger_count==2U && snapshot.ledger[0].state==COG_TOOL_EXECUTION_SUCCEEDED && snapshot.ledger[1].state==COG_TOOL_EXECUTION_SUCCEEDED);
     cog_cli_app_free(app);char path[512];CHECK(snprintf(path,sizeof(path),"%s/resumed-effect",workspace)>0);
     FILE *file=fopen(path,"r");CHECK(file!=NULL);char text[16]={0};CHECK(fread(text,1,15,file)==4U);CHECK(fclose(file)==0);CHECK(strcmp(text,"once")==0);
-    CHECK(seed_proposed(store,"denied-proposal","openrouter.chat-completions")==0);
+    CHECK(seed_proposed(store,"denied-proposal","openrouter.chat-completions",NULL)==0);
     o=options(store);o.session_action=COG_CLI_SESSION_RESUME;o.source_session_id="denied-proposal";o.chunks="denied safely";
     o.tool_policy=COG_CLI_TOOL_POLICY_DENY;o.explicit_options|=COG_CLI_OPT_POLICY;
     CHECK(cog_cli_app_new(&app,&o)==COG_OK);CHECK(cog_cli_app_run(app)==COG_OK);
     CHECK(cog_session_snapshot_view(app->session,&snapshot)==COG_OK && snapshot.ledger[1].state==COG_TOOL_EXECUTION_DENIED);
     CHECK(snapshot.ledger[1].audit_count==1U);cog_cli_app_free(app);
-    CHECK(seed_proposed(store,"cancel-proposal","openrouter.chat-completions")==0);
+    CHECK(seed_proposed(store,"cancel-proposal","openrouter.chat-completions",NULL)==0);
     o.source_session_id="cancel-proposal";CHECK(cog_cli_app_new(&app,&o)==COG_OK);
     CHECK(cog_cli_app_cancel(app)==COG_OK);CHECK(cog_cli_app_run(app)==COG_OK);
     CHECK(cog_mock_provider_state(app->provider,&state)==COG_OK && state.send_count==0U);
@@ -228,8 +229,10 @@ static cog_result_t synthetic_secret(void *arg,const char *ref,char *out,size_t 
 }
 static int real_preflight(const char *store,const char *workspace)
 {
-    CHECK(seed_proposed(store,"unsupported-opaque","foreign.required")==0);
-    CHECK(seed_proposed(store,"supported-opaque","openrouter.chat-completions")==0);
+    CHECK(seed_proposed(store,"unsupported-opaque","foreign.required",NULL)==0);
+    CHECK(seed_proposed(store,"supported-opaque","openrouter.chat-completions",NULL)==0);
+    CHECK(seed_proposed(store,"malformed-opaque","openrouter.chat-completions",
+        "{\"reasoning_details\":[{\"type\":\"reasoning.encrypted\",\"data\":42}]}")==0);
     CHECK(curl_global_init(CURL_GLOBAL_DEFAULT)==CURLE_OK);cog_net_ctx_t *net=NULL;
     cog_net_config_t config={.host_runtime_initialized=true,.dependency_memory=COG_NET_DEPENDENCY_MEMORY_DYNAMIC};
     CHECK(cog_net_new(&net,&config)==COG_OK);
@@ -238,6 +241,9 @@ static int real_preflight(const char *store,const char *workspace)
     o.net=net;o.credential_read=synthetic_secret;o.workspace_root=workspace;o.tool_policy=COG_CLI_TOOL_POLICY_ALLOW;
     o.explicit_options|=COG_CLI_OPT_MODEL|COG_CLI_OPT_BASE_URL|COG_CLI_OPT_WORKSPACE|COG_CLI_OPT_POLICY;
     cog_cli_app_t *app=NULL;CHECK(cog_cli_app_new(&app,&o)==COG_ERROR_UNSUPPORTED && app==NULL);
+    CHECK(cog_net_active_count(net)==0U);
+    o.source_session_id="malformed-opaque";
+    CHECK(cog_cli_app_new(&app,&o)==COG_ERROR_PROTOCOL && app==NULL);
     CHECK(cog_net_active_count(net)==0U);
     o.source_session_id="supported-opaque";CHECK(cog_cli_app_new(&app,&o)==COG_OK);
     CHECK(cog_net_active_count(net)==0U);CHECK(cog_cli_app_shutdown(app)==COG_OK);CHECK(cog_cli_app_run(app)==COG_OK);
@@ -302,12 +308,52 @@ static int terminal_faults(const char *store)
     CHECK(snapshot.ledger[0].state==COG_TOOL_EXECUTION_INDETERMINATE);
     cog_cli_app_free(app);return 0;
 }
+static int arbitrary_call_ids(const char *store)
+{
+    cog_cli_options_t o=options(store);o.session_id="odd-ids";
+    cog_cli_app_t *app=NULL;CHECK(cog_cli_app_new(&app,&o)==COG_OK);
+    const cog_message_t user={.role=COG_MESSAGE_ROLE_USER,.content="fixture",.content_len=7};
+    CHECK(cog_session_append(app->session,&user,NULL)==COG_OK);
+    static const char args[]="{\"command\":\"true\"}";
+    const char *ids[]={"space id","line\nid","@2"};
+    const cog_message_tool_call_t calls[]={{ids[0],"run_command",args,sizeof(args)-1U},
+        {ids[1],"run_command",args,sizeof(args)-1U},{ids[2],"run_command",args,sizeof(args)-1U}};
+    const cog_message_t proposal={.role=COG_MESSAGE_ROLE_ASSISTANT,.tool_calls=calls,.tool_call_count=3};
+    cog_session_node_t *assistant=NULL;CHECK(cog_session_append(app->session,&proposal,&assistant)==COG_OK);
+    for(size_t i=0;i<3U;i++)CHECK(cog_session_tool_transition(app->session,assistant,ids[i],COG_TOOL_EXECUTION_PROPOSED,COG_TOOL_EXECUTION_STARTED)==COG_OK);
+    CHECK(cog_store_save(app->store,app->session)==COG_OK);cog_cli_app_free(app);
+    o=options(store);o.session_action=COG_CLI_SESSION_RECOVER;o.source_session_id="odd-ids";o.previous_processes_fenced=true;
+    CHECK(cog_cli_app_new(&app,&o)==COG_OK);
+    cog_store_owner_t owner;cog_store_checkpoint_t before,after;CHECK(cog_store_owner_read(app->store,"odd-ids",&owner,&before)==COG_OK);
+    const char *bad[]={"/reconcile-index 2 0 acknowledged evidence","/reconcile-index 2 -1 acknowledged evidence",
+        "/reconcile-index 2 18446744073709551616 acknowledged evidence"};bool handled=false;
+    for(size_t i=0;i<sizeof(bad)/sizeof(bad[0]);i++)CHECK(cog_cli_session_command(app,bad[i],&handled)==COG_ERROR_INVALID_ARG && handled);
+    CHECK(cog_cli_session_command(app,"/reconcile-index 2 4 acknowledged evidence",&handled)==COG_ERROR_NOT_FOUND);
+    CHECK(cog_store_owner_read(app->store,"odd-ids",&owner,&after)==COG_OK && after.generation==before.generation);
+    CHECK(cog_cli_session_command(app,"/reconcile-index 2 1 acknowledged fixture fenced; unknown effects",&handled)==COG_OK);
+    FILE *file=tmpfile();CHECK(file!=NULL);app->out=file;CHECK(cog_cli_session_command(app,"/tools",&handled)==COG_OK);
+    rewind(file);char output[2048];size_t n=fread(output,1,sizeof(output)-1U,file);output[n]='\0';
+    CHECK(strstr(output,"ordinal=1 call=\"space id\" state=acknowledged")!=NULL);
+    CHECK(strstr(output,"ordinal=2 call=\"line\\nid\" state=indeterminate")!=NULL);
+    CHECK(strstr(output,"ordinal=3 call=\"@2\" state=indeterminate")!=NULL);
+    app->out=stdout;CHECK(fclose(file)==0);
+    CHECK(cog_cli_session_command(app,"/reconcile 2 @2 acknowledged literal at-looking identity",&handled)==COG_OK);
+    cog_session_snapshot_t snapshot;CHECK(cog_session_snapshot_view(app->session,&snapshot)==COG_OK);
+    CHECK(snapshot.ledger[1].state==COG_TOOL_EXECUTION_INDETERMINATE && snapshot.ledger[2].state==COG_TOOL_EXECUTION_ACKNOWLEDGED);
+    CHECK(cog_cli_session_command(app,"/reconcile-index 2 2 acknowledged original second identity",&handled)==COG_OK);
+    CHECK(cog_session_snapshot_view(app->session,&snapshot)==COG_OK && snapshot.node_count==5U);
+    CHECK(strcmp(snapshot.nodes[2].message->tool_call_id,ids[0])==0);
+    CHECK(strcmp(snapshot.nodes[3].message->tool_call_id,ids[2])==0);
+    CHECK(strcmp(snapshot.nodes[4].message->tool_call_id,ids[1])==0);
+    for(size_t i=0;i<3U;i++)CHECK(snapshot.ledger[i].state==COG_TOOL_EXECUTION_ACKNOWLEDGED);
+    cog_cli_app_free(app);return 0;
+}
 int main(int argc,char **argv)
 {
     if(argc==3 && strcmp(argv[1],"seed")==0)return seed(argv[2]);
     char root[]="/tmp/cog-l-ux-XXXXXX";CHECK(mkdtemp(root)!=NULL);
     char store[512];CHECK(snprintf(store,sizeof(store),"%s/state",root)>0);
-    CHECK(basics(store)==0);CHECK(partial(store)==0);CHECK(recovery(store)==0);CHECK(metadata_edges(store)==0);CHECK(output_and_limits(store)==0);CHECK(proposed(store,root)==0);CHECK(terminal_faults(store)==0);
+    CHECK(basics(store)==0);CHECK(partial(store)==0);CHECK(recovery(store)==0);CHECK(metadata_edges(store)==0);CHECK(output_and_limits(store)==0);CHECK(proposed(store,root)==0);CHECK(terminal_faults(store)==0);CHECK(arbitrary_call_ids(store)==0);
 #ifdef COG_SESSION_TEST_REAL_PROFILE
     CHECK(real_preflight(store,root)==0);
 #endif
