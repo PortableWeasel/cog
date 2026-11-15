@@ -16,8 +16,12 @@ REAL is the default. There is no default paid model: supply `--model ID`, `COG_M
 or `models.default`. Missing model/credential/usable default store location returns
 NOT_FOUND. Help explicitly identifies the model requirement. Endpoint name and URL
 resolve independently; the supported REAL name is `openrouter`, with default URL
-`https://openrouter.ai/api/v1`. URLs require HTTPS and reject user information, query,
-fragment and backslash. An explicit MOCK backend selects `mock` and `mock-model` defaults
+`https://openrouter.ai/api/v1`. URLs require HTTPS with a nonempty ASCII hostname (or bracketed IPv6 literal),
+an optional decimal port from 1 through 65535, and no user information, query,
+fragment or backslash. Invalid/missing IPv6 brackets, empty hosts and malformed
+ports fail before publication. Model identifiers must encode valid UTF-8 scalars:
+overlong encodings, stray continuation bytes, truncated scalars, surrogates and
+values above U+10FFFF fail. Filesystem paths retain native byte semantics. An explicit MOCK backend selects `mock` and `mock-model` defaults
 only when those fields are absent. An explicitly mismatched endpoint is rejected.
 No setup failure selects a different backend/model or disables durability.
 

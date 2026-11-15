@@ -85,3 +85,22 @@ store ownership, no-store unsolicited-call denial, and request/tool execution re
 H/K/P integration obligations. These tests do not claim those scenarios passed and
 make no authenticated requests. The config arena can fail LIMIT on contiguous-slice
 fragmentation; capacity is never expanded or silently compacted across borrowers.
+
+## Independent-review revision 1
+
+Critic `1978933` added permanent protocol-input regressions after rejecting the
+initial writer tip for malformed HTTPS authority and model UTF-8 acceptance. The
+focused correction validates the resolved generation before publication: nonempty
+ASCII hostname or bracketed IPv6 parsed with inet_pton, decimal optional port in
+1..65535, and strict model UTF-8 scalar encodings. No URI framework, path Unicode
+requirement or public header amendment is introduced. Provider-side validation
+remains H's independent defense.
+
+Regression coverage exercises each rejected URL/model through CLI presence,
+environment and literal config-file sources. Valid domain/absolute-domain/IPv4,
+bracketed IPv6 (including embedded IPv4), explicit ports 1/65535 and leading-zero
+443 remain accepted. Valid two/three/four-byte Unicode boundary scalars including
+U+0080, U+D7FF/U+E000 and U+10FFFF remain accepted; malformed native filesystem
+bytes remain accepted as paths. Failed constructors return INVALID_ARG and NULL.
+The five J tests pass again in strict GCC, strict Clang and separate Clang
+ASan/UBSan with leak detection (15 passes). Independent rereview is pending.

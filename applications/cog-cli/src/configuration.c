@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "configuration.h"
 #include "options_internal.h"
+#include <arpa/inet.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -167,22 +168,112 @@ static bool token(const char *s)
             return false;
     return true;
 }
+/* Validate protocol identifiers without imposing Unicode rules on filesystem
+ * paths. Range checks reject overlong scalars, surrogates and values >10FFFF. */
+static bool utf8_valid(const char *s)
+{
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p != 0U) {
+        size_t width, i;
+        unsigned char first = *p;
+        if (first < 0x80U) {
+            ++p;
+            continue;
+        }
+        if (first >= 0xc2U && first <= 0xdfU)
+            width = 2U;
+        else if (first >= 0xe0U && first <= 0xefU)
+            width = 3U;
+        else if (first >= 0xf0U && first <= 0xf4U)
+            width = 4U;
+        else
+            return false;
+        for (i = 1U; i < width; ++i)
+            if (p[i] < 0x80U || p[i] > 0xbfU)
+                return false;
+        if ((first == 0xe0U && p[1] < 0xa0U) || (first == 0xedU && p[1] >= 0xa0U) ||
+            (first == 0xf0U && p[1] < 0x90U) || (first == 0xf4U && p[1] > 0x8fU))
+            return false;
+        p += width;
+    }
+    return true;
+}
+static bool hostname_valid(const char *host, const char *end)
+{
+    const char *p = host;
+    if (p == end)
+        return false;
+    while (p < end) {
+        const char *label = p;
+        while (p < end && *p != '.') {
+            if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+                  (*p >= '0' && *p <= '9') || *p == '-'))
+                return false;
+            ++p;
+        }
+        if (p == label || *label == '-' || p[-1] == '-')
+            return false;
+        if (p < end)
+            ++p; /* A trailing dot is a valid absolute hostname. */
+    }
+    return true;
+}
+static bool port_valid(const char *port, const char *end)
+{
+    uint32_t n = 0U;
+    if (port == end)
+        return false;
+    while (port < end) {
+        uint32_t digit;
+        if (*port < '0' || *port > '9')
+            return false;
+        digit = (uint32_t)(*port - '0');
+        if (n > (65535U - digit) / 10U)
+            return false;
+        n = n * 10U + digit;
+        ++port;
+    }
+    return n != 0U;
+}
 static bool https_url(const char *s)
 {
-    const char *host, *end, *p;
+    const char *host, *end, *port = NULL;
     if (s == NULL || strncmp(s, "https://", 8U) != 0 || !token(s))
         return false;
     host = s + 8;
     end = strchr(host, '/');
     if (end == NULL)
         end = host + strlen(host);
-    if (host == end)
+    if (host == end || strchr(host, '?') != NULL || strchr(host, '#') != NULL ||
+        strchr(host, '\\') != NULL)
         return false;
-    for (p = host; p < end; ++p)
-        if (*p == '@' || *p == '?' || *p == '#' || *p == '\\')
+    if (*host == '[') {
+        const char *close = memchr(host, ']', (size_t)(end - host));
+        char literal[INET6_ADDRSTRLEN];
+        unsigned char address[16];
+        size_t length;
+        if (close == NULL)
             return false;
-    return strchr(end, '?') == NULL && strchr(end, '#') == NULL &&
-           strchr(end, '\\') == NULL;
+        length = (size_t)(close - host) - 1U;
+        if (length == 0U || length >= sizeof(literal))
+            return false;
+        memcpy(literal, host + 1, length);
+        literal[length] = '\0';
+        if (inet_pton(AF_INET6, literal, address) != 1)
+            return false;
+        if (close + 1 != end) {
+            if (close[1] != ':')
+                return false;
+            port = close + 2;
+        }
+    } else {
+        const char *colon = memchr(host, ':', (size_t)(end - host));
+        if (!hostname_valid(host, colon != NULL ? colon : end))
+            return false;
+        if (colon != NULL)
+            port = colon + 1;
+    }
+    return port == NULL || port_valid(port, end);
 }
 static cog_result_t validate(cog_cli_configuration_t *c)
 {
@@ -234,7 +325,7 @@ static cog_result_t validate(cog_cli_configuration_t *c)
         if (!https_url(o->base_url))
             return COG_ERROR_INVALID_ARG;
     }
-    if (!token(o->model_id) || !token(o->endpoint_name))
+    if (!token(o->model_id) || !utf8_valid(o->model_id) || !token(o->endpoint_name))
         return COG_ERROR_INVALID_ARG;
     if (o->store_mode == COG_CLI_STORE_DEFAULT)
         o->store_mode = o->backend == COG_CLI_BACKEND_REAL ? COG_CLI_STORE_DURABLE

@@ -399,20 +399,47 @@ static int parsing(void)
 static int protocol_inputs(void)
 {
     static const char *const bad_models[] = {
-        "synthetic/\xc0\xaf",        /* overlong UTF-8 */
-        "synthetic/\x80",            /* isolated continuation */
-        "synthetic/\xe2\x82",        /* incomplete scalar */
-        "synthetic/\xed\xa0\x80",    /* surrogate */
-        "synthetic/\xf4\x90\x80\x80" /* above U+10FFFF */
-    };
+        "synthetic/\xc0\xaf",         /* overlong UTF-8 */
+        "synthetic/\x80",             /* isolated continuation */
+        "synthetic/\xe2\x82",         /* incomplete scalar */
+        "synthetic/\xed\xa0\x80",     /* surrogate */
+        "synthetic/\xf4\x90\x80\x80", /* above U+10FFFF */
+        "synthetic/\xc1\xbf",
+        "synthetic/\xe0\x9f\xbf",
+        "synthetic/\xf0\x8f\xbf\xbf",
+        "synthetic/\xf5\x80\x80\x80",
+        "synthetic/\xe2X\x83",
+        "synthetic/\xf0\x90\x80"};
     static const char *const bad_urls[] = {
-        "https://:443/v1", "https://[]/v1", "https://synthetic.invalid:bad/v1",
-        "https://synthetic.invalid:65536/v1", "https://[::1/v1"
-    };
-    static const char *const good_urls[] = {
-        "https://synthetic.invalid/v1", "https://synthetic.invalid:443/v1",
-        "https://[::1]:443/v1"
-    };
+        "https://:443/v1",
+        "https://[]/v1",
+        "https://synthetic.invalid:bad/v1",
+        "https://synthetic.invalid:65536/v1",
+        "https://[::1/v1",
+        "https:///v1",
+        "https://synthetic.invalid:/v1",
+        "https://synthetic.invalid:0/v1",
+        "https://synthetic.invalid:18446744073709551616/v1",
+        "https://::1/v1",
+        "https://[not-ipv6]/v1",
+        "https://[::1]suffix/v1",
+        "https://[::1]:65536/v1",
+        "https://[::1]:/v1",
+        "https://[::1]]/v1"};
+    static const char *const good_urls[] = {"https://synthetic.invalid/v1",
+                                            "https://synthetic.invalid:443/v1",
+                                            "https://[::1]:443/v1",
+                                            "https://[::1]/v1",
+                                            "https://127.0.0.1:1/v1",
+                                            "https://localhost:65535/v1",
+                                            "https://synthetic.invalid.:000443/v1",
+                                            "https://[2001:db8::1]:65535/v1",
+                                            "https://[::ffff:192.0.2.128]:1/v1"};
+    static const char *const good_models[] = {
+        "synthetic/\xc2\x80",         "synthetic/\xdf\xbf",
+        "synthetic/\xe0\xa0\x80",     "synthetic/\xed\x9f\xbf",
+        "synthetic/\xee\x80\x80",     "synthetic/\xef\xbf\xbf",
+        "synthetic/\xf0\x90\x80\x80", "synthetic/\xf4\x8f\xbf\xbf"};
     cog_cli_options_t o;
     cog_cli_configuration_t *c = NULL;
     size_t i;
@@ -420,8 +447,8 @@ static int protocol_inputs(void)
     base(&o);
     o.model_id = "synthetic/model";
     o.store_mode = COG_CLI_STORE_DISABLED;
-    o.explicit_options |= COG_CLI_OPT_MODEL | COG_CLI_OPT_STORE_MODE |
-                          COG_CLI_OPT_BASE_URL;
+    o.explicit_options |=
+        COG_CLI_OPT_MODEL | COG_CLI_OPT_STORE_MODE | COG_CLI_OPT_BASE_URL;
     for (i = 0U; i < sizeof(good_urls) / sizeof(good_urls[0]); ++i) {
         o.base_url = good_urls[i];
         CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_OK);
@@ -435,6 +462,23 @@ static int protocol_inputs(void)
         empty = c == NULL;
         cog_cli_configuration_free(c);
         CHECK(rc == COG_ERROR_INVALID_ARG && empty);
+        o.explicit_options &= ~(uint32_t)COG_CLI_OPT_BASE_URL;
+        CHECK(setenv("COG_BASE_URL", bad_urls[i], 1) == 0);
+        CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_INVALID_ARG &&
+              c == NULL);
+        CHECK(unsetenv("COG_BASE_URL") == 0);
+        {
+            char path[] = "/tmp/cog-config-url-j-XXXXXX", contents[256];
+            CHECK(snprintf(contents, sizeof(contents),
+                           "providers.openrouter.base-url=%s\n", bad_urls[i]) > 0);
+            CHECK(fixture(path, contents) == 0);
+            o.config_path = path;
+            CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_INVALID_ARG &&
+                  c == NULL);
+            CHECK(unlink(path) == 0);
+            o.config_path = NULL;
+        }
+        o.explicit_options |= COG_CLI_OPT_BASE_URL;
     }
     o.base_url = "https://synthetic.invalid/v1";
     for (i = 0U; i < sizeof(bad_models) / sizeof(bad_models[0]); ++i) {
@@ -445,7 +489,31 @@ static int protocol_inputs(void)
         empty = c == NULL;
         cog_cli_configuration_free(c);
         CHECK(rc == COG_ERROR_INVALID_ARG && empty);
+        o.explicit_options &= ~(uint32_t)COG_CLI_OPT_MODEL;
+        CHECK(setenv("COG_MODEL", bad_models[i], 1) == 0);
+        CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_INVALID_ARG &&
+              c == NULL);
+        CHECK(unsetenv("COG_MODEL") == 0);
+        {
+            char path[] = "/tmp/cog-config-model-j-XXXXXX", contents[256];
+            CHECK(snprintf(contents, sizeof(contents), "models.default=%s\n",
+                           bad_models[i]) > 0);
+            CHECK(fixture(path, contents) == 0);
+            o.config_path = path;
+            CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_INVALID_ARG &&
+                  c == NULL);
+            CHECK(unlink(path) == 0);
+            o.config_path = NULL;
+        }
+        o.explicit_options |= COG_CLI_OPT_MODEL;
     }
+    for (i = 0U; i < sizeof(good_models) / sizeof(good_models[0]); ++i) {
+        o.model_id = good_models[i];
+        CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_OK);
+        cog_cli_configuration_free(c);
+    }
+    o.workspace_root = "synthetic/\x80"; /* Paths retain native filesystem bytes. */
+    o.explicit_options |= COG_CLI_OPT_WORKSPACE;
     o.model_id = "synthetic/\xe2\x98\x83"; /* valid multibyte scalar */
     CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_OK);
     cog_cli_configuration_free(c);
