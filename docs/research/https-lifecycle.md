@@ -10,7 +10,7 @@ libcurl multi is a viable transport candidate with **explicit host-owned
 process initialization**, separate context-owned multi handles, verified
 TLS, and event-loop cancellation. Recommend continuing to the header gate
 with libcurl as a **conditional candidate**, not declaring the embedding
-contract satisfied. There are two unresolved adoption gates:
+contract satisfied. There are two adoption gates:
 
 1. Runtime allocations are real: one successful request made 72 observed
    curl allocation calls during polling, after context/request setup. A
@@ -20,10 +20,12 @@ contract satisfied. There are two unresolved adoption gates:
    distinguish these from Cog-owned allocations, and define OOM and memory-limit
    semantics, or reject this backend. A constructor lifetime alone does not
    establish a byte bound. No silent weakening of the existing rule.
-2. The installed build uses a threaded resolver. These localhost fixtures
-   do not exercise slow DNS or resolver-thread teardown. Hard cancellation
-   latency during arbitrary DNS is unproven. Investigate a c-ares build and
-   controlled DNS stalls before accepting the release's DNS/shutdown bounds.
+2. The installed threaded-resolver build **fails** the DNS cancellation
+   target: a controlled two-second libc lookup made remove_handle wait
+   1.893 seconds. The DNS followup below demonstrates a c-ares-only build
+   cancelling actual blackholed DNS queries promptly without leftover
+   threads. Require a verified c-ares primary resolver for the initial
+   supported transport profile; ASYNCHDNS alone is insufficient.
 
 No Cog global initialization flag/reference counter or lazy curl init is
 needed or proposed. The host must initialize the dependency before any Cog
@@ -197,7 +199,7 @@ capacity overflow, allocation faults, descriptor accounting and sanitizer
 cleanup. Final self-review separates observations from guarantees. These
 are research passes, not the required three public-header review passes.
 
-Still unproven: real DNS delays/cancel/teardown, all dependency allocations,
+Still unproven: DNS behavior across untested resolver/build profiles, all dependency allocations,
 hard memory caps, TLS certificate expiry/revocation policy, proxies,
 HTTP/2 behavior, SIGPIPE behavior on all TLS builds, static packaging,
 request-body ownership, curl pause/resume lossless streaming, provider
@@ -211,5 +213,115 @@ asynchronous resolver and signal requirements. Global cleanup does not wait
 for resolver threads under the
 [cleanup contract](https://curl.se/libcurl/c/curl_global_cleanup.html), so
 plugin unloading and DNS shutdown cannot be certified by these localhost
-measurements. Keep the ticket open until independent review, and carry
-these adoption gates into the shared blueprint/header work.
+measurements. The DNS followup adds a concrete default-threaded-resolver
+counterexample and a c-ares-only supported candidate. Keep both research
+tickets open until independent review, and carry these adoption gates into
+the shared blueprint/header work.
+
+
+## DNS followup: c-ares required for the supported profile
+
+Child research ticket `23ae6c8`. Reproducible probe sources, pinned dependency
+hashes, authenticated setup commands and offline runner are in
+[pocs/https-lifecycle/dns](../../pocs/https-lifecycle/dns/README.md).
+No system packages or resolver configuration were changed. Downloads and
+custom build stayed in /tmp; no downloaded source or binary is committed.
+
+The installed curl 8.14.1 reports ASYNCHDNS but ares=NULL. Its DNS_SERVERS
+option returns 48 (CURLE_UNKNOWN_OPTION). In the isolated test host, an
+LD_PRELOAD getaddrinfo shim sleeps two seconds then returns EAI_AGAIN. At
+100ms the multi pump remains responsive, but default removal **joins the
+resolver thread**, blocking cancellation for another 1.893 seconds. This is
+not a real wire-DNS experiment: it deliberately controls the libc resolver
+latency without touching system configuration. It directly disproves a
+universal bounded-cancel claim for this backend. The pinned
+[curl threaded resolver source](https://github.com/curl/curl/blob/curl-8_14_1/lib/asyn-thrdd.c)
+explains why shutdown waits unless quick_exit is enabled.
+
+A separately built curl 8.14.1 with ENABLE_ARES=ON and
+ENABLE_THREADED_RESOLVER=OFF uses extracted Debian c-ares 1.34.9. A local
+UDP server receives DNS requests but sends no answers. Three cancellations
+and one configured 800ms timeout all complete with one host thread throughout,
+including immediately after easy/multi/global cleanup. Final descriptor counts
+match baseline. This fixture never performs an external DNS/provider request.
+
+| Probe | Latest observed result |
+|---|---|
+| Distro threaded resolver, cancel around 107ms | remove_handle 1893.377ms; remaining cleanup prompt after resolver joined |
+| Same resolver with QUICK_EXIT | remove_handle 0.043ms; **two threads remain after global cleanup**; one thread only after explicit 2.2s settling delay |
+| c-ares, three actual pending-query cancels | remove_handle 0.045–0.082ms; easy cleanup 0.017–0.030ms; multi cleanup 0.012–0.027ms; global cleanup 0.002–0.004ms |
+| c-ares, real blackhole DNS timeout | CURLE_OPERATION_TIMEDOUT at 800.807ms; no residual thread or descriptor |
+
+The same c-ares-only build also passed all 12 existing TLS/transport cases
+and the 80 curl allocation-failure cases. DNS-specific dependency OOM paths
+remain outside that earlier allocator sweep.
+
+The offline suite observes eight blackholed DNS packets, checks every
+c-ares service/cancel/cleanup step under 150ms, and verifies no resolver
+thread remains immediately after cleanup. These are measured regression
+ceilings on this host, not universal latency guarantees or full dependency
+allocation/OOM coverage. c-ares cancellation and destruction synchronously
+notify outstanding queries and release channel resources under its
+[ares_cancel](https://c-ares.org/docs/ares_cancel.html) and
+[ares_destroy](https://c-ares.org/docs/ares_destroy.html) contracts. Callbacks,
+allocator latency, scheduler delays and config/filesystem operations remain
+outside a hard real-time guarantee.
+
+### Backend checks and lifecycle contract
+
+For the initial supported package, record curl's **actual build options**:
+ENABLE_ARES=ON and ENABLE_THREADED_RESOLVER=OFF. Require runtime ASYNCHDNS,
+a nonnull curl_version_info().ares identifying the tested c-ares version,
+and successful c-ares-only DNS_SERVERS option support on a temporary easy
+handle (reset to system defaults before real use). For the tested curl
+8.14.1 source, DNS_SERVERS is compiled only for CURLRES_ARES. The
+[option documentation](https://curl.se/libcurl/c/CURLOPT_DNS_SERVERS.html)
+also states that it needs c-ares. Fail context construction clearly if the
+supported profile cannot be established; never silently fall back.
+
+A nonnull ares string alone is insufficient: curl can build c-ares alongside
+a **threaded primary A/AAAA resolver** for HTTPS resource records. Reject
+such combined builds (reported as asyn-rr where available), retain build
+provenance, and rerun the controlled DNS cancellation suite for every shipped
+configuration. c-ares 1.34.9 and curl 8.14.1 are the reproduced versions, not
+a claim that every version above them has identical latency. Production
+must use maintained security-patched packages; the unpatched upstream curl
+archive here is for local isolated experimentation only.
+
+The host explicitly initializes curl before contexts and cleans it up after
+all contexts, thereby also owning curl's dependency initialization; Cog
+adds no global resolver pointer or allocator/refcounter workaround. Keep
+request and context ownership explicit. The c-ares experiment adds no Cog
+state, callback registration system, or implicit startup.
+
+Do **not** use
+[CURLOPT_QUICK_EXIT](https://curl.se/libcurl/c/CURLOPT_QUICK_EXIT.html) as an
+embedding fix: its documented purpose permits abandoned cleanup when the
+program is about to exit. The experiment confirms the resolver thread can
+outlive easy/multi/global cleanup. Keeping allocator callbacks and code loaded
+until arbitrary DNS returns would undermine the clean destructor contract.
+
+If a host cannot supply the supported resolver, the smallest honest fallback
+contract is to refuse DNS-dependent starts, or accept explicit host-supplied
+resolved routes through
+[CURLOPT_RESOLVE](https://curl.se/libcurl/c/CURLOPT_RESOLVE.html) while preserving the URL hostname
+for TLS/SNI verification. That alternative must disable implicit proxy,
+redirect or other fallback resolution and make TTL/refresh ownership explicit;
+it is not implemented or validated here. Another honest contract could
+separate immediate **logical cancel** from potentially unbounded resolver
+**drain/free**, but that does not satisfy this release's bounded reusable
+shutdown goal. A worker process could isolate blocking DNS, at substantial
+extra lifecycle complexity. Prefer the c-ares requirement.
+
+### Dependency verification
+
+Curl source archive signature was verified with GPG against fingerprint
+27EDEAF22F3ABCEB50DB9A125CC908FDB71E12C2 from the
+[official verification page](https://curl.se/docs/verify.html); GPG emitted
+VALIDSIG for that fingerprint. Its SHA256 matched the archive used for the
+exploratory build. The exact c-ares .deb files were fetched with apt-get
+download, and their SHA256 values match apt's authenticated repository
+metadata. Source/package URLs, digests and minimal reconstruction commands
+are preserved in the DNS README/SHA256SUMS. c-ares uses the MIT license,
+curl uses SPDX curl, and OpenSSL uses Apache-2.0. This does not replace the
+complete binary dependency/license inventory required for packaging.
