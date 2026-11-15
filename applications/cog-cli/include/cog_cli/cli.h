@@ -543,9 +543,13 @@ cog_result_t cog_cli_app_reconcile(cog_cli_app_t *app,
  * by app_new, writes sorted IDs to stdout, frees the output, and exits with no
  * provider work. This explicit output constructor may return NOMEM/LIMIT.
  * RECOVER noninteractive returns INDETERMINATE. Interactive recovery accepts
- * /tools, /history, /reconcile NODE CALL OUTCOME EVIDENCE and /quit; ordinary
+ * /tools, /history, /reconcile NODE CALL OUTCOME EVIDENCE,
+ * /reconcile-index NODE ORDINAL OUTCOME EVIDENCE and /quit; ordinary
  * text/policy ALLOW never executes. Each reconciliation is an explicit operator
- * decision, persisted through cog_cli_app_reconcile. EOF leaves unresolved
+ * decision, persisted through cog_cli_app_reconcile. ORDINAL is 1-based in
+ * the immutable original assistant tool_calls order; literal CALL is never
+ * reinterpreted as an index. /tools displays escaped IDs and these ordinals.
+ * EOF leaves unresolved
  * intent intact; all reconciled returns OK without automatic execution.
  * Normal interactive mode adds /sessions, /history, /fork NODE and /usage.
  * Output/flush errors return IO; opaque data is never rendered and unavailable
