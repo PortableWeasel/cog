@@ -8,7 +8,8 @@ void *__real_malloc(size_t size);
 void *__real_calloc(size_t n, size_t size);
 void *__wrap_malloc(size_t size);
 void *__wrap_calloc(size_t n, size_t size);
-static size_t allocation, fail_at;
+/* Observe linker-wrapper effects across builtin/libc leaf assumptions. */
+static volatile size_t allocation, fail_at;
 void *__wrap_malloc(size_t size)
 {
     if (++allocation == fail_at) return NULL;
@@ -19,8 +20,35 @@ void *__wrap_calloc(size_t n, size_t size)
     if (++allocation == fail_at) return NULL;
     return __real_calloc(n, size);
 }
+/* Positive control: optimized direct allocator calls must reach wrappers,
+ * update the real oracle, and honor its fault injection before use. */
+static void allocation_oracle_control(void)
+{
+    size_t before = allocation;
+    unsigned char *bytes = malloc(8U);
+    assert(bytes != NULL && allocation == before + 1U);
+    bytes[0] = 0x5aU;
+    free(bytes);
+    before = allocation;
+    bytes = calloc(8U, 1U);
+    assert(bytes != NULL && allocation == before + 1U);
+    assert(bytes[0] == 0U && bytes[7] == 0U);
+    free(bytes);
+    before = allocation;
+    bytes = malloc(8U);
+    free(bytes);
+    assert(allocation == before + 1U); /* Detect optimized-away allocator pairs. */
+    before = allocation;
+    fail_at = allocation + 1U;
+    bytes = malloc(8U);
+    assert(bytes == NULL && allocation == before + 1U);
+    fail_at = 0U;
+    allocation = 0U;
+}
+
 int main(void)
 {
+    allocation_oracle_control();
     size_t point;
     assert(curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK);
     for (point = 1U; point <= 32U; ++point) {

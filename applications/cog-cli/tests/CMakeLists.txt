@@ -18,6 +18,9 @@ target_link_libraries(test_mock_provider PRIVATE cog::cli)
 target_enable_warnings(test_mock_provider)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_link_options(test_mock_provider PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc)
+    # Allocator linker wrappers invalidate the corresponding builtin effects.
+    target_compile_options(test_mock_provider PRIVATE
+        -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc)
     target_compile_definitions(test_mock_provider PRIVATE COG_MOCK_WRAP_ALLOC=1)
 endif()
 
@@ -135,6 +138,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang
     target_link_libraries(test_configuration_memory PRIVATE cog-cli-config)
     target_link_options(test_configuration_memory PRIVATE
         -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=free)
+    # Allocator linker wrappers invalidate the corresponding builtin effects.
+    target_compile_options(test_configuration_memory PRIVATE
+        -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-free)
     target_enable_warnings(test_configuration_memory)
     add_test(NAME cli-configuration-memory COMMAND test_configuration_memory)
 endif()
@@ -164,6 +170,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang
     add_executable(test_app_memory test_app_memory.c)
     target_link_libraries(test_app_memory PRIVATE cog::cli)
     target_link_options(test_app_memory PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc)
+    # Allocator linker wrappers invalidate the corresponding builtin effects.
+    target_compile_options(test_app_memory PRIVATE
+        -fno-builtin-malloc -fno-builtin-calloc)
     target_enable_warnings(test_app_memory)
     add_test(NAME cli-app-memory COMMAND test_app_memory)
     add_executable(test_app_save test_app_save.c)
