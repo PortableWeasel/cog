@@ -23,6 +23,7 @@ set(COG_UNIT_TESTS
     test_obs
     test_obs_types
     test_obs_critic
+    test_orchestrator
 )
 
 foreach(test ${COG_UNIT_TESTS})
@@ -44,6 +45,15 @@ target_enable_warnings(test_ipc)
 add_executable(test_ipc_critic test_ipc_critic.c)
 target_link_libraries(test_ipc_critic PRIVATE cog::ipc)
 target_enable_warnings(test_ipc_critic)
+
+# test_orchestrator is a white-box test: it drives the private hooks
+# declared in orchestrator_internal.h (accept, poll, register_session,
+# clock override, timeout overrides), so it includes the cog-orchestrator
+# src directory.  The public contract is still exercised through
+# cog/orchestrator.h.  It needs pthreads for the shutdown ack responder.
+target_link_libraries(test_orchestrator PRIVATE cog::orchestrator Threads::Threads)
+target_include_directories(test_orchestrator PRIVATE
+    ${PROJECT_SOURCE_DIR}/libraries/cog-orchestrator/src)
 
 # test_core exercises a concurrent cog_core_stop (shutdown must not drop a
 # pending message), so it needs the pthread library.
@@ -141,6 +151,10 @@ add_test(NAME unit-ipc
 
 add_test(NAME unit-ipc-critic
     COMMAND test_ipc_critic
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME unit-orchestrator
+    COMMAND test_orchestrator
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
 # -----------------------------------------------------------------------
