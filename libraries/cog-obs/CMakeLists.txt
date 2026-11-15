@@ -13,6 +13,10 @@ add_library(cog-obs STATIC
 )
 add_library(cog::obs ALIAS cog-obs)
 
+# Export as cog::obs (matching the build-tree alias) so installed
+# consumers use the same target name as in-tree consumers.
+set_target_properties(cog-obs PROPERTIES EXPORT_NAME obs)
+
 target_include_directories(cog-obs
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

@@ -220,3 +220,27 @@ the collection's storage and remain valid until the collection is freed.
   matching destructors. The request payload is borrowed.
 - No global mutable state; no dynamic registration. Tools are resolved
   exclusively through the static const `cog_tool_table_t`.
+
+## Core integration (ticket 1433731)
+
+`tests/integration/test_core_toolkit.c` wires a real cog-core agent (with a
+static const tool table) to the toolkit dispatcher and pins:
+
+- concurrent execution: two independent tools that each sleep run with
+  `max_parallel > 1` in strictly less wall-clock time than the same two
+  calls run sequentially, proving real overlap;
+- ordered collection: `cog_toolkit_execute_all` returns exactly
+  `call_count` results in call order, and the results are collected into
+  the session tree as tool-result nodes in that same order;
+- timeout: a tool that outlives its per-call timeout is reported as
+  `COG_ERROR_TIMEOUT`;
+- cooperative cancellation: a call cancelled before dispatch is reported
+  as `COG_ERROR_ABORTED`;
+- tool error propagation: a tool returning an error surfaces that status
+  in its result slot.
+
+The toolkit's worker threads write only per-call result slots and are
+joined before the collection is assembled on the caller thread, so the
+integration test is data-race free and runs clean under TSan.
+
+Run with `ctest -R integration-core-toolkit`.

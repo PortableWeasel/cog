@@ -13,6 +13,10 @@ add_library(cog-provider STATIC
 )
 add_library(cog::provider ALIAS cog-provider)
 
+# Export as cog::provider (matching the build-tree alias) so installed
+# consumers use the same target name as in-tree consumers.
+set_target_properties(cog-provider PROPERTIES EXPORT_NAME provider)
+
 target_include_directories(cog-provider
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

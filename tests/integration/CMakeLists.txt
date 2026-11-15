@@ -49,6 +49,29 @@ target_enable_warnings(test_core_obs)
 find_package(Threads REQUIRED)
 target_link_libraries(test_core_ipc PRIVATE Threads::Threads)
 
+# test_core_provider wires a real cog-core agent to a fake static-vtable
+# provider and drives a user-input -> provider-send -> LLM_CHUNK ->
+# LLM_COMPLETE flow through real dispatch and session history, covering
+# streaming content, error/retry metadata propagation, cancellation, and
+# provider accessor/ownership.
+add_executable(test_core_provider
+    test_core_provider.c
+)
+
+target_link_libraries(test_core_provider PRIVATE cog::core cog::provider)
+target_enable_warnings(test_core_provider)
+
+# test_core_toolkit wires a real core/static tool table to the toolkit
+# dispatcher and proves bounded parallel execution (overlap), ordered
+# result collection into session history, timeout, cooperative
+# cancellation, and tool error propagation.
+add_executable(test_core_toolkit
+    test_core_toolkit.c
+)
+
+target_link_libraries(test_core_toolkit PRIVATE cog::core cog::toolkit Threads::Threads)
+target_enable_warnings(test_core_toolkit)
+
 # -----------------------------------------------------------------------
 # CTest registration
 # -----------------------------------------------------------------------
@@ -70,4 +93,12 @@ add_test(NAME integration-core-ipc
 
 add_test(NAME integration-core-obs
     COMMAND test_core_obs
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME integration-core-provider
+    COMMAND test_core_provider
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME integration-core-toolkit
+    COMMAND test_core_toolkit
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
