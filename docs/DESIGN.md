@@ -10,7 +10,10 @@
 > completion. Stage 14 uses technical gates under delegated design authority.
 > [Transport research](research/https-lifecycle.md) is accepted as conditional
 > evidence for the accepted header profile; runtime lifecycle and maintained-build
-> conformance remain delivery work. DNS follow-up requires a c-ares primary resolver with
+> conformance is recorded by [transport delivery F](REAL_CLIENT_F_EVIDENCE.md).
+> The initial no-replay profile uses fresh HTTP/1.1 connections, no pooling or
+> HTTP/2, and a second-attempt guard. Full release validation remains pending.
+> DNS follow-up requires a c-ares primary resolver with
 > threaded resolution disabled, empirical shipped-profile validation and explicit
 > rejection of unsupported builds. Threaded/QUICK_EXIT alternatives fail cleanup.
 > Core fairness delivery Q must precede the real conversation-loop delivery K.
@@ -26,13 +29,14 @@
 > synchronous toolkit, unversioned-message and automatic transport retry text.
 > Cog workspaces are constructor-bounded; third-party handle runtime allocation
 > is explicitly declared and total dependency-memory caps are unsupported. Final E
-> review accepts that declared profile. No production delivery gate is complete.
+> review accepts that declared profile. Transport F is integrated; sibling
+> implementation and full release gates remain pending.
 
 The [Stage 14.D pass-2 scenario register](REAL_CLIENT_SCENARIO_PASS2.md) records
 the current header amendments, all original20 plus R01–R18 traces and delivery
 ownership. Quiescent same-host guarded checkpoint migration is the supported
 real-client profile; historical cross-core sketches below do not imply live
-handle transfer or automatic replay of effects. Independent gate E remains open.
+handle transfer or automatic replay of effects. Independent gate E passed.
 
 This document captures the software blueprint for Cog, an LLM harness and
 agent framework written in C. It follows the Jeep Method: the fewest

@@ -4,6 +4,11 @@
 > independent review of `8563f81`. The three header passes and final review are
 > complete; implementation and executable conformance remain delivery work.
 
+> [Stage 14.F transport delivery](REAL_CLIENT_F_EVIDENCE.md) is independently
+> reviewed and integrated. The initial no-replay profile uses fresh HTTP/1.1
+> connections with pooling/HTTP2 disabled. Full project installation and shipped
+> dependency closure remain gate P requirements.
+
 Status: planning baseline, 2026-11-15. Parent ticket: `2b9d0ea`.
 The user authorized autonomous design decisions and testing. This supersedes
 Stage 14's earlier scope-confirmation requirement. Header and implementation

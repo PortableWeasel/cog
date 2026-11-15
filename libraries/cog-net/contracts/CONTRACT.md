@@ -28,8 +28,9 @@ validation. `run_https.py` creates an ephemeral loopback CA/server to check HTTP
 capacity failure, untrusted certificates and absence of replay. `test_net_oom`
 injects failures into curl allocator callbacks during setup and request creation.
 The independent DNS probe covers cancel/timeout and thread/descriptor cleanup for
-the actual audited dependency build. Further adversarial coverage and independent
-review are required before package F is complete.
+the actual audited dependency build. Independent revision review and integrated
+validation are recorded in [delivery F evidence](../../../docs/REAL_CLIENT_F_EVIDENCE.md).
+Full project installation and shipped dependency closure remain gate P work.
 
 The audited curl 8.23.0 source has separate automatic replay paths for a dead
 reused connection and HTTP/2 stream refusal/downgrade. Fresh connections and
