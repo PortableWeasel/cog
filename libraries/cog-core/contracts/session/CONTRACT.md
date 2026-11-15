@@ -1,273 +1,108 @@
-# session.h Contract
+# Structured session implementation contract
 
-`libraries/cog-core/include/cog/session.h` — hierarchical conversation tree
-with forking, timing, and billing.
+Stage 14.G implements the public `cog/session.h` contract. The constructor
+reserves nodes, a coalescing payload arena, ledger/audit descriptors, public
+snapshot records and history scratch. Append, fork, discard, transition,
+reconciliation and history do not allocate or grow their reservations.
 
-This document records the executable contract verified by
-`tests/unit/test_session.c` and implemented by
-`libraries/cog-core/src/session.c` (ticket 0f055f5, Stage 12.1a). It
-intentionally does **not** expand the public API; it documents what the
-header declares and pins the implementation's interpretation of every
-ambiguous point so the Critic can review the choices.
+A complete structured message is copied transitively into one node payload.
+Content and argument lengths are explicit; opaque bytes retain embedded NUL.
+Neutral message validation checks UTF-8, role, pointer/count pairs, call-ID
+uniqueness and usage availability. JSON/schema and opaque namespace support
+belong to the consuming provider/toolkit.
 
-## Status
+Node and audit identities are monotonically issued, including discarded drafts.
+Capacity exhaustion fails before mutation; there is no automatic pruning.
+Discard/reset only remove uncommitted text drafts and cannot erase identified
+tools, results, audit, restored nodes or shared ancestors. Constructor failures
+release every reservation. Restoring with a larger reservation is a separate
+constructor and leaves the original object alive.
 
-Implemented. Guard: `COG_SESSION_H`. Includes `<cog/event.h>`,
-`<cog/message.h>`, `<cog/result.h>`, `<stdbool.h>`, `<stddef.h>`,
-`<stdint.h>`.
+The execution key is assistant-node identity plus provider call ID. Every call
+starts PROPOSED. Only documented compare-and-transition steps add immutable
+audit records. A terminal state and its single associated COMPLETE TOOL result
+are required for replay. Unresolved entries block unrelated input and branch
+switches session-wide; INDETERMINATE permits only explicit atomic reconciliation.
+Reconciliation records copied result text as immutable evidence and consumes
+node, payload and audit capacity atomically.
 
-## Public types
+Fork returns the same immutable shared node, preserving ancestor effect identity.
+Selecting a nonleaf leaves the current active leaf selected until explicit
+`add_message(parent=fork_point)` creates a divergent child. Leaf selection can
+select that leaf. No copying of assistant identities or tool execution occurs.
 
-| Type | Kind | Notes |
-|------|------|-------|
-| `cog_session_t` | opaque struct | Created by `cog_session_new`, destroyed by `cog_session_free`. |
-| `cog_session_node_t` | opaque struct | Owned by the session; never freed directly. |
-| `cog_session_config_t` | struct | `id` (copied; NULL → generated) and `max_nodes` (0 → default 1024). |
-| `cog_timing_t` | struct | Six fields: five `uint64_t` ms values + `tokens_per_second` double. |
-| `cog_cost_t` | struct | Token counts, per-token prices, `total_cost`. |
-| `cog_node_role_t` | enum | `COG_NODE_SYSTEM=0`, `USER=1`, `ASSISTANT=2`, `TOOL_CALL=3`, `TOOL_RESULT=4`. |
-| `cog_node_data_t` | struct | Read-only view of a node; owned by the session. |
+Public snapshots preserve preorder sibling order, sparse IDs, active leaf,
+identity high-water, all structured and legacy fields, usage and complete audit
+records. Restore validates parent order, duplicates, ledger/audit chains, global
+audit identity uniqueness, result associations and active-path unresolved state.
+STARTED conservatively adds one INDETERMINATE transition; restoring that result
+again does not add another transition. Unsafe unidentified legacy tools require
+inspection mode, which cannot build provider history or mutate execution state.
 
-## Constants
+`tests/unit/test_session.c` covers capacity/discard identity, arena reclamation,
+transitive copying, unknown/duplicate associations, crash normalization,
+capacity-failed reconciliation, larger restore, immutable audit evidence,
+branch-local call-ID reuse, immediate nonleaf-fork snapshots, off-path unresolved
+refusal, sparse restore, malformed identities/audits and legacy inspection.
+`test_message.c` covers malformed UTF-8, duplicate IDs, pointer pairs, roles,
+opaque bytes and finite known cost. Targeted strict C11 and ASan/UBSan executions
+pass. Store migration, durable generations and OS ownership are the separate
+G.2 persistence contract; they are not inferred from these session tests.
 
-| Constant | Value | Meaning |
-|----------|-------|---------|
-| `COG_NODE_SYSTEM` | `0` | System instruction. |
-| `COG_NODE_USER` | `1` | User input. |
-| `COG_NODE_ASSISTANT` | `2` | Model output. |
-| `COG_NODE_TOOL_CALL` | `3` | Tool invocation (name + JSON args). |
-| `COG_NODE_TOOL_RESULT` | `4` | Tool result content. |
+The private allocation-free `cog_session_snapshot_validate` checks exact public
+records for store admission without constructing a hidden temporary session.
+It validates tree/active-leaf identities, complete call/result associations,
+audit chains and unique sequences, preserved high-water, and the prohibition
+on unrelated descendants after unresolved calls. It does not normalize STARTED
+or grant execution. Restore calls this validator before reserving its owned
+object, then copies and conservatively normalizes.
 
-## Functions and error codes
+`test_session_allocations.c` uses linker wrappers for malloc/calloc/realloc/
+strdup: every constructor allocation is failed individually for new and restore,
+and all append/discard/transition/reconcile/history/fork/snapshot/validation
+operations run with allocation forbidden. Strict and ASan/UBSan runs pass.
 
-Every function returns `cog_result_t` except the documented `void`/`bool`/
-`double`/pointer accessors. Codes marked **(ext)** are fail-closed
-extensions not listed in the header's `@return` block but consistent with
-`cog/result.h`; they are pinned by the tests.
+## Independent G.1 review revision 1
 
-| Function | Success | Errors |
-|----------|---------|--------|
-| `cog_session_new` | `COG_OK` | `NULL_PTR` (out NULL), `NOMEM` |
-| `cog_session_free` | — (void) | NULL is a no-op |
-| `cog_session_id` | id string | NULL when session NULL |
-| `cog_session_reset` | `COG_OK` | `NULL_PTR`, `INVALID_STATE` (reserved, see below) |
-| `cog_session_is_empty` | bool | true when session NULL |
-| `cog_session_root` / `cog_session_active` | node | NULL when empty or session NULL |
-| `cog_node_parent` / `cog_node_first_child` / `cog_node_next_sibling` | node | NULL when absent or node NULL |
-| `cog_node_child_count` | size_t | 0 when node NULL |
-| `cog_node_data` | `const cog_node_data_t *` | NULL when node NULL |
-| `cog_session_add_message` | `COG_OK` | `NULL_PTR`, `NOMEM`, `INVALID_ARG` (ext: malformed role), `NOT_FOUND` (ext: foreign parent) |
-| `cog_session_append` | `COG_OK` | `NULL_PTR`, `NOMEM`, `INVALID_ARG` (ext), `NOT_FOUND` (ext) |
-| `cog_session_add_tool_call` | `COG_OK` | `NULL_PTR` (session/tool_name/tool_args NULL), `NOMEM`, `NOT_FOUND` (ext) |
-| `cog_session_add_tool_result` | `COG_OK` | `NULL_PTR` (session/parent/tool_result NULL), `NOMEM`, `NOT_FOUND` (ext) |
-| `cog_session_fork` | `COG_OK` | `NULL_PTR`, `NOMEM`, `NOT_FOUND` (ext: foreign node) |
-| `cog_session_get_history` | `COG_OK` | `NULL_PTR` (any of 4 args), `NOT_FOUND` (ext: foreign node), `NOMEM` |
-| `cog_session_set_timing` / `cog_session_set_cost` | `COG_OK` | `NULL_PTR`, `NOT_FOUND` (ext: foreign node) |
-| `cog_session_cumulative_cost` | double | 0.0 when session/node NULL or node foreign |
-| `cog_session_cumulative_timing` | `COG_OK` | `NULL_PTR`, `NOT_FOUND` (ext: foreign node) |
-| `cog_session_parent_id` | string | NULL when session NULL or no parent |
-| `cog_session_set_parent` | `COG_OK` | `NULL_PTR` (session NULL), `NOMEM` |
-| `cog_session_discard_node` | `COG_OK` | `NULL_PTR`, `INVALID_STATE` (node has children), `NOT_FOUND` (foreign node) |
+Completion is branch-local as well as session-wide. A finalized ledger entry
+and TOOL result in a sibling branch cannot complete the selected provider
+context. Fork/history/new-message insertion require exactly one associated final
+result for every assistant call on the selected parent path. Partial multi-call
+result prefixes are unsafe fork points. Snapshot validation checks each retained
+leaf independently, allows unresolved assistant turns only on the active leaf,
+and refuses unrelated messages before their parent path's tool results. A raw
+wire decode of such a malformed branch remains inadmissible in REPLAY or INSPECT.
 
-`COG_ERROR_NOMEM` is not injectable through this API (no allocation
-failure hook), so it is documented but not exercised by the tests.
+Discard of an active divergent text draft refuses INVALID_STATE atomically when
+its parent retains another child. Successful discard continues to select its
+parent, which is then a leaf. Refusal preserves node/payload capacity, selected
+leaf, sibling order and high-water. An unrelated uncommitted text draft can still
+be discarded while retaining the selected leaf.
 
-## Ownership
+Regressions cover assistant-before-result fork/add/history refusal, incomplete
+multi-call prefixes, active and off-active malformed sibling snapshots,
+serialized malformed branch rejection including inspection mode, and text-only
+divergent discard. All four targeted message/session/codec/allocation tests pass
+strict C11-Werror-NDEBUG and ASan/UBSan. Independent re-review remains required.
 
-- The session owns every node and every string it stores. All content,
-  tool, raw-data and metadata strings are deep-copied on insertion and
-  released by `cog_session_free`, `cog_session_reset`, discard, and
-  pruning. No hidden state exists outside the session struct.
-- `cog_node_data` returns a pointer into the node; it is valid until the
-  session is structurally modified (node freed).
-- `cog_session_get_history` returns a pointer into a single per-session
-  buffer; it is valid until the next structural modification **or** the
-  next `cog_session_get_history` call (the buffer is rebuilt in place).
-- `cog_session_set_parent` copies the id; `cog_session_new` copies
-  `config->id`.
-- On failure, output parameters (`*out`, `*out_node`, `*out_msgs`,
-  `*out_count`, `*out`) are left untouched.
+## Independent G.1 review revision 2
 
-## Invariants
+Explicit legacy inspection insertion uses its own private admission mode. It
+permits traversal of unidentified legacy call/result nodes when constructing the
+documented call -> result inspection chain, while retaining all identified
+ledger/result path checks. Ordinary structured insertion, fork and history use
+strict replay admission. The inspection helpers do not invent tool IDs, ledger
+entries, audits or replay authority; known unresolved identified effects and
+sibling-only identified results remain rejected.
 
-- Node ids are unique and stable for the lifetime of the session; they
-  start at 1 and never repeat (discard does not reuse ids; reset restarts
-  at 1).
-- `parent_id` in node data is 0 for the root and otherwise equals the
-  parent's `node_id`.
-- The active node is the most recently added node (add/append/tool
-  call/tool result/fork all advance it). Discarding the active node moves
-  it to the discarded node's parent.
-- The tree is always consistent: no orphaned nodes, parent/child/sibling
-  links agree with `child_count` and `node_count`.
-- Content is length-prefixed: `content_len` is authoritative and embedded
-  NUL bytes are payload. A NULL content with zero length is preserved as
-  NULL; a non-NULL content with zero length is preserved as an empty
-  string.
-- Tool arguments and tool results are also length-prefixed internally.
-  Private `tool_args_len` and `tool_result_len` byte counts are set at
-  insertion, copied on fork, and used for history messages; copy and
-  history never re-derive a stored payload length with `strlen`. A
-  trailing terminator is allocated for convenience, but embedded NUL
-  bytes remain payload.
+Positive regressions construct call/result chains both at an empty root and
+below a text root, verify transitive tool-name/arguments/result copies, retain a
+zero-entry ledger, refuse history/ordinary append/fork, and restore the exact
+records only in inspection mode. The earlier branch-local and divergent-discard
+regressions remain passing. All four suites plus the independent legacy
+reproduction pass strict C11-Werror-NDEBUG and ASan/UBSan (ten executions).
 
-## Complexity
-
-- Every node has a private owning-session back-pointer. Containment and
-  foreign-node checks are **O(1)**, independent of tree depth.
-- Navigation, discard, and tree insertion use **O(1)** pointer/counter
-  updates, excluding allocation and payload copying. Fork deep-copying is
-  **O(payload bytes)**.
-- The session maintains an exact count of leaves eligible for pruning
-  (excluding root and active). When over `max_nodes` with no eligible leaf,
-  pruning exits in **O(1)**. Thus a single-chain append is **O(1)** plus
-  allocation, even when the chain exceeds the soft cap.
-- When pruning is required, finding the oldest eligible leaf is **O(N)**
-  per removed node; pruning `k` leaves is **O(kN)**. This preserves the
-  documented oldest-first choice without adding another index.
-- History construction and cumulative cost/timing are **O(depth)**.
-  Reset/free are **O(N)**.
-- **Single-chain limitation:** `max_nodes` does not bound a linear
-  conversation. Its only leaf is active (and the root is also protected),
-  so no node is eligible for pruning. Such a chain grows to **O(N)**
-  memory by design, but appending is now linear overall rather than
-  quadratic.
-
-## Design decisions (interpretations of the header)
-
-These are the points where the header is ambiguous; the implementation
-picks one reading and pins it with tests.
-
-1. **A new session is empty.** `cog_session_is_empty` is true and
-   `cog_session_root`/`cog_session_active` are NULL after `cog_session_new`.
-   The first `cog_session_add_message(s, NULL, ...)` creates the root.
-   (docs/WALKTHROUGH.md describes a root node created at `session_new`;
-   the header's empty-session contract supersedes it.)
-
-2. **Fork copies the fork-point node.** `cog_session_fork` deep-copies the
-   fork-point node's data (role, content, tool fields and their private
-   byte lengths, timing, cost) into a new node inserted as the next sibling
-   of the source, with no children.
-   The new branch therefore shares all ancestors by reference and owns its
-   own children, matching the header's "shares all ancestor nodes but has
-   its own children". Forking the root is a no-op that returns the root
-   itself (the root is already the shared ancestor of every branch).
-
-3. **History tool mapping.** `COG_NODE_TOOL_CALL` and
-   `COG_NODE_TOOL_RESULT` both map to `COG_MESSAGE_ROLE_TOOL` in the
-   history: the call contributes `tool_args` as content with `tool_name`
-   as name; the result contributes `tool_result` as content. Both history
-   messages use the stored private byte length, so payloads containing
-   embedded NUL bytes round-trip with their original `content_len`. A
-   result node created via `cog_session_add_tool_result` deep-copies the
-   parent tool-call node's `tool_name`, so its history message name
-   matches the call. When the parent carries no tool name (e.g. a plain
-   message node), the result node's `tool_name` is NULL. A result created
-   via `cog_session_add_message` with `COG_MESSAGE_ROLE_TOOL` carries the
-   message's `name`.
-
-4. **History cache.** The returned message array is a per-session buffer
-   rebuilt on demand; the implementation updates it through the
-   const-qualified session pointer (the const is a caller-side view).
-
-5. **max_nodes is a soft cap.** Zero selects the default of 1024. After
-   each insertion, if at least one eligible leaf exists, the oldest leaf
-   nodes (smallest `node_id`, excluding the root and the active node) are
-   pruned until the count fits or no eligible leaf remains. If only the
-   root/active remain, the cap is exceeded rather than corrupting the
-   tree. In particular, a single-chain conversation is unbounded: its one
-   leaf is active, so there is nothing safe to prune.
-
-6. **Reset semantics.** `cog_session_reset` frees all nodes, empties the
-   tree, restarts node ids at 1, and retains the session id **and** the
-   parent session id (session identity persists; only conversation nodes
-   are cleared). Its `COG_ERROR_INVALID_STATE` path is reserved for the
-   core integration layer: the session keeps an internal `attached` flag
-   that no public session API sets, so the error is not reachable through
-   this module alone (core.c, ticket 681a566, will own the flag).
-
-7. **Reserved node fields.** `raw_request`, `raw_response`, `model`,
-   `provider`, and `chunk_count` are always NULL/0: the header declares no
-   setter for them. They are preserved for persistence/debugging and will
-   be populated by a future ticket.
-
-8. **Foreign-node rejection.** Any node/parent passed to a session that is
-   not reachable from that session's root is rejected with
-   `COG_ERROR_NOT_FOUND` (fail closed rather than corrupting the tree or
-   writing through a stale pointer).
-
-9. **Discarding the root.** A leaf root may be discarded; the session
-   becomes empty and a subsequent add creates a new root (with a fresh,
-   non-reused id).
-
-10. **Cumulative timing** sums every field of `cog_timing_t` literally
-    along the path (including timestamps); only `duration_ms`/`ttft_ms`/
-    `tokens_per_second` are meaningful as totals. `cumulative_cost` sums
-    `total_cost` per node.
-
-11. **No persistence in this module.** session.h declares no
-    save/load/serialize functions; scenario 13's `cog_session_save` /
-    `cog_session_load` / `cog_session_deserialize` belong to
-    `cog/session_store.h` (Stage 12.2d, ticket 0efef06). No round-trip
-    tests apply here.
-
-## Threading
-
-Per header: a session is owned by exactly one core instance and is not
-thread-safe. All access happens on the thread that runs `cog_core_run`.
-
-## Verification
-
-Commands (run from the repo root; shared CMake is owned by ticket
-6044b51, so the module is compiled directly with the project's strict
-flags):
-
-```bash
-# Implementation, strict flags
-gcc -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Wshadow \
-    -Wsign-conversion -Wmissing-prototypes -Wstrict-prototypes \
-    -Wundef -Wpointer-arith -Wcast-align -Wwrite-strings \
-    -Wlogical-op -Wformat=2 -Werror \
-    -c libraries/cog-core/src/session.c -o /tmp/session.o \
-    -I libraries/cog-core/include -I libraries/cog-ipc/include
-
-# Test, strict flags, then run
-gcc -std=c11 <same flags> -c tests/unit/test_session.c -o /tmp/test_session.o \
-    -I libraries/cog-core/include -I libraries/cog-ipc/include
-gcc /tmp/test_session.o /tmp/session.o -lm -o /tmp/test_session
-/tmp/test_session          # -> "test_session: ok", exit 0
-
-# ASan + UBSan + leak detection
-gcc <same flags> -fsanitize=address,undefined -fno-omit-frame-pointer -g \
-    -c libraries/cog-core/src/session.c -o /tmp/session_asan.o \
-    -I libraries/cog-core/include -I libraries/cog-ipc/include
-gcc <same flags> -fsanitize=address,undefined -fno-omit-frame-pointer -g \
-    -c tests/unit/test_session.c -o /tmp/test_session_asan.o \
-    -I libraries/cog-core/include -I libraries/cog-ipc/include
-gcc -fsanitize=address,undefined -fno-omit-frame-pointer \
-    /tmp/test_session_asan.o /tmp/session_asan.o -lm -o /tmp/test_session_asan
-ASAN_OPTIONS=detect_leaks=1 /tmp/test_session_asan   # -> ok, no leaks
-
-# Repeatable append scaling benchmark (three samples per size/cap)
-gcc -std=c11 -O2 -DNDEBUG -I libraries/cog-core/include \
-    -I libraries/cog-ipc/include libraries/cog-core/src/session.c \
-    tests/unit/bench_session_append.c -o /tmp/bench_session_append
-/tmp/bench_session_append
-```
-
-`tests/unit/test_session.c` covers: lifecycle and NULL contracts; add
-message (root/child/sibling, embedded NULs, NULL content, TOOL role,
-invalid role, foreign parent); append; tool call/result (happy path and
-NULLs); multi-level navigation; node data fields and reserved fields;
-fork (leaf, mid-tree, root, NULLs, foreign, branch divergence, timing/cost
-preservation); history (single, chain, tool mapping, NULLs, foreign,
-rebuild-overwrites); timing/cost set and cumulative sums; parent id
-get/set/clear; discard (leaf, active, non-leaf, foreign, NULLs, root,
-history-after-discard); max_nodes pruning, default, and the unbounded
-single-chain case; stable node ids; fork/discard/prune sibling ordering;
-and mixed-stress invariants. Embedded-NUL regression tests cover both the
-fork copy and history byte length for tool results; an additional test
-covers tool-argument lengths after fork and empty arguments.
-`tests/unit/bench_session_append.c` reports repeatable 10k/20k/40k append
-timings at the default cap and a small cap to guard against reintroducing
-quadratic append behavior.
+Independent review accepted G.1 and the final G.2 commit bookkeeping at
+`619fa0a`; merge `3c4e39c` preserves the reviewed history. Combined core/store
+and scenario 13/14 evidence, including the remaining application/release limits,
+is recorded in `../session_store/CONTRACT.md` and ticket `0a33dd7`.

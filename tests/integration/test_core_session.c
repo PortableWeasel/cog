@@ -58,7 +58,7 @@ enum {
 static cog_handler_result_t on_user_input(cog_core_t *core,
                                           const cog_event_t *event)
 {
-    cog_message_t msg;
+    cog_message_t msg = {0};
     cog_event_t complete;
     cog_handler_result_t r = {ST_RUNNING, COG_OK};
 
@@ -91,7 +91,7 @@ static cog_handler_result_t on_llm_complete(cog_core_t *core,
                                             const cog_event_t *event)
 {
     static const cog_message_t asst = {
-        COG_MESSAGE_ROLE_ASSISTANT, "ok", 2U, NULL
+        .role = COG_MESSAGE_ROLE_ASSISTANT, .content = "ok", .content_len = 2U
     };
     cog_handler_result_t r = {ST_IDLE, COG_OK};
 
@@ -232,7 +232,7 @@ static void test_run_mutates_history(void)
     ev.id = (cog_event_id_t)EV_USER_INPUT;
     ev.kind = COG_EVENT_USER_INPUT;
     ev.payload = "capital of France";
-    ev.payload_len = 18U;
+    ev.payload_len = sizeof("capital of France") - 1U;
 
     CHECK(cog_core_enqueue(core, &ev) == COG_OK);
     CHECK(cog_core_run(core) == COG_OK);
@@ -242,8 +242,9 @@ static void test_run_mutates_history(void)
                                   &msgs, &count) == COG_OK);
     CHECK_EQ_INT(count, 2);
     CHECK(msgs[0].role == COG_MESSAGE_ROLE_USER);
-    CHECK(msgs[0].content_len == 18U);
-    CHECK(memcmp(msgs[0].content, "capital of France", 18U) == 0);
+    CHECK(msgs[0].content_len == sizeof("capital of France") - 1U);
+    CHECK(memcmp(msgs[0].content, "capital of France",
+                 sizeof("capital of France") - 1U) == 0);
     CHECK(msgs[1].role == COG_MESSAGE_ROLE_ASSISTANT);
 
     cog_core_free(core);
