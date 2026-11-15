@@ -16,6 +16,7 @@ set(COG_UNIT_TESTS
     test_state
     test_handler
     test_core
+    test_agent
 )
 
 foreach(test ${COG_UNIT_TESTS})
@@ -28,6 +29,13 @@ endforeach()
 # pending message), so it needs the pthread library.
 find_package(Threads REQUIRED)
 target_link_libraries(test_core PRIVATE Threads::Threads)
+
+# test_agent is a white-box test: it drives the private status-transition
+# hooks declared in agent_internal.h (start/complete/fail/timeout), so it
+# includes the cog-core src directory.  The public contract is still
+# exercised through cog/agent.h.
+target_include_directories(test_agent PRIVATE
+    ${PROJECT_SOURCE_DIR}/libraries/cog-core/src)
 
 # -----------------------------------------------------------------------
 # CTest registration
@@ -58,6 +66,10 @@ add_test(NAME unit-handler
 
 add_test(NAME unit-core
     COMMAND test_core
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME unit-agent
+    COMMAND test_agent
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
 # -----------------------------------------------------------------------

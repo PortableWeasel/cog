@@ -16,6 +16,7 @@ add_library(cog-core STATIC
     src/event.c
     src/state.c
     src/core.c
+    src/agent.c
 )
 add_library(cog::core ALIAS cog-core)
 

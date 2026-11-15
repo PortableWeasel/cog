@@ -127,10 +127,19 @@ cog_result_t cog_agent_status(cog_core_t *core,
                                cog_agent_status_t *out_status);
 
 /**
- * @brief Send a status update to the parent session.
+ * @brief Record a status update for the parent session.
  *
- * Called by a subagent to report progress.  The parent receives a
- * COG_EVENT_SUBAGENT_STATUS event with the status message.
+ * Called by a subagent to report progress.  The status message is
+ * recorded synchronously on the agent record, replacing any previously
+ * recorded status message for this agent.
+ *
+ * Delivery of the @c COG_EVENT_SUBAGENT_STATUS event to the parent
+ * session is performed by the orchestrator layer once it is integrated
+ * (Stage 12.5).  In the current phase, agent.c stores the message on the
+ * record and does not enqueue the event directly.  When the event is
+ * delivered, its payload borrows its lifetime from the agent record, so
+ * a later call to this function may replace (and free) the message
+ * underlying a previously delivered event.
  *
  * @param[in,out] core       Core instance (the subagent's core).
  * @param[in]     agent_id   This subagent's id.
@@ -138,6 +147,7 @@ cog_result_t cog_agent_status(cog_core_t *core,
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p core or @p status_msg is NULL.
  * @return COG_ERROR_NOT_FOUND if @p agent_id does not exist.
+ * @return COG_ERROR_NOMEM if allocation of the copy fails.
  *
  * Threading: not thread-safe.
  */
