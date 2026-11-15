@@ -58,3 +58,11 @@ does not erase a previous member. These rules are pinned in
 [openrouter.h](../../libraries/cog-provider/include/cog/openrouter.h). Future
 fixtures cover absent vs empty, signature-only suffixes and unknown equal/conflicting
 members, then compare exact generated opaque bytes through save/load/fork/replay.
+
+### H concrete depth admission amendment
+
+OpenRouter's first implementation admits max_json_depth 1..256 and rejects a
+larger constructor ceiling with INVALID_ARG before network effects. The public
+OpenRouter header states that range. Tests admit deeply nested opaque metadata
+at depth256 through repeated equal-value merging, reject a ceiling257, and reject
+the same fixture at depth255. ASan/UBSan checks traversal at the admitted bound.

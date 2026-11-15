@@ -142,3 +142,11 @@ process-tree cancellation/reaping. Strict and ASan/UBSan writer suites pass;
 [delivery evidence](../REAL_CLIENT_I_EVIDENCE.md) records exact scope and limits.
 Independent review and library integration passed after one correction cycle.
 Application durable-loop integration remains with K.
+
+## H deterministic provider fixture amendment
+
+The narrow [H mock contract](../REAL_CLIENT_H_MOCK_AMENDMENT.md) adds
+`cog_mock_provider_new_deltas` in `cog_cli/mock_provider.h`. It supplies retained
+TOOL_BEGIN/ARGUMENTS/END/OPAQUE/FINISH fixtures through the same generic callbacks
+as the real adapter. K can exercise its tool admission loop without wire calls;
+this constructor itself executes no tool and grants no durable admission.

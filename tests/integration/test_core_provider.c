@@ -79,10 +79,13 @@ typedef struct fake_script {
  * the public cog_provider_* wrappers can dispatch through the opaque
  * pointer (mirrors struct cog_provider in provider_internal.h). */
 typedef struct fake_provider {
-    const cog_provider_vtable_t *vtable;
+    cog_provider_t base;
     const fake_script_t *script;
     int chunk_index;
     bool sent;
+    bool typed_finish;
+    uint64_t typed_sequence;
+    cog_result_t typed_outcome;
     bool disconnected;
     const cog_provider_request_t *last_request;
     cog_provider_error_t last_error;
@@ -101,11 +104,64 @@ static cog_result_t fake_send(cog_provider_t *provider,
 static cog_result_t fake_receive(cog_provider_t *provider,
                                  cog_provider_response_t *response);
 
+/* The deterministic fake has no transport timer; ready steps need no poll. */
+static cog_result_t fake_poll(cog_provider_t *provider, uint64_t now, uint64_t *deadline)
+{
+    (void)now;
+    if (provider == NULL || deadline == NULL) return COG_ERROR_NULL_PTR;
+    *deadline = UINT64_MAX;
+    return COG_OK;
+}
+static cog_result_t fake_cancel(cog_provider_t *provider)
+{
+    fake_provider_t *p = (fake_provider_t *)provider;
+    if (p == NULL) return COG_ERROR_NULL_PTR;
+    if (p->sent) { p->typed_finish = true; p->typed_outcome = COG_ERROR_ABORTED; }
+    return COG_OK;
+}
+static cog_result_t fake_next(cog_provider_t *provider, cog_provider_delta_t *out,
+                             void *storage, size_t capacity, size_t *required)
+{
+    fake_provider_t *p = (fake_provider_t *)provider;
+    if (p == NULL || out == NULL || required == NULL) return COG_ERROR_NULL_PTR;
+    if (!p->sent) return COG_ERROR_INVALID_STATE;
+    *required = 0U;
+    if (p->typed_finish) {
+        *out = (cog_provider_delta_t){.kind = COG_PROVIDER_DELTA_FINISH,
+            .sequence = ++p->typed_sequence, .outcome = p->typed_outcome,
+            .finish_reason = p->typed_outcome == COG_OK ? COG_FINISH_REASON_STOP : COG_FINISH_REASON_ERROR};
+        p->sent = false; return COG_OK;
+    }
+    cog_provider_response_t response = {.content = storage, .content_capacity = capacity};
+    cog_result_t rc = fake_receive(provider, &response);
+    if (rc == COG_ERROR_OVERFLOW) {
+        const char *chunk = p->script->chunks[p->chunk_index];
+        *required = strlen(chunk) + 1U; return rc;
+    }
+    if (rc != COG_OK) { p->typed_finish = true; p->typed_outcome = rc;
+        return fake_next(provider, out, storage, capacity, required); }
+    *required = response.content_len + 1U;
+    *out = (cog_provider_delta_t){.kind = COG_PROVIDER_DELTA_TEXT,
+        .sequence = ++p->typed_sequence, .data = storage, .data_len = response.content_len};
+    p->typed_finish = response.is_complete; return COG_OK;
+}
+static cog_result_t fake_error(const cog_provider_t *provider, cog_provider_error_t *out)
+{
+    const fake_provider_t *p = (const fake_provider_t *)provider;
+    if (p == NULL || out == NULL) return COG_ERROR_NULL_PTR;
+    if (p->last_error.code == COG_OK) return COG_ERROR_NOT_FOUND;
+    *out = p->last_error; return COG_OK;
+}
+
 static const cog_provider_vtable_t fake_vtable = {
     fake_connect,
     fake_disconnect,
     fake_send,
     fake_receive,
+    fake_poll,
+    fake_cancel,
+    fake_next,
+    fake_error,
 };
 
 static cog_result_t fake_connect(const cog_endpoint_t *endpoint,
@@ -120,7 +176,7 @@ static cog_result_t fake_connect(const cog_endpoint_t *endpoint,
     if (p == NULL) {
         return COG_ERROR_NOMEM;
     }
-    p->vtable = &fake_vtable;
+    p->base.vtable = &fake_vtable;
     p->script = g_current_script;
     *out_provider = (cog_provider_t *)p;
     return COG_OK;
@@ -251,7 +307,7 @@ static cog_handler_result_t on_user_input(cog_core_t *core,
 {
     cog_provider_t *provider = cog_core_provider(core);
     cog_provider_request_t req;
-    cog_message_t msg;
+    cog_message_t msg = {0};
     cog_event_t chunk_ev;
     cog_handler_result_t r = {ST_RUNNING, COG_OK};
 
@@ -298,7 +354,7 @@ static cog_handler_result_t on_llm_chunk(cog_core_t *core,
     cog_provider_t *provider = cog_core_provider(core);
     cog_provider_response_t resp;
     char content[256];
-    cog_message_t msg;
+    cog_message_t msg = {0};
     cog_event_t next;
     cog_handler_result_t r = {COG_TRANSITION_SELF, COG_OK};
     cog_result_t rc;

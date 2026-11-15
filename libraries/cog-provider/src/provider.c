@@ -1,95 +1,120 @@
-/**
- * @file provider.c
- * @brief Provider abstraction: request/response validation and static
- *        vtable dispatch wrappers.
- *
- * Implements the public contract in <cog/provider_request.h> and
- * <cog/provider_vtable.h>.  This module owns no concrete provider
- * implementation; it validates request/response structs and dispatches
- * connect/send/receive/disconnect to the static vtable referenced by the
- * endpoint (for connect) or embedded in the provider instance (for the
- * other three operations).
- *
- * The provider instance layout is defined in provider_internal.h: the
- * first member of the opaque @c cog_provider_t is a pointer to the static
- * vtable that created it.  Provider implementations must embed that
- * pointer first so the wrappers can reach the vtable.
- *
- * No global mutable state.  All state is caller-allocated and passed by
- * pointer.
- */
+/** @file provider.c @brief Validated public static provider dispatch. */
+#include <cog/provider.h>
+#include <math.h>
+#include <string.h>
 
-#include "cog/provider.h"
-
-#include "provider_internal.h"
-
-/* ------------------------------------------------------------------ */
-/* Request / response validation                                       */
-/* ------------------------------------------------------------------ */
-
-cog_result_t cog_provider_request_validate(const cog_provider_request_t *request)
+static bool complete(const cog_provider_vtable_t *v)
 {
-    if (request == NULL) {
+    return v != NULL && v->connect != NULL && v->disconnect != NULL &&
+           v->send != NULL && v->receive != NULL && v->poll != NULL &&
+           v->cancel != NULL && v->next != NULL && v->error != NULL;
+}
+cog_result_t cog_provider_request_validate(const cog_provider_request_t *r)
+{
+    if (r == NULL)
         return COG_ERROR_NULL_PTR;
-    }
-    if (request->model_id == NULL) {
+    if (r->model_id == NULL || r->model_id[0] == '\0' ||
+        (r->messages == NULL && r->message_count != 0U) ||
+        (r->tools_json == NULL && r->tools_json_len != 0U) ||
+        !isfinite(r->temperature) || r->temperature < 0.0f ||
+        r->temperature > 2.0f)
         return COG_ERROR_INVALID_ARG;
-    }
-    if (request->messages == NULL && request->message_count != 0U) {
+    cog_message_t model = {.role = COG_MESSAGE_ROLE_USER,
+                           .content = r->model_id,
+                           .content_len = strlen(r->model_id)};
+    if (cog_message_validate(&model) != COG_OK)
         return COG_ERROR_INVALID_ARG;
-    }
-    if (request->tools_json == NULL && request->tools_json_len != 0U) {
-        return COG_ERROR_INVALID_ARG;
+    for (size_t i = 0; i < r->message_count; ++i)
+    {
+        cog_result_t rc = cog_message_validate(&r->messages[i]);
+        if (rc != COG_OK)
+            return rc;
     }
     return COG_OK;
 }
-
-cog_result_t cog_provider_response_validate(const cog_provider_response_t *response)
+cog_result_t cog_provider_response_validate(const cog_provider_response_t *r)
 {
-    if (response == NULL) {
+    if (r == NULL)
         return COG_ERROR_NULL_PTR;
-    }
-    if (response->content == NULL && response->content_capacity != 0U) {
+    return r->content == NULL && r->content_capacity != 0U
+               ? COG_ERROR_INVALID_ARG
+               : COG_OK;
+}
+cog_result_t cog_provider_connect(const cog_endpoint_t *e, cog_provider_t **out)
+{
+    if (out == NULL)
+        return COG_ERROR_NULL_PTR;
+    *out = NULL;
+    if (e == NULL)
+        return COG_ERROR_NULL_PTR;
+    if (!complete(e->vtable))
         return COG_ERROR_INVALID_ARG;
-    }
-    return COG_OK;
+    cog_result_t rc = e->vtable->connect(e, out);
+    if (rc != COG_OK)
+        *out = NULL;
+    return rc;
 }
-
-/* ------------------------------------------------------------------ */
-/* Static vtable dispatch wrappers                                     */
-/* ------------------------------------------------------------------ */
-
-cog_result_t cog_provider_connect(const cog_endpoint_t *endpoint,
-                                  cog_provider_t **out_provider)
+cog_result_t cog_provider_disconnect(cog_provider_t *p)
 {
-    if (endpoint == NULL || endpoint->vtable == NULL || out_provider == NULL) {
+    if (p == NULL)
+        return COG_OK;
+    if (!complete(p->vtable))
+        return COG_ERROR_INVALID_ARG;
+    return p->vtable->disconnect(p);
+}
+cog_result_t cog_provider_send(cog_provider_t *p,
+                               const cog_provider_request_t *r)
+{
+    if (p == NULL || r == NULL)
         return COG_ERROR_NULL_PTR;
-    }
-    return endpoint->vtable->connect(endpoint, out_provider);
+    if (!complete(p->vtable))
+        return COG_ERROR_INVALID_ARG;
+    cog_result_t rc = cog_provider_request_validate(r);
+    return rc == COG_OK ? p->vtable->send(p, r) : rc;
 }
-
-cog_result_t cog_provider_disconnect(cog_provider_t *provider)
+cog_result_t cog_provider_receive(cog_provider_t *p, cog_provider_response_t *r)
 {
-    if (provider == NULL) {
-        return COG_OK; /* no-op */
-    }
-    return provider->vtable->disconnect(provider);
-}
-
-cog_result_t cog_provider_send(cog_provider_t *provider,
-                               const cog_provider_request_t *request)
-{
-    if (provider == NULL || request == NULL) {
+    if (p == NULL || r == NULL)
         return COG_ERROR_NULL_PTR;
-    }
-    return provider->vtable->send(provider, request);
+    if (!complete(p->vtable))
+        return COG_ERROR_INVALID_ARG;
+    cog_result_t rc = cog_provider_response_validate(r);
+    return rc == COG_OK ? p->vtable->receive(p, r) : rc;
 }
-
-cog_result_t cog_provider_receive(cog_provider_t *provider,
-                                  cog_provider_response_t *response)
+cog_result_t cog_provider_poll(cog_provider_t *p, uint64_t now,
+                               uint64_t *deadline)
 {
-    if (provider == NULL || response == NULL) {
+    if (p == NULL || deadline == NULL)
         return COG_ERROR_NULL_PTR;
-    }
-    return provider->vtable->receive(provider, response);
+    if (!complete(p->vtable))
+        return COG_ERROR_INVALID_ARG;
+    return p->vtable->poll(p, now, deadline);
+}
+cog_result_t cog_provider_cancel(cog_provider_t *p)
+{
+    if (p == NULL)
+        return COG_ERROR_NULL_PTR;
+    if (!complete(p->vtable))
+        return COG_ERROR_INVALID_ARG;
+    return p->vtable->cancel(p);
+}
+cog_result_t cog_provider_next(cog_provider_t *p, cog_provider_delta_t *d,
+                               void *storage, size_t cap, size_t *required)
+{
+    if (p == NULL || d == NULL || required == NULL)
+        return COG_ERROR_NULL_PTR;
+    if (storage == NULL && cap != 0U)
+        return COG_ERROR_INVALID_ARG;
+    if (!complete(p->vtable))
+        return COG_ERROR_INVALID_ARG;
+    return p->vtable->next(p, d, storage, cap, required);
+}
+cog_result_t cog_provider_get_error(const cog_provider_t *p,
+                                    cog_provider_error_t *e)
+{
+    if (p == NULL || e == NULL)
+        return COG_ERROR_NULL_PTR;
+    if (!complete(p->vtable))
+        return COG_ERROR_INVALID_ARG;
+    return p->vtable->error(p, e);
 }

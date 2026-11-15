@@ -3,8 +3,8 @@
  * @brief Contract test for cog/provider.h, provider_request.h,
  *        provider_vtable.h and endpoint.h (libraries/cog-provider).
  *
- * Drives the public cog-provider API with fake static vtables and a local
- * loopback HTTP server (fork-per-connection, no external network).  Covers:
+ * Drives registry and generic dispatch with deterministic static vtables.
+ * Actual adapter/HTTPS coverage lives in the OpenRouter-specific tests. Covers:
  *
  *   - request/response validation (NULL, malformed, boundary)
  *   - endpoint/model registry lookup, capability, and model selection
@@ -59,26 +59,6 @@ static int g_checks = 0;
 /* Time helpers                                                         */
 /* ------------------------------------------------------------------ */
 
-static uint64_t now_ms(void)
-{
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
-        return 0U;
-    }
-    return (uint64_t)ts.tv_sec * 1000U + (uint64_t)ts.tv_nsec / 1000000U;
-}
-
-static void sleep_ms(long ms)
-{
-    if (ms <= 0L) {
-        return;
-    }
-    struct timespec ts;
-    ts.tv_sec = ms / 1000L;
-    ts.tv_nsec = (ms % 1000L) * 1000000L;
-    (void)nanosleep(&ts, NULL);
-}
-
 /* ------------------------------------------------------------------ */
 /* Scripted fake provider                                              */
 /* ------------------------------------------------------------------ */
@@ -108,6 +88,9 @@ typedef struct fake_provider {
     const fake_script_t *script;
     int chunk_index;
     bool sent;
+    bool typed_finish;
+    uint64_t typed_sequence;
+    cog_result_t typed_outcome;
     bool disconnected;
     const cog_provider_request_t *last_request;
     cog_provider_error_t last_error;
@@ -126,11 +109,64 @@ static cog_result_t fake_send(cog_provider_t *provider,
 static cog_result_t fake_receive(cog_provider_t *provider,
                                  cog_provider_response_t *response);
 
+/* The deterministic fake has no transport timer; ready steps need no poll. */
+static cog_result_t fake_poll(cog_provider_t *provider, uint64_t now, uint64_t *deadline)
+{
+    (void)now;
+    if (provider == NULL || deadline == NULL) return COG_ERROR_NULL_PTR;
+    *deadline = UINT64_MAX;
+    return COG_OK;
+}
+static cog_result_t fake_cancel(cog_provider_t *provider)
+{
+    fake_provider_t *p = (fake_provider_t *)provider;
+    if (p == NULL) return COG_ERROR_NULL_PTR;
+    if (p->sent) { p->typed_finish = true; p->typed_outcome = COG_ERROR_ABORTED; }
+    return COG_OK;
+}
+static cog_result_t fake_next(cog_provider_t *provider, cog_provider_delta_t *out,
+                             void *storage, size_t capacity, size_t *required)
+{
+    fake_provider_t *p = (fake_provider_t *)provider;
+    if (p == NULL || out == NULL || required == NULL) return COG_ERROR_NULL_PTR;
+    if (!p->sent) return COG_ERROR_INVALID_STATE;
+    *required = 0U;
+    if (p->typed_finish) {
+        *out = (cog_provider_delta_t){.kind = COG_PROVIDER_DELTA_FINISH,
+            .sequence = ++p->typed_sequence, .outcome = p->typed_outcome,
+            .finish_reason = p->typed_outcome == COG_OK ? COG_FINISH_REASON_STOP : COG_FINISH_REASON_ERROR};
+        p->sent = false; return COG_OK;
+    }
+    cog_provider_response_t response = {.content = storage, .content_capacity = capacity};
+    cog_result_t rc = fake_receive(provider, &response);
+    if (rc == COG_ERROR_OVERFLOW) {
+        const char *chunk = p->script->chunks[p->chunk_index];
+        *required = strlen(chunk) + 1U; return rc;
+    }
+    if (rc != COG_OK) { p->typed_finish = true; p->typed_outcome = rc;
+        return fake_next(provider, out, storage, capacity, required); }
+    *required = response.content_len + 1U;
+    *out = (cog_provider_delta_t){.kind = COG_PROVIDER_DELTA_TEXT,
+        .sequence = ++p->typed_sequence, .data = storage, .data_len = response.content_len};
+    p->typed_finish = response.is_complete; return COG_OK;
+}
+static cog_result_t fake_error(const cog_provider_t *provider, cog_provider_error_t *out)
+{
+    const fake_provider_t *p = (const fake_provider_t *)provider;
+    if (p == NULL || out == NULL) return COG_ERROR_NULL_PTR;
+    if (p->last_error.code == COG_OK) return COG_ERROR_NOT_FOUND;
+    *out = p->last_error; return COG_OK;
+}
+
 static const cog_provider_vtable_t fake_vtable = {
     fake_connect,
     fake_disconnect,
     fake_send,
     fake_receive,
+    fake_poll,
+    fake_cancel,
+    fake_next,
+    fake_error,
 };
 
 static cog_result_t fake_connect(const cog_endpoint_t *endpoint,
@@ -243,171 +279,6 @@ static cog_result_t fake_receive(cog_provider_t *provider,
 }
 
 /* ------------------------------------------------------------------ */
-/* Net-backed fake provider (real transport through cog-net)           */
-/* ------------------------------------------------------------------ */
-
-typedef struct net_provider {
-    struct cog_provider base;
-    cog_net_ctx_t *net;
-    char base_url[256];
-    cog_request_id_t req_id;
-    bool sent;
-    bool headers_seen;
-    bool complete;
-    int http_status;
-    char headers[512];
-    char retry_after[32];
-} net_provider_t;
-
-static cog_result_t net_connect(const cog_endpoint_t *endpoint,
-                                cog_provider_t **out_provider);
-static cog_result_t net_disconnect(cog_provider_t *provider);
-static cog_result_t net_send(cog_provider_t *provider,
-                             const cog_provider_request_t *request);
-static cog_result_t net_receive(cog_provider_t *provider,
-                                cog_provider_response_t *response);
-
-static const cog_provider_vtable_t net_vtable = {
-    net_connect,
-    net_disconnect,
-    net_send,
-    net_receive,
-};
-
-static cog_result_t net_connect(const cog_endpoint_t *endpoint,
-                                cog_provider_t **out_provider)
-{
-    if (endpoint == NULL || out_provider == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    net_provider_t *p = (net_provider_t *)calloc(1U, sizeof *p);
-    if (p == NULL) {
-        return COG_ERROR_NOMEM;
-    }
-    p->base.vtable = &net_vtable;
-    if (endpoint->base_url != NULL) {
-        int n = snprintf(p->base_url, sizeof p->base_url, "%s",
-                         endpoint->base_url);
-        if (n < 0 || (size_t)n >= sizeof p->base_url) {
-            free(p);
-            return COG_ERROR_INVALID_ARG;
-        }
-    }
-    cog_result_t r = cog_net_new(&p->net, NULL);
-    if (r != COG_OK) {
-        free(p);
-        return r;
-    }
-    *out_provider = &p->base;
-    return COG_OK;
-}
-
-static cog_result_t net_disconnect(cog_provider_t *provider)
-{
-    net_provider_t *p = (net_provider_t *)provider;
-    if (p == NULL) {
-        return COG_OK;
-    }
-    cog_net_free(p->net);
-    free(p);
-    return COG_OK;
-}
-
-static cog_result_t net_send(cog_provider_t *provider,
-                             const cog_provider_request_t *request)
-{
-    net_provider_t *p = (net_provider_t *)provider;
-    if (p == NULL || request == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    if (p->sent) {
-        return COG_ERROR_INVALID_STATE;
-    }
-    /* The model_id selects the server path (e.g. "/stream"). */
-    const char *path = request->model_id != NULL ? request->model_id : "/";
-    char url[512];
-    int n = snprintf(url, sizeof url, "%s%s", p->base_url, path);
-    if (n < 0 || (size_t)n >= sizeof url) {
-        return COG_ERROR_INVALID_ARG;
-    }
-    static const char body[] = "{\"model\":\"test\"}";
-    cog_result_t r = cog_net_request(p->net, "POST", url, NULL, body,
-                                     sizeof body - 1U, &p->req_id);
-    if (r != COG_OK) {
-        return r;
-    }
-    p->sent = true;
-    return COG_OK;
-}
-
-static cog_result_t net_receive(cog_provider_t *provider,
-                                cog_provider_response_t *response)
-{
-    net_provider_t *p = (net_provider_t *)provider;
-    if (p == NULL || response == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    if (!p->sent) {
-        return COG_ERROR_INVALID_STATE;
-    }
-    if (p->complete) {
-        return COG_ERROR_INVALID_STATE;
-    }
-
-    cog_net_response_t nr;
-    cog_result_t r = cog_net_poll(p->net, &nr);
-    if (r == COG_ERROR_AGAIN) {
-        return COG_ERROR_AGAIN;
-    }
-    if (r != COG_OK) {
-        return r;
-    }
-    if (nr.headers != NULL && !p->headers_seen) {
-        p->headers_seen = true;
-        p->http_status = nr.http_status;
-        int hn = snprintf(p->headers, sizeof p->headers, "%s", nr.headers);
-        if (hn < 0 || (size_t)hn >= sizeof p->headers) {
-            p->headers[sizeof p->headers - 1U] = '\0';
-        }
-        const char *ra = strstr(p->headers, "Retry-After:");
-        if (ra != NULL) {
-            const char *v = ra + strlen("Retry-After:");
-            while (*v == ' ' || *v == '\t') {
-                v++;
-            }
-            size_t i = 0U;
-            while (v[i] >= '0' && v[i] <= '9' &&
-                   i + 1U < sizeof p->retry_after) {
-                p->retry_after[i] = v[i];
-                i++;
-            }
-            p->retry_after[i] = '\0';
-        }
-    }
-    if (nr.chunk != NULL && nr.chunk_len > 0U) {
-        if (nr.chunk_len >= response->content_capacity) {
-            return COG_ERROR_OVERFLOW;
-        }
-        (void)memcpy(response->content, nr.chunk, nr.chunk_len);
-        response->content[nr.chunk_len] = '\0';
-        response->content_len = nr.chunk_len;
-    } else {
-        response->content_len = 0U;
-        if (response->content_capacity > 0U) {
-            response->content[0] = '\0';
-        }
-    }
-    response->is_complete = nr.is_complete;
-    if (nr.is_complete) {
-        response->finish_reason = COG_FINISH_REASON_STOP;
-        p->complete = true;
-    } else {
-        response->finish_reason = COG_FINISH_REASON_NONE;
-    }
-    return COG_OK;
-}
-
-/* ------------------------------------------------------------------ */
 /* Static endpoint / model tables                                      */
 /* ------------------------------------------------------------------ */
 
@@ -430,9 +301,9 @@ static const cog_model_table_t model_table_b = { models_b, 1U };
 
 static const cog_endpoint_t endpoints[] = {
     { "openai", "https://api.openai.com/v1", "2024-01-01", NULL,
-      &fake_vtable, &model_table_a },
+      &fake_vtable, &model_table_a, NULL, 0U },
     { "anthropic", "https://api.anthropic.com/v1", NULL, NULL,
-      &fake_vtable, &model_table_b },
+      &fake_vtable, &model_table_b, NULL, 0U },
 };
 static const cog_endpoint_table_t endpoint_table = { endpoints, 2U };
 
@@ -648,7 +519,7 @@ static void test_connect_dispatch(void)
     /* endpoint->vtable NULL -> NULL_PTR. */
     cog_endpoint_t no_vtable = endpoints[0];
     no_vtable.vtable = NULL;
-    CHECK(cog_provider_connect(&no_vtable, &prov) == COG_ERROR_NULL_PTR);
+    CHECK(cog_provider_connect(&no_vtable, &prov) == COG_ERROR_INVALID_ARG);
 
     /* Successful connect through the vtable. */
     g_current_script = NULL;
@@ -714,7 +585,7 @@ static void test_message_history(void)
     cog_provider_t *prov = NULL;
     CHECK(cog_provider_connect(&endpoints[0], &prov) == COG_OK);
 
-    cog_message_t msgs[3];
+    cog_message_t msgs[3] = {0};
     (void)memset(msgs, 0, sizeof msgs);
     msgs[0].role = COG_MESSAGE_ROLE_SYSTEM;
     msgs[0].content = "sys";
@@ -726,6 +597,7 @@ static void test_message_history(void)
     msgs[2].content = "tool result";
     msgs[2].content_len = 11U;
     msgs[2].name = "calculator";
+    msgs[2].tool_call_id = "call_calculator";
 
     cog_provider_request_t req;
     (void)memset(&req, 0, sizeof req);
@@ -916,496 +788,9 @@ static void test_cancel(void)
     CHECK(cog_provider_disconnect(prov) == COG_OK);
 }
 
-/* ------------------------------------------------------------------ */
-/* Loopback HTTP test server                                           */
-/* ------------------------------------------------------------------ */
-
-#define REQUEST_CAP 4096U
-#define PATH_CAP 512U
-#define LISTEN_BACKLOG 16
-
-static int write_all(int fd, const void *buf, size_t len)
-{
-    const uint8_t *p = buf;
-    size_t off = 0U;
-    while (off < len) {
-        ssize_t w = send(fd, p + off, len - off, 0);
-        if (w < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return -1;
-        }
-        off += (size_t)w;
-    }
-    return 0;
-}
-
-static int send_simple(int fd, int status, const char *reason)
-{
-    char head[256];
-    int n = snprintf(head, sizeof head,
-                     "HTTP/1.1 %d %s\r\n"
-                     "Content-Length: 0\r\n"
-                     "Connection: close\r\n"
-                     "\r\n",
-                     status, reason);
-    if (n < 0 || (size_t)n >= sizeof head) {
-        return -1;
-    }
-    return write_all(fd, head, (size_t)n);
-}
-
-static int send_stream_head(int fd)
-{
-    static const char head[] =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/event-stream\r\n"
-        "Transfer-Encoding: chunked\r\n"
-        "Connection: close\r\n"
-        "\r\n";
-    return write_all(fd, head, sizeof head - 1U);
-}
-
-static int write_chunk(int fd, const char *payload)
-{
-    size_t plen = strlen(payload);
-    char hdr[32];
-    int n = snprintf(hdr, sizeof hdr, "%zx\r\n", plen);
-    if (n < 0 || (size_t)n >= sizeof hdr) {
-        return -1;
-    }
-    if (write_all(fd, hdr, (size_t)n) != 0) {
-        return -1;
-    }
-    if (write_all(fd, payload, plen) != 0) {
-        return -1;
-    }
-    return write_all(fd, "\r\n", 2U);
-}
-
-static int write_last_chunk(int fd)
-{
-    return write_all(fd, "0\r\n\r\n", 5U);
-}
-
-static int handle_stream(int fd)
-{
-    static const char *parts[] = { "Hello", ", ", "world", "!" };
-    size_t i;
-    for (i = 0U; i < sizeof parts / sizeof parts[0]; i++) {
-        if (write_chunk(fd, parts[i]) != 0) {
-            return -1;
-        }
-        sleep_ms(15L);
-    }
-    return write_last_chunk(fd);
-}
-
-static int handle_rate(int fd)
-{
-    static const char head[] =
-        "HTTP/1.1 429 Too Many Requests\r\n"
-        "Retry-After: 3\r\n"
-        "Content-Length: 0\r\n"
-        "Connection: close\r\n"
-        "\r\n";
-    return write_all(fd, head, sizeof head - 1U);
-}
-
-static int handle_malformed(int fd)
-{
-    static const char garbage[] = "GARBAGE NOT HTTP\r\n\r\n";
-    return write_all(fd, garbage, sizeof garbage - 1U);
-}
-
-static int read_request(int fd, uint8_t *buf, size_t cap, size_t *len_out)
-{
-    size_t got = 0U;
-    while (got < cap) {
-        ssize_t n = recv(fd, buf + got, cap - got, 0);
-        if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return -1;
-        }
-        if (n == 0) {
-            return -1;
-        }
-        got += (size_t)n;
-        size_t i;
-        for (i = 0U; i + 4U <= got; i++) {
-            if (memcmp(buf + i, "\r\n\r\n", 4U) == 0) {
-                *len_out = got;
-                return 0;
-            }
-        }
-    }
-    return -1;
-}
-
-static int parse_target(const uint8_t *buf, size_t len, char *path,
-                        size_t path_cap)
-{
-    if (len < 6U || (memcmp(buf, "GET ", 4U) != 0 &&
-                     memcmp(buf, "POST", 4U) != 0)) {
-        return -1;
-    }
-    size_t line_end = 0U;
-    while (line_end < len && buf[line_end] != '\n') {
-        line_end++;
-    }
-    if (line_end >= len) {
-        return -1;
-    }
-    size_t sp1 = 0U;
-    while (sp1 < line_end && buf[sp1] != ' ') {
-        sp1++;
-    }
-    size_t sp2 = sp1 + 1U;
-    while (sp2 < line_end && buf[sp2] != ' ') {
-        sp2++;
-    }
-    if (sp1 >= line_end || sp2 >= line_end || sp2 <= sp1 + 1U) {
-        return -1;
-    }
-    size_t plen = sp2 - (sp1 + 1U);
-    if (plen == 0U || plen >= path_cap) {
-        return -1;
-    }
-    (void)memcpy(path, buf + sp1 + 1U, plen);
-    path[plen] = '\0';
-    return 0;
-}
-
-static void handle_connection(int fd)
-{
-    uint8_t req_buf[REQUEST_CAP];
-    size_t req_len = 0U;
-    if (read_request(fd, req_buf, sizeof req_buf, &req_len) != 0) {
-        (void)close(fd);
-        return;
-    }
-    char target[PATH_CAP];
-    if (parse_target(req_buf, req_len, target, sizeof target) != 0) {
-        (void)send_simple(fd, 400, "Bad Request");
-        (void)close(fd);
-        return;
-    }
-    char *query = strchr(target, '?');
-    if (query != NULL) {
-        *query = '\0';
-    }
-
-    int rc;
-    if (strcmp(target, "/stream") == 0) {
-        (void)send_stream_head(fd);
-        rc = handle_stream(fd);
-    } else if (strcmp(target, "/rate") == 0) {
-        rc = handle_rate(fd);
-    } else if (strcmp(target, "/malformed") == 0) {
-        rc = handle_malformed(fd);
-    } else {
-        rc = send_simple(fd, 404, "Not Found");
-    }
-    (void)rc;
-    (void)close(fd);
-}
-
-static int bind_listener(uint16_t *port)
-{
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        return -1;
-    }
-    int one = 1;
-    (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one,
-                     (socklen_t)sizeof one);
-    struct sockaddr_in addr;
-    (void)memset(&addr, 0, sizeof addr);
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = 0U;
-    if (bind(fd, (struct sockaddr *)&addr, (socklen_t)sizeof addr) != 0) {
-        (void)close(fd);
-        return -1;
-    }
-    socklen_t alen = (socklen_t)sizeof addr;
-    if (getsockname(fd, (struct sockaddr *)&addr, &alen) != 0) {
-        (void)close(fd);
-        return -1;
-    }
-    *port = ntohs(addr.sin_port);
-    if (listen(fd, LISTEN_BACKLOG) != 0) {
-        (void)close(fd);
-        return -1;
-    }
-    return fd;
-}
-
-static void server_loop(int listen_fd)
-{
-    (void)signal(SIGPIPE, SIG_IGN);
-    (void)signal(SIGCHLD, SIG_IGN);
-    for (;;) {
-        int c = accept(listen_fd, NULL, NULL);
-        if (c < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            break;
-        }
-        pid_t pid = fork();
-        if (pid < 0) {
-            (void)close(c);
-            continue;
-        }
-        if (pid == 0) {
-            (void)close(listen_fd);
-            handle_connection(c);
-            (void)close(c);
-            _exit(0);
-        }
-        (void)close(c);
-    }
-}
-
-static int spawn_server(uint16_t *port, pid_t *pid)
-{
-    int fd = bind_listener(port);
-    if (fd < 0) {
-        return -1;
-    }
-    pid_t p = fork();
-    if (p < 0) {
-        (void)close(fd);
-        return -1;
-    }
-    if (p == 0) {
-        server_loop(fd);
-        _exit(0);
-    }
-    (void)close(fd);
-    *pid = p;
-    return 0;
-}
-
-static void stop_server(pid_t pid)
-{
-    if (pid > 0) {
-        (void)kill(pid, SIGTERM);
-        (void)waitpid(pid, NULL, 0);
-    }
-}
-
-/* ------------------------------------------------------------------ */
-/* Net transport tests (real cog-net path)                             */
-/* ------------------------------------------------------------------ */
-
-typedef struct collect {
-    char data[4096];
-    size_t len;
-    int status;
-    bool got_headers;
-    char headers[1024];
-    int chunks;
-} collect_t;
-
-static void collect_init(collect_t *c)
-{
-    (void)memset(c, 0, sizeof *c);
-}
-
-/* The endpoint's base_url is copied by net_connect, but the string must
- * remain valid until connect runs, so it lives in a static buffer. */
-static char g_net_base_url[64];
-
-static cog_endpoint_t make_net_endpoint(uint16_t port)
-{
-    cog_endpoint_t ep;
-    (void)memset(&ep, 0, sizeof ep);
-    ep.name = "loopback";
-    ep.vtable = &net_vtable;
-    ep.models = &model_table_a;
-    int n = snprintf(g_net_base_url, sizeof g_net_base_url,
-                     "http://127.0.0.1:%u", (unsigned)port);
-    if (n < 0 || (size_t)n >= sizeof g_net_base_url) {
-        g_net_base_url[0] = '\0';
-    }
-    ep.base_url = g_net_base_url;
-    return ep;
-}
-
-static cog_result_t provider_drain(cog_provider_t *prov, collect_t *c,
-                                   uint64_t timeout_ms)
-{
-    uint64_t start = now_ms();
-    char buf[1024];
-    while (now_ms() - start < timeout_ms) {
-        cog_provider_response_t resp;
-        (void)memset(&resp, 0, sizeof resp);
-        resp.content = buf;
-        resp.content_capacity = sizeof buf;
-        cog_result_t r = cog_provider_receive(prov, &resp);
-        if (r == COG_OK) {
-            if (resp.content_len > 0U) {
-                if (c->len + resp.content_len < sizeof c->data) {
-                    (void)memcpy(c->data + c->len, resp.content,
-                                 resp.content_len);
-                    c->len += resp.content_len;
-                }
-                c->chunks++;
-            }
-            if (resp.is_complete) {
-                return COG_OK;
-            }
-        } else if (r != COG_ERROR_AGAIN) {
-            return r;
-        }
-        sleep_ms(1);
-    }
-    return COG_ERROR_TIMEOUT;
-}
-
-static void test_net_streaming(uint16_t port)
-{
-    cog_endpoint_t ep = make_net_endpoint(port);
-    cog_provider_t *prov = NULL;
-    CHECK(cog_provider_connect(&ep, &prov) == COG_OK);
-    CHECK(prov != NULL);
-
-    cog_provider_request_t req;
-    (void)memset(&req, 0, sizeof req);
-    req.model_id = "/stream";
-    req.stream = true;
-    CHECK(cog_provider_send(prov, &req) == COG_OK);
-
-    collect_t c;
-    collect_init(&c);
-    cog_result_t r = provider_drain(prov, &c, 5000U);
-    CHECK(r == COG_OK);
-    CHECK(c.len == strlen("Hello, world!"));
-    CHECK(memcmp(c.data, "Hello, world!", c.len) == 0);
-    CHECK(c.chunks >= 4);
-
-    net_provider_t *np = (net_provider_t *)prov;
-    CHECK(np->http_status == 200);
-
-    CHECK(cog_provider_disconnect(prov) == COG_OK);
-}
-
-static void test_net_rate_limit(uint16_t port)
-{
-    cog_endpoint_t ep = make_net_endpoint(port);
-    cog_provider_t *prov = NULL;
-    CHECK(cog_provider_connect(&ep, &prov) == COG_OK);
-
-    cog_provider_request_t req;
-    (void)memset(&req, 0, sizeof req);
-    req.model_id = "/rate";
-    CHECK(cog_provider_send(prov, &req) == COG_OK);
-
-    collect_t c;
-    collect_init(&c);
-    cog_result_t r = provider_drain(prov, &c, 5000U);
-    CHECK(r == COG_OK);
-
-    net_provider_t *np = (net_provider_t *)prov;
-    CHECK(np->http_status == 429);
-    CHECK(strcmp(np->retry_after, "3") == 0);
-
-    CHECK(cog_provider_disconnect(prov) == COG_OK);
-}
-
-static void test_net_malformed(uint16_t port)
-{
-    cog_endpoint_t ep = make_net_endpoint(port);
-    cog_provider_t *prov = NULL;
-    CHECK(cog_provider_connect(&ep, &prov) == COG_OK);
-
-    cog_provider_request_t req;
-    (void)memset(&req, 0, sizeof req);
-    req.model_id = "/malformed";
-    CHECK(cog_provider_send(prov, &req) == COG_OK);
-
-    collect_t c;
-    collect_init(&c);
-    cog_result_t r = provider_drain(prov, &c, 3000U);
-    CHECK(r == COG_ERROR_IO);
-
-    CHECK(cog_provider_disconnect(prov) == COG_OK);
-}
-
-static void test_net_overflow(uint16_t port)
-{
-    cog_endpoint_t ep = make_net_endpoint(port);
-    cog_provider_t *prov = NULL;
-    CHECK(cog_provider_connect(&ep, &prov) == COG_OK);
-
-    cog_provider_request_t req;
-    (void)memset(&req, 0, sizeof req);
-    req.model_id = "/stream";
-    req.stream = true;
-    CHECK(cog_provider_send(prov, &req) == COG_OK);
-
-    /* A tiny buffer cannot hold a chunk -> OVERFLOW. */
-    char tiny[2];
-    cog_provider_response_t resp;
-    (void)memset(&resp, 0, sizeof resp);
-    resp.content = tiny;
-    resp.content_capacity = sizeof tiny;
-    cog_result_t r = COG_ERROR_AGAIN;
-    uint64_t start = now_ms();
-    while (now_ms() - start < 3000U) {
-        r = cog_provider_receive(prov, &resp);
-        /* Skip the headers node (COG_OK, no chunk) and would-block; stop
-         * on the first real error. */
-        if (r != COG_ERROR_AGAIN && r != COG_OK) {
-            break;
-        }
-        sleep_ms(1);
-    }
-    CHECK(r == COG_ERROR_OVERFLOW);
-
-    CHECK(cog_provider_disconnect(prov) == COG_OK);
-}
-
-static void test_net_cancel(uint16_t port)
-{
-    cog_endpoint_t ep = make_net_endpoint(port);
-    cog_provider_t *prov = NULL;
-    CHECK(cog_provider_connect(&ep, &prov) == COG_OK);
-
-    cog_provider_request_t req;
-    (void)memset(&req, 0, sizeof req);
-    req.model_id = "/stream";
-    req.stream = true;
-    CHECK(cog_provider_send(prov, &req) == COG_OK);
-
-    /* Cancel the underlying transport request directly (white-box: the
-     * test knows the net_provider layout). */
-    net_provider_t *np = (net_provider_t *)prov;
-    CHECK(cog_net_cancel(np->net, np->req_id) == COG_OK);
-
-    char buf[64];
-    cog_provider_response_t resp;
-    (void)memset(&resp, 0, sizeof resp);
-    resp.content = buf;
-    resp.content_capacity = sizeof buf;
-    cog_result_t r = COG_ERROR_AGAIN;
-    uint64_t start = now_ms();
-    while (now_ms() - start < 3000U) {
-        r = cog_provider_receive(prov, &resp);
-        if (r != COG_ERROR_AGAIN) {
-            break;
-        }
-        sleep_ms(1);
-    }
-    CHECK(r == COG_ERROR_ABORTED);
-
-    CHECK(cog_provider_disconnect(prov) == COG_OK);
-}
+/* Legacy HTTP-only provider fake retired: it used implicit cog_net_new(NULL),
+ * HTTP and consume-on-poll. Actual adapter codec tests live in test_openrouter;
+ * real audited HTTPS integration is separately registered by the provider. */
 
 /* ------------------------------------------------------------------ */
 /* main                                                                */
@@ -1427,19 +812,6 @@ int main(void)
     test_send_error();
     test_receive_error_retry_metadata();
     test_cancel();
-
-    uint16_t port = 0U;
-    pid_t server = 0;
-    if (spawn_server(&port, &server) != 0) {
-        (void)fprintf(stderr, "failed to spawn test server\n");
-        return 1;
-    }
-    test_net_streaming(port);
-    test_net_rate_limit(port);
-    test_net_malformed(port);
-    test_net_overflow(port);
-    test_net_cancel(port);
-    stop_server(server);
 
     (void)printf("test_provider: %d checks, %d failures\n", g_checks,
                  g_failures);
