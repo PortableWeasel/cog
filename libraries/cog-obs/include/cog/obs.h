@@ -163,6 +163,11 @@ typedef struct cog_obs_sink_table {
 typedef cog_result_t (*cog_obs_trace_sink_fn)(void *user,
                                              const cog_obs_span_record_t *span);
 
+/* Forward declaration for connection event sink callback. */
+struct cog_obs_conn_event;
+typedef cog_result_t (*cog_obs_conn_event_sink_fn)(void *user,
+                                                   const struct cog_obs_conn_event *event);
+
 /**
  * @brief Configuration passed to @c cog_obs_new.
  *
@@ -241,6 +246,20 @@ typedef struct cog_obs_config {
      * clock is how tests make timestamps reproducible.
      */
     cog_result_t (*clock_ns)(uint64_t *out_now_ns);
+
+    /**
+     * @brief Optional receiver for connection events.
+     *
+     * If non-NULL, every call to @c cog_obs_conn_event_emit delivers
+     * the event to this callback.  This is the feed for a GUI table
+     * showing live connection state.
+     */
+    cog_obs_conn_event_sink_fn conn_event_sink;
+
+    /**
+     * @brief Opaque handle passed to @c conn_event_sink; may be NULL.
+     */
+    void *conn_event_user;
 } cog_obs_config_t;
 
 /* ------------------------------------------------------------------ */
@@ -737,6 +756,105 @@ cog_result_t cog_obs_diag_format(const cog_obs_t *obs,
                                  char *out_buf,
                                  size_t buf_capacity,
                                  size_t *out_len);
+
+/* ------------------------------------------------------------------ */
+/* Connection event stream (GUI table feed)                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Kind of connection event.
+ *
+ * These events form a stream suitable for a GUI table where each row
+ * is one logical upstream connection.  Events are emitted by the
+ * transport layer and consumed by a @c cog_obs_conn_event_sink_fn.
+ */
+typedef enum cog_obs_conn_event_kind {
+    COG_OBS_CONN_EVENT_OPEN       = 0, /**< Connection attempt started. */
+    COG_OBS_CONN_EVENT_CONNECTED  = 1, /**< Connection established. */
+    COG_OBS_CONN_EVENT_PROGRESS   = 2, /**< Bytes transferred (periodic). */
+    COG_OBS_CONN_EVENT_STALLED    = 3, /**< No progress within threshold. */
+    COG_OBS_CONN_EVENT_RETRY      = 4, /**< Retry attempt started. */
+    COG_OBS_CONN_EVENT_CLOSED     = 5, /**< Connection closed normally. */
+    COG_OBS_CONN_EVENT_FAILED     = 6, /**< Connection failed. */
+} cog_obs_conn_event_kind_t;
+
+/**
+ * @brief One connection event for the GUI stream.
+ *
+ * Unlike @c cog_obs_conn_snapshot_t (which is a point-in-time state
+ * query), this is an **event** that describes something that happened.
+ * A GUI accumulates these into a table where each row is keyed by
+ * @c conn_id.
+ *
+ * All string pointers are borrowed and valid only for the duration of
+ * the sink call.  The sink must copy them if it needs to retain them.
+ */
+struct cog_obs_conn_event {
+    /** @brief Event kind. */
+    cog_obs_conn_event_kind_t kind;
+
+    /** @brief Connection id (matches @c cog_obs_conn_snapshot_t). */
+    uint64_t conn_id;
+
+    /** @brief Timestamp of this event, in nanoseconds. */
+    uint64_t timestamp_ns;
+
+    /** @brief Session id this connection belongs to; may be NULL. */
+    const char *session_id;
+
+    /** @brief Endpoint URL or name; may be NULL. */
+    const char *endpoint;
+
+    /** @brief Provider name; may be NULL. */
+    const char *provider;
+
+    /** @brief Model name; may be NULL. */
+    const char *model;
+
+    /** @brief Bytes received in this event (delta). */
+    uint64_t bytes_in_delta;
+
+    /** @brief Bytes sent in this event (delta). */
+    uint64_t bytes_out_delta;
+
+    /** @brief Total bytes received so far. */
+    uint64_t bytes_in_total;
+
+    /** @brief Total bytes sent so far. */
+    uint64_t bytes_out_total;
+
+    /** @brief Current retry attempt number (0 = first attempt). */
+    uint32_t retry_attempt;
+
+    /** @brief Outcome code for CLOSED/FAILED events. */
+    cog_result_t status;
+
+    /** @brief HTTP status code for FAILED events; 0 if not applicable. */
+    uint16_t http_status;
+};
+
+/** @brief Convenience alias for @c struct cog_obs_conn_event. */
+typedef struct cog_obs_conn_event cog_obs_conn_event_t;
+
+/**
+ * @brief Emit a connection event to the configured sink.
+ *
+ * The transport layer calls this for every connection lifecycle event.
+ * If no sink is configured, the call is a no-op.
+ *
+ * @param[in,out] obs    Context to emit through.
+ * @param[in]     event  Event to emit; must not be NULL.
+ * @return COG_OK on success (including when no sink is configured).
+ * @return COG_ERROR_NULL_PTR if @p obs or @p event is NULL.
+ * @return COG_ERROR_INVALID_ARG if @p event->kind is outside the
+ *         defined range.
+ * @return COG_ERROR_IO if the sink returned an error.
+ *
+ * Threading: not thread-safe.  Must be called from the same thread
+ * that runs the transport.
+ */
+cog_result_t cog_obs_conn_event_emit(cog_obs_t *obs,
+                                     const cog_obs_conn_event_t *event);
 
 #ifdef __cplusplus
 }
