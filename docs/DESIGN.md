@@ -357,6 +357,49 @@ core event queue.
 @c COG_EVENT_TOOL_RESULT event whose payload references the validated result.
 The core's event queue receives this event and resumes state-machine dispatch.
 
+### Bounded parallel execution
+
+@c cog_toolkit_execute_all accepts an options struct that controls
+concurrency:
+
+| Field | Meaning | Default when zero |
+|-------|---------|-------------------|
+| `timeout_ms` | Per-call wall-clock timeout. | 60000 ms |
+| `max_parallel` | Maximum worker threads. | `call_count` |
+| `stop_on_error` | Stop launching new calls on first failure. | false |
+
+The dispatcher uses a sequential fast path when `max_parallel` is 1 or
+`call_count` is at most 1.  For `max_parallel > 1` it spawns up to
+`min(max_parallel, call_count)` POSIX worker threads and blocks the caller
+until every launched worker has joined.
+
+A mutex-protected work index assigns each worker a deterministic call slot.
+Each worker writes its result into a pre-allocated slot owned exclusively by
+that call index, so the final collection is assembled in call order without
+data races.  Per-worker output and error-message buffers are independent; the
+collection copies all strings on the caller thread after all workers join.
+
+`stop_on_error` is implemented with a shared flag and a shared "first failure
+by call index".  When a worker observes a non-OK result it records the
+earliest failing index and sets the flag; workers check the flag before
+claiming new work.  Already-running calls complete normally.  After joining,
+if the flag is set the dispatcher returns the earliest failing status by index
+and frees any partial collection.
+
+Thread creation failure is treated as a fatal allocation error: no new workers
+are launched, already-running workers are joined, partial results are
+discarded, and the function returns `COG_ERROR_NOMEM`.
+
+### Tool thread-safety contract
+
+When `max_parallel` is 1 tools run sequentially on the caller's thread.
+When `max_parallel` is greater than 1 the selected tools may run concurrently
+in different worker threads.  The tool table itself is read-only and shared,
+but individual tool handlers must be reentrant and must not mutate the
+`cog_core_t` instance or any other shared state without their own
+synchronisation.  The same `core` pointer is passed to every concurrent tool
+invocation.
+
 ### Design constraints
 
 - **No dynamic registration.**  Tools are looked up exclusively in the static
@@ -366,10 +409,10 @@ explicit constructor and destroyed through a matching destructor.  The library
 never allocates hidden buffers.
 - **Fail closed.**  Every public function returns @c cog_result_t.  Errors are
 propagated rather than swallowed.
-- **Single-threaded by default.**  Each call context and result collection is
-owned by the thread that created it or performed the execution.  Parallel
-execution is cooperative and bounded by @c max_parallel; thread safety can
-be layered on top later with external locking.
+- **Single-threaded by default; bounded internal concurrency on demand.**
+Each call context and result collection is owned by the thread that created it
+or performed the execution.  `cog_toolkit_execute_all` may spawn worker
+threads internally when `max_parallel > 1`, but it joins them before returning.
 
 ---
 

@@ -135,9 +135,11 @@ bool cog_toolkit_result_is_ok(const cog_toolkit_result_t *result);
 /**
  * @brief Validate a result against an expected output schema.
  *
- * The schema format is implementation-defined (e.g. JSON Schema).  A
- * NULL or empty schema is treated as "no validation required" and the
- * function returns @c COG_OK.
+ * The schema string must contain a single JSON object; trailing
+ * whitespace after the object is ignored, but any other trailing
+ * characters cause the schema to be treated as malformed.  A NULL or
+ * empty schema is treated as "no validation required" and the function
+ * returns @c COG_OK.
  *
  * @param[in] result Result to validate.
  * @param[in] schema Schema string; may be NULL or empty.

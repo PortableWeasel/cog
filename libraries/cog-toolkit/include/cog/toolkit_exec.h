@@ -8,10 +8,15 @@
  * writes the outcome into a caller-provided result value or an opaque
  * result collection.
  *
- * Threading model: the dispatcher is single-threaded by design.  A single
- * @c cog_toolkit_execute or @c cog_toolkit_execute_all call must run to
- * completion on the thread that invoked it.  Concurrent calls on the same
- * core or tool table require external synchronisation.
+ * Threading model: @c cog_toolkit_execute is single-threaded and runs on
+ * the caller's thread.  @c cog_toolkit_execute_all is single-threaded
+ * when @c max_parallel is 1 (the fast path), and may spawn up to
+ * @c max_parallel worker threads otherwise.  The caller is blocked until
+ * every launched worker has joined.  Concurrent calls on the same core or
+ * tool table still require external synchronisation.  When
+ * @c max_parallel is greater than 1, individual tool handlers may run
+ * concurrently and must therefore be reentrant; they must not mutate
+ * @p core or other shared state without their own synchronisation.
  */
 #ifndef COG_TOOLKIT_EXEC_H
 #define COG_TOOLKIT_EXEC_H
@@ -50,16 +55,22 @@ typedef struct cog_toolkit_exec_opts {
     /**
      * @brief Maximum number of tool calls to run concurrently.
      *
-     * One means sequential execution.  Zero selects a sensible default
-     * (typically the number of calls).
+     * One means sequential execution on the caller's thread (fast path).
+     * Zero selects a sensible default, typically the number of calls.
+     * Values greater than one may spawn up to that many worker threads;
+     * the caller is blocked until all workers join.
      */
     size_t max_parallel;
 
     /**
-     * @brief If true, stop launching new calls as soon as one fails.
+     * @brief If true, stop launching new calls after the first observed
+     * failure.
      *
-     * Already-running calls are still awaited and their results are
-     * recorded.
+     * Already-running calls are still awaited, but if any call fails the
+     * final return is that failure code and @p *out_results is set to
+     * NULL.  Because tools are synchronous and non-preemptive, a failure
+     * observed in one worker cannot abort calls already running in other
+     * workers.
      */
     bool stop_on_error;
 } cog_toolkit_exec_opts_t;
@@ -129,9 +140,9 @@ cog_result_t cog_toolkit_execute(cog_core_t *core,
  *         @p out_results is NULL.
  * @return COG_ERROR_INVALID_ARG if @p call_count is non-zero and any
  *         entry in @p calls is NULL.
- * @return COG_ERROR_NOMEM if allocation fails.
- * @return Another error code propagated from the first failing tool
- *         when @p opts->stop_on_error is true.
+ * @return COG_ERROR_NOMEM if allocation or worker-thread creation fails.
+ * @return The first failing result code by call index when
+ *         @p opts->stop_on_error is true and any call fails.
  *
  * @pre @p core is a fully initialised core instance.
  * @pre @p table is valid for the duration of the call.
@@ -141,7 +152,11 @@ cog_result_t cog_toolkit_execute(cog_core_t *core,
  *       exactly @p call_count results in the same order as @p calls.
  * @post On failure, @p *out_results is NULL and no resources are held.
  *
- * Threading: not thread-safe.
+ * Threading: this call blocks the caller until all dispatched calls
+ * complete.  For @p opts->max_parallel greater than 1 worker threads are
+ * spawned; the tool table is read-only and shared, but tool handlers
+ * must be reentrant.  Do not modify @p calls or the call contexts from
+ * another thread during the call unless externally synchronised.
  */
 cog_result_t cog_toolkit_execute_all(cog_core_t *core,
                                      const cog_tool_table_t *table,

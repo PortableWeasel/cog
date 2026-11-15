@@ -118,7 +118,9 @@ cog_result_t cog_toolkit_call_set_timeout(cog_toolkit_call_t *call,
  *
  * Threading: not thread-safe.  In a multi-threaded program the caller
  * must ensure that no other thread is concurrently reading or executing
- * @p call.
+ * @p call.  In particular, do not cancel a call from one thread while
+ * @c cog_toolkit_execute_all is running it on another unless both sides
+ * are synchronised.
  */
 cog_result_t cog_toolkit_call_cancel(cog_toolkit_call_t *call);
 

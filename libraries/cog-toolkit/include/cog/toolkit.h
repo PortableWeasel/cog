@@ -18,8 +18,11 @@
  * Threading model: the toolkit is single-threaded by default.  Each
  * @c cog_toolkit_call_t, @c cog_toolkit_result_t, and
  * @c cog_toolkit_result_collection_t instance should be accessed only on
- * the thread that created it or performed the execution.  Multi-threaded
- * operation may be layered on top later via external locking.
+ * the thread that created it or performed the execution.  When
+ * @c cog_toolkit_execute_all is invoked with @c max_parallel greater than
+ * 1, worker threads are spawned internally, but the result collection is
+ * still returned to and owned by the caller's thread.  Multi-threaded
+ * operation beyond this may be layered on top via external locking.
  */
 #ifndef COG_TOOLKIT_H
 #define COG_TOOLKIT_H
