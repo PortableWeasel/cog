@@ -138,6 +138,18 @@ typedef enum cog_cli_option_bit {
 } cog_cli_option_bit_t;
 
 /**
+ * @brief Explicit session command. Selectors are CLI/host inputs, not config or
+ * environment defaults; zero initialization preserves NEW behavior.
+ */
+typedef enum cog_cli_session_action {
+    COG_CLI_SESSION_NEW = 0, /**< New session; an existing explicit ID is refused. */
+    COG_CLI_SESSION_LIST, /**< Offline durable IDs; no model/secret/net required. */
+    COG_CLI_SESSION_RESUME, /**< Guarded exact restore of source_session_id. */
+    COG_CLI_SESSION_FORK, /**< RESUME then select a safe node for the next input. */
+    COG_CLI_SESSION_RECOVER /**< Offline recovery-only ownership, never execution. */
+} cog_cli_session_action_t;
+
+/**
  * @brief Parsed CLI options.
  *
  * Zero-initialise and pass to @c cog_cli_options_parse, which fills the
@@ -148,8 +160,22 @@ typedef enum cog_cli_option_bit {
 typedef struct cog_cli_options {
     /** Single prompt to run; NULL selects interactive mode. */
     const char *prompt;
-    /** Session identifier; NULL generates one. */
+    /** NEW session identifier; NULL generates one. Invalid with another action. */
     const char *session_id;
+    cog_cli_session_action_t session_action; /**< NEW by default. --sessions,
+       --resume ID, --fork ID and --recover ID select mutually exclusive actions. */
+    const char *source_session_id; /**< Required for RESUME/FORK/RECOVER, NULL
+       otherwise. Copied during construction; 1..127 UTF-8 bytes, no controls,
+       NUL, slash/backslash, . or ..; store-reserved identities are refused. */
+    uint64_t fork_node_id; /**< FORK only: --from-node ID, 0 selects active leaf.
+       A node must exist and its entire prefix must be replay-safe. The branch
+       stays in the SAME session tree and preserves all other branches/IDs. */
+    bool previous_processes_fenced; /**< RECOVER only: --fenced records the
+       operator's explicit assertion that prior command processes are stopped
+       and reaped/fenced. It does NOT verify, stop or reap unknown old processes.
+       Required before recovery owner admission; a live store guard still wins. */
+    bool show_usage; /**< --usage prints only reported availability/counts/cost
+       for completed turns to stderr; false keeps streamed stdout text-only. */
     /** Durable store directory override; NULL selects the mode-specific default. */
     const char *store_dir;
     cog_cli_store_mode_t store_mode; /**< --store DIR selects DURABLE;
@@ -231,7 +257,7 @@ typedef struct cog_cli_display_snapshot {
  * @brief View full bounded visible history plus the active/incomplete aggregate.
  * @param[in,out] app Owner thread, outside callbacks; no concurrent app mutation.
  * @param[out] snapshot Constructor-scratch view, unchanged on failure.
- * @return OK; NULL_PTR; LIMIT if complete snapshot cannot fit reserved app limits.
+ * @return OK; NULL_PTR; NOT_FOUND for store-only LIST; LIMIT if complete snapshot cannot fit reserved app limits.
  * @note Valid until the next mutating app call/service/free. Encode/copy before
  * returning to service. Snapshot and replay anchor are sampled atomically on
  * the owner thread; no append can occur between them. Includes display text
@@ -373,7 +399,28 @@ const char *cog_cli_result_name(cog_result_t rc);
  * Invalid values fail rather than being ignored. Resolves secret references only
  * during construction, validates the full candidate generation and atomically
  * adopts it. Failure retains no partial app and never falls back to mock.
- * Builds bounded session/provider/tool workspaces, obs/store/IPC and the core.
+ * Session actions: NEW retains the collision-refusal contract. RESUME/FORK
+ * require DURABLE and source_session_id; load an exact committed checkpoint,
+ * restore into current explicit constructor reservations, admit a fresh process
+ * incarnation/checked epoch and acquire its matching normal guard before work.
+ * A competing live guard returns AGAIN; stale checkpoint/owner fails rather
+ * than loading another generation. RESUME never reexecutes completed ancestor
+ * calls. Coherent PROPOSED resumes only its current explicit policy phase,
+ * before unrelated user/branch/model work. STARTED/INDETERMINATE refuses normal
+ * resume with INDETERMINATE, never an automatic recovery downgrade. Incomplete
+ * text remains visible and requires K's fresh postfailure input to branch.
+ * FORK selects fork_node_id through cog_cli_app_fork; --queue is invalid for
+ * startup FORK, and its fresh --prompt/interactive input creates the new branch.
+ * LIST and RECOVER require DURABLE; DEFAULT becomes DURABLE even for MOCK.
+ * LIST constructs store-only metadata state: session/provider/core accessors
+ * return NULL, no credential resolver/net/provider/guard or workspace executes.
+ * RECOVER requires the explicit fencing assertion, loads uncertain history and
+ * acquires only a recovery guard; provider/core remain NULL and no credentials
+ * or net are required. It refuses absent uncertainty with INVALID_STATE.
+ * Both metadata actions reject prompt/queue inputs; malformed configuration
+ * still fails, but missing model/credential does not. LIST performs no store
+ * mutation; RECOVER never grants ordinary execution, even under ALLOW policy.
+ * Normal modes build bounded session/provider/tool workspaces, obs/store/IPC and the core.
  * REAL requires opts.net with explicit host dependency lifecycle; MOCK alone
  * uses fixture scripts. Secret memory is cleared on failed/successful teardown.  Fails closed: on any error
  * every resource created so far is released and @p *out is NULL.
@@ -412,6 +459,52 @@ cog_result_t cog_cli_app_new(cog_cli_app_t **out,
 void cog_cli_app_free(cog_cli_app_t *app);
 
 /**
+ * @brief Select a replay-safe fork point for the next fresh input in this session.
+ * @param[in,out] app Normal execution app, idle and outside callbacks.
+ * @param[in] node_id Existing node ID; zero selects current active leaf.
+ * @return OK; NULL_PTR; NOT_FOUND; AGAIN for active work or queued input;
+ * INVALID_STATE for metadata/recovery app or unsafe/unresolved prefix; LIMIT;
+ * INDETERMINATE for frozen admission. No wire/tool effects or runtime growth.
+ * @note Owner thread. Uses cog_session_fork without copying/rebinding ancestor
+ * IDs/effects. A nonleaf selection does not change the current active leaf;
+ * the next freshly submitted user message is explicitly added at that point.
+ * Existing durable branches remain intact. No durable branch is created until
+ * that message is successfully appended/saved. Pending input cannot be silently
+ * reassigned to the new branch, so admission refuses while any input is queued.
+ */
+cog_result_t cog_cli_app_fork(cog_cli_app_t *app, uint64_t node_id);
+
+/**
+ * @brief Explicitly reconcile one uncertain tool under recovery-only ownership.
+ * @param[in,out] app Constructed with RECOVER and previous_processes_fenced=true.
+ * @param[in] assistant_node_id Exact assistant node containing the call.
+ * @param[in] call_id Nonempty identified call ID, borrowed for this call only.
+ * @param[in] resolution SUCCEEDED/FAILED/CANCELLED only for an outcome externally
+ * verified by the operator; ACKNOWLEDGED explicitly preserves unknown effects.
+ * @param[in] evidence Nonempty UTF-8 operator evidence, no secrets/opaque data.
+ * @param[in] evidence_len Exact evidence bytes, 1..4095 excluding NUL.
+ * @return OK only after matching identified result+audit is saved; NULL_PTR;
+ * INVALID_ARG for resolution/evidence; NOT_FOUND; INVALID_STATE for wrong mode,
+ * non-indeterminate/shared/already-closed call or a prior failed reconciliation;
+ * LIMIT; IO/INDETERMINATE for failed/uncertain persistence. No tool execution.
+ * @note Owner thread, outside callbacks. Reconciles ONLY this call through
+ * cog_session_reconcile_tool; never applies a blanket outcome to other calls.
+ * The operator assertion is not independent proof that old processes are dead.
+ * A live owner guard prevents concurrent admission. Evidence-backed resolutions
+ * are operator statements; ACKNOWLEDGED must not claim that no effect occurred.
+ * Failed save freezes further reconciliation in this app; inspect/restart from
+ * durable state, never repeat an effect or claim successful recovery. The guard
+ * is retained until app_free. Even after all calls close this app remains
+ * recovery-only; a later explicit RESUME admits a new epoch and normal guard
+ * before provider/tool/input work. No automatic model continuation occurs.
+ */
+cog_result_t cog_cli_app_reconcile(cog_cli_app_t *app,
+                                   uint64_t assistant_node_id,
+                                   const char *call_id,
+                                   cog_tool_execution_state_t resolution,
+                                   const char *evidence, size_t evidence_len);
+
+/**
  * @brief Run the agent loop until stopped.
  *
  * Enqueues the configured @c --prompt (if any) and @c --queue message
@@ -419,6 +512,15 @@ void cog_cli_app_free(cog_cli_app_t *app);
  * polls stdin within the bounded idle budget; in single-prompt mode it stops the loop when the turn
  * completes.  May be called again after a stop.
  *
+ * LIST writes sorted durable IDs to stdout and exits with no provider work.
+ * RECOVER noninteractive returns INDETERMINATE. Interactive recovery accepts
+ * /tools, /history, /reconcile NODE CALL OUTCOME EVIDENCE and /quit; ordinary
+ * text/policy ALLOW never executes. Each reconciliation is an explicit operator
+ * decision, persisted through cog_cli_app_reconcile. EOF leaves unresolved
+ * intent intact; all reconciled returns OK without automatic execution.
+ * Normal interactive mode adds /sessions, /history, /fork NODE and /usage.
+ * Output/flush errors return IO; opaque data is never rendered and unavailable
+ * usage is never guessed. Fresh input is still required after failure/cancel.
  * Uses generic provider/tool poll/next/cancel/error through the fair service
  * hook, including during queued input and timer backoff. One assistant message
  * is assembled per turn; complete tool call IDs, opaque continuation and usage
