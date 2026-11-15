@@ -1,5 +1,21 @@
 # Cog — System Design Blueprint
 
+> Runtime observability design `d32fafd` passed independent header gate
+> `a26a179` at `7096360`. Transport facts travel through an optional
+> constructor-borrowed numeric net observer, independent of retained body queues.
+> A host-owned bounded bridge queues numeric values with callback-time timestamps
+> and copied scope, then drains outside net/provider calls into stable sanitized
+> obs rows and pinned application metadata. Connection readiness comes from real
+> DNS/TCP/TLS readiness; retries belong only to app admission. Typed provider/tool
+> duration/status and explicit usage availability use existing obs calls.
+> Observer failure is latched separately from transport/effect outcomes and halts
+> later app admission through normal cleanup; it never makes a completed POST or
+> tool replayable. No Cog runtime allocation, mutable global, observer registry
+> or net-to-obs/app dependency is added. Net primitive delivery `1a2b9c8` passed
+> independent source review; its [evidence](REAL_CLIENT_NET_OBSERVATION_EVIDENCE.md)
+> records the scoped result. Application bridge/timing delivery `b64ee7c` remains
+> pending after R12 `af6956a`; this does not close the full release gate.
+
 > Stage 14.H provider delivery passed independent revision review and is
 > integrated. [H evidence](REAL_CLIENT_H_EVIDENCE.md) records bounded JSON/SSE,
 > retained typed output, final opaque preservation, mock conformance, offline
