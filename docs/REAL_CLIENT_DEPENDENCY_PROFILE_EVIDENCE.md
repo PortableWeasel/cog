@@ -113,3 +113,47 @@ three compiler/sanitizer profiles using these same dependency bytes. Its fixture
 `66527d0` and independent review remain separate from this recipe's review; this
 writer record does not close R18, packaging, or release gates. No authenticated or
 paid request, credential access or global installation occurred.
+
+## Independent profile review
+
+Different critic review of complete checkpoint `d7db7e4` passes **cycle 1**.
+The nine-file scope contains recipe, metadata patches, provenance and evidence
+only; no runtime/header/admission/app/root-CMake change is included.
+
+Independent checks revalidated the curl detached signature against the pinned
+signer and the fresh Debian InRelease -> complete Sources index -> exact four
+source-package input chain. Corrupt curl archive, curl signature, c-ares archive
+and Sources-index controls were rejected. Comparing all 4,515 curl and 532 c-ares
+regular archive files with the built source trees found differences only in the
+six declared metadata/install-template files; resolver/transport source is
+unchanged. Recipe/profile/patch/cache digests and all 205 installed regular-file
+hashes match the frozen receipt. Both notices equal their authenticated source
+copies, all four installed symlinks resolve inside the prefix, and the two
+separate output roots contain byte-identical curl/c-ares libraries.
+
+The critic used a private copy of the complete, already normally installed
+prefix for a relocation replay, preserving symlinks and every recorded byte.
+The two dependency-install commands were intentionally skipped in that replay;
+it does not claim another genuine dependency install. All subsequent audit
+checks ran: ELF/RUNPATH/host closure, relocated CMake/pkg-config consumers,
+actual loaded curl/c-ares paths, unchanged Cog admission, altered-test-copy
+rejection, and thirteen local DNS cancellation/timeout probes with 26 queries.
+SHA-256 contents and nanosecond modification times of all 5,979 frozen regular
+files matched before/after this replay. No candidate file was changed by it.
+Receipt `/tmp/dependency-profile-critic-audit.json` has SHA-256
+`66485318e3755eede0d5bdb8ab1df237511e078885f408d3736a1818c5c59043` and
+explicitly records the private-copy staging mode.
+
+The separate R18 critic independently completed genuine normal installs and
+relocations under GCC, Clang and sanitizers at fixture `66527d0`, with matching
+library identities and loader receipts
+`/tmp/cog-r18-critic-{gcc,clang,asan}-report.json`. Ordinary `cmake --install`
+updates generated dependency `install_manifest.txt` bookkeeping; it does not
+reconfigure/relink or alter the accepted source receipts, caches, recipes or
+runtime bytes. Profile freeze refers to those acceptance identities, rather
+than immutability of installer bookkeeping. The read-only review avoided further
+manifest races with R18.
+
+No profile blocker was found. Existing host OS/OpenSSL/trust-store requirements
+remain explicit; this is not a self-contained OS bundle or an admission-policy
+change. Main integration, the R18 join and full P/O validation remain separate.
