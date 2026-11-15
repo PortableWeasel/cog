@@ -104,3 +104,36 @@ terminal-error field cases were rebuilt and rerun in unit-openrouter under all
 three profiles. No new full-suite or release-gate success is claimed; the earlier
 six unrelated orchestrator fixture failures remain recorded above. This is an
 implementation revision awaiting the different independent reviewer's verdict.
+
+## Independent implementation acceptance
+
+Review accepts revision `3f71075d4d74319f23db93575ee9d7eab48bd394` on attempt
+2/4 after one grouped correction cycle. The critic independently reproduced the
+initial known-field type acceptance, authored the narrow header/profile
+clarification and obtained a DIFFERENT independent final review (`a81767d`,
+`3e237a8`) before runtime correction. Repeating the original real-adapter repro
+now returns PROTOCOL for encrypted data object/number and wrong common-field
+kinds, and UNSUPPORTED for a null signature, with zero network calls.
+
+Critic commit `1f27e90` contributes a separate bitmask state model of 55,987
+histories over user/text-assistant/one-call/two-call/a-result/b-result tokens.
+It tests both stages, COMPLETE-only send dispatch, group-local reused IDs,
+validation failures accepting no turn and retained terminal error/clock values.
+This is independent of production's backward result-ID lookup. It passes under
+strict GCC, strict Clang and Clang ASan/UBSan with leak/error halt enabled.
+
+The final exact ten-test selection above passes 10/10 independently in each of
+`build-preflight-critic-gcc`, `build-preflight-critic-clang` and
+`build-preflight-critic-asan` at the reviewed revision. Source checks cover required
+static callback migration, isolated parser/writer/request and mock arenas,
+constructor rollback, generic ordered-history admission and last-error/output
+lifetimes. The shared inbound/outbound field guard matches the independently
+approved minimal profile, preserving unknown members and adding no base64,
+integer/range, format-value registry or nullable-signature acceptance.
+
+No further blocker was found in this scoped provider delivery. The unchanged
+six orchestrator/IPC failures and complete L application integration remain
+separate gates; no new full-suite/release success is inferred from these ten
+tests. No paid/model service calls occurred; fixtures and HTTPS integration are
+local. No production `.c` edit was made by the critic and no main merge is
+performed by this acceptance.
