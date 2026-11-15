@@ -10,6 +10,13 @@ This document records the executable contract verified by
 `tests/integration/test_core_session.c`. It intentionally does **not**
 expand the public API; it only documents what the header already declares.
 
+Since the reviewed merge (64e536b), `core.c` also hosts the subagent
+registry: `struct cog_core` embeds a `cog_agent_registry_t` (see
+`src/agent_internal.h`), `cog_core_agent_registry()` exposes it to
+`agent.c`, and `cog_core_free` releases it via
+`cog_agent_registry_reset()`.  The registry is zero-initialised by
+`cog_core_new` (calloc) and adds no new failure path to construction.
+
 ## Status
 
 Implemented. `src/core.c` provides every function declared in `core.h`.
@@ -200,8 +207,8 @@ returned by a handler.
 
 ## Invariants
 
-- The core owns its event queue and its pending FIFO; both are released by
-  `cog_core_free`.
+- The core owns its event queue, its pending FIFO, and the subagent
+  registry; all are released by `cog_core_free`.
 - The session, provider, obs, and store are borrowed; the core never frees
   them.
 - The core starts in state `0` and only changes state through a validated
@@ -222,7 +229,8 @@ queue. The pending-message functions are not thread-safe.
 - **Borrowed:** session, provider, obs, store, dispatch table, tool table,
   wait hook.
 - **Owned:** event queue, pending FIFO (and each queued message), the
-  injected-message payload while in flight.
+  injected-message payload while in flight, the subagent registry (agent
+  records, their owned strings, and their child sessions).
 - **IPC endpoint:** during the pre-IPC phase a non-NULL endpoint is
   rejected by `cog_core_new` with `COG_ERROR_UNAVAILABLE`; the core never
   stores, dereferences, owns, or frees it.  Once IPC integration is

@@ -39,11 +39,16 @@
  *   clears it on cog_core_free.  The flag lives in the private
  *   session_internal.h layout shared with session.c (there is no public
  *   attach API); see session_internal.h.
+ * - Subagent registry host: the core embeds the subagent registry
+ *   (agent_internal.h) and exposes it through cog_core_agent_registry().
+ *   agent.c owns every operation on it; cog_core_free releases it via
+ *   cog_agent_registry_reset().
  */
 #define _POSIX_C_SOURCE 200809L
 
 #include "cog/core.h"
 
+#include "agent_internal.h"
 #include "session_internal.h"
 
 #include <assert.h>
@@ -73,9 +78,10 @@ typedef struct cog_pending_msg {
 /**
  * @brief Opaque core layout (definition of @c cog_core_t).
  *
- * The session, provider, obs, and store are borrowed.  The event queue
- * and the pending FIFO are owned.  The IPC endpoint is owned per the
- * header but its release is deferred to the IPC phase.
+ * The session, provider, obs, and store are borrowed.  The event queue,
+ * the pending FIFO, and the subagent registry are owned.  The IPC
+ * endpoint is owned per the header but its release is deferred to the
+ * IPC phase.
  */
 struct cog_core {
     cog_session_t *session;
@@ -99,6 +105,7 @@ struct cog_core {
     void *injected_payload;       /**< Text of the pending message currently
                                        injected into the event queue; freed
                                        after dispatch. */
+    cog_agent_registry_t agents;  /**< Subagent registry; see agent_internal.h. */
 };
 
 /* ------------------------------------------------------------------ */
@@ -309,6 +316,9 @@ void cog_core_free(cog_core_t *core)
     free(core->injected_payload);
     cog_event_queue_free(core->event_queue);
 
+    /* Release every subagent record and its child session. */
+    cog_agent_registry_reset(&core->agents);
+
     /* No IPC endpoint is ever stored in this phase (cog_core_new rejects
      * a non-NULL endpoint with COG_ERROR_UNAVAILABLE), so there is
      * nothing to release here.  Once IPC integration is enabled, an
@@ -433,6 +443,15 @@ cog_obs_t *cog_core_obs(cog_core_t *core)
 cog_store_t *cog_core_store(cog_core_t *core)
 {
     return (core != NULL) ? core->store : NULL;
+}
+
+/* ------------------------------------------------------------------ */
+/* Subagent registry host (internal; see agent_internal.h)             */
+/* ------------------------------------------------------------------ */
+
+cog_agent_registry_t *cog_core_agent_registry(cog_core_t *core)
+{
+    return (core != NULL) ? &core->agents : NULL;
 }
 
 /* ------------------------------------------------------------------ */
