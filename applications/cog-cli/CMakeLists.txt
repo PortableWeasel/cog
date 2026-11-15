@@ -27,6 +27,9 @@ target_enable_warnings(cog-cli-config)
 
 add_library(cog-cli-lib STATIC
     src/cli.c
+    src/app_turn.c
+    src/app_tools.c
+    src/app_display.c
     src/mock_provider.c
 )
 add_library(cog::cli ALIAS cog-cli-lib)

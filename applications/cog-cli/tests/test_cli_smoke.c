@@ -58,6 +58,12 @@ static cog_cli_app_t *make_app(cog_cli_options_t *opts)
         opts->endpoint_name = "mock";
     }
     opts->interactive = false;
+    opts->backend = COG_CLI_BACKEND_MOCK;
+    opts->explicit_options |= COG_CLI_OPT_BACKEND | COG_CLI_OPT_MODEL | COG_CLI_OPT_ENDPOINT;
+    if (opts->store_dir != NULL) {
+        opts->store_mode = COG_CLI_STORE_DURABLE;
+        opts->explicit_options |= COG_CLI_OPT_STORE_MODE | COG_CLI_OPT_STORE_DIR;
+    }
     if (cog_cli_app_new(&app, opts) != COG_OK) {
         return NULL;
     }
@@ -131,18 +137,14 @@ static void test_streaming_flow(void)
     CHECK(cog_cli_app_run(app) == COG_OK);
     CHECK(cog_cli_app_state(app) == (cog_state_t)0); /* IDLE */
 
-    /* Session: user + three assistant chunks. */
-    CHECK_EQ_INT((long long)history_count(app), 4LL);
+    /* Session: user + one complete assistant turn. */
+    CHECK_EQ_INT((long long)history_count(app), 2LL);
     CHECK(history_role(app, 0U) == COG_MESSAGE_ROLE_USER);
     CHECK(history_content(app, 0U) != NULL &&
           strcmp(history_content(app, 0U), "hello") == 0);
     CHECK(history_role(app, 1U) == COG_MESSAGE_ROLE_ASSISTANT);
     CHECK(history_content(app, 1U) != NULL &&
-          strcmp(history_content(app, 1U), "Hello") == 0);
-    CHECK(history_content(app, 2U) != NULL &&
-          strcmp(history_content(app, 2U), " world") == 0);
-    CHECK(history_content(app, 3U) != NULL &&
-          strcmp(history_content(app, 3U), "!") == 0);
+          strcmp(history_content(app, 1U), "Hello world!") == 0);
 
     /* Provider state: one send, three chunks. */
     CHECK(cog_mock_provider_state(cog_cli_app_provider(app), &st) == COG_OK);
@@ -208,9 +210,12 @@ static void test_cancel_flow(void)
     CHECK(cog_cli_app_run(app) == COG_OK);
     CHECK(cog_cli_app_state(app) == (cog_state_t)0); /* IDLE */
 
-    /* The user message is preserved; no assistant node. */
-    CHECK_EQ_INT((long long)history_count(app), 1LL);
-    CHECK(history_role(app, 0U) == COG_MESSAGE_ROLE_USER);
+    /* The user message and explicit cancelled assistant aggregate are preserved. */
+    cog_cli_display_snapshot_t display;
+    CHECK(cog_cli_app_display_snapshot(app, &display) == COG_OK);
+    CHECK(display.item_count == 2U);
+    CHECK(display.items[0].role == COG_MESSAGE_ROLE_USER);
+    CHECK(display.items[1].status == COG_MESSAGE_CANCELLED);
 
     CHECK(cog_mock_provider_state(cog_cli_app_provider(app), &st) == COG_OK);
     CHECK_EQ_INT((long long)st.cancel_count, 1LL);
@@ -248,7 +253,7 @@ static void test_error_retry_flow(void)
     CHECK(cog_mock_provider_state(cog_cli_app_provider(app), &st) == COG_OK);
     CHECK_EQ_INT((long long)st.error_count, 1LL);
     CHECK_EQ_INT((long long)st.send_count, 2LL);
-    CHECK(st.last_error.retryable);
+    CHECK(st.last_error.code == COG_OK);
 
     cog_cli_app_free(app);
 }

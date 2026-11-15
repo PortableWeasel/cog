@@ -702,3 +702,20 @@ with an entry ceiling of one. Actual net composition uses request-local peek/ack
 and never retries. The [mock fixture amendment](REAL_CLIENT_H_MOCK_AMENDMENT.md)
 adds a header-first typed script constructor for K's subsequent tool-loop tests.
 H review/integration evidence does not waive the remaining application gates.
+
+### Stage 14.K application composition
+
+The single-process CLI now composes typed provider poll/next/cancel/error with
+fair core service, one complete assistant node per wire turn, immutable J
+configuration generations, and sequential asynchronous built-in workspace tools.
+The application owns the sole finite retry budget and saves STARTED before a
+tool starts, then result+terminal ledger before model continuation. Any uncertain
+save freezes admission; a terminal tool result whose insertion/save fails stays
+retained and visible without another execution. Earlier queued prompts cannot
+authorize continuation of an incomplete/cancelled turn: fresh postfailure input
+forks from a safe ancestor and preserves the failed branch. CGD1 visible snapshots
+include active/incomplete state without opaque continuation. Main explicitly
+owns dependency initialization and signalfd lifecycle; no global signal target
+is introduced. [Application contract](../applications/cog-cli/CONTRACT.md) and
+[K evidence](REAL_CLIENT_K_EVIDENCE.md) distinguish this single-process delivery
+from L recovery interaction and N/O remote/headless orchestration.

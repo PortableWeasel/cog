@@ -1,152 +1,121 @@
-# cog-cli — Application Contract
+# cog-cli application contract
 
-Stage 14.J supersedes the baseline options/configuration portions below with
-[effective configuration](CONFIGURATION.md). The independent `cog-cli-config`
-static library implements parsing and private immutable generation construction;
-`cog::cli` propagates it plus toolkit/net. H/K still migrate provider dispatch and
-the full application loop. These baseline scenario claims are not a Stage 14
-real-client release pass.
+Stage 14.K composes the integrated core, provider, toolkit, store and J
+[effective configuration](CONFIGURATION.md). Its independent review and exact
+verification scope are recorded in [K evidence](../../docs/REAL_CLIENT_K_EVIDENCE.md).
+This is the single-process conversation/tool client. Session recovery commands
+belong to L; remote IPC, replay and subagent application wiring remain N/O work.
 
-`cog-cli` is the command-line application for Cog: a single-process LLM
-agent harness that wires the real `cog-core`, `cog-provider`, `cog-obs`,
-and `cog-store` libraries into a functional prompt flow.  It is the
-foundation for the executable scenario tests (Stages 12.6b–12.6e).
+The executable parses options and explicitly initializes the dependency runtime
+and audited c-ares-only transport for REAL. It blocks SIGINT/SIGTERM and uses a
+borrowed signal file descriptor serviced by the app, without a mutable global
+signal-handler pointer. Tool helpers reset inherited masks and dispositions.
+Teardown drains the app, releases transport, cleans up the dependency runtime,
+closes the signal descriptor and restores the host mask. Embedders instead
+provide `opts.net` with their own explicit dependency lifetime.
 
-## Layout
+REAL is the default and requires an explicit model and usable credential
+reference. Configuration errors never select MOCK. `--mock` is an explicit
+fixture selection. CLI > environment > config file > defaults and presence bits
+are defined by CONFIGURATION.md; programmatic tests must set presence bits for
+their intended overrides. No credential or arbitrary provider diagnostic string
+is included in app error messages.
 
-```
-applications/cog-cli/
-  include/cog_cli/
-    cli.h             public app API: options, lifecycle, event injection, accessors
-    mock_provider.h   deterministic scripted mock provider + observable state
-  src/
-    main.c            thin entry point: parse, signal handlers, run, exit code
-    cli.c             app implementation: dispatch table, handlers, wait hook
-    mock_provider.c   mock provider implementation (no network)
-  tests/              cli-* tests and executable scenarios 11–20
-  CONTRACT.md         this file
-  HARNESS.md          scenario-writer guide (fixtures and observation)
-```
+The private implementation is split into `cli.c` (ownership/construction),
+`app_turn.c` (static dispatch, service and input), `app_tools.c` (durable tools),
+`app_display.c` (snapshots/CGD1), and `main.c` (host composition). J's immutable
+configuration generation and secret remain alive until provider disconnect.
+All contexts are explicit; dispatch and tool descriptors are static const.
 
-Scenarios 01–10 and the 05b shutdown regression live in
-`tests/scenarios/`. All 20 numbered scenarios plus 05b use the shared
-`scenario` CTest label.
+| State | Work |
+|---|---|
+| IDLE | Copy/validate user input, save user node, build bounded history, send |
+| MODEL | Poll generic provider and consume ordered typed deltas |
+| BACKOFF | Wait on one application-owned retry timer while servicing input/stop |
+| POLICY | Validate complete identified calls and apply explicit per-call policy |
+| TOOL | Poll one asynchronous execution through bounded capture and child reap |
 
-## Build targets
+The core service interval is four dispatched events, with a 10 ms idle ceiling
+reduced by provider/tool/application deadlines. Provider data is retained in app
+scratch if the core queue is full. Internal work events carry a request serial,
+so a queued event from a stopped request cannot consume a later turn's data.
 
-| Target | Kind | Contents |
-|--------|------|----------|
-| `cog-cli-lib` (alias `cog::cli`) | static library | `cli.c`, `mock_provider.c` |
-| `cog-cli` | executable | `main.c` linked against `cog::cli` |
+Constructor reservations include 1024 session nodes, 16 tool calls per assistant,
+16 complete opaque blobs, eight copied input slots, context-sized text/opaque
+scratch, provider delta storage, history/display arrays and tool-result capture.
+Arguments are bounded to 65535 bytes per call; IDs/names to 255 bytes. Session
+payload is reserved at four times the configured context bytes. Explicit async
+tool constructors reserve their handles before effects; the app never grows
+its own buffers during service. Dependency allocation semantics remain those of
+the approved transport profile.
 
-`cog::cli` links `cog::core`, `cog::provider`, and `cog::obs` PUBLIC so
-consumers (scenario tests) get the full include path and link closure.
+Streaming text is printed and accumulated separately from durable history. One
+assistant node is inserted for each finished model turn. Only successful FINISH
+with STOP or TOOL_CALLS produces COMPLETE; LENGTH/filter/error preserves an
+explicit INCOMPLETE aggregate, cancellation a CANCELLED aggregate. Complete
+opaque continuation and reported usage survive insertion and resend. Usage
+snapshots replace prior values, with unknown billing remaining unknown. Partial
+tool fragments never become executable calls.
 
-## Installation and exports
+Incomplete/cancelled turns cannot be replayed. Earlier queued input, including
+`--queue`, remains retained and cannot authorize a branch change or another send.
+Fresh explicit `app_submit` while the failed turn is inactive, or fresh
+interactive input, authorizes a fork at the last safe ancestor and a newly
+appended user message. The failed aggregate remains on its old branch. A
+successful explicitly authorized continuation may then process retained queued
+work. `app_queue` by itself never grants that continuation authorization.
 
-```bash
-cmake --install build --prefix install/stage
-install/stage/bin/cog-cli --prompt hello
-```
+One retry budget covers the whole user turn, including model/tool rounds:
+default one additional attempt, bounded retry elapsed time and overall turn time.
+Retry requires generic retryable + replay_safe error metadata, no accepted app
+output and no effects. Transport does not retry. Backoff is a timer, never a
+sleep in a handler. Exhaustion reports the original error without another send.
+Context is the sum of visible text, tool identity/arguments, opaque continuation
+and advertised schemas; protocol serialization has separate provider limits.
+No context truncation, token-count guessing or model substitution occurs.
 
-The install includes `bin/cog-cli`, `libcog-cli-lib.a`, the `cog_cli`
-headers, and `cog-cli-targets.cmake`, which exports the library as
-`cog::cli`. Load installed target sets in dependency order: `cog-result`,
-`cog-ipc`, `cog-obs`, `cog-core`, `cog-provider`, then `cog-cli`.
+REAL defaults to a durable XDG/HOME store. Every required parent directory is
+created without following symlinks and new directory entries are fsynced before
+store construction. Durable MOCK fixtures use the same fenced store profile.
+K creates fresh sessions and refuses an existing durable session ID with
+INVALID_STATE; it does not replace history or impersonate an old incarnation.
+L owns explicit load/recovery/fork interaction. The guard remains borrowed by
+all executions until their terminal destruction.
 
-## CLI options
+Tools are advertised only with both a workspace and durable store. Explicit
+no-store is text-only; unsolicited calls receive identified DENIED results even
+with ALLOW policy. ASK waits for `allow`/`deny` in interactive mode and denies in
+noninteractive mode. ALLOW is explicit autonomous opt-in. Strict built-in
+read/search/edit/command schemas and descriptor-relative workspace checks still
+apply. Commands receive only PATH=/usr/bin:/bin and LC_ALL=C.UTF-8; credentials
+and the host environment are not inherited. Command permission is not OS
+confinement.
 
-```
--p, --prompt TEXT     run one prompt, print the response, and exit
--i, --interactive     read prompts from stdin (default)
--s, --session ID      session identifier (default: generated)
--d, --store DIR       persist sessions under DIR (auto-save after each turn)
--l, --log PATH        structured logs to PATH (default: stderr)
--S, --socket PATH     listen on a Unix domain socket (optional IPC)
--m, --model ID        model identifier sent in requests (default: mock-model)
--e, --endpoint NAME   endpoint name (default: mock; only "mock" exists)
--M, --mock-mode MODE  stream|error|cancel|rate-limit (default: stream)
--c, --chunks LIST     comma-separated mock chunks (default: "Hello from cog-cli!")
--q, --queue TEXT      queue TEXT for the turn after the current one
--v, --verbose         debug logging
--h, --help / -V, --version
-```
+Each allowed call transitions PROPOSED → STARTED and saves durably before
+`execution_start`. The terminal result and ledger transition are saved together
+before another model request. Denied/invalid calls receive matching no-effect
+results. Results include status, truncation, possible effects and exit-status
+availability. Round exhaustion closes unstarted proposals by denial and makes
+no further model request.
 
-Exit codes: `0` success (including `--help`/`--version`), `1` startup or
-run failure, `2` bad arguments.
+Any INDETERMINATE save immediately freezes new input/model/tool admission.
+An executed tool's terminal handle and result remain retained if insertion,
+transition or save fails; drain returns that original failure, does not construct
+another execution, and later run/input admission is refused. An uninserted
+result is included as an incomplete visible TOOL snapshot item. Caller teardown
+may release the already-terminal handle after observing the failure. Restart
+uses the store's explicit indeterminate-recovery contract; K never guesses or
+repeats an effect.
 
-## State machine
+`app_run` cancels and drains provider/tool work on every stop/error exit. Process
+cleanup follows the toolkit's owned process-group TERM/KILL/reap profile.
+`app_stop` only forwards to the signal-safe core stop. `app_free` requires no
+active execution; prepared and terminal handles are releasable. Provider,
+workspace, guard, session and dependency lifetime ordering remains explicit.
 
-The dispatch table is `static const` in `cli.c`:
-
-| State | Event | Handler behaviour |
-|-------|-------|-------------------|
-| IDLE | `USER_INPUT` | append user message, send request from session history, start streaming |
-| IDLE | `CANCEL` | no-op (self transition) |
-| IDLE | `SHUTDOWN` | stop the run loop |
-| AWAITING_LLM | `LLM_CHUNK` | receive next chunk, append + print, continue or finish |
-| AWAITING_LLM | `LLM_COMPLETE` | close the turn, return to IDLE |
-| AWAITING_LLM | `CANCEL` | arm provider cancellation; next receive aborts and the partial turn is discarded |
-| AWAITING_LLM | `SHUTDOWN` | cancel the in-flight request (arm provider cancellation, drain the abort), discard the partial assistant turn, return to IDLE, stop the run loop |
-
-Error handling: a retryable provider error (e.g. rate limit) is retried
-once after a bounded backoff derived from the error's `retry_after_ms`
-(default 100 ms, capped at 5 s); a non-retryable error propagates out of
-`cog_core_run` and the process exits non-zero (fail loudly).
-
-## Ownership
-
-`cog_cli_app_t` owns the session, provider, obs context, store, mock
-script storage, and (until hand-off) the IPC listener.  The core borrows
-session/provider/obs/store and owns the IPC endpoint once configured.
-Teardown order in `cog_cli_app_free`: core → provider → obs → store →
-session → IPC (only if `cog_core_new` failed) → owned script storage →
-log file.
-
-The handlers need the app context (output stream, options) but the
-handler signature only receives the core.  The app is threaded through
-the core's borrowed `cog_core_config_t::user` pointer at construction
-and retrieved in handlers with `cog_core_user(core)` (see
-`cli_app_from_core` in cli.c).  The core never owns or mutates the
-pointer, and the dispatch table itself remains static const — there is
-no global mutable state.
-
-## Mock provider
-
-`mock_provider.h` implements the full `cog_provider_vtable_t` contract
-with no network access.  A script is an ordered array of steps
-(`CHUNK`, `ERROR`, `CANCEL`, `COMPLETE`); steps are consumed
-monotonically, and the `repeat` field replays the script for multi-turn
-sessions.  Cancellation is available both as a scripted step and as a
-one-shot `cog_mock_provider_request_cancel`.  `cog_mock_provider_state`
-snapshots send/receive/chunk/error/cancel counters, the last request
-(struct copy; pointer fields borrowed), and the last error metadata.
-
-The mock is deliberately **not** part of `cog-provider`: production
-provider logic stays free of test scaffolding.
-
-## Threading
-
-Single-threaded.  `cog_cli_app_stop` is the only call safe from a signal
-handler or another thread; it forwards to `cog_core_stop`.  The
-interactive wait hook polls stdin with a 100 ms timeout so a stop
-request is honoured promptly.
-
-## Tests
-
-The app-focused CTest names are `cli-options`, `cli-mock-provider`,
-`cli-smoke`, `cli-harness`, `cli-regression`, and `cli-binary-smoke` (see
-`tests/CMakeLists.txt`). The binary smoke test spawns the built `cog-cli`
-executable and checks its stdout and exit code for the stream, error-retry,
-cancel, custom-chunk, help, and bad-option cases.
-
-Scenario tests use names `scenario-test_11_ui_reconnect` through
-`scenario-test_20_interrupt_and_queue` in this directory and
-`scenario-test_01_user_prompt` through `scenario-test_10_fan_out_fan_in` in
-the shared scenario directory; `scenario-test_05b_shutdown_cancel_contract`
-is also labeled `regression`. The complete project suite has 61 tests:
-
-```bash
-ctest --test-dir build --output-on-failure -j4
-ctest --test-dir build -L scenario --output-on-failure
-```
+`app_display_snapshot` returns the selected branch plus active/incomplete visible
+state at one session/generation/through_sequence anchor, independent of replay
+eligibility. Opaque data is excluded. CGD1 encodes big-endian integers and exact
+UTF-8 text, with no native structures. Encode/decode capacity failure is
+transactional; malformed roles/statuses, UTF-8, lengths, generation or trailing
+bytes fail. O's CGR1 reconnect/GAP protocol consumes this snapshot contract later.

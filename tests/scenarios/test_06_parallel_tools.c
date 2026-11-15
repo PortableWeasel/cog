@@ -156,9 +156,9 @@ static cog_result_t slow_tool(cog_core_t *core,
 
 static const cog_tool_t kTools[] = {
     { .name = "sleep_echo", .description = NULL, .input_schema = NULL,
-      .handler = sleep_echo_tool },
+      .handler = sleep_echo_tool, .flags = COG_TOOL_REENTRANT | COG_TOOL_INDEPENDENT },
     { .name = "slow", .description = NULL, .input_schema = NULL,
-      .handler = slow_tool },
+      .handler = slow_tool, .flags = COG_TOOL_REENTRANT | COG_TOOL_INDEPENDENT },
 };
 
 static const cog_tool_table_t kTable = {
@@ -303,6 +303,13 @@ static void scenario_overlap(void)
     cog_toolkit_result_collection_free(coll);
     coll = NULL;
 
+    /* A call context is at-most-once: fresh contexts are required to measure
+     * actual parallel work rather than the cached sequential outcomes. */
+    cog_toolkit_call_free(calls[0]);
+    cog_toolkit_call_free(calls[1]);
+    CHECK(cog_toolkit_call_new(&calls[0], "sleep_echo", "150", 3U) == COG_OK);
+    CHECK(cog_toolkit_call_new(&calls[1], "sleep_echo", "150", 3U) == COG_OK);
+
     /* Parallel (max_parallel = 2). */
     memset(&opts, 0, sizeof(opts));
     opts.max_parallel = 2U;
@@ -356,7 +363,7 @@ static void scenario_ordered_results(void)
     const cog_toolkit_result_t *res = NULL;
     cog_session_node_t *user_node = NULL;
     cog_session_node_t *call_nodes[3];
-    cog_message_t user_msg;
+    cog_message_t user_msg = {0};
     size_t i;
     size_t req_len;
     const char *req;
@@ -390,12 +397,14 @@ static void scenario_ordered_results(void)
     r = cog_toolkit_execute_all(fx.core, &kTable, calls, 3U, &opts, &coll);
     CHECK(r == COG_OK);
     CHECK(coll != NULL);
+    if (coll == NULL) { fixture_free(&fx); return; }
 
     /* Exactly call_count results, in call order, echoing each request. */
     CHECK_EQ_INT((long long)cog_toolkit_result_collection_count(coll), 3LL);
     for (i = 0U; i < 3U; ++i) {
         req = cog_toolkit_call_request(calls[i], &req_len);
         CHECK(cog_toolkit_result_collection_get(coll, i, &res) == COG_OK);
+        if (res == NULL) { CHECK(0); break; }
         CHECK(cog_toolkit_result_is_ok(res));
         CHECK(res->output != NULL);
         CHECK(res->output_len == req_len);
@@ -405,6 +414,7 @@ static void scenario_ordered_results(void)
     /* Attach each result under its tool-call node. */
     for (i = 0U; i < 3U; ++i) {
         CHECK(cog_toolkit_result_collection_get(coll, i, &res) == COG_OK);
+        if (res == NULL) { CHECK(0); break; }
         CHECK(cog_session_add_tool_result(fx.session, call_nodes[i],
                                           res->output, NULL) == COG_OK);
     }
@@ -453,7 +463,9 @@ static void scenario_timeout(void)
     r = cog_toolkit_execute_all(fx.core, &kTable, calls, 1U, &opts, &coll);
     CHECK(r == COG_OK);
     CHECK(coll != NULL);
+    if (coll == NULL) { fixture_free(&fx); return; }
     CHECK(cog_toolkit_result_collection_get(coll, 0U, &res) == COG_OK);
+    if (res == NULL) { CHECK(0); cog_toolkit_result_collection_free(coll); fixture_free(&fx); return; }
     CHECK(res->status == COG_ERROR_TIMEOUT);
     CHECK(res->error_message != NULL);
 
@@ -489,7 +501,9 @@ static void scenario_cancel(void)
     r = cog_toolkit_execute_all(fx.core, &kTable, calls, 1U, &opts, &coll);
     CHECK(r == COG_OK);
     CHECK(coll != NULL);
+    if (coll == NULL) { fixture_free(&fx); return; }
     CHECK(cog_toolkit_result_collection_get(coll, 0U, &res) == COG_OK);
+    if (res == NULL) { CHECK(0); cog_toolkit_result_collection_free(coll); fixture_free(&fx); return; }
     CHECK(res->status == COG_ERROR_ABORTED);
     CHECK(res->error_message != NULL);
 

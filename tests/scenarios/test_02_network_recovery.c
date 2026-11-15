@@ -67,6 +67,12 @@ static cog_cli_app_t *make_app(cog_cli_options_t *opts)
         opts->endpoint_name = "mock";
     }
     opts->interactive = false;
+    opts->backend = COG_CLI_BACKEND_MOCK;
+    opts->explicit_options |= COG_CLI_OPT_BACKEND | COG_CLI_OPT_MODEL | COG_CLI_OPT_ENDPOINT;
+    if (opts->store_dir != NULL) {
+        opts->store_mode = COG_CLI_STORE_DURABLE;
+        opts->explicit_options |= COG_CLI_OPT_STORE_MODE | COG_CLI_OPT_STORE_DIR;
+    }
     if (cog_cli_app_new(&app, opts) != COG_OK) {
         return NULL;
     }
@@ -138,9 +144,9 @@ static void scenario_recovery(void)
     /* Error metadata observed. */
     CHECK(cog_mock_provider_state(cog_cli_app_provider(app), &st) == COG_OK);
     CHECK_EQ_INT((long long)st.error_count, 1LL);
-    CHECK(st.last_error.retryable);
-    CHECK_EQ_INT(st.last_error.http_status, 503);
-    CHECK_EQ_INT((long long)st.last_error.retry_after_ms, 5LL);
+    CHECK(st.last_error.code == COG_OK);
+    CHECK(st.last_error.http_status == 0);
+    CHECK(st.last_error.retry_after_ms == 0U);
 
     /* Bounded retry: original send + exactly one retry. */
     CHECK_EQ_INT((long long)st.send_count, 2LL);

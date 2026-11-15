@@ -171,6 +171,12 @@ typedef struct cog_cli_options {
      *  non-NULL.  The steps array and its strings are borrowed and must
      *  outlive the app. */
     const cog_mock_script_t *script;
+    /** Typed deterministic fixture, MOCK only and mutually exclusive with script.
+     * Nested deltas/strings are borrowed until app_free. NULL iff count=0;
+     * count is at most 4096, each turn ends in FINISH. The app uses the public
+     * cog_mock_provider_new_deltas constructor; REAL rejects these inputs. */
+    const cog_provider_delta_t *mock_deltas;
+    size_t mock_delta_count;
     /** Message queued for the turn after the current one. */
     const char *queue_text;
     /** Read prompts from stdin (default when @p prompt is NULL). */
@@ -441,8 +447,8 @@ cog_result_t cog_cli_app_run(cog_cli_app_t *app);
 /**
  * @brief Request the run loop to exit.
  *
- * Signal-safe: forwards to @c cog_core_stop and records the request so
- * the wait hook returns promptly.
+ * Signal-safe: forwards to @c cog_core_stop; app_run drains owned work
+ * after the core exits.
  *
  * @param[in,out] app App to stop; may be NULL (no-op).
  */

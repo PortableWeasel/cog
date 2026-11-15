@@ -6,8 +6,7 @@
  *  - non-retryable provider errors propagate out of cog_cli_app_run
  *    (fail loudly, no retry) and the process-facing contract holds;
  *  - NULL-pointer handling across the app API surface;
- *  - the store does NOT auto-save a cancelled turn (documented: only
- *    LLM_COMPLETE triggers a save), while a completed turn does save.
+ *  - the durable store preserves both completed and cancelled turn state.
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -53,6 +52,12 @@ static cog_cli_app_t *make_app(cog_cli_options_t *opts)
         opts->endpoint_name = "mock";
     }
     opts->interactive = false;
+    opts->backend = COG_CLI_BACKEND_MOCK;
+    opts->explicit_options |= COG_CLI_OPT_BACKEND | COG_CLI_OPT_MODEL | COG_CLI_OPT_ENDPOINT;
+    if (opts->store_dir != NULL) {
+        opts->store_mode = COG_CLI_STORE_DURABLE;
+        opts->explicit_options |= COG_CLI_OPT_STORE_MODE | COG_CLI_OPT_STORE_DIR;
+    }
     if (cog_cli_app_new(&app, opts) != COG_OK) {
         return NULL;
     }
@@ -132,10 +137,10 @@ static void test_null_handling(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Store auto-save: completed turn saves, cancelled turn does not      */
+/* Durable state: completed and cancelled turns are preserved      */
 /* ------------------------------------------------------------------ */
 
-static void test_store_save_on_complete_only(void)
+static void test_store_preserves_complete_and_cancelled(void)
 {
     char dir_ok[] = "/tmp/cog-cli-reg-store-XXXXXX";
     char dir_cancel[] = "/tmp/cog-cli-reg-store-XXXXXX";
@@ -149,7 +154,7 @@ static void test_store_save_on_complete_only(void)
         return;
     }
 
-    /* Completed turn: the store auto-saves on LLM_COMPLETE. */
+    /* Completed turn: the application saves the complete aggregate. */
     (void)memset(&opts, 0, sizeof(opts));
     opts.prompt = "hello";
     opts.chunks = "persisted";
@@ -162,7 +167,7 @@ static void test_store_save_on_complete_only(void)
     CHECK(cog_store_exists(cog_cli_app_store(app), sid));
     cog_cli_app_free(app);
 
-    /* Cancelled turn: no LLM_COMPLETE, so no auto-save (documented).  A
+    /* Cancelled turn: explicit CANCELLED state is also saved. A
      * fresh store dir avoids any session-id collision with the run above. */
     (void)memset(&opts, 0, sizeof(opts));
     opts.prompt = "hello";
@@ -173,7 +178,10 @@ static void test_store_save_on_complete_only(void)
     CHECK(cog_cli_app_run(app) == COG_OK);
     sid = cog_session_id(cog_cli_app_session(app));
     CHECK(sid != NULL);
-    CHECK(!cog_store_exists(cog_cli_app_store(app), sid));
+    CHECK(cog_store_exists(cog_cli_app_store(app), sid));
+    cog_cli_display_snapshot_t display;
+    CHECK(cog_cli_app_display_snapshot(app, &display) == COG_OK);
+    CHECK(display.item_count == 2U && display.items[1].status == COG_MESSAGE_CANCELLED);
     cog_cli_app_free(app);
 
     (void)rmdir(dir_ok);
@@ -184,7 +192,7 @@ int main(void)
 {
     test_nonretryable_error_propagates();
     test_null_handling();
-    test_store_save_on_complete_only();
+    test_store_preserves_complete_and_cancelled();
 
     if (failures != 0) {
         (void)fprintf(stderr, "test_cli_regression: %d failure(s)\n",

@@ -129,3 +129,13 @@ script constructor before implementation, pins bounded request ownership and
 retained overflow/cancel behavior, and supplies deterministic identified tool
 and opaque events through generic provider callbacks. K retains responsibility
 for durable message aggregation and actual tool admission/execution.
+
+## K typed application fixture admission
+
+The application options `mock_deltas`/`mock_delta_count` borrow a bounded typed
+script through app destruction. MOCK uses `cog_mock_provider_new_deltas`; REAL
+refuses fixture inputs, and legacy `script` is mutually exclusive. Each turn
+ends with FINISH before policy, durable STARTED, tool execution, identified
+result and continuation. This exercises application composition without wire
+traffic or relaxing durable tool admission. Pass 3 checks pointer/count pairs,
+4096-entry ceiling, fixture lifetime and REAL rejection.
