@@ -84,3 +84,24 @@ ownership, state transitions, installed targets, and tests, and
 [the scenario harness guide](../applications/cog-cli/HARNESS.md) for fixture
 APIs and observation points. [DESIGN.md](DESIGN.md) remains the architectural
 blueprint.
+
+## API documentation
+
+Doxygen API documentation can be generated when Doxygen 1.9.8+ and Graphviz
+dot are installed:
+
+```bash
+cmake -S . -B build-docs -DCOG_BUILD_DOCS=ON
+cmake --build build-docs --target cog_docs
+# Output: docs/output/html/index.html
+
+# Or directly from the project root:
+doxygen docs/Doxyfile
+```
+
+The generated HTML includes:
+- All public headers with full API reference
+- Call graphs and caller graphs (via Graphviz)
+- Include dependency diagrams
+- Design documents, scenario traces, and contracts
+- Source browser with cross-references
