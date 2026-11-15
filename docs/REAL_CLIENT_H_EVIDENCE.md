@@ -119,3 +119,48 @@ passing. Strict GCC6, ASan/UBSan6 and strict Clang5 targeted tests all pass afte
 these corrections, including the actual offline HTTPS two-turn integration.
 No additional paid request or credential access occurred. Independent re-review
 is still required before H approval or merge.
+
+## Independent acceptance and main integration
+
+H.2 `01ab5f5` independently accepted revised tip `c170fa0` after one rejection
+cycle. Regression commit `32a6f36` remains in history; the revision fixes all
+three findings without changing or weakening public headers. Exact nonstream
+opaque arrays retain distinct, equal and absent identities, separate summary
+metadata and explicit empty presence. Legacy retained text is nonterminal before
+one ABORTED completion. Cancellation error snapshots prohibit replay as soon as
+retained output is accepted, including before delivery.
+
+Independent premerge validation passed strict GCC six targets, ASan/UBSan six
+targets and Clang five targets. This includes constructor fault injection,
+depth256 traversal, retained typed events and actual offline TLS. No additional
+paid generation or credential access occurred during review or integration.
+
+Merge `c0b1c17` integrates the reviewed H branch into main `aa50918`, preserving
+the newer J configuration implementation, application CMake linkage and I toolkit
+exports. The sole conflict was additive evidence in R04: both toolkit acceptance
+and the H mock fixture amendment were retained. No agent-contract or agent-code
+branch was merged, and no application loop code was changed.
+
+Postmerge strict validation passes eleven provider/mock/core/configuration
+tests and all eight toolkit tests. A fresh postmerge ASan/UBSan build passes the
+same six focused provider targets. The six-target set is listed under Local
+validation above; the added strict checks are `unit-core`, `unit-core-service`,
+`cli-options`, `cli-configuration` and `cli-configuration-memory`.
+
+The complete strict build was attempted. Libraries and the application binary
+compile; it stops at `applications/cog-cli/tests/test_15_multi_turn_tools.c:86`,
+whose old positional tool initializer omits `cog_tool_t.async` under Werror.
+The old application mock wiring at `applications/cog-cli/src/cli.c:791` still
+passes its script through api_key instead of implementation_config. These are
+pending K migration work (`78760e5`), alongside the durable conversation/tool
+loop. H acceptance does not claim a full-suite, scenario15, CLI behavior or
+release gate P pass.
+
+The normal complete install succeeds. After prefix relocation, a standalone
+consumer finds `cog-provider` and links only `cog::provider`, initializes the
+host runtime and constructs/frees the audited net context. A second consumer
+also includes the installed toolkit export with explicit Threads discovery and
+whole-archive links both libraries; it runs successfully, proving private yyjson
+namespaces coexist. Both licenses are installed; no yyjson public header or
+worktree/build path appears in installed CMake exports. No source/export change
+was needed during integration.
