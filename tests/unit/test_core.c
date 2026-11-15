@@ -367,6 +367,69 @@ static void test_accessors(void)
     cog_session_free(session);
 }
 
+static void test_provider_replacement(void)
+{
+    cog_session_t *session = NULL;
+    cog_core_t *core = NULL;
+    cog_core_config_t cfg = {0};
+    wait_ctx_t wait = {0};
+    int provider_a = 123;
+    int provider_b = 456;
+    cog_provider_t *a = (cog_provider_t *)&provider_a;
+    cog_provider_t *b = (cog_provider_t *)&provider_b;
+    cog_event_t event = { .id = EV_FAIL, .kind = COG_EVENT_USER_INPUT };
+    const cog_message_t *history = NULL;
+    const cog_message_t initial = { .role = COG_MESSAGE_ROLE_USER,
+        .content = "before", .content_len = 6U };
+    cog_session_node_t *active = NULL;
+    size_t count = 0U;
+    size_t pending = 0U;
+
+    CHECK(cog_core_set_provider(NULL, NULL) == COG_ERROR_NULL_PTR);
+    CHECK(cog_core_set_provider(NULL, a) == COG_ERROR_NULL_PTR);
+    CHECK(cog_session_new(&session, NULL) == COG_OK);
+    CHECK(cog_session_append(session, &initial, &active) == COG_OK);
+    cfg.session = session;
+    cfg.dispatch_table = dispatch_table;
+    cfg.dispatch_table_size = sizeof(dispatch_table) / sizeof(dispatch_table[0]);
+    cfg.event_queue_capacity = 1U;
+    cfg.wait_fn = stop_wait_fn;
+    cfg.wait_arg = &wait;
+    cfg.provider = a;
+    CHECK(cog_core_new(&core, &cfg) == COG_OK);
+    wait.core = core;
+    CHECK(cog_core_enqueue(core, &event) == COG_OK);
+    CHECK(cog_core_queue_message(core, cog_session_id(session), "pending", 7U) == COG_OK);
+
+    CHECK(cog_core_set_provider(core, a) == COG_OK);
+    CHECK(cog_core_provider(core) == a);
+    CHECK(cog_core_set_provider(core, b) == COG_OK);
+    CHECK(cog_core_provider(core) == b);
+    CHECK(cog_core_set_provider(core, NULL) == COG_OK);
+    CHECK(cog_core_provider(core) == NULL);
+    CHECK(cog_core_set_provider(core, NULL) == COG_OK);
+    CHECK(cog_core_provider(core) == NULL);
+    CHECK(cog_core_set_provider(core, a) == COG_OK);
+    CHECK(cog_core_provider(core) == a);
+
+    CHECK(provider_a == 123 && provider_b == 456);
+    CHECK(wait.calls == 0 && !cog_core_is_running(core));
+    CHECK(cog_core_state(core) == ST_IDLE && cog_core_session(core) == session);
+    CHECK(cog_session_get_history(session, cog_session_active(session), &history, &count) == COG_OK);
+    CHECK(cog_session_active(session) == active && count == 1U);
+    CHECK(history != NULL && history[0].content_len == 6U &&
+          memcmp(history[0].content, "before", 6U) == 0);
+    CHECK(cog_core_pending_count(core, cog_session_id(session), &pending) == COG_OK);
+    CHECK(pending == 1U);
+    CHECK(cog_core_enqueue(core, &event) == COG_ERROR_OVERFLOW);
+    /* The original event remains queued and was not dispatched by the setter. */
+    CHECK(cog_core_run(core) == COG_ERROR_IO);
+    CHECK(wait.calls == 0);
+    cog_core_free(core);
+    CHECK(provider_a == 123 && provider_b == 456);
+    cog_session_free(session);
+}
+
 /* ------------------------------------------------------------------ */
 /* Borrowed caller context (cog_core_user)                             */
 /* ------------------------------------------------------------------ */
@@ -1153,6 +1216,7 @@ int main(void)
     test_new_validation();
     test_free_null();
     test_accessors();
+    test_provider_replacement();
     test_user_context();
     test_enqueue();
     test_run_basic();
