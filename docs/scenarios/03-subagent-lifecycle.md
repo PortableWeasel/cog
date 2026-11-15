@@ -78,3 +78,16 @@ Future conformance requirements: Public-only child runtime; owned queued status 
 Header tracing is complete only where the gap analysis says so. Production
 implementation and executable scenario migration remain gated by pass 3 and the
 independent final review; no passing runtime result is inferred from these tables.
+
+## Pass-3 IPC ownership retrace (E02)
+
+Core constructor settings `cog_core_config_t.ipc_max_frame_bytes` and
+`cog_core_config_t.ipc_payload_bytes` bound admitted frames and queued payload
+bytes ([core.h](../../libraries/cog-core/include/cog/core.h)). Reserve an event
+slot and owned arena bytes before endpoint receive; if unavailable, consume
+nothing and service/dispatch other work. Bytes survive until handler return.
+An endpoint-retained frame above the core ceiling closes only that peer with
+reported LIMIT, rather than an endless OVERFLOW loop. Accepted endpoint
+constructors remain explicit and peer-count-bounded; private intrusive listener
+links need no additional public allocation surface. Test just-below/exact/above
+frame limits, full arena/full event queue, and caller payload mutation after enqueue.

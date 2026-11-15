@@ -1,5 +1,9 @@
 # Stage 14 execution scaffold
 
+> [Stage 14.E pass 3](REAL_CLIENT_PASS3.md) records the latest recovery, bounds,
+> compatibility and explicit DYNAMIC allocation decisions. Additional full
+> independent final review remains required before E closes or implementation.
+
 Parent: `2b9d0ea`. This is the current real-client roadmap; Stage 12 remains
 historical engine/mock-CLI delivery evidence. User delegates routine design
 and preapproves autonomous testing. No pending scope-confirmation gate.

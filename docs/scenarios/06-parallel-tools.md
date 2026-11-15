@@ -65,3 +65,16 @@ Future conformance requirements: Disposable file counter remains exactly one acr
 Header tracing is complete only where the gap analysis says so. Production
 implementation and executable scenario migration remain gated by pass 3 and the
 independent final review; no passing runtime result is inferred from these tables.
+
+## Pass-3 parser/process bounds retrace (E03)
+
+`cog_tool_async_config_t` now fixes argument/schema bytes, JSON depth and codec
+workspace capacity ([tool.h](../../libraries/cog-core/include/cog/tool.h)).
+Construction rejects over-limit input before effects, duplicate keys and invalid
+UTF-8. Scalar-count string lengths, finite numeric semantics and unsupported
+schema keywords are pinned in [toolkit_exec.h](../../libraries/cog-toolkit/include/cog/toolkit_exec.h).
+No remote schema fetch or hidden parser growth occurs. Process-tree supervision
+keeps subreaper/signal changes inside an owned helper, never the embedding host;
+the cancellation profile requires descendants remain in the owned group. Test
+ordinary inherited-group grandchildren outliving the shell, exact parser/depth
+limits, unsupported numeric ranges and result resize with one effect.

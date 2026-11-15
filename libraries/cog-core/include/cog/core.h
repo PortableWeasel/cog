@@ -167,6 +167,15 @@ typedef struct cog_core_config {
      * be bound (listening or connected) before it is passed to the
      * core; an unbound endpoint is accepted but never drained.
      *
+     * Core reserves event descriptors and ipc_payload_bytes before running.
+     * Before consuming a complete endpoint frame it reserves both an event
+     * slot and enough owned payload storage. Full reservations backpressure
+     * that peer without consuming the frame; other service/dispatch continues.
+     * Copied payload lives until handler return, then its arena slice is reused.
+     * No per-message allocation occurs. Accepted endpoints are explicit accept
+     * constructors paired with endpoint_free and bounded by ipc_peer_capacity;
+     * core tracking slots are constructor-reserved and listener linkage may be
+     * intrusive, without a separate growing peer array.
      * Ownership transfers to the core only on successful @c cog_core_new: the caller
      * must not use or free the endpoint after that call.
      */
@@ -220,6 +229,11 @@ typedef struct cog_core_config {
     void *idle_arg; /**< Borrowed idle context. */
     uint32_t max_idle_wait_ms; /**< Default 10; reduced to earliest deadline. */
     size_t ipc_peer_capacity; /**< Maximum accepted peers; default 16. */
+    size_t ipc_max_frame_bytes; /**< Core admission ceiling; default 1 MiB. A
+       larger endpoint-retained frame closes only that offending peer with a
+       reported LIMIT; never loops forever on receive OVERFLOW or truncates it. */
+    size_t ipc_payload_bytes; /**< Total constructor-reserved queued IPC payload
+       arena; default 8 MiB, must be >= ipc_max_frame_bytes. No runtime growth. */
     size_t ipc_service_quantum; /**< Max IPC units per fairness step; default 16. */
     size_t max_agents; /**< Constructor-reserved agent records; default 16. */
     size_t max_agent_message_bytes; /**< Per-agent copied task/status/result bytes;
@@ -494,8 +508,11 @@ cog_result_t cog_core_queue_message(cog_core_t *core,
  *         required capacity, excluding the terminator. No output bytes are
  *         written; the same oldest entry remains queued across service calls.
  *
- * @post Auto-injection removes an entry only after successful core enqueue;
- *       full event queues retain it without duplicate injection.
+ * @post Auto-injection logically removes an entry only after successful core
+ *       enqueue; full event queues retain it without duplicate injection. Its
+ *       backing text slot stays leased until the consuming handler returns, or
+ *       bytes are first copied into another constructor-reserved event owner.
+ *       Reusing a FIFO slot must never overwrite an already queued prompt.
  * @post On success, the message is removed from the queue and copied
  *       into @p out_buf.
  *

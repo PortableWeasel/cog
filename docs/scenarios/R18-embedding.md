@@ -50,3 +50,15 @@ Pass1/transport research compile and lifecycle evidence exists; implementation/e
 **Required future executable evidence:** F/H/P: isolated installed consumers, link closure, public external provider fixture, two-context cancellation and shipped dependency-profile tests.
 
 **Amendment references:** D02,D10 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+
+## Pass-3 custom store construction retrace (E06)
+
+An out-of-tree store backend constructs its own caller-owned context, supplies
+`cog_store_config_t.backend_context`, and receives that exact pointer in every
+custom callback ([session_store.h](../../libraries/cog-core/include/cog/session_store.h)).
+No callback casts a private Cog wrapper or uses a mutable global. The caller
+keeps context alive until all guards are released and store_free has finished,
+then invokes its own matching destructor. Generic store_free never frees this
+borrowed state. Missing required callbacks or incomplete fenced/recovery groups
+fail before publication. Future G/P installed-consumer tests use two independent
+custom contexts and assert callback identity and destructor ordering.

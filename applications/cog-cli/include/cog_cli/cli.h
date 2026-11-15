@@ -216,7 +216,7 @@ typedef struct cog_cli_display_item {
 /** @brief Atomic full-display snapshot at one replay cursor boundary. */
 typedef struct cog_cli_display_snapshot {
     const char *session_id; /**< Nonempty UTF-8, max 127 bytes; part of identity. */
-    uint64_t generation;
+    uint64_t generation; /**< Nonzero replay lifetime identity. */
     uint64_t through_sequence; /**< Includes all display DATA through this ID. */
     const cog_cli_display_item_t *items;
     size_t item_count;
@@ -261,7 +261,8 @@ cog_result_t cog_cli_display_snapshot_encode(const cog_cli_display_snapshot_t *s
  * @param[out] required_items Required entries.
  * @param[out] required_text Required bytes. Destinations may be NULL iff capacity=0.
  * @return OK; OVERFLOW changes required counts only; NULL_PTR; UNSUPPORTED
- * version; PROTOCOL invalid role/status/UTF-8/length or trailing bytes. Outputs
+ * version; PROTOCOL zero generation, invalid role/status/UTF-8/embedded NUL,
+ * length or trailing bytes. Outputs
  * independent of input/app lifetime. No allocation, provider replay or effects.
  */
 cog_result_t cog_cli_display_snapshot_decode(const void *input, size_t input_len,
@@ -347,6 +348,12 @@ const char *cog_cli_result_name(cog_result_t rc);
  * be absolute). REAL durable mode enables require_owner, admits a fresh process
  * incarnation/epoch, and holds its guard for the entire session execution.
  * Restart never reuses a dead incarnation or bypasses unresolved effects.
+ * Coherent unresolved intent may construct a recovery-only app with an explicit
+ * recovery guard; no provider/tool/input work is admitted. In interactive run,
+ * an operator must choose evidence-backed reconciliation or acknowledge unknown
+ * effects; ALLOW policy never substitutes for that decision. Noninteractive run
+ * returns INDETERMINATE without effects. After successful reconciliation save,
+ * release recovery guard and admit/acquire a new normal epoch before work.
  * Missing usable location returns NOT_FOUND; creation/open errors
  * return IO, never silently disable persistence. MOCK defaults DISABLED.
  * Explicit DISABLED allows text conversation only: omit tools from requests,
@@ -399,7 +406,7 @@ void cog_cli_app_free(cog_cli_app_t *app);
  *
  * Enqueues the configured @c --prompt (if any) and @c --queue message
  * (if any) before entering the loop.  In interactive mode the wait hook
- * reads stdin; in single-prompt mode it stops the loop when the turn
+ * polls stdin within the bounded idle budget; in single-prompt mode it stops the loop when the turn
  * completes.  May be called again after a stop.
  *
  * Uses generic provider/tool poll/next/cancel/error through the fair service
@@ -410,6 +417,12 @@ void cog_cli_app_free(cog_cli_app_t *app);
  * Retry only before accepted output/effects, within attempt and elapsed limits;
  * transport never retries. Partial failures persist INCOMPLETE and require an
  * explicit user continuation; no replay of executed or indeterminate tools.
+ * After an explicit continuation of an incomplete/cancelled model turn, fork
+ * from its last replay-safe ancestor and append the newly authorized user input;
+ * preserve the failed aggregate on the old branch. Never relabel a failed wire
+ * turn COMPLETE or replay its partial tool/opaque state. An unresolved tool
+ * instead requires recovery-only ownership and explicit reconcile_tool before
+ * ordinary execution. app_run never performs that operator decision implicitly.
  * Shutdown cancels and services tool process-group drain/reap before freeing.
  * @param[in,out] app App to run.
  * @return COG_OK if the loop exited via stop.
@@ -440,7 +453,10 @@ void cog_cli_app_stop(cog_cli_app_t *app);
  * @param[in]     len  Length of @p text in bytes.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p app or @p text is NULL.
- * @return COG_ERROR_OVERFLOW if the event queue is full.
+ * @return COG_ERROR_OVERFLOW if the event queue is full; LIMIT if constructor
+ *       prompt storage cannot fit text; INVALID_ARG for invalid UTF-8/NUL.
+ * @post OK owns copied text through handler completion; failure accepts nothing.
+ * No runtime allocation/growth or borrowed pointer into caller text is queued.
  */
 cog_result_t cog_cli_app_submit(cog_cli_app_t *app,
                                 const char *text,

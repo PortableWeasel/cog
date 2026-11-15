@@ -1,5 +1,9 @@
 # Real-model client: release blueprint
 
+> [Stage 14.E pass 3](REAL_CLIENT_PASS3.md) records the latest recovery, bounds,
+> compatibility and explicit DYNAMIC allocation decisions. Additional full
+> independent final review remains required before E closes or implementation.
+
 Status: planning baseline, 2026-11-15. Parent ticket: `2b9d0ea`.
 The user authorized autonomous design decisions and testing. This supersedes
 Stage 14's earlier scope-confirmation requirement. Header and implementation

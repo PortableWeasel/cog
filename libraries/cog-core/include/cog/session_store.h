@@ -156,7 +156,14 @@ typedef bool (*cog_store_exists_fn)(void *store, const char *id);
 /**
  * @brief Session store backend dispatch table.
  *
- * Static const dispatch table — no dynamic registration.
+ * Static const dispatch table — no dynamic registration. For a custom backend,
+ * every void *store callback argument is exactly config.backend_context, never
+ * a private cog_store_t layout. Caller constructs/destroys that context and
+ * keeps it live through store_free and every guard. Builtins use their own
+ * explicit store-constructor-owned context; no global custom-backend state.
+ * Required save/load/append/delete_/list/exists/load_ex pointers are validated
+ * before constructor effects. Fenced callbacks form one complete optional group;
+ * require_owner rejects a missing member with UNSUPPORTED.
  */
 typedef struct cog_store_vtable {
     const char *name;
@@ -189,6 +196,11 @@ typedef struct cog_store_vtable {
     cog_result_t (*owner_acquire)(void *store, const char *id,
                                   cog_store_owner_t expected, void **out_guard);
     cog_result_t (*owner_release)(void *store, void *guard);
+    /** Restricted recovery guard; same explicit ownership/locking as acquire.
+     * Required with the fenced profile; never authorizes execution borrows. */
+    cog_result_t (*owner_acquire_recovery)(void *store, const char *id,
+                                           cog_store_owner_t expected,
+                                           void **out_guard);
 
 } cog_store_vtable_t;
 
@@ -204,6 +216,10 @@ typedef struct cog_store_config {
      * @brief Backend vtable. If NULL, uses the default file backend.
      */
     const cog_store_vtable_t *backend;
+    /** Borrowed custom-backend state, passed verbatim to its callbacks. May be
+     * NULL for a stateless custom backend. Ignored for builtin file/null tables;
+     * those contexts are constructor-owned. Never freed by generic store_free. */
+    void *backend_context;
 
     /**
      * @brief Base directory for file-based backends.
@@ -242,7 +258,8 @@ typedef struct cog_store_config {
     size_t max_record_bytes;
     bool require_owner; /**< Same-host fenced execution profile. Legacy save/append
        consult this context's live guard and return INVALID_STATE without one;
-       unguarded APIs cannot bypass ownership. File backend supports it; null or
+       unguarded APIs cannot bypass ownership. A recovery-only guard permits
+       only explicit reconciliation writes, never ordinary append/execution. File backend supports it; null or
        incapable custom backend returns UNSUPPORTED at construction. */
 } cog_store_config_t;
 
@@ -486,7 +503,10 @@ cog_result_t cog_store_owner_read(cog_store_t *store, const char *id,
  * @note Source stops new work, drains/reaps, checkpoints, then releases its guard
  * and remains frozen BEFORE CAS. Target is inactive until it acquires next guard.
  * Aborting a prepared handoff resumes source only through a NEW epoch, including
- * same-instance return. Uncertain IO never permits either side to guess or undo.
+ * same-instance return. Crash recovery may admit a fresh incarnation against
+ * the exact latest generation only after old owned processes are fenced/reaped;
+ * unresolved intent then permits only owner_acquire_recovery, never execution.
+ * Uncertain IO never permits either side to guess or undo.
  */
 cog_result_t cog_store_owner_compare_exchange(cog_store_t *store, const char *id,
                                                cog_store_owner_t expected,
@@ -508,14 +528,42 @@ cog_result_t cog_store_owner_compare_exchange(cog_store_t *store, const char *id
  * close in fork child. The OS releases it on owner death. Restart first fences/
  * reaps prior owned processes; unverified child effects remain INDETERMINATE,
  * never automatic failover/replay. A new incarnation requires a fresh epoch.
+ * Unresolved intent is inspectable/reconcilable only through the explicitly
+ * restricted owner_acquire_recovery path, never an automatic mode downgrade.
  */
 cog_result_t cog_store_owner_acquire(cog_store_t *store, const char *id,
                                       cog_store_owner_t expected,
                                       cog_store_owner_guard_t **out_guard);
 /**
+ * @brief Acquire the exclusive lock for explicit recovery, never execution.
+ * @param[in,out] store Fenced-profile context; one owner thread.
+ * @param[in] id Session ID with a coherent v2 generation.
+ * @param[in] expected Newly admitted current incarnation/epoch after old owned
+ * process groups are fenced/reaped; never impersonate the dead incarnation.
+ * @param[out] out_guard Owned recovery guard, NULL on failure; release normally.
+ * @return OK; AGAIN lock busy; INVALID_STATE stale tuple/no recovery needed;
+ * NULL_PTR; NOMEM; IO; PROTOCOL corrupt authoritative data; UNSUPPORTED backend.
+ * @note Takes the same independently opened lock and durably confirms owner as
+ * ordinary acquire, but may hold unresolved ledger entries. It grants no model,
+ * tool, child or input admission; guard_borrow fails INVALID_STATE. The only
+ * permitted save changes are atomic reconcile_tool results/final states plus
+ * their audit evidence; existing message bytes/node identity/parentage/opaque/
+ * usage stay unchanged (only matching new result nodes may be appended), and
+ * no new user/assistant/tool-call work may be added. save validates this monotonic
+ * diff against the locked generation; append/checkpoint_save refuse this guard.
+ * After every unresolved entry is explicitly closed and save succeeds, release
+ * recovery guard, CAS to a NEW epoch with the exact resulting checkpoint, then
+ * ordinary acquire may grant execution. Failed save retains recovery ownership;
+ * a crash repeats recovery without executing the call or forgetting uncertainty.
+ */
+cog_result_t cog_store_owner_acquire_recovery(cog_store_t *store, const char *id,
+                                               cog_store_owner_t expected,
+                                               cog_store_owner_guard_t **out_guard);
+
+/**
  * @brief Borrow a live guard for one bounded execution constructor.
  * @param[in,out] guard Live owner guard. @param[in] session_id Matching ID.
- * @return OK; NULL_PTR; INVALID_STATE wrong session/inactive; LIMIT count overflow.
+ * @return OK; NULL_PTR; INVALID_STATE wrong session/inactive/recovery-only; LIMIT count overflow.
  * @note Owner thread, no allocation. Pair each success with guard_return after
  * execution is prepared/terminal and destroyed. Release refuses any borrowers.
  */

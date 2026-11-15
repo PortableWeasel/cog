@@ -213,7 +213,14 @@ typedef enum cog_toolkit_policy_decision {
  * additionalProperties=false, items, enum, minimum/maximum, min/maxLength and
  * min/maxItems. Annotation keywords title/description/$schema are accepted;
  * unknown validation keywords fail UNSUPPORTED, never ignored. Codec/parser
- * pools are part of this constructor, not process-global state.
+ * pools are part of this constructor, not process-global state. Argument,
+ * schema, depth and pool ceilings are explicit in config; exceeding any returns
+ * LIMIT before effects. Reject duplicate keys at every level and invalid UTF-8.
+ * Length keywords count Unicode scalar values, array limits count entries;
+ * integer means an exact mathematical integer in signed 64-bit range; number
+ * means a finite representable double. Unsupported numeric range/schema forms
+ * return UNSUPPORTED, malformed values INVALID_ARG. No remote schema fetch,
+ * regex, $ref, coercion, default insertion or unknown-keyword acceptance.
  */
 cog_result_t cog_toolkit_execution_new(cog_toolkit_execution_t **out,
                                        cog_core_t *core,

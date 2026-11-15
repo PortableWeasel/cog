@@ -21,9 +21,12 @@
  * COG_ERROR_NOT_FOUND, as is a path that resolves to a node carrying no
  * value.
  *
- * Threading model: a cog_config_tree_t is not thread-safe.  Transactions
- * are single-threaded.  The running tree may be read concurrently after
- * commit; the candidate tree is private to the transaction.
+ * Threading: every tree/transaction operation is owner-thread only, including
+ * begin/get/list; no concurrent read/commit without external synchronization.
+ * Copied immutable endpoint generations may be shared independently. All Cog
+ * node/string/transaction/validator storage is constructor-reserved; no runtime
+ * allocation/growth. Limit failure is atomic unless commit explicitly finalizes
+ * a rejected transaction because its reset snapshot cannot fit.
  */
 #ifndef COG_CONFIG_H
 #define COG_CONFIG_H
@@ -55,9 +58,20 @@ typedef struct cog_config_tree cog_config_tree_t;
  * cog_config_tree_free: stale-handle reuse is then detected
  * deterministically (COG_ERROR_INVALID_STATE for mutations,
  * COG_ERROR_NOT_FOUND for reads) and memory stays bounded by the
- * number of transactions begun on the tree.
+ * configured max_transactions handles, including finalized tombstones. Their
+ * candidate storage is reclaimed on finalization; handle identity is never reused
+ * within a tree. At the handle limit, begin returns LIMIT. A caller may construct
+ * a new tree generation and retire this tree after its last borrower.
  */
 typedef struct cog_config_transaction cog_config_txn_t;
+
+/** @brief Aggregate constructor ceilings across running and all candidate trees. */
+typedef struct cog_config_limits {
+    size_t max_nodes; /**< Zero defaults 8192 aggregate nodes, not per transaction. */
+    size_t string_bytes; /**< Zero defaults 8 MiB for paths/values/prefixes. */
+    size_t max_transactions; /**< Zero defaults 4096 retained handle identities. */
+    size_t max_validators; /**< Zero defaults 16 ordered validator slots. */
+} cog_config_limits_t;
 
 /**
  * @brief Validator function for a config subtree.
@@ -77,7 +91,19 @@ typedef cog_result_t (*cog_config_validator_fn)(const cog_config_txn_t *txn,
 /* ── Lifecycle ──────────────────────────────────────────────────── */
 
 /**
- * @brief Create a new configuration tree.
+ * @brief Reserve bounded tree, candidate, tombstone and validator workspaces.
+ * @param[out] out Owned empty tree; NULL on failure, match tree_free.
+ * @param[in] limits NULL or zero fields select documented defaults. All size
+ * arithmetic is checked; aggregate capacities must support at least one node
+ * and transaction. No candidate/runtime operation can increase these limits.
+ * @return OK; NULL_PTR; INVALID_ARG invalid/overflowing layout; NOMEM reservation.
+ * @note Owner thread, no file/network I/O, validators or global state.
+ */
+cog_result_t cog_config_tree_new_ex(cog_config_tree_t **out,
+                                    const cog_config_limits_t *limits);
+
+/**
+ * @brief Create a bounded tree, equivalent to tree_new_ex(out,NULL).
  *
  * @param[out] out Uninitialised pointer; set to the new tree on success.
  * @return COG_OK on success.
@@ -111,9 +137,9 @@ void cog_config_tree_free(cog_config_tree_t *tree);
  * @param[out] out_txn Receives the transaction handle.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p tree or @p out_txn is NULL.
- * @return COG_ERROR_NOMEM if allocation fails.
- *
- * Threading: not thread-safe.
+ * @return COG_ERROR_LIMIT if reserved node/string/transaction identity capacity
+ * cannot fit the snapshot; failure sets *out_txn=NULL and changes no running data.
+ * Threading: owner-thread only; no runtime allocation.
  */
 cog_result_t cog_config_begin(cog_config_tree_t *tree,
                                cog_config_txn_t **out_txn);
@@ -141,8 +167,8 @@ cog_result_t cog_config_begin(cog_config_tree_t *tree,
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p txn is NULL.
  * @return COG_ERROR_INVALID_ARG if a validator rejects the config.
- * @return COG_ERROR_NOMEM if the candidate cannot be re-derived after a
- *         validator rejection (degraded path: the transaction is
+ * @return COG_ERROR_LIMIT if reserved workspace cannot re-derive the candidate
+ *         after validator rejection (degraded path: the transaction is
  *         finalized in that case).
  * @return COG_ERROR_INVALID_STATE if the transaction was already
  *         committed or rolled back.
@@ -203,9 +229,9 @@ cog_result_t cog_config_get(const cog_config_txn_t *txn,
  * @return COG_ERROR_NULL_PTR if @p txn, @p path, or @p value is NULL.
  * @return COG_ERROR_INVALID_ARG if @p path is empty or malformed.
  * @return COG_ERROR_INVALID_STATE if @p txn was already finalized.
- * @return COG_ERROR_NOMEM if allocation fails.
- *
- * Threading: not thread-safe.
+ * @return COG_ERROR_LIMIT if reserved node/string capacity cannot fit the
+ * change; candidate/running data stay unchanged. No runtime allocation.
+ * Threading: owner-thread only.
  */
 cog_result_t cog_config_set(cog_config_txn_t *txn,
                              const char *path,
@@ -275,7 +301,7 @@ cog_result_t cog_config_list(const cog_config_txn_t *txn,
  * prefix that exists in the candidate (see cog_config_commit).  They
  * run in registration order; the first rejection aborts the commit.
  * Validators are stored in a fixed-capacity table embedded in the tree
- * (16 slots per tree): the table never grows at runtime, and
+ * (limits.max_validators, default 16): the table never grows at runtime, and
  * COG_ERROR_OVERFLOW reports a full table.
  *
  * @param[in,out] tree      Tree to register on.
@@ -286,8 +312,9 @@ cog_result_t cog_config_list(const cog_config_txn_t *txn,
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p tree, @p prefix, or @p validator is NULL.
  * @return COG_ERROR_INVALID_ARG if @p prefix is a malformed path.
- * @return COG_ERROR_OVERFLOW if the validator table is full (16 entries).
- * @return COG_ERROR_NOMEM if the prefix cannot be copied.
+ * @return COG_ERROR_OVERFLOW if the configured validator table is full.
+ * @return COG_ERROR_LIMIT if the reserved prefix-string pool is exhausted;
+ * failure adds no validator and consumes no capacity. No runtime allocation.
  *
  * Threading: not thread-safe.
  */

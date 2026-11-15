@@ -218,7 +218,11 @@ cog_result_t cog_ipc_endpoint_listen(cog_ipc_endpoint_t *endpoint,
  * @return COG_ERROR_NULL_PTR if @p listener or @p client is NULL.
  * @return COG_ERROR_INVALID_STATE if @p listener is not listening.
  * @return COG_ERROR_AGAIN if no connection is pending; never waits for a peer.
- * @return COG_ERROR_IO if accept fails.
+ * @return COG_ERROR_IO if accept fails; NOMEM if the explicit accepted-endpoint
+ * constructor cannot reserve its inherited bounded framing workspaces.
+ * @note Accepted endpoints may link intrusively into their listener's peer list;
+ * acceptance adds no separate growing listener peer-table allocation. Caller
+ * bounds admitted accepted endpoints and frees each one explicitly.
  *
  * @pre @p listener is listening.
  *

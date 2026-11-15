@@ -1,5 +1,9 @@
 # Cog — System Design Blueprint
 
+> [Stage 14.E pass 3](REAL_CLIENT_PASS3.md) records the latest recovery, bounds,
+> compatibility and explicit DYNAMIC allocation decisions. Additional full
+> independent final review remains required before E closes or implementation.
+
 > Current extension: [real-client blueprint](REAL_CLIENT_BLUEPRINT.md) and
 > [Stage 14 execution scaffold](REAL_CLIENT_WBS.md). The material below
 > describes the original engine/mock-CLI baseline, not real-client release

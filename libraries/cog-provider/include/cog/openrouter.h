@@ -34,7 +34,8 @@ typedef struct cog_openrouter_config {
  * complete validated argument objects; continuation fields are retained and
  * round-tripped under namespace openrouter.chat-completions, format json-v1.
  * That format is UTF-8 strict JSON object {"reasoning_details":[...]} containing
- * only the optional reasoning_details assistant wire member; array entries are
+ * only the optional reasoning_details assistant wire member; explicit presence
+ * of an empty array is retained/replayed and is never collapsed to absence; array entries are
  * reconstructed losslessly by the bounded rules below, never interpreted/rendered.
  * No other top-level key is accepted in v1; unknown required continuation fields
  * fail UNSUPPORTED before a tool executes or continuation sends. The codec
@@ -46,7 +47,11 @@ typedef struct cog_openrouter_config {
  * to another signature. reasoning.encrypted entries are discrete opaque data
  * objects, never concatenated or merged. Unknown types/ambiguous conflicting
  * fields fail UNSUPPORTED/PROTOCOL before tool admission; never guess from index
- * alone. Unknown members within a retained discrete object are preserved.
+ * alone. Unknown members in discrete objects are preserved. For a merged
+ * text/summary block, preserve the union of all non-payload members; repeated
+ * members must have equal JSON values or fail UNSUPPORTED, never discard an
+ * unfamiliar member or concatenate it speculatively. Absence does not erase a
+ * previously supplied member. One entry with a signature closes a text block.
  * A nonstream response already contains the final array. The bounded private
  * writer generates one final array after reconstruction;
  * send reinserts it beside role/content/tool_calls, never inside visible text.

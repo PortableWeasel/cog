@@ -71,3 +71,15 @@ Future conformance requirements: Busy-queue cancel latency, completion-vs-cancel
 Header tracing is complete only where the gap analysis says so. Production
 implementation and executable scenario migration remain gated by pass 3 and the
 independent final review; no passing runtime result is inferred from these tables.
+
+## Pass-3 explicit continuation and queued text (E05)
+
+An explicitly authorized continuation forks from the failed model turn's last
+replay-safe ancestor, preserves the incomplete aggregate on its original branch,
+and appends the new user input. It never relabels a failed wire turn COMPLETE or
+replays partial tools/opaque data; unresolved effects use E01 recovery instead.
+Automatic queued prompts cannot make that decision. FIFO auto-injection leases
+the original backing text until its handler returns (or copies into another
+reserved owner); successful enqueue alone is not permission to overwrite it.
+Future tests enqueue a second prompt before dispatching the first and verify
+unchanged text, plus explicit continuation/cancel branch isolation.

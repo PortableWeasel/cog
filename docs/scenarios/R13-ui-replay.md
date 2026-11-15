@@ -55,3 +55,16 @@ Original11 baseline drop-oldest buffer test cannot prove generation-aware GAP or
 **Required future executable evidence:** N/O/Q: detach during active stream/tool round, ring eviction/restart-before-first-record, cross-session stale snapshot, tiny buffers and slow prefix/output peer tests.
 
 **Amendment references:** D11,D12,D13 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+
+## Pass-3 IPC ownership retrace (E02)
+
+Core constructor settings `cog_core_config_t.ipc_max_frame_bytes` and
+`cog_core_config_t.ipc_payload_bytes` bound admitted frames and queued payload
+bytes ([core.h](../../libraries/cog-core/include/cog/core.h)). Reserve an event
+slot and owned arena bytes before endpoint receive; if unavailable, consume
+nothing and service/dispatch other work. Bytes survive until handler return.
+An endpoint-retained frame above the core ceiling closes only that peer with
+reported LIMIT, rather than an endless OVERFLOW loop. Accepted endpoint
+constructors remain explicit and peer-count-bounded; private intrusive listener
+links need no additional public allocation surface. Test just-below/exact/above
+frame limits, full arena/full event queue, and caller payload mutation after enqueue.

@@ -579,7 +579,8 @@ typedef enum cog_tool_execution_state {
     COG_TOOL_EXECUTION_FAILED,
     COG_TOOL_EXECUTION_DENIED,
     COG_TOOL_EXECUTION_CANCELLED,
-    COG_TOOL_EXECUTION_INDETERMINATE
+    COG_TOOL_EXECUTION_INDETERMINATE,
+    COG_TOOL_EXECUTION_ACKNOWLEDGED /**< Explicitly closed unknown outcome; never rerun. */
 } cog_tool_execution_state_t;
 
 /**
@@ -589,7 +590,8 @@ typedef enum cog_tool_execution_state {
  * @param[in] call_id Nonempty ID belonging to that assistant node.
  * @param[in] expected Required previous state.
  * @param[in] next New state: PROPOSED->STARTED/DENIED, STARTED->SUCCEEDED/
- * FAILED/CANCELLED/INDETERMINATE; all final states immutable.
+ * FAILED/CANCELLED/INDETERMINATE; final states immutable through this API.
+ * Only explicit reconcile_tool may close INDETERMINATE without execution.
  * @return COG_OK; NULL_PTR; NOT_FOUND for unknown ID; INVALID_STATE on stale
  * expected, illegal transition or mutation of a fork-shared ancestor.
  * @note Owner thread; no allocation/execution/save. Application MUST durably
@@ -603,6 +605,36 @@ cog_result_t cog_session_tool_transition(cog_session_t *session,
                                          const char *call_id,
                                          cog_tool_execution_state_t expected,
                                          cog_tool_execution_state_t next);
+/**
+ * @brief Explicitly reconcile an indeterminate call and append its result atomically.
+ * @param[in,out] session Session containing a private, unshared assistant node.
+ * @param[in] assistant Private assistant node on the active branch whose
+ * identified call is INDETERMINATE. Result appends at that branch's active leaf,
+ * preserving earlier results for other calls in the same assistant turn.
+ * @param[in] call_id Exact nonempty call ID.
+ * @param[in] resolution SUCCEEDED/FAILED/CANCELLED only with externally verified
+ * outcome, or ACKNOWLEDGED when an operator explicitly accepts unknown effects.
+ * @param[in] result COMPLETE TOOL message with matching tool_call_id. Its text
+ * must explain observed evidence or unresolved outcome; ACKNOWLEDGED must not
+ * claim the effect did not occur. No tool execution or implicit retry occurs.
+ * @param[out] out_node Appended result; NULL allowed, unchanged on failure.
+ * @return OK; NULL_PTR; INVALID_ARG mismatched result/resolution; NOT_FOUND;
+ * INVALID_STATE non-indeterminate/shared node or an existing result; LIMIT.
+ * @pre Application has explicitly authorized reconciliation and fenced/reaped
+ * every old execution/process group. Absence of output is never proof of failure.
+ * @post State+identified result change together in constructor-reserved storage;
+ * failure changes neither. Caller must durably save under its recovery guard
+ * before continuation. INDETERMINATE evidence remains in the persisted audit
+ * record; ACKNOWLEDGED is replay-safe only as an explicitly uncertain tool result.
+ * @note Owner thread; does not save, allocate, clear other calls or alter opaque data.
+ */
+cog_result_t cog_session_reconcile_tool(cog_session_t *session,
+                                        cog_session_node_t *assistant,
+                                        const char *call_id,
+                                        cog_tool_execution_state_t resolution,
+                                        const cog_message_t *result,
+                                        cog_session_node_t **out_node);
+
 /**
  * @brief Query the ledger for one assistant tool.
  * @param[in] session Session owner.
