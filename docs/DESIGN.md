@@ -692,3 +692,11 @@ implementation. Three iterations:
 3. Full review for consistency and edge cases
 
 Stage 7 — Implementation. See `docs/IMPLEMENTATION_STRATEGY.md`.
+
+## Stage 14.G shared fork points
+
+The structured session implementation preserves assistant/effect identity by
+returning the existing immutable shared fork point. A nonleaf selection retains
+the current active leaf until explicit `add_message(parent=fork_point)` creates
+and selects a divergent child. A leaf selection may select that leaf. This
+keeps immediate snapshots valid without copying effect-bearing nodes.
