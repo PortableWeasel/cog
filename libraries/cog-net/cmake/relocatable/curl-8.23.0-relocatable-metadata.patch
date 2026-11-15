@@ -1,0 +1,61 @@
+--- a/libcurl.pc.in
++++ b/libcurl.pc.in
+@@ -22,7 +22,7 @@
+ #
+ ###########################################################################
+ 
+-prefix=@prefix@
++prefix=${pcfiledir}/../..
+ exec_prefix=@exec_prefix@
+ libdir=@libdir@
+ includedir=@includedir@
+@@ -40,7 +40,7 @@
+ Requires: @LIBCURL_PC_REQUIRES@
+ Requires.private: @LIBCURL_PC_REQUIRES_PRIVATE@
+ Libs: -L${libdir} -lcurl @LIBCURL_PC_LIBS@
+-Libs.private: @LIBCURL_PC_LDFLAGS_PRIVATE@ @LIBCURL_PC_LIBS_PRIVATE@
++Libs.private: -L${libdir} @LIBCURL_PC_LIBS_PRIVATE@
+ Cflags: -I${includedir} @LIBCURL_PC_CFLAGS@
+ Cflags.private: @LIBCURL_PC_CFLAGS_PRIVATE@
+ Link.ABI: c
+--- a/curl-config.in
++++ b/curl-config.in
+@@ -25,7 +25,7 @@
+ 
+ # shellcheck disable=SC2006
+ 
+-prefix='@prefix@'
++prefix=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+ # Used in 'libdir'
+ # shellcheck disable=SC2034
+ exec_prefix="@exec_prefix@"
+@@ -167,7 +167,7 @@
+ 
+   --static-libs)
+     if test '@ENABLE_STATIC@' != 'no'; then
+-      echo "@libdir@/libcurl.@libext@ @LIBCURL_PC_LDFLAGS_PRIVATE@ @LIBCURL_PC_LIBS_PRIVATE@"
++      echo "@libdir@/libcurl.@libext@ -L${exec_prefix}/lib @LIBCURL_PC_LIBS_PRIVATE@"
+     else
+       echo 'curl was built with static libraries disabled' >&2
+       exit 1
+--- a/CMake/curl-config.in.cmake
++++ b/CMake/curl-config.in.cmake
+@@ -166,7 +166,7 @@
+ # For compatibility with CMake's FindCURL.cmake
+ set(CURL_VERSION_STRING "@CURLVERSION@")
+ set(CURL_LIBRARIES @PROJECT_NAME@::@LIB_NAME@)
+-set(CURL_LIBRARIES_PRIVATE "@LIBCURL_PC_LIBS_PRIVATE_LIST@")
++set(CURL_LIBRARIES_PRIVATE CURL::cares OpenSSL::SSL OpenSSL::Crypto)
+ set_and_check(CURL_INCLUDE_DIRS "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
+ 
+ set(CURL_SUPPORTED_PROTOCOLS "@CURL_SUPPORTED_PROTOCOLS_LIST@")
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2500,3 +2500,7 @@
+ if(NOT "$ENV{CURL_BUILDINFO}$ENV{CURL_CI}$ENV{CI}" STREQUAL "")
+   message(STATUS "\n${_buildinfo}")
+ endif()
++
++# Cog dependency packaging: preserve the upstream distribution notice.
++install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/COPYING"
++  DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/licenses/curl")

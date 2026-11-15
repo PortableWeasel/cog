@@ -1,0 +1,21 @@
+--- a/libcares.pc.cmake
++++ b/libcares.pc.cmake
+@@ -6,7 +6,7 @@
+ #
+ # Copyright (C) The c-ares project and its contributors
+ # SPDX-License-Identifier: MIT
+-prefix=@CMAKE_INSTALL_PREFIX@
++prefix=${pcfiledir}/../..
+ exec_prefix=${prefix}/@CMAKE_INSTALL_BINDIR@
+ libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+ includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -932,3 +932,7 @@
+     # This must always be last!
+     include( CPack )
+ ENDIF ()
++
++# Cog dependency packaging: preserve the upstream distribution notice.
++install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE.md"
++  DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/licenses/c-ares")
