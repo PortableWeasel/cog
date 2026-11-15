@@ -1,6 +1,7 @@
 """Numeric observer exercise against an ephemeral offline TLS service."""
 import http.server
 import os
+import socket
 import ssl
 import subprocess
 import sys
@@ -50,13 +51,45 @@ with tempfile.TemporaryDirectory(prefix="cog-net-observer-") as directory:
     server.socket = tls.wrap_socket(server.socket, server_side=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    # Hold an unlistened TCP port so connection refusal is entirely local.
+    refused = socket.socket()
+    refused.bind(("127.0.0.1", 0))
+    dns = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    dns.bind(("127.0.0.1", 0))
+    dns.settimeout(0.1)
+    stop_dns = threading.Event()
+
+    def serve_dns():
+        while not stop_dns.is_set():
+            try:
+                query, peer = dns.recvfrom(4096)
+            except socket.timeout:
+                continue
+            if b"observer-timeout" in query:
+                continue
+            end = 12
+            while query[end]:
+                end += query[end] + 1
+            end += 5  # NUL label, QTYPE, QCLASS.
+            reply = query[:2] + b"\x81\x83" + query[4:6] + b"\0" * 6 + query[12:end]
+            dns.sendto(reply, peer)
+
+    dns_thread = threading.Thread(target=serve_dns, daemon=True)
+    dns_thread.start()
     try:
         env = os.environ.copy()
         env["COG_NET_TEST_URL"] = f"https://localhost:{server.server_port}/"
         env["COG_NET_TEST_CA"] = cert
+        env["COG_NET_TEST_REFUSED"] = f"https://127.0.0.1:{refused.getsockname()[1]}/"
+        env["COG_NET_TEST_IP"] = f"https://127.0.0.1:{server.server_port}/"
+        env["COG_NET_TEST_DNS"] = f"127.0.0.1:{dns.getsockname()[1]}"
         subprocess.run([sys.argv[1]], env=env, check=True, timeout=25)
-        assert Handler.posts == [b"synthetic-observer-secret"] * 5, "POST outcome/replay changed"
+        assert Handler.posts == [b"synthetic-observer-secret"] * 7, "POST outcome/replay changed"
     finally:
+        stop_dns.set()
+        dns_thread.join()
+        dns.close()
+        refused.close()
         server.shutdown()
         server.server_close()
         thread.join()

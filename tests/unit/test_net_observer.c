@@ -55,7 +55,7 @@ static cog_result_t observer(void *user, const cog_net_ctx_t *ctx,
                              const cog_net_observation_t *value)
 {
     observer_log_t *log = user;
-    assert(ctx != NULL && value->request_id != 0U && log->count < RECORDS);
+    assert(ctx != NULL && ctx->observing && value->request_id != 0U && log->count < RECORDS);
     if (value->kind == COG_NET_OBSERVATION_OPEN && log->published != NULL)
         assert(*log->published == value->request_id); /* Publication precedes OPEN. */
     log->contexts[log->count] = ctx;
@@ -163,6 +163,9 @@ static void verify(observer_log_t *log, const cog_net_ctx_t *ctx,
         } else assert(v->bytes_in_delta == 0U && v->bytes_out_delta == 0U);
         if (v->kind == COG_NET_OBSERVATION_CLOSED || v->kind == COG_NET_OBSERVATION_FAILED) {
             ++terminals; assert(v->outcome == outcome && v->http_status == status);
+            if (outcome == COG_OK) assert(v->error_kind == COG_NET_ERROR_NONE);
+            if (outcome == COG_ERROR_ABORTED) assert(v->error_kind == COG_NET_ERROR_CANCELLED);
+            if (outcome == COG_ERROR_TIMEOUT) assert(v->error_kind == COG_NET_ERROR_TIMEOUT);
             assert(v->kind == (outcome == COG_OK ? COG_NET_OBSERVATION_CLOSED : COG_NET_OBSERVATION_FAILED));
             assert(v->bytes_in_total == in && v->bytes_out_total == out);
             assert(v->bytes_in_total == sum_in && v->bytes_out_total == sum_out);
@@ -220,6 +223,12 @@ static void admission_and_errors(void)
     log.failure = COG_ERROR_IO;
     assert(cog_net_cancel(ctx, id) == COG_OK && cog_net_observer_status(ctx) == COG_ERROR_AGAIN);
     assert(log.count == 1U); cog_net_free(ctx);
+    log = (observer_log_t){.fail_kind = COG_NET_OBSERVATION_OPEN, .failure = COG_ERROR_NOMEM};
+    assert(cog_net_new(&ctx, &config) == COG_OK);
+    id = submit(ctx, &log, "", NULL, 0U);
+    assert(cog_net_observer_status(ctx) == COG_ERROR_NOMEM && cog_net_active_count(ctx) == 1U);
+    assert(cog_net_cancel(ctx, id) == COG_OK && log.count == 1U);
+    cog_net_free(ctx);
     config.observer = NULL; config.observer_user = (void *)(uintptr_t)1U;
     assert(cog_net_new(&ctx, &config) == COG_OK);
     assert(cog_net_observer_status(ctx) == COG_OK); cog_net_free(ctx);
@@ -326,10 +335,119 @@ static void accounting_boundaries(void)
     assert(bytes == 5U && cog_net_observer_status(ctx) == COG_ERROR_LIMIT);
     cog_net_free(ctx);
 }
+static size_t null_user_calls;
+static cog_result_t null_user(void *user, const cog_net_ctx_t *ctx,
+                              const cog_net_observation_t *value)
+{
+    assert(user == NULL && ctx != NULL && value->request_id != 0U);
+    ++null_user_calls; return COG_OK;
+}
+static void identity_lifetime_and_shared_failure(void)
+{
+    observer_log_t log = {.fail_kind = -1}; cog_net_ctx_t *a = NULL, *b = NULL;
+    cog_net_config_t config = settings(&log);
+    assert(cog_net_new(&a, &config) == COG_OK && cog_net_new(&b, &config) == COG_OK);
+    cog_request_id_t x = submit(a, &log, "", NULL, 0U), y = submit(b, &log, "", NULL, 0U);
+    assert(x == 1U && y == 1U && a != b);
+    assert(cog_net_cancel(a, x) == COG_OK && cog_net_request_release(b, y) == COG_OK);
+    verify(&log, a, x, 0U, 0U, COG_ERROR_ABORTED, 0, false, false);
+    verify(&log, b, y, 0U, 0U, COG_ERROR_ABORTED, 0, false, false);
+    cog_net_free(a); cog_net_free(b);
+    config.observer = null_user; config.observer_user = NULL;
+    size_t old = null_user_calls;
+    assert(cog_net_new(&a, &config) == COG_OK && null_user_calls == old);
+    x = submit(a, &log, "", NULL, 0U); assert(null_user_calls == old + 1U);
+    assert(cog_net_cancel(a, x) == COG_OK && null_user_calls == old + 2U);
+    cog_net_free(a); assert(null_user_calls == old + 2U);
+
+    log = (observer_log_t){.fail_kind = COG_NET_OBSERVATION_PROGRESS, .failure = COG_ERROR_DENIED};
+    config = settings(&log); config.chunks_per_request = 1U; config.service_quantum = 1U;
+    assert(cog_net_new(&a, &config) == COG_OK);
+    x = submit(a, &log, "large", NULL, 0U);
+    bool paused = false;
+    for (size_t i = 0U; i < 5000U && !paused; ++i) {
+        service(a, &log, now_ms());
+        paused = a->requests[0].paused && a->requests[0].count != 0U;
+        pause_briefly();
+    }
+    assert(paused);
+    cog_net_response_t saved, again;
+    assert(cog_net_peek(a, &saved) == COG_OK && saved.request_id == x);
+    static const char body[] = "synthetic-observer-secret";
+    y = submit(a, &log, "post", body, sizeof(body) - 1U);
+    assert(drive(a, &log, y, COG_OK, 200, false) == 5U);
+    assert(cog_net_observer_status(a) == COG_ERROR_DENIED);
+    assert(cog_net_peek(a, &again) == COG_OK && again.request_id == x &&
+           again.sequence == saved.sequence && again.headers == saved.headers);
+    bool active = false; assert(cog_net_request_status(a, x, &active) == COG_OK && active);
+    assert(drive(a, &log, x, COG_OK, 200, false) == 65536U);
+    cog_net_free(a); /* The failed feed never cancels either shared request. */
+}
+static void failure_classes_and_callbacks(void)
+{
+    const char *urls[] = {getenv("COG_NET_TEST_REFUSED"), getenv("COG_NET_TEST_IP"),
+                          "https://observer-nxdomain.invalid/"};
+    const cog_net_error_kind_t classes[] = {COG_NET_ERROR_CONNECT, COG_NET_ERROR_TLS, COG_NET_ERROR_DNS};
+    for (size_t i = 0U; i < 3U; ++i) {
+        observer_log_t log = {.fail_kind = -1}; cog_net_ctx_t *ctx = NULL;
+        cog_net_config_t config = settings(&log); cog_request_id_t id = 0U;
+        assert(urls[i] != NULL && cog_net_new(&ctx, &config) == COG_OK);
+        assert(cog_net_request(ctx, "GET", urls[i], NULL, NULL, 0U, &id) == COG_OK);
+        if (i == 2U)
+            assert(curl_easy_setopt(ctx->requests[0].easy, CURLOPT_DNS_SERVERS,
+                                   getenv("COG_NET_TEST_DNS")) == CURLE_OK);
+        assert(drive(ctx, &log, id, COG_ERROR_IO, 0, false) == 0U);
+        verify(&log, ctx, id, 0U, 0U, COG_ERROR_IO, 0, false, false);
+        assert(log.records[log.count - 1U].error_kind == classes[i]);
+        cog_net_free(ctx);
+    }
+    observer_log_t log = {.fail_kind = -1}; cog_net_ctx_t *ctx = NULL;
+    cog_net_config_t config = settings(&log); cog_request_id_t id;
+    assert(cog_net_new(&ctx, &config) == COG_OK);
+    assert(cog_net_request(ctx, "GET", "https://observer-timeout.invalid/", NULL, NULL, 0U, &id) == COG_OK);
+    assert(curl_easy_setopt(ctx->requests[0].easy, CURLOPT_DNS_SERVERS, getenv("COG_NET_TEST_DNS")) == CURLE_OK);
+    service(ctx, &log, 100U); service(ctx, &log, 1000U);
+    bool done = false; assert(consume(ctx, id, &done, COG_ERROR_TIMEOUT, 0) == 0U && done);
+    verify(&log, ctx, id, 0U, 0U, COG_ERROR_TIMEOUT, 0, false, false); cog_net_free(ctx);
+
+    log = (observer_log_t){.fail_kind = COG_NET_OBSERVATION_FAILED, .failure = COG_ERROR_DENIED};
+    config = settings(&log); assert(cog_net_new(&ctx, &config) == COG_OK);
+    id = submit(ctx, &log, "", NULL, 0U);
+    assert(cog_net_cancel(ctx, id) == COG_OK && cog_net_observer_status(ctx) == COG_ERROR_DENIED);
+    done = false; assert(consume(ctx, id, &done, COG_ERROR_ABORTED, 0) == 0U && done);
+    cog_net_free(ctx);
+    log = (observer_log_t){.fail_kind = COG_NET_OBSERVATION_STALLED, .failure = COG_ERROR_IO};
+    config = settings(&log); assert(cog_net_new(&ctx, &config) == COG_OK);
+    id = submit(ctx, &log, "stall", NULL, 0U);
+    assert(drive(ctx, &log, id, COG_ERROR_TIMEOUT, 200, true) == 5U);
+    assert(cog_net_observer_status(ctx) == COG_ERROR_IO &&
+           log.records[log.count - 1U].kind == COG_NET_OBSERVATION_STALLED);
+    cog_net_free(ctx);
+
+    log = (observer_log_t){.fail_kind = -1}; config = settings(&log);
+    config.chunk_bytes = 1U; config.chunks_per_request = 2U;
+    assert(cog_net_new(&ctx, &config) == COG_OK);
+    id = submit(ctx, &log, "", NULL, 0U);
+    assert(drive(ctx, &log, id, COG_ERROR_LIMIT, 200, false) == 0U);
+    verify(&log, ctx, id, 0U, 0U, COG_ERROR_LIMIT, 200, true, false);
+    assert(log.records[log.count - 1U].error_kind == COG_NET_ERROR_CAPACITY);
+    cog_net_free(ctx);
+
+    log = (observer_log_t){.fail_kind = -1}; config = settings(&log);
+    assert(cog_net_new(&ctx, &config) == COG_OK);
+    static const char body[] = "synthetic-observer-secret";
+    id = submit(ctx, &log, "post", body, sizeof(body) - 1U);
+    upload_fault = 1;
+    assert(drive(ctx, &log, id, COG_OK, 200, false) == 5U);
+    upload_fault = 0;
+    assert(cog_net_observer_status(ctx) == COG_ERROR_IO);
+    cog_net_free(ctx);
+}
 int main(void)
 {
     allocation_control();
     assert(curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK);
     admission_and_errors(); real_transfers(); pause_and_pending(); accounting_boundaries();
+    identity_lifetime_and_shared_failure(); failure_classes_and_callbacks();
     curl_global_cleanup(); return 0;
 }
