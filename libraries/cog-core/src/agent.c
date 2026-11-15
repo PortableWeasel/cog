@@ -190,6 +190,7 @@ cog_result_t cog_agent_spawn(cog_core_t *core,
     entry->session = child;
     entry->group_id = config->group_id;
     entry->timeout_ms = config->timeout_ms;
+    entry->force_local = config->force_local;
     entry->session_id = strdup(sid);
     if (entry->session_id == NULL) {
         cog_session_free(child);

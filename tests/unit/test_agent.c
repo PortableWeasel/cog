@@ -214,6 +214,7 @@ static void test_spawn_happy_path(void)
     CHECK_EQ_STR(rec->parent_session_id, "parent-1");
     CHECK_EQ_INT((long long)rec->group_id, 7LL);
     CHECK_EQ_INT((long long)rec->timeout_ms, 5000LL);
+    CHECK(rec->force_local == true);
     CHECK(rec->cancelled == false);
     CHECK(rec->result == NULL);
 
@@ -238,6 +239,9 @@ static void test_spawn_no_parent_and_distinct_ids(void)
     CHECK_EQ_INT(cog_agent_spawn(core, &cfg, &id1), COG_OK);
     CHECK(cog_agent_internal_get(core, id1)->parent_session_id == NULL);
     CHECK(cog_session_parent_id(cog_agent_internal_get(core, id1)->session) == NULL);
+    /* Zeroed config: force_local defaults to false (mirrors the true
+     * assertion in test_spawn_happy_path). */
+    CHECK(cog_agent_internal_get(core, id1)->force_local == false);
 
     cfg.task = "t2";
     CHECK_EQ_INT(cog_agent_spawn(core, &cfg, &id2), COG_OK);

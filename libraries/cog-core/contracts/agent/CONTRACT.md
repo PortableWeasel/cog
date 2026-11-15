@@ -59,8 +59,9 @@ cog_result_t cog_agent_spawn(cog_core_t *core, const cog_agent_config_t *config,
 - The registry is append-only for the lifetime of the core: agent.h
   declares no destroy API, so agents are released wholesale by
   `cog_core_free`.
-- `force_local` is a placement hint for the orchestrator; in this phase
-  every spawn is local.
+- `force_local` is a placement hint recorded on the agent record (like
+  `group_id` and `timeout_ms`) for the orchestrator to honour; in this
+  phase every spawn is local.
 
 ### `cog_agent_cancel`
 
@@ -193,6 +194,15 @@ uses them to exercise the state machine:
 | `cog_agent_internal_timeout` | `RUNNING` → `TIMEOUT` | NULL_PTR, NOT_FOUND, INVALID_STATE |
 | `cog_agent_internal_get` | read-only record access | NULL on NULL core / unknown id |
 
+`cog_agent_internal_get` returns a pointer into the registry's dynamic
+array.  The pointer is **invalidated by any subsequent spawn that grows
+the registry** (capacity boundaries 8 -> 16 -> ... -> 256, which
+reallocates the array) and by `cog_core_free` (registry reset).  It is
+safe to hold across in-place mutations (cancel, status, notify_parent,
+result, session_id, is_cancelled, and the internal transition hooks),
+which never reallocate.  Orchestrator consumers must re-fetch the
+pointer after any spawn and never use it after `cog_core_free`.
+
 The registry itself is embedded in `struct cog_core` (see
 `src/agent_internal.h`); `core.c` exposes it via
 `cog_core_agent_registry()` and releases it via
@@ -241,7 +251,8 @@ synchronised.
 
 `tests/unit/test_agent.c` verifies: spawn validation (NULL core/config/
 out_id, NULL/empty task), the happy path (unique ids, PENDING status,
-child session linked to the parent, group id and timeout recorded), the
+child session linked to the parent, group id, timeout, and force_local
+recorded — including the false default for a zeroed config), the
 registry-full boundary (`COG_ERROR_UNAVAILABLE` at 256 agents), status /
 session_id / is_cancelled NULL and NOT_FOUND checks, cancellation
 (PENDING and RUNNING, terminal refusal, idempotence, late-result

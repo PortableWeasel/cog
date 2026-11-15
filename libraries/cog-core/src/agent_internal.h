@@ -59,6 +59,7 @@ typedef struct cog_agent_entry {
     char *status_msg;               /**< Owned last status message; may be NULL. */
     uint64_t group_id;              /**< Fan-out group; zero = none. */
     uint32_t timeout_ms;            /**< Time limit; zero = none. */
+    bool force_local;               /**< Placement hint: run locally. */
     bool cancelled;                 /**< Cancellation requested. */
 } cog_agent_entry_t;
 
@@ -158,7 +159,25 @@ cog_result_t cog_agent_internal_timeout(cog_core_t *core, cog_agent_id_t agent_i
  * @param[in] core Core to query.
  * @param[in] agent_id Agent id.
  * @return Pointer to the record, or NULL if @p core is NULL or the id
- *         does not exist.  Valid until the core is freed.
+ *         does not exist.
+ *
+ * @warning The returned pointer points into the registry's dynamic
+ *          array (@c cog_agent_registry_t::entries), which is
+ *          reallocated when the registry grows.  It is therefore
+ *          invalidated by any subsequent @c cog_agent_spawn that grows
+ *          the registry (capacity boundaries 8 -> 16 -> ... -> 256), and
+ *          by @c cog_core_free (which resets the registry and frees the
+ *          array).  It is NOT valid until the core is freed.
+ *
+ * Safe usage window: the pointer is valid from the moment this function
+ * returns until the next spawn that grows the registry or until the core
+ * is freed, whichever comes first.  Calls that mutate an existing record
+ * in place (cog_agent_cancel, cog_agent_status, cog_agent_notify_parent,
+ * cog_agent_result, cog_agent_session_id, cog_agent_is_cancelled, and
+ * the internal start/complete/fail/timeout hooks) do not reallocate the
+ * array and do not invalidate the pointer.  Orchestrator consumers must
+ * not hold the pointer across a spawn: re-fetch it after any spawn, and
+ * never use it after cog_core_free.
  */
 const cog_agent_entry_t *cog_agent_internal_get(cog_core_t *core,
                                                  cog_agent_id_t agent_id);
