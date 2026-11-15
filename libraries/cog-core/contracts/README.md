@@ -15,6 +15,7 @@ Layout: one directory per module, named after its public header.
 - `handler/CONTRACT.md` — verified by `tests/unit/test_handler.c`
 - `core/CONTRACT.md` — verified by `tests/unit/test_core.c`
 - `agent/CONTRACT.md` — verified by `tests/unit/test_agent.c`
+- `tool/CONTRACT.md` — verified by `tests/unit/test_tool.c`
 
 The contract is written against the header only; it never expands the
 public API.  Cross-module composition of the Phase 1 primitives is
