@@ -10,3 +10,6 @@ add_subdirectory(integration)
 if(COG_BUILD_CLI)
     add_subdirectory(scenarios)
 endif()
+
+# R18 public embedder: normal install/relocation and a separate CMake project.
+add_subdirectory(external-consumer)
