@@ -84,3 +84,20 @@ multi-call prefixes, active and off-active malformed sibling snapshots,
 serialized malformed branch rejection including inspection mode, and text-only
 divergent discard. All four targeted message/session/codec/allocation tests pass
 strict C11-Werror-NDEBUG and ASan/UBSan. Independent re-review remains required.
+
+## Independent G.1 review revision 2
+
+Explicit legacy inspection insertion uses its own private admission mode. It
+permits traversal of unidentified legacy call/result nodes when constructing the
+documented call -> result inspection chain, while retaining all identified
+ledger/result path checks. Ordinary structured insertion, fork and history use
+strict replay admission. The inspection helpers do not invent tool IDs, ledger
+entries, audits or replay authority; known unresolved identified effects and
+sibling-only identified results remain rejected.
+
+Positive regressions construct call/result chains both at an empty root and
+below a text root, verify transitive tool-name/arguments/result copies, retain a
+zero-entry ledger, refuse history/ordinary append/fork, and restore the exact
+records only in inspection mode. The earlier branch-local and divergent-discard
+regressions remain passing. All four suites plus the independent legacy
+reproduction pass strict C11-Werror-NDEBUG and ASan/UBSan (ten executions).

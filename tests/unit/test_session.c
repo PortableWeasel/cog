@@ -311,6 +311,56 @@ static void test_legacy_and_incomplete(void)
     cog_session_free(s);
 }
 
+static void test_legacy_helper_roundtrip(void)
+{
+    for (size_t text_root = 0U; text_root < 2U; ++text_root) {
+        cog_session_t *s = session(8U, 8192U);
+        const cog_message_t user = text(COG_MESSAGE_ROLE_USER, "root");
+        cog_session_node_t *parent = NULL, *call, *output;
+        if (text_root != 0U) CHECK(cog_session_append(s, &user, &parent) == COG_OK);
+        char name[] = "tool", args[] = "{}", result_text[] = "output";
+        CHECK(cog_session_add_tool_call(s, parent, name, args, &call) == COG_OK);
+        name[0] = 'X'; args[0] = 'X';
+        CHECK(cog_session_add_tool_result(s, call, result_text, &output) == COG_OK);
+        result_text[0] = 'X';
+        CHECK(cog_node_parent(output) == call);
+        CHECK(cog_node_data(call)->role == COG_NODE_TOOL_CALL && cog_node_data(call)->message == NULL);
+        CHECK(strcmp(cog_node_data(call)->tool_name, "tool") == 0);
+        CHECK(strcmp(cog_node_data(call)->tool_args, "{}") == 0);
+        CHECK(cog_node_data(output)->role == COG_NODE_TOOL_RESULT && cog_node_data(output)->message == NULL);
+        CHECK(strcmp(cog_node_data(output)->tool_name, "tool") == 0);
+        CHECK(strcmp(cog_node_data(output)->tool_result, "output") == 0);
+        cog_session_snapshot_t snap = snapshot(s);
+        CHECK(snap.ledger_count == 0U && snap.audit_high_water == 0U && snap.node_count == text_root + 2U);
+        cog_message_t history[8]; size_t count = 0U;
+        CHECK(cog_session_copy_history(s, NULL, history, 8U, &count) == COG_ERROR_INVALID_STATE);
+        CHECK(cog_session_fork(s, output, NULL) == COG_ERROR_INVALID_STATE);
+        CHECK(cog_session_append(s, &user, NULL) == COG_ERROR_INVALID_STATE);
+        cog_session_t *inspected = NULL;
+        CHECK(cog_session_restore(&inspected, NULL, &snap) == COG_ERROR_UNSUPPORTED && inspected == NULL);
+        snap.inspection_only = true;
+        CHECK(cog_session_restore(&inspected, NULL, &snap) == COG_OK);
+        CHECK(cog_session_copy_history(inspected, NULL, history, 8U, &count) == COG_ERROR_INVALID_STATE);
+        CHECK(cog_session_append(inspected, &user, NULL) == COG_ERROR_INVALID_STATE);
+        CHECK(strcmp(cog_node_data(cog_session_active(inspected))->tool_result, "output") == 0);
+        CHECK(strcmp(cog_node_data(cog_session_active(inspected))->tool_name, "tool") == 0);
+        CHECK(snapshot(inspected).ledger_count == 0U);
+        cog_session_free(inspected); cog_session_free(s);
+    }
+    /* Legacy construction cannot bypass an identified unresolved effect. */
+    cog_session_t *s = session(8U, 8192U);
+    cog_session_node_t *a = assistant(s, "identified");
+    CHECK(cog_session_add_tool_call(s, a, "legacy", "{}", NULL) == COG_ERROR_INVALID_STATE);
+    CHECK(cog_session_add_tool_result(s, a, "legacy", NULL) == COG_ERROR_INVALID_STATE);
+    cog_message_t r = result("identified");
+    CHECK(cog_session_tool_transition(s, a, "identified", COG_TOOL_EXECUTION_PROPOSED, COG_TOOL_EXECUTION_DENIED) == COG_OK);
+    CHECK(cog_session_append(s, &r, NULL) == COG_OK);
+    /* A result on another path still does not complete this fork prefix. */
+    CHECK(cog_session_add_tool_call(s, a, "legacy", "{}", NULL) == COG_ERROR_INVALID_STATE);
+    CHECK(cog_session_add_tool_result(s, a, "legacy", NULL) == COG_ERROR_INVALID_STATE);
+    cog_session_free(s);
+}
+
 static void test_branch_local_result_coverage(void)
 {
     cog_session_t *s = session(16U, 16384U);
@@ -411,7 +461,7 @@ int main(void)
 {
     test_capacity_identity(); test_deep_copy(); test_crash_reconciliation();
     test_branch_and_associations(); test_snapshot_validation(); test_legacy_and_incomplete();
-    test_branch_local_result_coverage(); test_divergent_discard_leaf();
+    test_branch_local_result_coverage(); test_divergent_discard_leaf(); test_legacy_helper_roundtrip();
     puts("bounded structured session contracts passed");
     return 0;
 }
