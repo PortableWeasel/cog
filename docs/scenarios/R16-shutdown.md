@@ -98,3 +98,12 @@ explicit recovery. Newly indeterminate work halts new admission under an already
 held guard as well as during acquisition. Failed/uncertain save never makes prior
 intent erasable. Test discard/reset/replacement-save against a saved STARTED leaf
 with no result, and against a completed result/audit; expect refusal and zero reruns.
+
+## L metadata lifecycle retrace
+
+LIST/RECOVER application modes have no provider/core. The L header amendment
+therefore requires a constructor-verified lock-free app stop flag in addition
+to forwarding to core_stop when present. Recovery retains its guard through
+EOF/signal and app_free, never executes a tool, and leaves unresolved evidence
+intact. Main explicitly suppresses SIGPIPE only for its host lifetime so output
+errors can propagate through cleanup, then restores the original disposition.

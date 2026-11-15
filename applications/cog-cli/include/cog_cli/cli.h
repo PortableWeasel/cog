@@ -165,7 +165,7 @@ typedef struct cog_cli_options {
     cog_cli_session_action_t session_action; /**< NEW by default. --sessions,
        --resume ID, --fork ID and --recover ID select mutually exclusive actions. */
     const char *source_session_id; /**< Required for RESUME/FORK/RECOVER, NULL
-       otherwise. Copied during construction; 1..127 UTF-8 bytes, no controls,
+       otherwise. Copied during construction; 1..127 UTF-8 bytes, no ASCII controls,
        NUL, slash/backslash, . or ..; store-reserved identities are refused. */
     uint64_t fork_node_id; /**< FORK only: --from-node ID, 0 selects active leaf.
        A node must exist and its entire prefix must be replay-safe. The branch
@@ -403,6 +403,8 @@ const char *cog_cli_result_name(cog_result_t rc);
  * require DURABLE and source_session_id; load an exact committed checkpoint,
  * restore into current explicit constructor reservations, admit a fresh process
  * incarnation/checked epoch and acquire its matching normal guard before work.
+ * Explicit RESUME permits lossless text-only v1 migration to an unowned v2
+ * generation before normal owner admission; unsafe legacy tools stay UNSUPPORTED.
  * A competing live guard returns AGAIN; stale checkpoint/owner fails rather
  * than loading another generation. RESUME never reexecutes completed ancestor
  * calls. Coherent PROPOSED resumes only its current explicit policy phase,
@@ -421,7 +423,7 @@ const char *cog_cli_result_name(cog_result_t rc);
  * still fails, but missing model/credential does not. LIST performs no store
  * mutation; RECOVER never grants ordinary execution, even under ALLOW policy.
  * Normal modes build bounded session/provider/tool workspaces, obs/store/IPC and the core.
- * REAL requires opts.net with explicit host dependency lifecycle; MOCK alone
+ * Normal REAL execution requires opts.net with explicit host dependency lifecycle; MOCK alone
  * uses fixture scripts. Secret memory is cleared on failed/successful teardown.  Fails closed: on any error
  * every resource created so far is released and @p *out is NULL.
  *
@@ -434,6 +436,7 @@ const char *cog_cli_result_name(cog_result_t rc);
  * @return COG_ERROR_NOT_FOUND if endpoint/model/credential reference is missing.
  * @return COG_ERROR_DENIED for refused credential access or unavailable policy.
  * @return COG_ERROR_LIMIT for invalid/exhausted finite limits; UNSUPPORTED for
+ * a platform without a lock-free app stop flag or
  * backend capabilities/unknown config fields/unsafe continuation format.
  * @return COG_ERROR_IO if the log file cannot be opened or the IPC
  *         listener cannot bind.
@@ -549,8 +552,9 @@ cog_result_t cog_cli_app_run(cog_cli_app_t *app);
 /**
  * @brief Request the run loop to exit.
  *
- * Signal-safe: forwards to @c cog_core_stop; app_run drains owned work
- * after the core exits.
+ * Signal-safe: records a constructor-verified lock-free stop flag and forwards
+ * to @c cog_core_stop when a core exists. Metadata recovery observes the same
+ * flag without a core. app_run drains owned work after the core exits.
  *
  * @param[in,out] app App to stop; may be NULL (no-op).
  */

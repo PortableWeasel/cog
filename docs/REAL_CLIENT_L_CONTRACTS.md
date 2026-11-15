@@ -63,3 +63,45 @@ Public signatures/errors/lifetimes are in `applications/cog-cli/include/cog_cli/
 Implementation ownership: options/config changes, new private app_sessions.c,
 cli lifecycle/terminal integration, deterministic installed-binary tests and
 CONTRACT/HARNESS/evidence updates. Public libraries remain unchanged.
+
+## Pass 2 — exact call traces and amendments
+
+| Flow | Public application selection | Exact existing library coverage | Result / failure rule |
+|---|---|---|---|
+| 1. Offline list, no model/key/net | LIST; app_new/run/free | store_new/list/free, caller frees returned IDs/array | Sorted valid committed IDs; checked stdout/flush, no guard/credential/provider |
+| 2. Restart complete session | RESUME source ID | owner_read → checkpoint_load(exact generation) → snapshot_view/restore(current reservations) → owner_compare_exchange(new incarnation/epoch, exact checkpoint) → owner_acquire | Stale checkpoint/owner refuses; live guard AGAIN; provider created only after safe activation |
+| 3. v1 text migration | explicit RESUME | load_ex report → unowned store_save(v2) → owner_read/CAS/acquire | Explicit migration publication before ownership; v1 unidentified tools UNSUPPORTED |
+| 4. Resume completed tools | RESUME | exact restore + copy_history | Ancestor IDs/results/opaque/usage remain exact; no old tool constructor/start |
+| 5. Resume partial text | RESUME then fresh prompt | display snapshot; session_fork(safe ancestor) + add_message(parent=forkpoint) | Prequeued input cannot authorize; failed aggregate retained on old branch |
+| 6. Resume PROPOSED | RESUME | snapshot ledger → normal guard → current policy/denial → STARTED save before start | Already closed calls skipped from validated restored state; unrelated input waits; partial STARTED never mistaken for PROPOSED |
+| 7. Resume STARTED | RESUME | checkpoint_load/restore normalizes STARTED → INDETERMINATE; owner_acquire refuses | Return INDETERMINATE, no provider/tool/input work, no recovery downgrade |
+| 8. Divergent same-session branch | FORK or app_fork | session_fork + add_message(parent=selected node) + store_save | Complete safe prefix only, no identity rebinding; other branches/effects remain intact |
+| 9. Fork unresolved/queued | FORK/app_fork | copy_history/fork safety and app pending admission checks | INVALID_STATE for unsafe path; AGAIN for active/queued input, no mutation |
+| 10. Recovery-only restart | RECOVER + fenced assertion | exact load → new owner CAS → owner_acquire_recovery | No normal guard/net/credentials/core; live guard still AGAIN; assertion is not verification |
+| 11. Per-call reconciliation | app_reconcile / terminal command | session_reconcile_tool(matching node+call, explicit outcome/evidence) → store_save | Only exact call closes; failed/uncertain save freezes this app; no automatic execute |
+| 12. Restart after reconciliation | later explicit RESUME | owner_read/CAS(new epoch)/owner_acquire after all final | New normal activation only after durable closure; remaining uncertain call still refuses |
+| 13. EOF/signal/output failure | normal/recovery run; app_stop | core_stop when present; app-owned lock-free flag; existing provider/tool cancel/drain; checked FILE output | Metadata cannot depend on a nonexistent core stop flag; no lost guard/child cleanup |
+| 14. Known usage/history | show_usage or terminal /usage,/history | node_data/message usage; display snapshot | Show exact known counts/cost/availability, no billing guesses or opaque rendering |
+
+Pass-2 amendment: metadata apps have no core, so app_stop must also record an
+explicit constructor-verified lock-free flag observed by their owner-thread run
+loop. This does not introduce a process-global signal target. A platform lacking
+that profile returns UNSUPPORTED. Main's explicit SIGPIPE disposition handling
+allows EPIPE to reach normal cleanup; it restores the host disposition at exit.
+
+Pass-2 amendment: RESUME is explicit authorization for text-only v1 migration.
+An unowned v2 save precedes owner admission; the application does not adopt v1
+under a new owner tuple or invent missing tool identity. All restore operations
+use public snapshots and matching IDs, never private structures or rebinding.
+
+Pass-2 amendment: distinguish same-session fork from cross-session cloning.
+There is no new-session destination ID for FORK. `session_id` remains NEW-only;
+`source_session_id` selects RESUME/FORK/RECOVER. A successful fork selection is a
+pending parent for fresh input, not an in-place active-leaf switch on a nonleaf.
+
+All original scenarios retain their accepted headers; this amendment changes
+only application entry/terminal coverage. 01/02/04/05/06/12/15/16/18/19 keep K's
+loop/tool/diagnostic contracts; 03/07/09/10 and 11/17 retain N/O IPC/migration
+boundaries; 08 retains immutable J generations; 13 now invokes guarded RESUME;
+14 invokes safe app_fork; 20 retains K's fresh-input and queued-text rule. R10,
+R11 and R16 receive corresponding application traces. No implementation claim.

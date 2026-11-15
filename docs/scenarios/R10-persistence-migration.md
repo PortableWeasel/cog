@@ -137,3 +137,17 @@ may retry recovery LIMIT without changing identity/history or growing in place;
 keep the old object until construction succeeds. Test sparse IDs/active branch,
 wrong high-water, duplicate IDs, malformed audit chain, custom-context round trip
 and a last-node STARTED snapshot restored with enough room to append recovery.
+
+## L application entry retrace
+
+The header-only L amendment adds `cog_cli_options_t.session_action` with explicit
+RESUME/RECOVER selection and `source_session_id`. RESUME loads an exact checkpoint,
+restores current constructor reservations, CAS-admits a fresh incarnation/epoch
+and acquires a normal guard. Text-only v1 explicitly migrates to unowned v2 first;
+unsafe legacy tools refuse. PROPOSED resumes only the current policy phase;
+STARTED/INDETERMINATE returns INDETERMINATE without model/tool execution.
+RECOVER requires the operator's fencing assertion and a recovery guard, without
+credentials/net/core. `cog_cli_app_reconcile` closes exactly one selected node/call
+with explicit evidence/outcome and saves atomically; it never grants ordinary
+execution. Later explicit RESUME advances to another normal epoch. See
+[three-pass amendment](../REAL_CLIENT_L_CONTRACTS.md). Executable evidence remains L work.
