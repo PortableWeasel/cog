@@ -51,8 +51,11 @@ def replay(root, build, variant, temporary):
         for i, value in enumerate(link):
             if value.endswith("/" + pathlib.Path(relative).name + ".o"):
                 link[i] = str(stem.with_suffix(".o"))
-            if value.startswith("--dependency-file="):
-                link[i] = "--dependency-file=" + str(stem.with_suffix(".d"))
+            # GCC forwards this option as one -Wl argument; Clang uses
+            # -Xlinker followed by the bare option. Both must stay temporary.
+            for prefix in ("--dependency-file=", "-Wl,--dependency-file="):
+                if value.startswith(prefix):
+                    link[i] = prefix + str(stem.with_suffix(".d"))
             if i and link[i - 1] == "-o":
                 link[i] = str(stem)
         subprocess.run(link, cwd=flags_path.parent.parent.parent, check=True)

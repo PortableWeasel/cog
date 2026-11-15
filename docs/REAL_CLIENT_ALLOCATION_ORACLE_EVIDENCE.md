@@ -78,3 +78,42 @@ replay tool, not a new CTest framework.
 No production defect was found and no paid/live request was made. Full release
 validation and unrelated open P work remain separate. This writer evidence
 awaits independent review before integration.
+
+## Independent review
+
+Critic reviewed writer checkpoint `c6ed7bb` against baseline `8c68b4a`.
+The original allocation guards, constructor-fault loops, cleanup checks and
+runtime no-allocation assertions remain intact. The added controls exercise
+real wrapped allocations, contents, release and injected failure before
+resetting their state for the original tests. Session retains ordinary state
+because its flags-only control succeeds. No production source, public header,
+production compile option or shared warning policy changed.
+
+The critic found and corrected one diagnostic-script issue: GCC emits linker
+dependency output as `-Wl,--dependency-file=...`, while Clang emits `-Xlinker`
+followed by `--dependency-file=...`. The original relocation handled only the
+latter and could overwrite GCC's existing generated `link.d`. Both spellings
+now point into the diagnostic's temporary directory. This is a test-only
+review correction, with no allocation-oracle behavior change.
+
+Independent strict full Release builds completed without warnings in
+`build-critic-gcc`, `build-critic-clang` and `build-critic-asan` (Clang with
+ASan/UBSan and leak detection). All three passed the same 13 scoped tests.
+An initial sanitizer CTest invocation preceded completion of that build and
+reported seven missing executables; it is not counted as test evidence. The
+complete-build invocation passed 13/13 with no sanitizer report.
+
+The complete twenty-variant negative replay against the independent GCC and
+Clang builds reproduced nine GCC oracle failures plus session's expected
+success, and ten Clang oracle failures. Every expected failure named
+`allocation_oracle_control`. SHA-256 contents and nanosecond modification times
+of all 3,457 existing files in those two builds matched before and after the
+replay, with no added/deleted build files and no remaining new temporary
+directory. Thus both actual linker spellings were exercised without changing
+existing build artifacts. Generated flags in all three builds were also
+checked: only the ten scoped test targets and previously corrected
+`test_openrouter` contain allocator builtin suppressions.
+
+Review verdict: **PASS, cycle 1**, including the narrow script correction.
+This approves the scoped test instrumentation change; integration and the
+parent P release gate remain separate. No paid or live request was made.
