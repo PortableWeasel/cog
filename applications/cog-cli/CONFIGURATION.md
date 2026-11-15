@@ -101,3 +101,60 @@ K remains responsible for actual provider/store/loop construction and no-store e
 denials. Until that migration replaces the old application body, its REAL entry path
 returns UNSUPPORTED and cannot reach the legacy mock dispatcher. J's isolated tests
 claim source resolution and generation ownership, not a completed real conversation.
+
+## Session actions (delivery L1)
+
+The approved [L contract](../../docs/REAL_CLIENT_L_CONTRACTS.md) adds direct CLI/host
+selectors outside J's precedence table. `session_action` defaults to NEW.
+`--sessions`, `--resume ID`, `--fork ID` and `--recover ID` are mutually exclusive,
+including repeated action flags. `--session ID` remains NEW-only. `--from-node N`
+is FORK-only; decimal zero selects the active leaf and the full uint64 range is
+accepted without signs, whitespace, overflow or truncation. `--fenced` is valid
+only for RESUME/FORK/RECOVER and records an operator assertion, not verification.
+`--usage` copies `show_usage` for the application to report available usage.
+None of these inputs sets an explicit_options bit or comes from environment/file.
+Unknown selector-like file keys are rejected; selector-like environment variables
+are ignored. The source ID is copied into the immutable constructor arena.
+
+RESUME/FORK/RECOVER require a source_session_id, and NEW/LIST forbid it. Source IDs
+are 1..127 UTF-8 bytes with no ASCII controls, DEL, slash or backslash; `.`, `..`
+and the store's `.cog-domain.lock` reserved identity are rejected. Malformed IDs
+return INVALID_ARG and an overlong source ID returns LIMIT. LIST/RECOVER reject
+all prompt/queue inputs, including an explicitly empty prompt; startup FORK
+rejects queued input. Parse failures return ABORTED with exit2 and fixed redacted
+error text. Missing RECOVER fencing is left false by parsing; configuration_new
+returns DENIED, without an implicit assertion. RESUME/FORK accept the assertion
+but do not require it until the application discovers unowned v1/v2 adoption.
+
+All non-NEW actions resolve DEFAULT to DURABLE, including MOCK. A resolved
+DISABLED mode returns INVALID_ARG. A non-NEW action still needs either an explicit
+store directory or a usable absolute XDG/HOME default; it never chooses cwd or
+a null store. J's existing store precedence and finite reservation limits apply.
+
+LIST/RECOVER construct offline metadata configurations. Missing model/key,
+credential access refusal, absent net context and an unavailable credential
+reference resolver cannot prevent metadata construction: no credential callback
+is invoked, no secret environment value is read, no net borrow is retained, and
+configuration_bind returns INVALID_STATE while endpoint remains NULL. Optional
+present model/endpoint/HTTPS/env-reference syntax and ordinary config types/limits
+are still validated; empty/malformed values and unusable store locations fail.
+Descriptions mark credentials as none and tools as disabled, regardless of ALLOW
+or workspace configuration. Arbitrary non-env host credential references remain
+unresolved in metadata mode. NEW and normal RESUME/FORK REAL modes retain J's
+explicit-model, credential resolution and endpoint binding requirements.
+
+L1 changes only parsing/private configuration and existing option/config tests.
+L2/L3 own store enumeration, exact checkpoint restore/adoption, recovery guard
+admission, actual fork/reconciliation operations and terminal output. No selector
+validation grants execution or proves prior processes are dead.
+
+L1 writer validation: existing targets `test_config`, `test_config_bounded`,
+`test_cli_options`, `test_configuration` and `test_configuration_memory` pass
+under strict GCC, strict Clang and a separate Clang ASan/UBSan build with leak
+detection (15 executable passes). Session tests cover action exclusivity, direct
+source ownership, max-length/UTF-8/reserved IDs, uint64 node bounds, empty prompt
+conflicts, optional RESUME/FORK fencing, required recovery assertion, no callback
+or net borrow/bind in metadata modes, durable defaults/disabled rejection,
+malformed present metadata settings, location failures and unchanged normal REAL
+credential requirements. No new test target, live request, public header, app
+source or CMake change is needed for these assertions.

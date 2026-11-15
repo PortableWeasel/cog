@@ -168,36 +168,6 @@ static bool token(const char *s)
             return false;
     return true;
 }
-/* Validate protocol identifiers without imposing Unicode rules on filesystem
- * paths. Range checks reject overlong scalars, surrogates and values >10FFFF. */
-static bool utf8_valid(const char *s)
-{
-    const unsigned char *p = (const unsigned char *)s;
-    while (*p != 0U) {
-        size_t width, i;
-        unsigned char first = *p;
-        if (first < 0x80U) {
-            ++p;
-            continue;
-        }
-        if (first >= 0xc2U && first <= 0xdfU)
-            width = 2U;
-        else if (first >= 0xe0U && first <= 0xefU)
-            width = 3U;
-        else if (first >= 0xf0U && first <= 0xf4U)
-            width = 4U;
-        else
-            return false;
-        for (i = 1U; i < width; ++i)
-            if (p[i] < 0x80U || p[i] > 0xbfU)
-                return false;
-        if ((first == 0xe0U && p[1] < 0xa0U) || (first == 0xedU && p[1] >= 0xa0U) ||
-            (first == 0xf0U && p[1] < 0x90U) || (first == 0xf4U && p[1] > 0x8fU))
-            return false;
-        p += width;
-    }
-    return true;
-}
 static bool hostname_valid(const char *host, const char *end)
 {
     const char *p = host;
@@ -275,10 +245,28 @@ static bool https_url(const char *s)
     }
     return port == NULL || port_valid(port, end);
 }
+static bool metadata_action(cog_cli_session_action_t action)
+{
+    return action == COG_CLI_SESSION_LIST || action == COG_CLI_SESSION_RECOVER;
+}
+static bool environment_name_valid(const char *name)
+{
+    size_t i;
+    if (!((*name >= 'A' && *name <= 'Z') || (*name >= 'a' && *name <= 'z') ||
+          *name == '_'))
+        return false;
+    for (i = 1U; name[i] != '\0'; ++i)
+        if (!((name[i] >= 'A' && name[i] <= 'Z') ||
+              (name[i] >= 'a' && name[i] <= 'z') ||
+              (name[i] >= '0' && name[i] <= '9') || name[i] == '_'))
+            return false;
+    return true;
+}
 static cog_result_t validate(cog_cli_configuration_t *c)
 {
     cog_cli_options_t *o = &c->options;
     size_t i;
+    bool metadata = metadata_action(o->session_action);
     if (o->backend != COG_CLI_BACKEND_REAL && o->backend != COG_CLI_BACKEND_MOCK)
         return COG_ERROR_INVALID_ARG;
     if (o->tool_policy != COG_CLI_TOOL_POLICY_ASK &&
@@ -310,26 +298,48 @@ static cog_result_t validate(cog_cli_configuration_t *c)
             string == NULL)
             return COG_ERROR_INVALID_ARG;
     }
-    if (o->backend == COG_CLI_BACKEND_MOCK) {
-        if (!c->endpoint_present)
-            o->endpoint_name = "mock";
-        if (o->model_id == NULL)
-            o->model_id = "mock-model";
-        if (strcmp(o->endpoint_name, "mock") != 0)
-            return COG_ERROR_NOT_FOUND;
+    if (o->store_mode == COG_CLI_STORE_DEFAULT)
+        o->store_mode = o->session_action != COG_CLI_SESSION_NEW ||
+                                o->backend == COG_CLI_BACKEND_REAL
+                            ? COG_CLI_STORE_DURABLE
+                            : COG_CLI_STORE_DISABLED;
+    if (o->session_action != COG_CLI_SESSION_NEW &&
+        o->store_mode == COG_CLI_STORE_DISABLED)
+        return COG_ERROR_INVALID_ARG;
+    if (metadata) {
+        /* Optional protocol settings are still checked without resolving a
+         * credential, selecting a provider, or requiring a model. */
+        if (o->model_id != NULL &&
+            (!token(o->model_id) || !cog_cli_utf8_valid(o->model_id)))
+            return COG_ERROR_INVALID_ARG;
+        if (o->endpoint_name != NULL &&
+            (!token(o->endpoint_name) || !cog_cli_utf8_valid(o->endpoint_name)))
+            return COG_ERROR_INVALID_ARG;
+        if (o->base_url != NULL && !https_url(o->base_url))
+            return COG_ERROR_INVALID_ARG;
+        if (o->credential_ref != NULL && strncmp(o->credential_ref, "env:", 4U) == 0 &&
+            !environment_name_valid(o->credential_ref + 4))
+            return COG_ERROR_INVALID_ARG;
     } else {
-        if (o->model_id == NULL)
-            return COG_ERROR_NOT_FOUND;
-        if (strcmp(o->endpoint_name, "openrouter") != 0)
-            return COG_ERROR_NOT_FOUND;
-        if (!https_url(o->base_url))
+        if (o->backend == COG_CLI_BACKEND_MOCK) {
+            if (!c->endpoint_present)
+                o->endpoint_name = "mock";
+            if (o->model_id == NULL)
+                o->model_id = "mock-model";
+            if (strcmp(o->endpoint_name, "mock") != 0)
+                return COG_ERROR_NOT_FOUND;
+        } else {
+            if (o->model_id == NULL)
+                return COG_ERROR_NOT_FOUND;
+            if (strcmp(o->endpoint_name, "openrouter") != 0)
+                return COG_ERROR_NOT_FOUND;
+            if (!https_url(o->base_url))
+                return COG_ERROR_INVALID_ARG;
+        }
+        if (!token(o->model_id) || !cog_cli_utf8_valid(o->model_id) ||
+            !token(o->endpoint_name))
             return COG_ERROR_INVALID_ARG;
     }
-    if (!token(o->model_id) || !utf8_valid(o->model_id) || !token(o->endpoint_name))
-        return COG_ERROR_INVALID_ARG;
-    if (o->store_mode == COG_CLI_STORE_DEFAULT)
-        o->store_mode = o->backend == COG_CLI_BACKEND_REAL ? COG_CLI_STORE_DURABLE
-                                                           : COG_CLI_STORE_DISABLED;
     if (o->store_mode == COG_CLI_STORE_DURABLE && o->store_dir == NULL) {
         const char *xdg = getenv("XDG_STATE_HOME"), *home = getenv("HOME");
         const char *base, *suffix;
@@ -362,7 +372,7 @@ static cog_result_t credential(cog_cli_configuration_t *c)
     cog_cli_options_t *o = &c->options;
     size_t required = 0U, len, i;
     cog_result_t rc;
-    if (o->backend == COG_CLI_BACKEND_MOCK)
+    if (metadata_action(o->session_action) || o->backend == COG_CLI_BACKEND_MOCK)
         return COG_OK;
     if (o->credential_ref == NULL || *o->credential_ref == '\0')
         return COG_ERROR_NOT_FOUND;
@@ -382,14 +392,8 @@ static cog_result_t credential(cog_cli_configuration_t *c)
         if (strncmp(o->credential_ref, "env:", 4U) != 0)
             return COG_ERROR_UNSUPPORTED;
         name = o->credential_ref + 4;
-        if (!((*name >= 'A' && *name <= 'Z') || (*name >= 'a' && *name <= 'z') ||
-              *name == '_'))
+        if (!environment_name_valid(name))
             return COG_ERROR_INVALID_ARG;
-        for (i = 1U; name[i] != '\0'; ++i)
-            if (!((name[i] >= 'A' && name[i] <= 'Z') ||
-                  (name[i] >= 'a' && name[i] <= 'z') ||
-                  (name[i] >= '0' && name[i] <= '9') || name[i] == '_'))
-                return COG_ERROR_INVALID_ARG;
         s = getenv(name);
         if (s == NULL || *s == '\0')
             return COG_ERROR_NOT_FOUND;
@@ -420,6 +424,9 @@ cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
         return COG_ERROR_NULL_PTR;
     if (generation == 0U)
         return COG_ERROR_INVALID_ARG;
+    rc = cog_cli_session_options_validate(input);
+    if (rc != COG_OK)
+        return rc;
     c = calloc(1U, sizeof(*c));
     if (c == NULL)
         return COG_ERROR_NOMEM;
@@ -436,6 +443,11 @@ cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
         c->endpoint_present = true;
     c->options.prompt = input->prompt;
     c->options.session_id = input->session_id;
+    c->options.session_action = input->session_action;
+    c->options.source_session_id = input->source_session_id;
+    c->options.fork_node_id = input->fork_node_id;
+    c->options.previous_processes_fenced = input->previous_processes_fenced;
+    c->options.show_usage = input->show_usage;
     c->options.config_path = input->config_path;
     c->options.log_path = input->log_path;
     c->options.socket_path = input->socket_path;
@@ -447,7 +459,7 @@ cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
     c->options.mock_delta_count = input->mock_delta_count;
     c->options.interactive = input->interactive;
     c->options.verbose = input->verbose;
-    c->options.net = input->net;
+    c->options.net = metadata_action(input->session_action) ? NULL : input->net;
     c->options.credential_read = input->credential_read;
     c->options.credential_arg = input->credential_arg;
     rc = validate(c);
@@ -476,6 +488,7 @@ cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
     } while (0)
     OWN(prompt);
     OWN(session_id);
+    OWN(source_session_id);
     OWN(config_path);
     OWN(log_path);
     OWN(socket_path);
@@ -516,7 +529,7 @@ cog_result_t cog_cli_configuration_bind(cog_cli_configuration_t *c,
     const cog_provider_vtable_t *vtable;
     if (c == NULL)
         return COG_ERROR_NULL_PTR;
-    if (c->bound)
+    if (c->bound || metadata_action(c->options.session_action))
         return COG_ERROR_INVALID_STATE;
     if (c->options.backend == COG_CLI_BACKEND_REAL) {
         if (real == NULL || c->options.net == NULL || limits == NULL)
@@ -584,11 +597,15 @@ cog_result_t cog_cli_configuration_describe(const cog_cli_configuration_t *c,
                  c->options.backend == COG_CLI_BACKEND_REAL ? "real" : "mock",
                  c->options.store_mode == COG_CLI_STORE_DURABLE ? "durable"
                                                                 : "disabled",
-                 c->options.store_mode == COG_CLI_STORE_DURABLE &&
+                 !metadata_action(c->options.session_action) &&
+                         c->options.store_mode == COG_CLI_STORE_DURABLE &&
                          c->options.workspace_root != NULL
                      ? "policy-controlled"
                      : "disabled",
-                 c->options.backend == COG_CLI_BACKEND_REAL ? "[REDACTED]" : "none",
+                 !metadata_action(c->options.session_action) &&
+                         c->options.backend == COG_CLI_BACKEND_REAL
+                     ? "[REDACTED]"
+                     : "none",
                  (unsigned long long)c->generation);
     if (n < 0 || (size_t)n >= sizeof(text))
         return COG_ERROR_LIMIT;

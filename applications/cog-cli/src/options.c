@@ -63,6 +63,109 @@ void cog_cli_options_defaults(cog_cli_options_t *o)
     o->max_retries = 1U;
     o->max_retry_elapsed_ms = 10000U;
 }
+/* Validate protocol identifiers without imposing Unicode rules on filesystem
+ * paths. Range checks reject overlong scalars, surrogates and values >10FFFF. */
+bool cog_cli_utf8_valid(const char *s)
+{
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p != 0U) {
+        size_t width, i;
+        unsigned char first = *p;
+        if (first < 0x80U) {
+            ++p;
+            continue;
+        }
+        if (first >= 0xc2U && first <= 0xdfU)
+            width = 2U;
+        else if (first >= 0xe0U && first <= 0xefU)
+            width = 3U;
+        else if (first >= 0xf0U && first <= 0xf4U)
+            width = 4U;
+        else
+            return false;
+        for (i = 1U; i < width; ++i)
+            if (p[i] < 0x80U || p[i] > 0xbfU)
+                return false;
+        if ((first == 0xe0U && p[1] < 0xa0U) || (first == 0xedU && p[1] >= 0xa0U) ||
+            (first == 0xf0U && p[1] < 0x90U) || (first == 0xf4U && p[1] > 0x8fU))
+            return false;
+        p += width;
+    }
+    return true;
+}
+/* Session command inputs are deliberately outside the precedence table. */
+static cog_result_t source_id_valid(const char *id)
+{
+    size_t i, n;
+    if (id == NULL || *id == '\0')
+        return COG_ERROR_INVALID_ARG;
+    n = strlen(id);
+    if (n > 127U)
+        return COG_ERROR_LIMIT;
+    if (strcmp(id, ".") == 0 || strcmp(id, "..") == 0 ||
+        strcmp(id, ".cog-domain.lock") == 0 || !cog_cli_utf8_valid(id))
+        return COG_ERROR_INVALID_ARG;
+    for (i = 0U; i < n; ++i)
+        if ((unsigned char)id[i] < 32U || (unsigned char)id[i] == 127U ||
+            id[i] == '/' || id[i] == '\\')
+            return COG_ERROR_INVALID_ARG;
+    return COG_OK;
+}
+cog_result_t cog_cli_session_options_validate(const cog_cli_options_t *o)
+{
+    if (o == NULL)
+        return COG_ERROR_NULL_PTR;
+    switch (o->session_action) {
+    case COG_CLI_SESSION_NEW:
+        if (o->source_session_id != NULL || o->fork_node_id != 0U ||
+            o->previous_processes_fenced)
+            return COG_ERROR_INVALID_ARG;
+        return COG_OK;
+    case COG_CLI_SESSION_LIST:
+        if (o->session_id != NULL || o->source_session_id != NULL ||
+            o->fork_node_id != 0U || o->previous_processes_fenced ||
+            o->prompt != NULL || o->queue_text != NULL)
+            return COG_ERROR_INVALID_ARG;
+        return COG_OK;
+    case COG_CLI_SESSION_RESUME:
+    case COG_CLI_SESSION_FORK:
+    case COG_CLI_SESSION_RECOVER:
+        if (o->session_id != NULL ||
+            (o->session_action != COG_CLI_SESSION_FORK && o->fork_node_id != 0U) ||
+            (o->session_action == COG_CLI_SESSION_FORK && o->queue_text != NULL) ||
+            (o->session_action == COG_CLI_SESSION_RECOVER &&
+             (o->prompt != NULL || o->queue_text != NULL)))
+            return COG_ERROR_INVALID_ARG;
+        {
+            cog_result_t rc = source_id_valid(o->source_session_id);
+            if (rc != COG_OK)
+                return rc;
+        }
+        if (o->session_action == COG_CLI_SESSION_RECOVER &&
+            !o->previous_processes_fenced)
+            return COG_ERROR_DENIED;
+        return COG_OK;
+    }
+    return COG_ERROR_INVALID_ARG;
+}
+static cog_result_t node_number(const char *s, uint64_t *out)
+{
+    uint64_t n = 0U;
+    if (*s == '\0')
+        return COG_ERROR_INVALID_ARG;
+    while (*s != '\0') {
+        uint64_t digit;
+        if (*s < '0' || *s > '9')
+            return COG_ERROR_INVALID_ARG;
+        digit = (uint64_t)(*s - '0');
+        if (n > (UINT64_MAX - digit) / UINT64_C(10))
+            return COG_ERROR_INVALID_ARG;
+        n = n * UINT64_C(10) + digit;
+        ++s;
+    }
+    *out = n;
+    return COG_OK;
+}
 static cog_result_t number(const char *s, size_t ceiling, size_t *out)
 {
     size_t n = 0U;
@@ -174,7 +277,7 @@ cog_result_t cog_cli_options_parse(cog_cli_options_t *out, int argc, char **argv
                                    int *exit_code)
 {
     int i;
-    bool store = false, no_store = false;
+    bool store = false, no_store = false, action_seen = false, from_node = false;
     if (out == NULL)
         return COG_ERROR_NULL_PTR;
     cog_cli_options_defaults(out);
@@ -194,6 +297,38 @@ cog_result_t cog_cli_options_parse(cog_cli_options_t *out, int argc, char **argv
         if (strcmp(arg, "--version") == 0 || strcmp(arg, "-V") == 0) {
             printf("cog-cli %s\n", COG_CLI_VERSION);
             return COG_ERROR_ABORTED;
+        }
+        if (strcmp(arg, "--sessions") == 0) {
+            if (action_seen)
+                return bad(exit_code);
+            action_seen = true;
+            out->session_action = COG_CLI_SESSION_LIST;
+            continue;
+        }
+        if (match(arg, "--resume") || match(arg, "--fork") || match(arg, "--recover")) {
+            if (action_seen || value(argc, argv, &i, &v) != COG_OK)
+                return bad(exit_code);
+            action_seen = true;
+            out->session_action = match(arg, "--resume") ? COG_CLI_SESSION_RESUME
+                                  : match(arg, "--fork") ? COG_CLI_SESSION_FORK
+                                                         : COG_CLI_SESSION_RECOVER;
+            out->source_session_id = v;
+            continue;
+        }
+        if (match(arg, "--from-node")) {
+            if (from_node || value(argc, argv, &i, &v) != COG_OK ||
+                node_number(v, &out->fork_node_id) != COG_OK)
+                return bad(exit_code);
+            from_node = true;
+            continue;
+        }
+        if (strcmp(arg, "--fenced") == 0) {
+            out->previous_processes_fenced = true;
+            continue;
+        }
+        if (strcmp(arg, "--usage") == 0) {
+            out->show_usage = true;
+            continue;
         }
         if (strcmp(arg, "--mock") == 0) {
             out->backend = COG_CLI_BACKEND_MOCK;
@@ -273,6 +408,14 @@ cog_result_t cog_cli_options_parse(cog_cli_options_t *out, int argc, char **argv
         }
         return bad(exit_code);
     }
+    if (from_node && out->session_action != COG_CLI_SESSION_FORK)
+        return bad(exit_code);
+    {
+        cog_result_t rc = cog_cli_session_options_validate(out);
+        /* The constructor reports a missing recovery assertion as DENIED. */
+        if (rc != COG_OK && rc != COG_ERROR_DENIED)
+            return bad(exit_code);
+    }
     return COG_OK;
 }
 void cog_cli_print_usage(FILE *stream)
@@ -284,7 +427,14 @@ void cog_cli_print_usage(FILE *stream)
           "Credentials default to env:OPENROUTER_API_KEY; keys are never arguments.\n"
           "  -p, --prompt TEXT       Run one prompt\n"
           "  -i, --interactive       Read stdin\n"
-          "  -s, --session ID        Session identity\n"
+          "  -s, --session ID        NEW session identity\n"
+          "      --sessions          List durable IDs offline\n"
+          "      --resume ID         Resume an existing durable session\n"
+          "      --fork ID           Select a safe branch in this same session\n"
+          "      --from-node NODE    FORK parent (0 selects active leaf)\n"
+          "      --recover ID        Offline recovery; requires --fenced\n"
+          "      --fenced            Assert prior writers/processes are fenced\n"
+          "      --usage             Report available usage to stderr\n"
           "  -m, --model ID          Explicit provider model ID\n"
           "  -e, --endpoint NAME     Registry name (default openrouter)\n"
           "      --base-url URL      HTTPS base URL\n"

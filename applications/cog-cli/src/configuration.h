@@ -14,11 +14,11 @@ typedef struct cog_cli_configuration cog_cli_configuration_t;
  * metadata actions need only a usable durable store location: no model, secret
  * resolution or net. All non-NEW DEFAULT stores become DURABLE even for MOCK.
  * Session selectors are explicit host inputs, not environment/file fields; copy
- * source ID and validate mode/exclusivity before publishing. No effects/network/shell calls.
- * The generation identity is supplied by the owner, nonzero and never reused live.
- * Limits: config file 64 KiB, line 4096 bytes, copied field 4096 bytes,
- * aggregate copied strings 64 KiB, resolved credential 16 KiB including NUL.
- * Errors leave *out=NULL and clear any temporary/reserved credential storage.
+ * source ID and validate mode/exclusivity before publishing. No effects/network/shell
+ * calls. The generation identity is supplied by the owner, nonzero and never reused
+ * live. Limits: config file 64 KiB, line 4096 bytes, copied field 4096 bytes, aggregate
+ * copied strings 64 KiB, resolved credential 16 KiB including NUL. Errors leave
+ * *out=NULL and clear any temporary/reserved credential storage.
  */
 cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
                                        const cog_cli_options_t *input,
