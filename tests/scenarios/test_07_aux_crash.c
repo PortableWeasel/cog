@@ -15,7 +15,7 @@
  *      recovery can find the affected subagents;
  *   3. recovery primitives: a subagent that was running on the crashed
  *      core (spawned on the real core via cog_agent_spawn) is marked
- *      FAILED via the internal fail hook — the action the parent takes
+ *      FAILED via an authenticated attempt update — the action the parent takes
  *      when the orchestrator reports the dead core's sessions — and a
  *      fresh replacement agent can be spawned and completed from
  *      scratch;
@@ -42,6 +42,7 @@
 #include "cog_cli/mock_provider.h"
 
 #include "agent_internal.h"
+#include "agent_test_helpers.h"
 
 #include <signal.h>
 #include <stddef.h>
@@ -258,7 +259,7 @@ static void scenario_recovery_restart(void)
     cfg.parent_session_id = cog_session_id(cog_cli_app_session(app));
     cfg.force_local = true;
     CHECK(cog_agent_spawn(core, &cfg, &affected) == COG_OK);
-    CHECK(cog_agent_internal_start(core, affected) == COG_OK);
+    CHECK(scenario_agent_step(core, affected, COG_AGENT_STATUS_RUNNING, COG_OK, "", 0U) == COG_OK);
     CHECK(cog_agent_status(core, affected, &st) == COG_OK);
     CHECK_EQ_INT((long long)st, (long long)COG_AGENT_STATUS_RUNNING);
 
@@ -266,12 +267,12 @@ static void scenario_recovery_restart(void)
      * on the crashed core as FAILED (the orchestrator reports the dead
      * peer's sessions via cog_orchestrator_sessions; the parent applies
      * the fail transition). */
-    CHECK(cog_agent_internal_fail(core, affected) == COG_OK);
+    CHECK(scenario_agent_step(core, affected, COG_AGENT_STATUS_FAILED, COG_ERROR_IO, "", 0U) == COG_OK);
     CHECK(cog_agent_status(core, affected, &st) == COG_OK);
     CHECK_EQ_INT((long long)st, (long long)COG_AGENT_STATUS_FAILED);
-    /* A failed agent has no result to collect. */
+    /* A failed terminal result is readable, including an empty result. */
     CHECK(cog_agent_result(core, affected, result, sizeof(result),
-                           &result_len) == COG_ERROR_INVALID_STATE);
+                           &result_len) == COG_OK);
 
     /* Restart from scratch: a fresh replacement agent runs to completion
      * and delivers its result to the parent. */
@@ -281,8 +282,8 @@ static void scenario_recovery_restart(void)
     cfg.force_local = true;
     CHECK(cog_agent_spawn(core, &cfg, &replacement) == COG_OK);
     CHECK(replacement != affected);
-    CHECK(cog_agent_internal_start(core, replacement) == COG_OK);
-    CHECK(cog_agent_internal_complete(core, replacement, "recovered", 9U)
+    CHECK(scenario_agent_step(core, replacement, COG_AGENT_STATUS_RUNNING, COG_OK, "", 0U) == COG_OK);
+    CHECK(scenario_agent_step(core, replacement, COG_AGENT_STATUS_COMPLETED, COG_OK, "recovered", 9U)
           == COG_OK);
     CHECK(cog_agent_status(core, replacement, &st) == COG_OK);
     CHECK_EQ_INT((long long)st, (long long)COG_AGENT_STATUS_COMPLETED);
