@@ -71,6 +71,7 @@ typedef struct workspace_execution {
     bool started;
     bool done;
     bool cancelling;
+    bool terminate_sent;
     bool kill_sent;
     bool helper_reaped;
     bool output_eof;

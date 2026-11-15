@@ -39,8 +39,8 @@ Writer validation on 2026-11-15:
 
 | Build | Registered tests | Result |
 |---|---|---|
-| Strict GCC C11/Werror | toolkit, critic, parallel, async, workspace, resources, fencing | 7/7 |
-| ASan+UBSan, leak detection, vendored codec instrumented | same | 7/7 |
+| Strict GCC C11/Werror | toolkit, critic, parallel, async, workspace, resources, fencing, review-faults | 8/8 |
+| ASan+UBSan, leak detection, vendored codec instrumented | same | 8/8 |
 | TSan | critic concurrency/barrier and bounded worker/failure suite | 2/2 |
 
 The dedicated tests cover:
@@ -67,7 +67,7 @@ fixtures):
 cmake -S . -B build-toolkit -DCOG_ENABLE_WERROR=ON -DCOG_BUILD_CLI=OFF
 cmake --build build-toolkit --target test_toolkit test_toolkit_critic \
   test_toolkit_parallel test_toolkit_async test_workspace \
-  test_toolkit_resources test_toolkit_fencing -j4
+  test_toolkit_resources test_toolkit_fencing test_toolkit_review_faults -j4
 ctest --test-dir build-toolkit -R 'unit-(toolkit|workspace)' --output-on-failure
 
 # Repeat in a separate directory with -DCOG_ENABLE_ASAN=ON.
@@ -101,3 +101,30 @@ project install or release relocation gate P.
 No network, provider, paid model, persistent user workspace or user commands were
 used by these checks. Workspace/process fixture effects stayed under their
 own `mkdtemp` roots and were removed on successful completion.
+
+## Independent review revision 1
+
+Review `036ac33` found that the initial nonblocking TERM send could be lost after
+EINTR/EAGAIN: the execution was already cancelling, and later polls attempted
+only KILL. Critic checkpoint `6fcafcc` added the reproducer and an edit fsync
+failure oracle. Before the fix it recorded one failed TERM attempt, no cleanup
+marker and exit 137.
+
+The revised lifecycle distinguishes cancellation requested, TERM accepted and
+KILL accepted. Cancel queues pending control work. Each poll attempts at most
+one nonblocking send, retaining EINTR/EAGAIN for later service. Repeated cancel
+and send retries never extend the original escalation deadline. Unsent TERM is
+superseded by KILL at that deadline; transient KILL failure is retained too.
+
+The permanent `test_toolkit_review_faults` now covers single/multiple EINTR and
+EAGAIN followed by successful TERM handling, both manual cancellation and tool
+timeout, persistent TERM backpressure with transient KILL failures, and zero-grace
+KILL. It checks one send attempt per poll, one accepted control command, retained
+ABORTED/TIMEOUT outcomes, one command start, repeated result copies, absence of
+both shell/descendant PIDs and no waitable children. The critic's original edit
+fsync case still proves unchanged target and removal of the owned temp.
+
+Revision writer validation is strict 8/8, ASan+UBSan/leaks 8/8 and TSan concurrency
+2/2. Successful retry cases observed TERM accepted on attempt 2 or 4, marker
+present and exit 0; persistent-backpressure cases observed no accepted TERM,
+KILL accepted on attempt 3 and exit 137. Independent rereview remains pending.

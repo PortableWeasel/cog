@@ -122,7 +122,11 @@ its report. Host signal disposition/subreaper/cwd are untouched. The shell reset
 signal masks/dispositions and receives only configured environment/stdio.
 
 The parent only performs bounded nonblocking pipe reads and WNOHANG checks.
-Cancellation/deadline sends TERM, escalates to KILL at the configured grace,
+Cancellation/deadline queues control work; each poll attempts at most one
+nonblocking TERM/KILL send. EINTR/EAGAIN retain a pending command for a later poll.
+Accepted TERM is sent only once; the original KILL deadline is never extended by
+retry or repeated cancellation. At that deadline an unsent TERM is superseded by
+KILL, whose transient send failures also retry through later polls. Cleanup
 continues capture draining and waits for the helper's final report and reap.
 A shell exiting before its grandchildren does not complete the execution.
 Missing/unverifiable status is INDETERMINATE, never a successful reap claim.
@@ -134,10 +138,12 @@ a command is **not OS confinement**.
 
 `test_toolkit`, `test_toolkit_critic`, `test_toolkit_parallel`,
 `test_toolkit_async`, `test_workspace`, `test_toolkit_resources` and
-`test_toolkit_fencing` link the real core/session/store libraries. Dedicated
+`test_toolkit_fencing` and `test_toolkit_review_faults` link the real
+core/session/store libraries. Dedicated
 fixtures cover strict schema/Unicode/depth, policy, copy overflow, one effect,
 constructor OOM, runtime allocation refusal, bounded worker creation failure,
 workspace denial/traversal/symlinks, copied environment, process truncation,
-timeout/cancel, TERM-resistant descendants and complete reap. Files/processes
+timeout/cancel, transient TERM/KILL send failures, persistent backpressure,
+TERM-resistant descendants, edit fsync refusal and complete reap. Files/processes
 are created only in disposable test workspaces. Integration with the real client
 and independent review remain separate Stage 14 gate work.

@@ -124,3 +124,11 @@ add_executable(test_toolkit_fencing ${PROJECT_SOURCE_DIR}/tests/unit/test_toolki
 target_link_libraries(test_toolkit_fencing PRIVATE cog::toolkit)
 target_enable_warnings(test_toolkit_fencing)
 add_test(NAME unit-toolkit-fencing COMMAND test_toolkit_fencing)
+
+# Independent review fault regression: retained TERM/KILL sends and edit fsync.
+add_executable(test_toolkit_review_faults ${PROJECT_SOURCE_DIR}/tests/unit/test_toolkit_review_faults.c)
+target_link_libraries(test_toolkit_review_faults PRIVATE cog::toolkit)
+target_enable_warnings(test_toolkit_review_faults)
+target_link_options(test_toolkit_review_faults PRIVATE -Wl,--wrap=send -Wl,--wrap=fsync)
+add_test(NAME unit-toolkit-review-faults COMMAND test_toolkit_review_faults)
+set_tests_properties(unit-toolkit-review-faults PROPERTIES TIMEOUT 15)

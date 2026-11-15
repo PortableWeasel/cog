@@ -170,24 +170,36 @@ static cog_result_t send_control(workspace_execution_t *execution, char command)
     return COG_ERROR_IO;
 }
 
+/* Cancellation requested, accepted TERM and accepted KILL are distinct states.
+   A transient send leaves the command pending; one service step makes at most
+   one attempt, and retries never extend the original escalation deadline. */
+static void service_control(workspace_execution_t *execution)
+{
+    if (!execution->cancelling || execution->kill_sent) { return; }
+    bool kill_due = execution->now >= execution->kill_deadline;
+    if (!kill_due && execution->terminate_sent) { return; }
+    cog_result_t r = send_control(execution, kill_due ? 'K' : 'T');
+    if (r == COG_OK) {
+        if (kill_due) { execution->kill_sent = true; }
+        else { execution->terminate_sent = true; }
+    }
+    /* AGAIN retains the unsent command until another bounded service step.
+       A closed helper socket is resolved by retained report/EOF/reap below. */
+}
+
 cog_result_t cog_workspace_process_cancel(workspace_execution_t *execution)
 {
     if (execution->cancelling) { return COG_OK; }
     execution->cancelling = true;
     execution->kill_deadline = UINT64_MAX - execution->now < execution->config.terminate_grace_ms ?
         UINT64_MAX : execution->now + execution->config.terminate_grace_ms;
-    cog_result_t r = send_control(execution, execution->config.terminate_grace_ms == 0U ? 'K' : 'T');
-    if (r == COG_OK && execution->config.terminate_grace_ms == 0U) { execution->kill_sent = true; }
-    /* A transient send is retried by poll. An exited helper is handled there. */
+    /* Admission only queues control work; poll owns the bounded send attempt. */
     return COG_OK;
 }
 
 cog_result_t cog_workspace_process_poll(workspace_execution_t *execution)
 {
-    if (execution->cancelling && !execution->kill_sent && execution->now >= execution->kill_deadline) {
-        cog_result_t r = send_control(execution, 'K');
-        if (r == COG_OK) { execution->kill_sent = true; }
-    }
+    service_control(execution);
     char bytes[COG_WORKSPACE_IO_BYTES];
     for (size_t i = 0U; i < execution->workspace->quantum && !execution->output_eof; i++) {
         ssize_t count = read(execution->output_fd, bytes, sizeof(bytes));
