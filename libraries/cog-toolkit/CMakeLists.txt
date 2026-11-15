@@ -119,6 +119,11 @@ add_executable(test_toolkit_resources ${PROJECT_SOURCE_DIR}/tests/unit/test_tool
 target_link_libraries(test_toolkit_resources PRIVATE cog::toolkit)
 target_enable_warnings(test_toolkit_resources)
 target_link_options(test_toolkit_resources PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
+# Allocator linker wrappers invalidate the corresponding builtin effects.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_toolkit_resources PRIVATE
+        -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc)
+endif()
 add_test(NAME unit-toolkit-resources COMMAND test_toolkit_resources)
 add_executable(test_toolkit_fencing ${PROJECT_SOURCE_DIR}/tests/unit/test_toolkit_fencing.c)
 target_link_libraries(test_toolkit_fencing PRIVATE cog::toolkit)
