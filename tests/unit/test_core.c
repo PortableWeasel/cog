@@ -27,12 +27,16 @@
  * Ticket: 681a566 (Stage 12.2a — Implement core.c)
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include "cog/core.h"
 
+#include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #ifndef COG_CORE_H
 #error "COG_CORE_H include guard missing"
@@ -56,6 +60,7 @@ enum {
     EV_FAIL = 0x2000,
     EV_BADTRANS = 0x2001,
     EV_UNKNOWN = 0x1234,
+    EV_BLOCK = 0x2002,
 };
 
 /* ------------------------------------------------------------------ */
@@ -702,6 +707,128 @@ static void test_pending_injection(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Regression tests (Critic review 4d7badf)                            */
+/* ------------------------------------------------------------------ */
+
+/** text_len == SIZE_MAX must not overflow the text_len + 1 allocation. */
+static void test_queue_message_size_max(void)
+{
+    cog_session_t *session = NULL;
+    cog_core_t *core = NULL;
+    cog_core_config_t cfg;
+    const char *sid;
+    size_t pc = 0U;
+
+    CHECK(cog_session_new(&session, NULL) == COG_OK);
+    sid = cog_session_id(session);
+    CHECK(sid != NULL);
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.session = session;
+    cfg.dispatch_table = dispatch_table;
+    cfg.dispatch_table_size = sizeof(dispatch_table) / sizeof(dispatch_table[0]);
+
+    CHECK(cog_core_new(&core, &cfg) == COG_OK);
+
+    /* A length of SIZE_MAX would wrap text_len + 1 to zero and then write
+     * past the allocation; it must be rejected, not corrupt memory. */
+    CHECK(cog_core_queue_message(core, sid, "x", SIZE_MAX) == COG_ERROR_NOMEM);
+
+    /* The FIFO is unchanged. */
+    CHECK(cog_core_pending_count(core, sid, &pc) == COG_OK);
+    CHECK_EQ_INT(pc, 0);
+
+    cog_core_free(core);
+    cog_session_free(session);
+}
+
+/* ------------------------------------------------------------------ */
+/* Shutdown must not dequeue-and-drop a pending message.               */
+/* ------------------------------------------------------------------ */
+
+/* Handler that blocks long enough for a concurrent stop to land while a
+ * pending message is still queued and the event queue is empty. */
+static cog_handler_result_t on_block(cog_core_t *core, const cog_event_t *event)
+{
+    struct timespec ts;
+
+    (void)core;
+    (void)event;
+    ts.tv_sec = 0;
+    ts.tv_nsec = 50000000L; /* 50 ms */
+    (void)nanosleep(&ts, NULL);
+    return (cog_handler_result_t){ST_IDLE, COG_OK};
+}
+
+static const cog_state_t block_transitions[] = {
+    ST_IDLE,
+    COG_TRANSITION_SELF,
+    COG_TRANSITION_END,
+};
+
+static const cog_dispatch_entry_t block_table[] = {
+    COG_DISPATCH_ENTRY(ST_IDLE, EV_BLOCK, on_block, block_transitions),
+};
+
+static cog_core_t *g_stop_core;
+
+static void *stop_after_delay(void *arg)
+{
+    struct timespec ts;
+
+    (void)arg;
+    ts.tv_sec = 0;
+    ts.tv_nsec = 10000000L; /* 10 ms: fires while on_block is sleeping */
+    (void)nanosleep(&ts, NULL);
+    cog_core_stop(g_stop_core);
+    return NULL;
+}
+
+static void test_shutdown_preserves_pending(void)
+{
+    cog_session_t *session = NULL;
+    cog_core_t *core = NULL;
+    cog_core_config_t cfg;
+    const char *sid;
+    size_t pc = 0U;
+    pthread_t th;
+    cog_event_t ev;
+
+    CHECK(cog_session_new(&session, NULL) == COG_OK);
+    sid = cog_session_id(session);
+    CHECK(sid != NULL);
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.session = session;
+    cfg.dispatch_table = block_table;
+    cfg.dispatch_table_size = sizeof(block_table) / sizeof(block_table[0]);
+
+    CHECK(cog_core_new(&core, &cfg) == COG_OK);
+    g_stop_core = core;
+
+    /* A pending message is queued but not yet injected. */
+    CHECK(cog_core_queue_message(core, sid, "hello", 5U) == COG_OK);
+
+    /* A blocking event occupies the loop while a concurrent stop lands. */
+    memset(&ev, 0, sizeof(ev));
+    ev.id = (cog_event_id_t)EV_BLOCK;
+    ev.kind = COG_EVENT_SYSTEM_SIGNAL;
+    CHECK(cog_core_enqueue(core, &ev) == COG_OK);
+
+    CHECK(pthread_create(&th, NULL, stop_after_delay, NULL) == 0);
+    CHECK(cog_core_run(core) == COG_OK);
+    CHECK(pthread_join(th, NULL) == 0);
+
+    /* The pending message must survive shutdown, not be dequeued and
+     * dropped. */
+    CHECK(cog_core_pending_count(core, sid, &pc) == COG_OK);
+    CHECK_EQ_INT(pc, 1);
+
+    cog_core_free(core);
+    cog_session_free(session);
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -717,6 +844,8 @@ int main(void)
     test_run_dispatch_errors();
     test_pending_api();
     test_pending_injection();
+    test_queue_message_size_max();
+    test_shutdown_preserves_pending();
 
     if (failures != 0) {
         fprintf(stderr, "test_core: %d failure(s)\n", failures);

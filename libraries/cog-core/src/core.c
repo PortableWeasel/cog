@@ -359,8 +359,13 @@ cog_result_t cog_core_run(cog_core_t *core)
 
         pop_rc = cog_event_queue_pop(core->event_queue, &event);
         if (pop_rc == COG_ERROR_AGAIN) {
-            /* Queue empty: inject a pending message for our session, or
-             * wait. */
+            /* Queue empty.  Honour a pending stop request before doing any
+             * further work: injecting a pending message here would dequeue
+             * it and then drop it unprocessed on shutdown. */
+            if (core->stop_requested) {
+                break;
+            }
+            /* Inject a pending message for our session, or wait. */
             if (core_inject_pending(core) == COG_OK) {
                 continue;
             }
@@ -465,6 +470,13 @@ cog_result_t cog_core_queue_message(cog_core_t *core,
 
     if (core->pending_count >= core->pending_capacity) {
         return COG_ERROR_OVERFLOW;
+    }
+
+    /* text_len + 1 must not wrap: a length of SIZE_MAX would make the
+     * allocation size zero and then write past it.  Reject it as an
+     * unsatisfiable allocation. */
+    if (text_len == SIZE_MAX) {
+        return COG_ERROR_NOMEM;
     }
 
     sid_copy = strdup(session_id);

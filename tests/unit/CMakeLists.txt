@@ -24,6 +24,11 @@ foreach(test ${COG_UNIT_TESTS})
     target_enable_warnings(${test})
 endforeach()
 
+# test_core exercises a concurrent cog_core_stop (shutdown must not drop a
+# pending message), so it needs the pthread library.
+find_package(Threads REQUIRED)
+target_link_libraries(test_core PRIVATE Threads::Threads)
+
 # -----------------------------------------------------------------------
 # CTest registration
 # -----------------------------------------------------------------------

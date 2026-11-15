@@ -104,10 +104,11 @@ cog_result_t cog_core_run(cog_core_t *core);
   allowed list, and apply it (`COG_TRANSITION_SELF` keeps the state).
 - On any dispatch failure the state is left unchanged and the loop returns
   the error.
-- When the queue is empty the loop first tries to inject the oldest pending
-  message for the core's session as a `COG_EVENT_USER_INPUT`; if none is
-  pending it calls `wait_fn(wait_arg)`, or busy-waits with a short yield
-  when `wait_fn` is NULL.
+- When the queue is empty the loop first honours a pending stop request
+  (exits without dequeuing a pending message), then tries to inject the
+  oldest pending message for the core's session as a
+  `COG_EVENT_USER_INPUT`; if none is pending it calls `wait_fn(wait_arg)`,
+  or busy-waits with a short yield when `wait_fn` is NULL.
 - `cog_core_stop` may be called from another thread or a signal handler;
   the loop exits at the next safe opportunity.
 - After the loop the running flag is cleared.
@@ -165,7 +166,9 @@ cog_result_t cog_core_pending_count(const cog_core_t *core,
 - `queue_message` copies `text` (and the session id).  Returns
   `COG_ERROR_NULL_PTR` if `core`, `session_id`, or `text` is NULL;
   `COG_ERROR_OVERFLOW` when the FIFO is full; `COG_ERROR_NOMEM` on
-  allocation failure.
+  allocation failure.  A `text_len` of `SIZE_MAX` is rejected with
+  `COG_ERROR_NOMEM` because `text_len + 1` would wrap the allocation size
+  to zero and then write past it.
 - `dequeue_message` removes and returns the oldest message for the session.
   Returns `COG_ERROR_NULL_PTR` if `core`, `session_id`, or `out_buf` is
   NULL; `COG_ERROR_NOT_FOUND` when the session has no pending message;
