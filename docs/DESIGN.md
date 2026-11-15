@@ -261,6 +261,55 @@ block.
 
 ---
 
+## Tool Execution Framework
+
+cog-toolkit is the execution layer for tools invoked by the LLM during an
+agent loop.  It sits between the core state machine and the concrete tool
+implementations registered in the static @c cog_tool_table_t defined in
+cog-core.
+
+### Responsibilities
+
+1. **Prepare the tool call context.**  A @c cog_toolkit_call_t carries the
+tool name, serialised request payload, optional per-call timeout, and a
+cancellation flag.  Callers create and configure the context, then pass it to
+the dispatcher.
+
+2. **Dispatch tools by name.**  @c cog_toolkit_execute resolves the tool in
+the static table, invokes its @c cog_tool_fn implementation, and writes the
+outcome into a caller-provided @c cog_toolkit_result_t.
+
+3. **Run multiple tools.**  @c cog_toolkit_execute_all accepts an array of
+call contexts and an options struct (@c timeout_ms, @c max_parallel,
+@c stop_on_error).  It returns an opaque
+@c cog_toolkit_result_collection_t that preserves call order and owns
+copies of the individual results.
+
+4. **Validate results.**  Result values expose a status code, an output
+buffer, and an optional error message.  A schema validation helper checks the
+output against an expected contract before the result is fed back into the
+core event queue.
+
+5. **Feed results back as events.**  On completion, the toolkit constructs a
+@c COG_EVENT_TOOL_RESULT event whose payload references the validated result.
+The core's event queue receives this event and resumes state-machine dispatch.
+
+### Design constraints
+
+- **No dynamic registration.**  Tools are looked up exclusively in the static
+const @c cog_tool_table_t supplied to the core.
+- **Caller-allocated state.**  Every toolkit object is created through an
+explicit constructor and destroyed through a matching destructor.  The library
+never allocates hidden buffers.
+- **Fail closed.**  Every public function returns @c cog_result_t.  Errors are
+propagated rather than swallowed.
+- **Single-threaded by default.**  Each call context and result collection is
+owned by the thread that created it or performed the execution.  Parallel
+execution is cooperative and bounded by @c max_parallel; thread safety can
+be layered on top later with external locking.
+
+---
+
 ## Next steps
 
 Stage 5 — Research & PoCs. The main unknowns to test:

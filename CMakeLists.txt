@@ -33,7 +33,7 @@ include(compiler_warnings)
 # -----------------------------------------------------------------------
 add_subdirectory(libraries/cog-core)
 # add_subdirectory(libraries/cog-provider)
-# add_subdirectory(libraries/cog-toolkit)
+add_subdirectory(libraries/cog-toolkit)
 
 # -----------------------------------------------------------------------
 # Applications
