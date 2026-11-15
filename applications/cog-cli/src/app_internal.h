@@ -2,6 +2,7 @@
 #ifndef COG_CLI_APP_INTERNAL_H
 #define COG_CLI_APP_INTERNAL_H
 #include "configuration.h"
+#include "observation.h"
 #include <cog/workspace.h>
 /* Control-tree ownership is private; only app_reload.c needs config.h. */
 typedef struct cog_config_tree cog_config_tree_t;
@@ -33,6 +34,18 @@ typedef struct cli_input {
     bool used, queued, continuation_authorized;
 } cli_input_t;
 struct cog_cli_app {
+    /* Optional host bridge borrowed past provider teardown, never net-owned.
+       Application timing/error state exists even with an external observer. */
+    cog_cli_observer_t *observer;
+    cog_result_t observation_error;
+    cog_cli_observation_scope_t observation_scope;
+    uint64_t provider_started_ns, tool_started_ns, tool_assistant_id;
+    size_t tool_ordinal;
+    const char *observed_tool; /* Static descriptor name or static unknown. */
+    cog_obs_span_id_t provider_span, tool_span;
+    bool provider_timed, tool_timed, provider_usage_seen, observation_retry;
+    bool observation_draining;
+    char log_buffer[4096]; /* Owned setvbuf storage for an explicitly opened log. */
     cog_cli_configuration_t *configuration;
     cog_cli_options_t opts;
     /* Active aliases above/below borrow current owner; future is published but

@@ -9,6 +9,15 @@
 #include <cog/openrouter.h>
 #include <cog_cli/cli.h>
 typedef struct cog_cli_configuration cog_cli_configuration_t;
+/** Immutable cached log labels only. Optional strings are safe ASCII, at most
+ *127 bytes, screened against this generation's credential bytes/reference.
+ * Unavailable/long/unsafe values are NULL, never truncated or config failures.
+ * Session cache covers explicit session/source selectors; auto-generated IDs
+ * remain unavailable. No secret or resolver authority is exposed. */
+typedef struct cog_cli_safe_labels {
+    const char *session, *model;
+    bool session_available, model_available;
+} cog_cli_safe_labels_t;
 /** Resolve sources and secrets without opening a provider or durable store.
  * Normal REAL execution needs an explicitly configured model. LIST/RECOVER
  * metadata actions need only a usable durable store location: no model, secret
@@ -44,6 +53,10 @@ cog_result_t cog_cli_configuration_reload_new(cog_cli_configuration_t **out,
 void cog_cli_configuration_free(cog_cli_configuration_t *configuration);
 const cog_cli_options_t *
 cog_cli_configuration_options(const cog_cli_configuration_t *configuration);
+/** Borrow constructor-computed labels until configuration_free; bridge copies
+ * them before drive. NULL config returns NULL. No runtime allocation/authority. */
+const cog_cli_safe_labels_t *
+cog_cli_configuration_labels(const cog_cli_configuration_t *configuration);
 /** Final constructor step. Uses supplied static implementation, no dispatch.
  * REAL requires non-NULL real implementation and input.net; MOCK requires its
  * explicitly supplied mock implementation. Mock script is implementation_config,
