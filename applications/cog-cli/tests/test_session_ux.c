@@ -6,6 +6,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef COG_SESSION_TEST_REAL_PROFILE
+#include <curl/curl.h>
+#endif
 #define CHECK(x) do {if(!(x)){fprintf(stderr,"%s:%d: %s\n",__FILE__,__LINE__,#x);return 1;}}while(0)
 static cog_cli_options_t options(const char *store)
 {
@@ -162,6 +165,85 @@ static int metadata_edges(const char *base)
     CHECK(cog_store_load_ex(app->store,"legacy",COG_STORE_LOAD_REPLAY,&loaded,&report)==COG_OK && report.source_version==2U);
     cog_session_free(loaded);cog_cli_app_free(app);return 0;
 }
+static int seed_proposed(const char *base,const char *id,const char *namespace_id)
+{
+    cog_store_config_t config={.base_dir=base,.require_owner=true};cog_store_t *store=NULL;
+    CHECK(cog_store_new(&store,&config)==COG_OK);
+    cog_session_config_t cfg={.id=id};cog_session_t *session=NULL;CHECK(cog_session_new(&session,&cfg)==COG_OK);
+    const cog_message_t user={.role=COG_MESSAGE_ROLE_USER,.content="old",.content_len=3};
+    CHECK(cog_session_append(session,&user,NULL)==COG_OK);
+    static const char old_args[]="{\"command\":\"printf BAD >> resumed-effect\"}";
+    static const char new_args[]="{\"command\":\"printf once >> resumed-effect\"}";
+    const cog_message_tool_call_t calls[]={{"first","run_command",old_args,sizeof(old_args)-1U},
+        {"second","run_command",new_args,sizeof(new_args)-1U}};
+    static const unsigned char bytes[]="{\"reasoning_details\":[]}";
+    const cog_message_opaque_t opaque={namespace_id,"json-v1",bytes,sizeof(bytes)-1U};
+    const cog_message_t message={.role=COG_MESSAGE_ROLE_ASSISTANT,.tool_calls=calls,.tool_call_count=2,
+        .opaque=&opaque,.opaque_count=1};
+    cog_session_node_t *assistant=NULL;CHECK(cog_session_append(session,&message,&assistant)==COG_OK);
+    cog_store_owner_t owner={1,771};cog_store_owner_guard_t *guard=NULL;
+    CHECK(cog_store_owner_compare_exchange(store,id,(cog_store_owner_t){0},owner,(cog_store_checkpoint_t){0})==COG_OK);
+    CHECK(cog_store_owner_acquire(store,id,owner,&guard)==COG_OK);
+    CHECK(cog_session_tool_transition(session,assistant,"first",COG_TOOL_EXECUTION_PROPOSED,COG_TOOL_EXECUTION_STARTED)==COG_OK);
+    const cog_message_t prior={.role=COG_MESSAGE_ROLE_TOOL,.tool_call_id="first",.content="prior fixture outcome",.content_len=21};
+    CHECK(cog_session_append(session,&prior,NULL)==COG_OK);
+    CHECK(cog_session_tool_transition(session,assistant,"first",COG_TOOL_EXECUTION_STARTED,COG_TOOL_EXECUTION_SUCCEEDED)==COG_OK);
+    CHECK(cog_store_save(store,session)==COG_OK);CHECK(cog_store_owner_release(guard)==COG_OK);
+    cog_session_free(session);cog_store_free(store);return 0;
+}
+static int proposed(const char *store,const char *workspace)
+{
+    CHECK(seed_proposed(store,"proposed","openrouter.chat-completions")==0);
+    cog_cli_options_t o=options(store);o.session_action=COG_CLI_SESSION_RESUME;o.source_session_id="proposed";
+    o.workspace_root=workspace;o.tool_policy=COG_CLI_TOOL_POLICY_ALLOW;o.chunks="continued";
+    o.explicit_options|=COG_CLI_OPT_WORKSPACE|COG_CLI_OPT_POLICY;
+    cog_cli_app_t *app=NULL;CHECK(cog_cli_app_new(&app,&o)==COG_OK && app->resuming_policy);
+    cog_mock_state_t state;CHECK(cog_mock_provider_state(app->provider,&state)==COG_OK && state.send_count==0U);
+    CHECK(cog_cli_app_run(app)==COG_OK);
+    CHECK(cog_mock_provider_state(app->provider,&state)==COG_OK && state.send_count==1U && state.last_request->message_count==4U);
+    CHECK(state.last_request->messages[1].opaque_count==1U);
+    cog_session_snapshot_t snapshot;CHECK(cog_session_snapshot_view(app->session,&snapshot)==COG_OK);
+    CHECK(snapshot.ledger_count==2U && snapshot.ledger[0].state==COG_TOOL_EXECUTION_SUCCEEDED && snapshot.ledger[1].state==COG_TOOL_EXECUTION_SUCCEEDED);
+    cog_cli_app_free(app);char path[512];CHECK(snprintf(path,sizeof(path),"%s/resumed-effect",workspace)>0);
+    FILE *file=fopen(path,"r");CHECK(file!=NULL);char text[16]={0};CHECK(fread(text,1,15,file)==4U);CHECK(fclose(file)==0);CHECK(strcmp(text,"once")==0);
+    CHECK(seed_proposed(store,"denied-proposal","openrouter.chat-completions")==0);
+    o=options(store);o.session_action=COG_CLI_SESSION_RESUME;o.source_session_id="denied-proposal";o.chunks="denied safely";
+    o.tool_policy=COG_CLI_TOOL_POLICY_DENY;o.explicit_options|=COG_CLI_OPT_POLICY;
+    CHECK(cog_cli_app_new(&app,&o)==COG_OK);CHECK(cog_cli_app_run(app)==COG_OK);
+    CHECK(cog_session_snapshot_view(app->session,&snapshot)==COG_OK && snapshot.ledger[1].state==COG_TOOL_EXECUTION_DENIED);
+    CHECK(snapshot.ledger[1].audit_count==1U);cog_cli_app_free(app);
+    CHECK(seed_proposed(store,"cancel-proposal","openrouter.chat-completions")==0);
+    o.source_session_id="cancel-proposal";CHECK(cog_cli_app_new(&app,&o)==COG_OK);
+    CHECK(cog_cli_app_cancel(app)==COG_OK);CHECK(cog_cli_app_run(app)==COG_OK);
+    CHECK(cog_mock_provider_state(app->provider,&state)==COG_OK && state.send_count==0U);
+    CHECK(cog_session_snapshot_view(app->session,&snapshot)==COG_OK && snapshot.ledger[1].state==COG_TOOL_EXECUTION_DENIED);
+    cog_cli_app_free(app);return 0;
+}
+#ifdef COG_SESSION_TEST_REAL_PROFILE
+static cog_result_t synthetic_secret(void *arg,const char *ref,char *out,size_t capacity,size_t *required)
+{
+    static const char value[]="synthetic";(void)arg;(void)ref;*required=sizeof(value);
+    if(capacity<sizeof(value))return COG_ERROR_OVERFLOW;
+    memcpy(out,value,sizeof(value));return COG_OK;
+}
+static int real_preflight(const char *store,const char *workspace)
+{
+    CHECK(seed_proposed(store,"unsupported-opaque","foreign.required")==0);
+    CHECK(seed_proposed(store,"supported-opaque","openrouter.chat-completions")==0);
+    CHECK(curl_global_init(CURL_GLOBAL_DEFAULT)==CURLE_OK);cog_net_ctx_t *net=NULL;
+    cog_net_config_t config={.host_runtime_initialized=true,.dependency_memory=COG_NET_DEPENDENCY_MEMORY_DYNAMIC};
+    CHECK(cog_net_new(&net,&config)==COG_OK);
+    cog_cli_options_t o=options(store);o.session_action=COG_CLI_SESSION_RESUME;o.source_session_id="unsupported-opaque";
+    o.backend=COG_CLI_BACKEND_REAL;o.model_id="synthetic/model";o.base_url="https://127.0.0.1:1/v1";
+    o.net=net;o.credential_read=synthetic_secret;o.workspace_root=workspace;o.tool_policy=COG_CLI_TOOL_POLICY_ALLOW;
+    o.explicit_options|=COG_CLI_OPT_MODEL|COG_CLI_OPT_BASE_URL|COG_CLI_OPT_WORKSPACE|COG_CLI_OPT_POLICY;
+    cog_cli_app_t *app=NULL;CHECK(cog_cli_app_new(&app,&o)==COG_ERROR_UNSUPPORTED && app==NULL);
+    CHECK(cog_net_active_count(net)==0U);
+    o.source_session_id="supported-opaque";CHECK(cog_cli_app_new(&app,&o)==COG_OK);
+    CHECK(cog_net_active_count(net)==0U);CHECK(cog_cli_app_shutdown(app)==COG_OK);CHECK(cog_cli_app_run(app)==COG_OK);
+    CHECK(cog_net_active_count(net)==0U);cog_cli_app_free(app);cog_net_free(net);curl_global_cleanup();return 0;
+}
+#endif
 static int output_and_limits(const char *store)
 {
     cog_cli_options_t o=options(store);o.session_action=COG_CLI_SESSION_LIST;
@@ -185,11 +267,49 @@ static int output_and_limits(const char *store)
     size_t n=fread(output,1,sizeof(output)-1U,file);output[n]='\0';CHECK(strstr(output,"input=17 output=3")!=NULL && strstr(output,"USD")!=NULL);
     app->out=stdout;CHECK(fclose(file)==0);cog_cli_app_free(app);return 0;
 }
+static int run_input(cog_cli_app_t *app,const char *bytes,size_t length,cog_result_t expected)
+{
+    int original=dup(STDIN_FILENO);CHECK(original>=0);int fds[2];CHECK(pipe(fds)==0);
+    CHECK(write(fds[1],bytes,length)==(ssize_t)length);CHECK(close(fds[1])==0);
+    CHECK(dup2(fds[0],STDIN_FILENO)>=0);CHECK(close(fds[0])==0);
+    cog_result_t rc=cog_cli_app_run(app);
+    CHECK(dup2(original,STDIN_FILENO)>=0);CHECK(close(original)==0);CHECK(rc==expected);return 0;
+}
+static int terminal_faults(const char *store)
+{
+    cog_cli_options_t o=options(store);o.session_action=COG_CLI_SESSION_RESUME;o.source_session_id="story";o.interactive=true;
+    cog_cli_app_t *app=NULL;CHECK(cog_cli_app_new(&app,&o)==COG_OK);
+    FILE *full=fopen("/dev/full","w");CHECK(full!=NULL);
+    CHECK(cog_cli_usage(app,cog_session_active(app->session),full,true)==COG_ERROR_IO);(void)fclose(full);
+    cog_session_snapshot_t snapshot;CHECK(cog_session_snapshot_view(app->session,&snapshot)==COG_OK);size_t nodes=snapshot.node_count;
+    static const char bad_fork[]="/fork 1\0hidden\nnew prompt\n";
+    CHECK(run_input(app,bad_fork,sizeof(bad_fork)-1U,COG_ERROR_INVALID_ARG)==0);
+    CHECK(app->fork_parent==NULL);cog_mock_state_t state;CHECK(cog_mock_provider_state(app->provider,&state)==COG_OK && state.send_count==0U);
+    CHECK(cog_session_snapshot_view(app->session,&snapshot)==COG_OK && snapshot.node_count==nodes);cog_cli_app_free(app);
+    char path[512];CHECK(snprintf(path,sizeof(path),"%s/terminal-fault",store)>0);CHECK(seed(path)==0);
+    o=options(path);o.session_action=COG_CLI_SESSION_RECOVER;o.source_session_id="uncertain";o.previous_processes_fenced=true;o.interactive=true;
+    CHECK(cog_cli_app_new(&app,&o)==COG_OK);
+    int saved=dup(STDIN_FILENO);CHECK(saved>=0);CHECK(close(STDIN_FILENO)==0);
+    cog_result_t rc=cog_cli_app_run(app);CHECK(dup2(saved,STDIN_FILENO)>=0);CHECK(close(saved)==0);CHECK(rc==COG_ERROR_IO);
+    cog_store_owner_t owner;cog_store_checkpoint_t before,after;
+    CHECK(cog_store_owner_read(app->store,"uncertain",&owner,&before)==COG_OK);
+    static const char bad_reconcile[]="/reconcile 2 first acknowledged evidence\0hidden\n";
+    CHECK(run_input(app,bad_reconcile,sizeof(bad_reconcile)-1U,COG_ERROR_INVALID_ARG)==0);
+    static const char bad_utf8[]="/reconcile 2 first acknowledged bad\xff\n";
+    CHECK(run_input(app,bad_utf8,sizeof(bad_utf8)-1U,COG_ERROR_INVALID_ARG)==0);
+    CHECK(cog_store_owner_read(app->store,"uncertain",&owner,&after)==COG_OK && after.generation==before.generation);
+    CHECK(cog_session_snapshot_view(app->session,&snapshot)==COG_OK && snapshot.node_count==2U);
+    CHECK(snapshot.ledger[0].state==COG_TOOL_EXECUTION_INDETERMINATE);
+    cog_cli_app_free(app);return 0;
+}
 int main(int argc,char **argv)
 {
     if(argc==3 && strcmp(argv[1],"seed")==0)return seed(argv[2]);
     char root[]="/tmp/cog-l-ux-XXXXXX";CHECK(mkdtemp(root)!=NULL);
     char store[512];CHECK(snprintf(store,sizeof(store),"%s/state",root)>0);
-    CHECK(basics(store)==0);CHECK(partial(store)==0);CHECK(recovery(store)==0);CHECK(metadata_edges(store)==0);CHECK(output_and_limits(store)==0);
+    CHECK(basics(store)==0);CHECK(partial(store)==0);CHECK(recovery(store)==0);CHECK(metadata_edges(store)==0);CHECK(output_and_limits(store)==0);CHECK(proposed(store,root)==0);CHECK(terminal_faults(store)==0);
+#ifdef COG_SESSION_TEST_REAL_PROFILE
+    CHECK(real_preflight(store,root)==0);
+#endif
     CHECK(clean(root)==0);return 0;
 }

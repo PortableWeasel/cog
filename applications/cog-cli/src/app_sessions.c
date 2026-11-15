@@ -317,8 +317,8 @@ cog_result_t cog_cli_usage(cog_cli_app_t *app, const cog_session_node_t *node,
     const cog_usage_t *usage = &data->message->usage;
     (void)app;
     if (!usage->tokens_known && !usage->reasoning_tokens_known && !usage->cost_known) {
-        if (explicit_request && fprintf(stream, "node=%" PRIu64 " usage unavailable\n", data->node_id) < 0)
-            return COG_ERROR_IO;
+        if (explicit_request && (fprintf(stream, "node=%" PRIu64 " usage unavailable\n", data->node_id) < 0 ||
+            fflush(stream) != 0)) return COG_ERROR_IO;
         return COG_OK;
     }
     if (fprintf(stream, "node=%" PRIu64 " reported usage:", data->node_id) < 0) return COG_ERROR_IO;
@@ -430,9 +430,16 @@ cog_result_t cog_cli_metadata_run(cog_cli_app_t *app)
         struct pollfd fds[2] = {{STDIN_FILENO, POLLIN, 0}, {app->signal_fd, POLLIN, 0}};
         int ready = poll(fds, app->signal_fd < 0 ? 1U : 2U, 10);
         if (ready < 0) { if (errno == EINTR) continue; rc = COG_ERROR_IO; break; }
+        if ((fds[0].revents & (POLLERR | POLLNVAL)) != 0 ||
+            (app->signal_fd >= 0 && (fds[1].revents & (POLLERR | POLLNVAL | POLLHUP)) != 0)) {
+            rc = COG_ERROR_IO; break;
+        }
         if (app->signal_fd >= 0 && (fds[1].revents & POLLIN) != 0) {
             struct signalfd_siginfo info;
-            if (read(app->signal_fd, &info, sizeof(info)) == (ssize_t)sizeof(info)) break;
+            ssize_t got = read(app->signal_fd, &info, sizeof(info));
+            if (got == (ssize_t)sizeof(info)) break;
+            if (got < 0 && (errno == EAGAIN || errno == EINTR)) continue;
+            rc = COG_ERROR_IO; break;
         }
         if ((fds[0].revents & (POLLIN | POLLHUP)) == 0) continue;
         char byte; ssize_t n = read(STDIN_FILENO, &byte, 1U);
@@ -443,7 +450,10 @@ cog_result_t cog_cli_metadata_run(cog_cli_app_t *app)
             app->line[app->line_length++] = byte; continue;
         }
         while (app->line_length != 0U && app->line[app->line_length - 1U] == '\r') app->line_length--;
-        app->line[app->line_length] = '\0'; app->line_length = 0U;
+        app->line[app->line_length] = '\0';
+        bool valid = cog_cli_text_valid(app->line, app->line_length);
+        app->line_length = 0U;
+        if (!valid) { rc = COG_ERROR_INVALID_ARG; break; }
         if (strcmp(app->line, "/quit") == 0 || strcmp(app->line, "/exit") == 0) break;
         bool handled;
         rc = cog_cli_session_command(app, app->line, &handled);

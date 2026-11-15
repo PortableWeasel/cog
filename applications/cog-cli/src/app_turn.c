@@ -443,6 +443,9 @@ static cog_result_t line(cog_cli_app_t *app)
 {
     while (app->line_length != 0U && app->line[app->line_length - 1U] == '\r') app->line_length--;
     app->line[app->line_length] = '\0';
+    if (!cog_cli_text_valid(app->line, app->line_length)) {
+        app->line_length = 0U; return COG_ERROR_INVALID_ARG;
+    }
     cog_result_t rc = COG_OK;
     if (app->policy_prompt) {
         if (strcmp(app->line, "allow") == 0) app->policy_decision = COG_TOOLKIT_POLICY_ALLOW;
