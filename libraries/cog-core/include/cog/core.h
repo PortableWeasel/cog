@@ -334,6 +334,89 @@ cog_obs_t *cog_core_obs(cog_core_t *core);
  */
 cog_store_t *cog_core_store(cog_core_t *core);
 
+/* ------------------------------------------------------------------ */
+/* Pending message queue (interrupt / queue-next support)              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Queue a user message for delivery after the current turn.
+ *
+ * When the user types a message while the LLM is still streaming, the
+ * UI can call this to hold the message in a session-scoped FIFO.  The
+ * core automatically dequeues and injects the message as a new
+ * @c COG_EVENT_USER_INPUT when the current turn completes.
+ *
+ * @param[in,out] core       Core to queue into.
+ * @param[in]     session_id Session to queue for; must not be NULL.
+ * @param[in]     text       Message text; copied.  Must not be NULL.
+ * @param[in]     text_len   Length of @p text in bytes.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if @p core, @p session_id, or @p text is NULL.
+ * @return COG_ERROR_OVERFLOW if the session's pending queue is full
+ *         (default capacity: 8 messages).
+ * @return COG_ERROR_NOMEM if allocation fails.
+ *
+ * @post On success, the message is appended to the session's pending
+ *       queue and will be delivered after the current turn.
+ *
+ * Threading: not thread-safe.  Must be called from the same thread
+ * that runs @c cog_core_run.
+ */
+cog_result_t cog_core_queue_message(cog_core_t *core,
+                                     const char *session_id,
+                                     const char *text,
+                                     size_t text_len);
+
+/**
+ * @brief Dequeue the next pending message for a session.
+ *
+ * Removes and returns the oldest pending message for the given session.
+ * Called internally by the core when a turn completes; may also be
+ * called by the application to inspect or drain the queue.
+ *
+ * @param[in]  core        Core to query.
+ * @param[in]  session_id  Session to dequeue from; must not be NULL.
+ * @param[out] out_buf     Buffer that receives the message text,
+ *                         NUL-terminated.
+ * @param[in]  buf_capacity Size of @p out_buf in bytes, including
+ *                          space for the NUL terminator.
+ * @param[out] out_len     Receives the message length in bytes,
+ *                         excluding the terminator.  May be NULL.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if @p core, @p session_id, or @p out_buf
+ *         is NULL.
+ * @return COG_ERROR_NOT_FOUND if the session's pending queue is empty.
+ * @return COG_ERROR_OVERFLOW if the message does not fit in
+ *         @p buf_capacity.  On this error @p *out_len receives the
+ *         required capacity, excluding the terminator.
+ *
+ * @post On success, the message is removed from the queue and copied
+ *       into @p out_buf.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_core_dequeue_message(cog_core_t *core,
+                                       const char *session_id,
+                                       char *out_buf,
+                                       size_t buf_capacity,
+                                       size_t *out_len);
+
+/**
+ * @brief Return the number of pending messages for a session.
+ *
+ * @param[in]  core        Core to query.
+ * @param[in]  session_id  Session to check; must not be NULL.
+ * @param[out] out_count   Receives the number of pending messages.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if @p core, @p session_id, or @p out_count
+ *         is NULL.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_core_pending_count(const cog_core_t *core,
+                                     const char *session_id,
+                                     size_t *out_count);
+
 #ifdef __cplusplus
 }
 #endif

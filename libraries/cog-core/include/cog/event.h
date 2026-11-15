@@ -68,6 +68,13 @@ typedef enum cog_event_kind {
     COG_EVENT_CONFIG_CHANGED,     /**< Configuration was reloaded. */
     COG_EVENT_SUBAGENT_TIMEOUT,   /**< Subagent exceeded its time limit. */
     COG_EVENT_SHUTDOWN,           /**< Request for graceful shutdown. */
+    COG_EVENT_CANCEL,             /**< User requests cancellation of in-flight work. */
+    COG_EVENT_CANCELLED,          /**< Cancellation completed successfully. */
+    COG_EVENT_QUEUE_MSG,          /**< User queues a message for next turn. */
+    COG_EVENT_MSG_QUEUED,         /**< Queued message acknowledgement. */
+    COG_EVENT_RETRY,              /**< User requests retry of failed operation. */
+    COG_EVENT_ABORT,              /**< User requests abort of failed operation. */
+    COG_EVENT_ERROR,              /**< Error occurred (provider, tool, etc). */
 } cog_event_kind_t;
 
 /**

@@ -613,6 +613,36 @@ const char *cog_session_parent_id(const cog_session_t *session);
 cog_result_t cog_session_set_parent(cog_session_t *session,
                                      const char *parent_id);
 
+/* ------------------------------------------------------------------ */
+/* Node mutation (cancellation support)                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Discard a leaf node from the session tree.
+ *
+ * Removes the node from its parent's child list and frees its resources.
+ * Used when the user cancels an in-flight request: the partial assistant
+ * response node is discarded, preserving the rest of the tree.
+ *
+ * @param[in,out] session Session containing the node.
+ * @param[in]     node    Leaf node to discard.  Must have no children.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if @p session or @p node is NULL.
+ * @return COG_ERROR_INVALID_STATE if @p node has children (not a leaf).
+ * @return COG_ERROR_NOT_FOUND if @p node is not in this session.
+ *
+ * @pre @p node is a leaf (no children).
+ * @pre @p node was created by @c cog_session_add_message on this session.
+ *
+ * @post On success, the node is removed from the tree and its memory freed.
+ * @post The active node is updated to the discarded node's parent if the
+ *       discarded node was active.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_session_discard_node(cog_session_t *session,
+                                       cog_session_node_t *node);
+
 #ifdef __cplusplus
 }
 #endif

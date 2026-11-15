@@ -1,0 +1,150 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 700" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#333"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#dc3545"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#28a745"/>
+    </marker>
+  </defs>
+
+  <text x="550" y="25" text-anchor="middle" font-size="16" font-weight="bold">Scenario 20: User Interrupt and Queued Message</text>
+
+  <!-- Actors -->
+  <rect x="60" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="110" y="75" text-anchor="middle">User</text>
+
+  <rect x="240" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="290" y="75" text-anchor="middle">UI</text>
+
+  <rect x="420" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="470" y="75" text-anchor="middle">Main Core</text>
+
+  <rect x="600" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="650" y="75" text-anchor="middle">Provider</text>
+
+  <rect x="780" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="830" y="75" text-anchor="middle">Session</text>
+
+  <!-- Lifelines -->
+  <line x1="110" y1="90" x2="110" y2="650" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="290" y1="90" x2="290" y2="650" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="470" y1="90" x2="470" y2="650" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="650" y1="90" x2="650" y2="650" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="830" y1="90" x2="830" y2="650" stroke="#999" stroke-dasharray="5,5"/>
+
+  <!-- ===== SHARED PREFIX ===== -->
+  <rect x="30" y="105" width="1040" height="25" fill="#f8f9fa" stroke="#999" rx="3"/>
+  <text x="550" y="122" text-anchor="middle" font-size="11" font-weight="bold">Shared prefix: user submits prompt, streaming begins</text>
+
+  <!-- User submits -->
+  <line x1="110" y1="145" x2="290" y2="145" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="200" y="140" text-anchor="middle" font-size="10">"Explain X"</text>
+
+  <!-- UI to core -->
+  <line x1="290" y1="160" x2="470" y2="160" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="380" y="155" text-anchor="middle" font-size="10">COG_EVENT_USER_INPUT</text>
+
+  <!-- Core to session -->
+  <line x1="470" y1="175" x2="830" y2="175" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="650" y="170" text-anchor="middle" font-size="10">cog_session_add_message(user)</text>
+
+  <!-- Core to provider -->
+  <line x1="470" y1="190" x2="650" y2="190" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="560" y="185" text-anchor="middle" font-size="10">cog_provider_send()</text>
+
+  <!-- State -->
+  <rect x="420" y="200" width="100" height="20" fill="#fff3cd" stroke="#333" rx="3"/>
+  <text x="470" y="214" text-anchor="middle" font-size="9">state=AWAITING_LLM</text>
+
+  <!-- Streaming -->
+  <line x1="650" y1="230" x2="470" y2="230" stroke="#333" stroke-dasharray="5,5" marker-end="url(#arrow)"/>
+  <text x="560" y="225" text-anchor="middle" font-size="10">LLM_CHUNK</text>
+
+  <line x1="470" y1="245" x2="290" y2="245" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="380" y="240" text-anchor="middle" font-size="10">render chunk</text>
+
+  <!-- ===== PATH A: INTERRUPT ===== -->
+  <rect x="30" y="265" width="1040" height="25" fill="#f8d7da" stroke="#dc3545" rx="3"/>
+  <text x="550" y="282" text-anchor="middle" font-size="11" font-weight="bold" fill="#dc3545">Path A: User hits ESC (immediate interrupt)</text>
+
+  <!-- User cancels -->
+  <line x1="110" y1="305" x2="290" y2="305" stroke="#dc3545" marker-end="url(#arrow-red)"/>
+  <text x="200" y="300" text-anchor="middle" font-size="10" fill="#dc3545">[ESC]</text>
+
+  <!-- UI to core -->
+  <line x1="290" y1="320" x2="470" y2="320" stroke="#dc3545" marker-end="url(#arrow-red)"/>
+  <text x="380" y="315" text-anchor="middle" font-size="10" fill="#dc3545">COG_EVENT_CANCEL</text>
+
+  <!-- Core cancels provider -->
+  <line x1="470" y1="335" x2="650" y2="335" stroke="#dc3545" marker-end="url(#arrow-red)"/>
+  <text x="560" y="330" text-anchor="middle" font-size="10" fill="#dc3545">cog_provider_cancel()</text>
+
+  <!-- Provider aborted -->
+  <line x1="650" y1="350" x2="470" y2="350" stroke="#dc3545" stroke-dasharray="5,5" marker-end="url(#arrow-red)"/>
+  <text x="560" y="345" text-anchor="middle" font-size="10" fill="#dc3545">COG_ERROR_ABORTED</text>
+
+  <!-- Discard partial -->
+  <line x1="470" y1="365" x2="830" y2="365" stroke="#dc3545" marker-end="url(#arrow-red)"/>
+  <text x="650" y="360" text-anchor="middle" font-size="10" fill="#dc3545">cog_session_discard_node(partial)</text>
+
+  <!-- State idle -->
+  <rect x="420" y="375" width="100" height="20" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="470" y="389" text-anchor="middle" font-size="9">state=IDLE</text>
+
+  <!-- Notify UI -->
+  <line x1="470" y1="405" x2="290" y2="405" stroke="#dc3545" marker-end="url(#arrow-red)"/>
+  <text x="380" y="400" text-anchor="middle" font-size="10" fill="#dc3545">COG_EVENT_CANCELLED</text>
+
+  <!-- User sees cancelled -->
+  <line x1="290" y1="420" x2="110" y2="420" stroke="#dc3545" marker-end="url(#arrow-red)"/>
+  <text x="200" y="415" text-anchor="middle" font-size="10" fill="#dc3545">"cancelled"</text>
+
+  <!-- ===== PATH B: QUEUE ===== -->
+  <rect x="30" y="450" width="1040" height="25" fill="#d4edda" stroke="#28a745" rx="3"/>
+  <text x="550" y="467" text-anchor="middle" font-size="11" font-weight="bold" fill="#28a745">Path B: User types next message while streaming</text>
+
+  <!-- User types -->
+  <line x1="110" y1="490" x2="290" y2="490" stroke="#28a745" marker-end="url(#arrow-green)"/>
+  <text x="200" y="485" text-anchor="middle" font-size="10" fill="#28a745">"Also explain Y"</text>
+
+  <!-- UI to core -->
+  <line x1="290" y1="505" x2="470" y2="505" stroke="#28a745" marker-end="url(#arrow-green)"/>
+  <text x="380" y="500" text-anchor="middle" font-size="10" fill="#28a745">COG_EVENT_QUEUE_MSG</text>
+
+  <!-- Core queues -->
+  <rect x="420" y="515" width="100" height="25" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="470" y="532" text-anchor="middle" font-size="9">enqueue pending</text>
+
+  <!-- Ack to UI -->
+  <line x1="470" y1="550" x2="290" y2="550" stroke="#28a745" marker-end="url(#arrow-green)"/>
+  <text x="380" y="545" text-anchor="middle" font-size="10" fill="#28a745">COG_EVENT_MSG_QUEUED</text>
+
+  <!-- User sees queued -->
+  <line x1="290" y1="565" x2="110" y2="565" stroke="#28a745" marker-end="url(#arrow-green)"/>
+  <text x="200" y="560" text-anchor="middle" font-size="10" fill="#28a745">"queued"</text>
+
+  <!-- LLM completes -->
+  <line x1="650" y1="580" x2="470" y2="580" stroke="#333" stroke-dasharray="5,5" marker-end="url(#arrow)"/>
+  <text x="560" y="575" text-anchor="middle" font-size="10">LLM_COMPLETE</text>
+
+  <!-- Add assistant msg -->
+  <line x1="470" y1="595" x2="830" y2="595" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="650" y="590" text-anchor="middle" font-size="10">add assistant msg</text>
+
+  <!-- State idle -->
+  <rect x="420" y="605" width="100" height="20" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="470" y="619" text-anchor="middle" font-size="9">state=IDLE</text>
+
+  <!-- Dequeue and auto-inject -->
+  <rect x="420" y="630" width="100" height="20" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="470" y="644" text-anchor="middle" font-size="9">dequeue → USER_INPUT</text>
+
+  <!-- Legend -->
+  <rect x="30" y="665" width="1040" height="30" fill="#f8f9fa" stroke="#999" rx="3"/>
+  <text x="50" y="685" font-size="10" fill="#dc3545">Red: Path A (interrupt) — partial response discarded, session preserved</text>
+  <text x="550" y="685" font-size="10" fill="#28a745">Green: Path B (queue) — message held, auto-sent after current turn</text>
+</svg>
