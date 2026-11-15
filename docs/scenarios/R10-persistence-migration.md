@@ -151,3 +151,10 @@ credentials/net/core. `cog_cli_app_reconcile` closes exactly one selected node/c
 with explicit evidence/outcome and saves atomically; it never grants ordinary
 execution. Later explicit RESUME advances to another normal epoch. See
 [three-pass amendment](../REAL_CLIENT_L_CONTRACTS.md). Executable evidence remains L work.
+
+L independent-review clarification: unowned v1/v2 adoption requires the explicit
+operator quiescence/fencing assertion. Text-only v1 migration uses a temporary
+require_owner=false store for its explicit v2 save, releases that context, then
+admits/acquires fenced ownership against the exact generation. The assertion is
+not verification; a live lock still refuses. Unowned uncertain data remains
+INDETERMINATE, and no legacy tool ID/effect is invented.

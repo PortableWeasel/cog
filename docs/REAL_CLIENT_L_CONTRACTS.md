@@ -68,9 +68,9 @@ CONTRACT/HARNESS/evidence updates. Public libraries remain unchanged.
 
 | Flow | Public application selection | Exact existing library coverage | Result / failure rule |
 |---|---|---|---|
-| 1. Offline list, no model/key/net | LIST; app_new/run/free | store_new/list/free, caller frees returned IDs/array | Sorted valid committed IDs; checked stdout/flush, no guard/credential/provider |
+| 1. Offline list, no model/key/net | LIST; app_new/run/free | store_new/list/free, caller frees returned IDs/array | Sorted validated metadata IDs; checked stdout/flush, no integrity/health claim or guard/credential/provider |
 | 2. Restart complete session | RESUME source ID | owner_read → checkpoint_load(exact generation) → snapshot_view/restore(current reservations) → owner_compare_exchange(new incarnation/epoch, exact checkpoint) → owner_acquire | Stale checkpoint/owner refuses; live guard AGAIN; provider created only after safe activation |
-| 3. v1 text migration | explicit RESUME | load_ex report → unowned store_save(v2) → owner_read/CAS/acquire | Explicit migration publication before ownership; v1 unidentified tools UNSUPPORTED |
+| 3. v1 text migration | explicit RESUME + quiescence assertion | load_ex report → temporary require_owner=false store/save/free(v2) → fenced owner_read/CAS/acquire | Explicit migration publication before ownership; v1 unidentified tools UNSUPPORTED |
 | 4. Resume completed tools | RESUME | exact restore + copy_history | Ancestor IDs/results/opaque/usage remain exact; no old tool constructor/start |
 | 5. Resume partial text | RESUME then fresh prompt | display snapshot; session_fork(safe ancestor) + add_message(parent=forkpoint) | Prequeued input cannot authorize; failed aggregate retained on old branch |
 | 6. Resume PROPOSED | RESUME | snapshot ledger → normal guard → current policy/denial → STARTED save before start | Already closed calls skipped from validated restored state; unrelated input waits; partial STARTED never mistaken for PROPOSED |
@@ -119,7 +119,7 @@ constructor ownership and the G/K contracts. Amendments from this pass:
 - Constructor errors now distinguish malformed selectors (INVALID_ARG), absent
   session/node (NOT_FOUND), competing live guard (AGAIN), unsafe normal resume
   (INDETERMINATE), stale admission/no recovery uncertainty (INVALID_STATE),
-  missing RECOVER fencing assertion (DENIED), and reservation/platform limits.
+  missing recovery/unowned-adoption fencing assertion (DENIED), and reservation/platform limits.
 - Reconciliation remains one exact assistant/call, with resolution and nonempty
   bounded evidence; a failed save freezes later reconciliation. No blanket
   ALLOW, outcome inference, session-ID rebinding or automatic execution appears.
@@ -127,7 +127,7 @@ constructor ownership and the G/K contracts. Amendments from this pass:
 | Edge | Contract outcome |
 |---|---|
 | NEW with source ID; LIST with source/identity; RESUME/FORK/RECOVER without source | INVALID_ARG before publication |
-| Multiple action flags, `--session` with non-NEW, `--from-node` outside FORK, `--fenced` outside RECOVER | INVALID_ARG; parser exits2 |
+| Multiple action flags, `--session` with non-NEW, `--from-node` outside FORK, `--fenced` outside RESUME/FORK/RECOVER | INVALID_ARG; parser exits2 |
 | FORK with queued startup input; LIST/RECOVER with prompt/queue | INVALID_ARG, no reassignment/model effects |
 | Invalid UTF-8/control/separator/empty/oversize source ID; overflowing unsigned node ID | INVALID_ARG/LIMIT as documented, no guessed/truncated identity |
 | Missing store / explicit no-store on a non-NEW action | NOT_FOUND / INVALID_ARG, never null-store success |
@@ -148,3 +148,30 @@ Final self-review after pass 3 rechecked the 14 call traces plus original01–20
 mapping and the alternate failure edges above. Strict standalone C11 and C++11
 header compilation validates self-containment; it is not executable conformance.
 The independent final header review must PASS before L implementation starts.
+
+
+## Independent header-review amendments
+
+The independent audit requested explicit per-call semantics for valid metadata
+apps. submit/queue/cancel return INVALID_STATE (required NULLs still NULL_PTR),
+shutdown records the app stop flag and returns OK, and stop works without a core.
+The old queue forwarding prose is corrected to K's actual reserved app FIFO and
+fresh postfailure authorization rule. No production behavior is changed here.
+
+LIST uses the existing store_list temporary output constructor and frees every
+ID/array. Enumeration allocates proportionally to returned metadata; no fixed
+pre-enumeration allocation ceiling is claimed. Before any output the app checks
+at most 1024 IDs, aggregate bytes+NULs <= max_context_bytes, UTF-8 and store-safe
+1..127-byte IDs. Over-limit returns LIMIT; malformed metadata IDs return PROTOCOL;
+neither partially prints nor silently filters. Listing does not validate session
+generation checksums or establish replay health.
+
+The G v1/adoption preconditions need an explicit temporary unowned store context:
+require_owner=true cannot save before guard acquisition, while v1 cannot acquire
+that guard. RESUME/FORK therefore require --fenced for unowned v1/v2 adoption,
+recording the operator assertion that all old writers are quiescent (not app
+verification). v1 text is saved through require_owner=false, that context is
+released, then a new fenced owner is admitted against the exact v2 checkpoint.
+Owned clean RESUME/FORK still use normal exclusive guard arbitration without a
+required assertion; RECOVER always requires it. Unowned uncertain data remains
+INDETERMINATE under G's CAS contract and cannot be bootstrapped into execution.
