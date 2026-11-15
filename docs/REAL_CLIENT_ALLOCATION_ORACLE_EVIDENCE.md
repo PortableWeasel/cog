@@ -117,3 +117,25 @@ checked: only the ten scoped test targets and previously corrected
 Review verdict: **PASS, cycle 1**, including the narrow script correction.
 This approves the scoped test instrumentation change; integration and the
 parent P release gate remain separate. No paid or live request was made.
+
+## Main integration
+
+Approved `d53f188` was merged without conflicts into main `8c68b4a` by
+`56697197ba14b3a6542cac53fec7d5a7297e9913` (no fast-forward). The merged
+tree exactly matches the approved tree. Existing `build_user/` and the
+independent header-design worktrees were preserved.
+
+Fresh main `build-review-allocation-oracles` completed a full strict Clang
+Release build without warnings and passed all 13 scoped tests. Postmerge
+negative controls exercised session and IPC replay with both profiles: GCC
+nonvolatile session succeeded and IPC failed at the oracle; Clang without the
+symbol flags failed at both oracles. This checks the deliberate session
+exception and both linker dependency-output spellings without repeating the
+unchanged twenty-case review.
+
+SHA-256 contents and nanosecond modification times of all 3,460 existing files
+in the main Clang build and prior independent GCC build matched before/after
+these four replays, with no added/deleted files or temporary-directory remnant.
+The sorted artifact manifest's SHA-256 was
+`3025a03a1e03e5071b756b13380367071b391aacf886de352444bb7efd8c7af9`.
+Integration closes only `5dd3cf7`; parent P full validation remains open.
