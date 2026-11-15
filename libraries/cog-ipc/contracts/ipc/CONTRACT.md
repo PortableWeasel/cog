@@ -294,6 +294,17 @@ cog_result_t cog_ipc_unregister_session(cog_ipc_endpoint_t *endpoint,
 | `COG_ERROR_NULL_PTR` | `endpoint` or `session_id` is NULL. |
 | `COG_ERROR_NOT_FOUND` | The session is not registered. |
 
+## Build integration
+
+`cog-ipc` links the header-only `cog::result` target (exposed by cog-core)
+for its `<cog/result.h>` include path and C11 requirement.  It does **not**
+link the `cog-core` archive, so the target graph stays acyclic
+(`cog::core -> cog::ipc -> cog::result`); the previous `cog::core` link
+produced a static-library/export cycle.  `cog-result` is exported in its
+own `cog-result-targets.cmake` set, so an installed consumer loads the
+sets in dependency order (`cog-result`, then `cog-ipc`/`cog-obs`, then
+`cog-core`) with no circular reference.
+
 ## Behavioural notes
 
 - **Blocking mode.** Endpoints are blocking. `send` and `recv` block until

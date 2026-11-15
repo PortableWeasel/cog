@@ -73,10 +73,25 @@ include(GNUInstallDirs)
 install(DIRECTORY include/cog
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
-install(TARGETS cog-core cog-result
+# cog-result is exported in its own export set so the installed target
+# graph stays acyclic.  cog-ipc and cog-obs reference cog::cog-result, and
+# cog-core references cog::cog-ipc / cog::cog-obs; if cog-result lived in
+# the cog-core export set, no include order of the installed targets files
+# would satisfy every cross-reference (core needs ipc/obs, ipc/obs need
+# result).  With a dedicated cog-result-targets.cmake, a consumer loads
+# result -> ipc -> obs -> core and every check passes.
+install(TARGETS cog-core
     EXPORT cog-core-targets)
 
 install(EXPORT cog-core-targets
     FILE cog-core-targets.cmake
+    NAMESPACE cog::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cog)
+
+install(TARGETS cog-result
+    EXPORT cog-result-targets)
+
+install(EXPORT cog-result-targets
+    FILE cog-result-targets.cmake
     NAMESPACE cog::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cog)

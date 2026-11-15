@@ -11,14 +11,12 @@
  * Design notes (the full executable contract is recorded in
  * libraries/cog-core/contracts/core/CONTRACT.md):
  *
- * - The core owns its event queue and its pending-message FIFO.  The
- *   session, provider, obs, and store are borrowed (the caller retains
- *   ownership).  During the pre-IPC integration phase a non-NULL
- *   config->ipc_endpoint is rejected by cog_core_new with
- *   COG_ERROR_UNAVAILABLE (fail closed): the core never stores,
- *   dereferences, owns, or frees an endpoint it cannot yet service.  Once
- *   IPC integration is enabled, an accepted endpoint will be owned by the
- *   core and drained during the event loop.
+ * - The core owns its event queue, its pending-message FIFO, and (when
+ *   configured) its IPC endpoint.  The session, provider, obs, and store
+ *   are borrowed (the caller retains ownership).  A non-NULL
+ *   config->ipc_endpoint is accepted and owned by the core: it is drained
+ *   during the event loop (incoming connections and messages are enqueued
+ *   as COG_EVENT_IPC_* events) and destroyed by cog_core_free.
  * - The run loop pops one event, looks up the (state, event) row in the
  *   static dispatch table, invokes the handler, validates the requested
  *   transition against the row's allowed list, and applies it.  A
@@ -64,6 +62,16 @@
 /** Default pending-message FIFO capacity (per the header: 8 messages). */
 #define COG_CORE_DEFAULT_PENDING_CAPACITY ((size_t)8)
 
+/**
+ * @brief Capacity of the core-owned IPC receive buffer.
+ *
+ * Matches the IPC layer's maximum frame payload (UINT16_MAX), so the
+ * core accepts every valid frame.  A frame larger than this is rejected
+ * by cog_ipc_endpoint_recv with COG_ERROR_OVERFLOW and the connection is
+ * closed (reported as a disconnect).
+ */
+#define COG_CORE_IPC_RECV_CAPACITY ((size_t)UINT16_MAX)
+
 /* ------------------------------------------------------------------ */
 /* Internal structures                                                 */
 /* ------------------------------------------------------------------ */
@@ -93,6 +101,14 @@ struct cog_core {
     void *wait_arg;
     cog_ipc_endpoint_t *ipc_endpoint;
     cog_peer_id_t local_peer_id;
+    int ipc_is_listener;          /**< 1=listener, 2=connected, 0=unbound. */
+    cog_ipc_endpoint_t **ipc_clients; /**< Owned accepted clients (listener). */
+    size_t ipc_client_count;      /**< Live entries in @p ipc_clients. */
+    size_t ipc_client_capacity;   /**< Allocated slots in @p ipc_clients. */
+    cog_ipc_message_t ipc_recv;   /**< Owned receive buffer. */
+    void **ipc_inflight;          /**< Owned in-flight IPC payload copies. */
+    size_t ipc_inflight_count;    /**< Live entries in @p ipc_inflight. */
+    size_t ipc_inflight_capacity; /**< Allocated slots in @p ipc_inflight. */
     cog_provider_t *provider;
     cog_obs_t *obs;
     cog_store_t *store;
@@ -234,6 +250,380 @@ static cog_result_t core_inject_pending(cog_core_t *core)
 }
 
 /* ------------------------------------------------------------------ */
+/* IPC integration                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Probe the role of an IPC endpoint.
+ *
+ * Returns 1 for a listener, 2 for a connected endpoint, and 0 for an
+ * unbound endpoint.  A connected endpoint reports a peer id; a listener
+ * reports none but accepts poll on its bound socket; an unbound endpoint
+ * has no file descriptor and fails poll with COG_ERROR_INVALID_STATE.
+ */
+static int core_ipc_probe_role(cog_ipc_endpoint_t *ep)
+{
+    cog_result_t rc;
+    cog_peer_id_t peer_id = COG_PEER_ID_INVALID;
+
+    rc = cog_ipc_endpoint_get_peer_id(ep, &peer_id);
+    if (rc == COG_OK) {
+        return 2; /* connected */
+    }
+    rc = cog_ipc_endpoint_poll(ep, COG_IPC_POLL_IN, 0, NULL);
+    if (rc == COG_OK || rc == COG_ERROR_AGAIN) {
+        return 1; /* listener */
+    }
+    return 0; /* unbound */
+}
+
+/**
+ * @brief Track an in-flight IPC payload copy.
+ *
+ * @return COG_OK on success, COG_ERROR_NOMEM if the list cannot grow.
+ */
+static cog_result_t core_ipc_inflight_add(cog_core_t *core, void *ptr)
+{
+    if (core->ipc_inflight_count >= core->ipc_inflight_capacity) {
+        size_t new_capacity = core->ipc_inflight_capacity == 0U
+                                  ? 8U
+                                  : core->ipc_inflight_capacity * 2U;
+        void **new_list = (void **)realloc(
+            core->ipc_inflight, new_capacity * sizeof(*new_list));
+
+        if (new_list == NULL) {
+            return COG_ERROR_NOMEM;
+        }
+        core->ipc_inflight = new_list;
+        core->ipc_inflight_capacity = new_capacity;
+    }
+    core->ipc_inflight[core->ipc_inflight_count] = ptr;
+    ++core->ipc_inflight_count;
+    return COG_OK;
+}
+
+/**
+ * @brief Remove an in-flight IPC payload copy from the tracking list.
+ */
+static void core_ipc_inflight_remove(cog_core_t *core, void *ptr)
+{
+    size_t i;
+
+    for (i = 0U; i < core->ipc_inflight_count; ++i) {
+        if (core->ipc_inflight[i] == ptr) {
+            if (i + 1U < core->ipc_inflight_count) {
+                (void)memmove(&core->ipc_inflight[i],
+                              &core->ipc_inflight[i + 1U],
+                              (core->ipc_inflight_count - i - 1U) *
+                                  sizeof(core->ipc_inflight[0]));
+            }
+            --core->ipc_inflight_count;
+            return;
+        }
+    }
+}
+
+/**
+ * @brief Release an in-flight IPC payload copy (if tracked).
+ */
+static void core_ipc_inflight_free(cog_core_t *core, void *ptr)
+{
+    if (ptr == NULL) {
+        return;
+    }
+    core_ipc_inflight_remove(core, ptr);
+    free(ptr);
+}
+
+/**
+ * @brief Track an accepted client endpoint (listener case).
+ *
+ * @return COG_OK on success, COG_ERROR_NOMEM if the list cannot grow.
+ */
+static cog_result_t core_ipc_client_add(cog_core_t *core,
+                                        cog_ipc_endpoint_t *client)
+{
+    if (core->ipc_client_count >= core->ipc_client_capacity) {
+        size_t new_capacity = core->ipc_client_capacity == 0U
+                                  ? 4U
+                                  : core->ipc_client_capacity * 2U;
+        cog_ipc_endpoint_t **new_list = (cog_ipc_endpoint_t **)realloc(
+            core->ipc_clients, new_capacity * sizeof(*new_list));
+
+        if (new_list == NULL) {
+            return COG_ERROR_NOMEM;
+        }
+        core->ipc_clients = new_list;
+        core->ipc_client_capacity = new_capacity;
+    }
+    core->ipc_clients[core->ipc_client_count] = client;
+    ++core->ipc_client_count;
+    return COG_OK;
+}
+
+/**
+ * @brief Remove and free an accepted client endpoint.
+ *
+ * Freeing the client disconnects it, which removes it from the owning
+ * listener's peer table (see ipc.c).
+ */
+static void core_ipc_client_remove(cog_core_t *core,
+                                   cog_ipc_endpoint_t *client)
+{
+    size_t i;
+
+    for (i = 0U; i < core->ipc_client_count; ++i) {
+        if (core->ipc_clients[i] == client) {
+            if (i + 1U < core->ipc_client_count) {
+                (void)memmove(&core->ipc_clients[i],
+                              &core->ipc_clients[i + 1U],
+                              (core->ipc_client_count - i - 1U) *
+                                  sizeof(core->ipc_clients[0]));
+            }
+            --core->ipc_client_count;
+            break;
+        }
+    }
+    (void)cog_ipc_endpoint_free(client);
+}
+
+/**
+ * @brief Enqueue a COG_EVENT_IPC_* event.
+ *
+ * Copies @p payload (if any) into a core-owned buffer so the message
+ * bytes survive until the event is dispatched, and tracks that buffer in
+ * the core's in-flight list so it is released after dispatch.  The
+ * cog_event_ipc_t struct itself is snapshotted by the event queue (see
+ * event.h / the event CONTRACT.md), so only the inner msg_payload needs
+ * core-managed lifetime.
+ *
+ * @return COG_OK on success.
+ * @return COG_ERROR_NOMEM if the payload copy or in-flight tracking fails.
+ * @return COG_ERROR_OVERFLOW if the event queue is full (the payload copy
+ *         is released; the caller should stop draining).
+ */
+static cog_result_t core_ipc_enqueue(cog_core_t *core,
+                                     cog_event_kind_t kind,
+                                     cog_peer_id_t peer,
+                                     const void *payload,
+                                     size_t payload_len)
+{
+    cog_event_t event;
+    cog_event_ipc_t ipc;
+    void *copy = NULL;
+    cog_result_t rc;
+
+    if (payload_len > 0U) {
+        copy = malloc(payload_len);
+        if (copy == NULL) {
+            return COG_ERROR_NOMEM;
+        }
+        (void)memcpy(copy, payload, payload_len);
+        rc = core_ipc_inflight_add(core, copy);
+        if (rc != COG_OK) {
+            free(copy);
+            return rc;
+        }
+    }
+
+    ipc.peer = peer;
+    ipc.msg_type = 0U;
+    ipc.msg_payload = copy;
+    ipc.msg_payload_len = payload_len;
+
+    event.id = (cog_event_id_t)kind;
+    event.kind = kind;
+    event.payload = &ipc;
+    event.payload_len = sizeof(ipc);
+    event.source_id = 0U;
+
+    rc = cog_event_queue_push(core->event_queue, &event);
+    if (rc != COG_OK) {
+        if (copy != NULL) {
+            core_ipc_inflight_remove(core, copy);
+            free(copy);
+        }
+        return rc;
+    }
+    return COG_OK;
+}
+
+/**
+ * @brief Poll and receive one message from a connected endpoint.
+ *
+ * @param[in,out] core  Core owning the endpoint and the receive buffer.
+ * @param[in,out] ep    Connected endpoint to read from.
+ * @param[in]     owned Non-zero if @p ep is a core-owned accepted client
+ *                      that must be freed on disconnect; zero for the
+ *                      core's own configured endpoint.
+ * @return COG_OK if a message was received and enqueued, or if nothing
+ *         was ready, or (owned == 0) if the endpoint disconnected.
+ * @return COG_ERROR_IO if an owned client disconnected and was freed.
+ * @return COG_ERROR_OVERFLOW if the event queue is full (stop draining).
+ * @return COG_ERROR_NOMEM if a payload copy or tracking allocation fails.
+ */
+static cog_result_t core_ipc_recv_one(cog_core_t *core,
+                                      cog_ipc_endpoint_t *ep,
+                                      int owned)
+{
+    cog_result_t rc;
+    int revents = 0;
+    cog_peer_id_t peer_id = COG_PEER_ID_INVALID;
+
+    rc = cog_ipc_endpoint_poll(ep, COG_IPC_POLL_IN, 0, &revents);
+    if (rc == COG_ERROR_INVALID_STATE) {
+        return COG_OK; /* endpoint already disconnected; nothing to do */
+    }
+    if (rc != COG_OK || (revents & (COG_IPC_POLL_IN | COG_IPC_POLL_ERR)) == 0) {
+        return COG_OK; /* timeout or transient; nothing ready */
+    }
+
+    (void)cog_ipc_endpoint_get_peer_id(ep, &peer_id);
+
+    rc = cog_ipc_endpoint_recv(ep, &core->ipc_recv);
+    if (rc == COG_OK) {
+        return core_ipc_enqueue(core, COG_EVENT_IPC_MESSAGE, peer_id,
+                                core->ipc_recv.data, core->ipc_recv.len);
+    }
+
+    /* Disconnect or malformed frame: ipc.c has already closed the
+     * connection.  Report the disconnect.  For an owned client, free it
+     * (removing it from the listener's peer table). */
+    if (owned) {
+        core_ipc_client_remove(core, ep);
+        (void)core_ipc_enqueue(core, COG_EVENT_IPC_DISCONNECTED, peer_id,
+                               NULL, 0U);
+        return COG_ERROR_IO;
+    }
+    (void)core_ipc_enqueue(core, COG_EVENT_IPC_DISCONNECTED, peer_id, NULL,
+                           0U);
+    return COG_OK;
+}
+
+/**
+ * @brief Accept all pending connections on the core's listener.
+ *
+ * Each accepted client is tracked and reported with a
+ * COG_EVENT_IPC_CONNECTED event.  Stops accepting when no connection is
+ * pending or the event queue is full.
+ *
+ * @return COG_OK on success.
+ * @return COG_ERROR_NOMEM if a client-list or event allocation fails.
+ * @return COG_ERROR_IO if accept fails.
+ * @return COG_ERROR_OVERFLOW if the event queue is full (stop draining).
+ */
+static cog_result_t core_ipc_accept_pending(cog_core_t *core)
+{
+    for (;;) {
+        cog_ipc_endpoint_t *client = NULL;
+        cog_peer_id_t peer_id = COG_PEER_ID_INVALID;
+        cog_result_t rc;
+        int revents = 0;
+
+        rc = cog_ipc_endpoint_poll(core->ipc_endpoint, COG_IPC_POLL_IN, 0,
+                                   &revents);
+        if (rc != COG_OK || (revents & COG_IPC_POLL_IN) == 0) {
+            break; /* no pending connection */
+        }
+
+        rc = cog_ipc_endpoint_accept(core->ipc_endpoint, &client, &peer_id);
+        if (rc == COG_ERROR_AGAIN) {
+            break; /* raced; no pending connection */
+        }
+        if (rc != COG_OK) {
+            return rc; /* accept failed */
+        }
+
+        rc = core_ipc_client_add(core, client);
+        if (rc != COG_OK) {
+            (void)cog_ipc_endpoint_free(client);
+            return rc;
+        }
+
+        rc = core_ipc_enqueue(core, COG_EVENT_IPC_CONNECTED, peer_id, NULL,
+                             0U);
+        if (rc != COG_OK) {
+            /* Queue full or allocation failure: stop accepting.  The
+             * client stays tracked and will be drained for messages on a
+             * later pass. */
+            return rc;
+        }
+    }
+    return COG_OK;
+}
+
+/**
+ * @brief Drain every accepted client of the core's listener.
+ *
+ * @return COG_OK on success.
+ * @return COG_ERROR_NOMEM if a payload copy or tracking allocation fails.
+ * @return COG_ERROR_OVERFLOW if the event queue is full (stop draining).
+ */
+static cog_result_t core_ipc_drain_clients(cog_core_t *core)
+{
+    size_t i = 0U;
+
+    while (i < core->ipc_client_count) {
+        cog_result_t rc = core_ipc_recv_one(core, core->ipc_clients[i], 1);
+
+        if (rc == COG_ERROR_IO) {
+            continue; /* client freed; the list shifted, @p i is current */
+        }
+        if (rc != COG_OK) {
+            return rc;
+        }
+        ++i;
+    }
+    return COG_OK;
+}
+
+/**
+ * @brief Drain the core's IPC fabric.
+ *
+ * Accepts pending connections and receives messages on the core's own
+ * endpoint (connected case) or its accepted clients (listener case),
+ * enqueuing COG_EVENT_IPC_* events.  A full event queue is not an error:
+ * the drain stops and the loop dispatches what it has.
+ *
+ * @return COG_OK on success.
+ * @return COG_ERROR_NOMEM if an allocation fails.
+ * @return COG_ERROR_IO if accept fails.
+ */
+static cog_result_t core_ipc_drain(cog_core_t *core)
+{
+    cog_result_t rc;
+
+    if (core->ipc_endpoint == NULL) {
+        return COG_OK;
+    }
+
+    if (core->ipc_is_listener == 1) {
+        rc = core_ipc_accept_pending(core);
+        if (rc == COG_ERROR_OVERFLOW) {
+            return COG_OK;
+        }
+        if (rc != COG_OK) {
+            return rc;
+        }
+        rc = core_ipc_drain_clients(core);
+        if (rc == COG_ERROR_OVERFLOW) {
+            return COG_OK;
+        }
+        return rc;
+    }
+
+    if (core->ipc_is_listener == 2) {
+        rc = core_ipc_recv_one(core, core->ipc_endpoint, 0);
+        if (rc == COG_ERROR_OVERFLOW) {
+            return COG_OK;
+        }
+        return rc;
+    }
+
+    return COG_OK; /* unbound: nothing to drain */
+}
+
+/* ------------------------------------------------------------------ */
 /* Lifecycle                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -252,13 +642,6 @@ cog_result_t cog_core_new(cog_core_t **out, const cog_core_config_t *config)
         config->dispatch_table == NULL ||
         config->dispatch_table_size == 0U) {
         return COG_ERROR_INVALID_ARG;
-    }
-
-    /* Fail closed during the pre-IPC integration phase: a non-NULL IPC
-     * endpoint is not yet serviceable, so reject it without taking
-     * ownership, dereferencing, or freeing it.  *out is already NULL. */
-    if (config->ipc_endpoint != NULL) {
-        return COG_ERROR_UNAVAILABLE;
     }
 
     core = (struct cog_core *)calloc(1U, sizeof(*core));
@@ -285,6 +668,20 @@ cog_result_t cog_core_new(cog_core_t **out, const cog_core_config_t *config)
         return COG_ERROR_NOMEM;
     }
 
+    /* Accept and take ownership of an optional IPC endpoint.  The core
+     * drains it during cog_core_run and destroys it in cog_core_free.
+     * The receive buffer is sized to accept every valid frame. */
+    if (config->ipc_endpoint != NULL) {
+        rc = cog_ipc_message_new(&core->ipc_recv, COG_CORE_IPC_RECV_CAPACITY);
+        if (rc != COG_OK) {
+            free(core->pending);
+            cog_event_queue_free(core->event_queue);
+            free(core);
+            return rc;
+        }
+        core->ipc_is_listener = core_ipc_probe_role(config->ipc_endpoint);
+    }
+
     core->session = config->session;
     core->dispatch_table = config->dispatch_table;
     core->dispatch_table_size = config->dispatch_table_size;
@@ -306,6 +703,10 @@ cog_result_t cog_core_new(cog_core_t **out, const cog_core_config_t *config)
     /* Attach the session so cog_session_reset refuses while the core is
      * alive (see session.c). */
     ((struct cog_session *)core->session)->attached = true;
+
+    if (core->obs != NULL) {
+        (void)cog_obs_log(core->obs, COG_OBS_INFO, "core.created", NULL, 0U);
+    }
 
     *out = core;
     return COG_OK;
@@ -333,10 +734,32 @@ void cog_core_free(cog_core_t *core)
     /* Release every subagent record and its child session. */
     cog_agent_registry_reset(&core->agents);
 
-    /* No IPC endpoint is ever stored in this phase (cog_core_new rejects
-     * a non-NULL endpoint with COG_ERROR_UNAVAILABLE), so there is
-     * nothing to release here.  Once IPC integration is enabled, an
-     * accepted endpoint will be owned by the core and freed here. */
+    /* Release any in-flight IPC message payload copies that were never
+     * dispatched (e.g. the core was freed with events still queued). */
+    for (i = 0U; i < core->ipc_inflight_count; ++i) {
+        free(core->ipc_inflight[i]);
+    }
+    free(core->ipc_inflight);
+
+    /* Free accepted clients first so each disconnect removes itself from
+     * the listener's peer table while the listener is still alive. */
+    for (i = 0U; i < core->ipc_client_count; ++i) {
+        (void)cog_ipc_endpoint_free(core->ipc_clients[i]);
+    }
+    free(core->ipc_clients);
+
+    /* Destroy the core's own endpoint (listener or connected). */
+    if (core->ipc_endpoint != NULL) {
+        (void)cog_ipc_endpoint_free(core->ipc_endpoint);
+    }
+
+    /* Release the receive buffer (no-op when no endpoint was configured). */
+    (void)cog_ipc_message_free(&core->ipc_recv);
+
+    if (core->obs != NULL) {
+        (void)cog_obs_log(core->obs, COG_OBS_INFO, "core.destroyed", NULL,
+                          0U);
+    }
 
     free(core);
 }
@@ -359,6 +782,11 @@ cog_result_t cog_core_run(cog_core_t *core)
     core->running = true;
     core->stop_requested = false;
 
+    if (core->obs != NULL) {
+        (void)cog_obs_log(core->obs, COG_OBS_INFO, "core.run_start", NULL,
+                          0U);
+    }
+
     rc = COG_OK;
     while (!core->stop_requested) {
         cog_event_t event;
@@ -371,6 +799,22 @@ cog_result_t cog_core_run(cog_core_t *core)
              * it and then drop it unprocessed on shutdown. */
             if (core->stop_requested) {
                 break;
+            }
+            /* Drain the IPC fabric: accept new peers and receive messages,
+             * enqueuing COG_EVENT_IPC_* events.  A drain failure (e.g.
+             * allocation failure) is fatal to the loop and is returned; a
+             * full event queue is not (the drain stops and the loop
+             * dispatches what it has). */
+            rc = core_ipc_drain(core);
+            if (rc != COG_OK) {
+                break;
+            }
+            if (core->stop_requested) {
+                break;
+            }
+            /* If IPC produced events, pop them before waiting. */
+            if (!cog_event_queue_is_empty(core->event_queue)) {
+                continue;
             }
             /* Inject a pending message for our session, or wait. */
             if (core_inject_pending(core) == COG_OK) {
@@ -392,6 +836,14 @@ cog_result_t cog_core_run(cog_core_t *core)
         }
 
         rc = core_dispatch(core, &event);
+        /* Release the IPC message payload copy after dispatch.  The
+         * cog_event_ipc_t struct itself is snapshotted by the event queue;
+         * only the inner msg_payload needs core-managed lifetime. */
+        if (event.kind == COG_EVENT_IPC_MESSAGE && event.payload != NULL) {
+            const cog_event_ipc_t *ipc =
+                (const cog_event_ipc_t *)event.payload;
+            core_ipc_inflight_free(core, (void *)ipc->msg_payload);
+        }
         free(core->injected_payload);
         core->injected_payload = NULL;
         if (rc != COG_OK) {
@@ -400,6 +852,12 @@ cog_result_t cog_core_run(cog_core_t *core)
     }
 
     core->running = false;
+    if (core->obs != NULL) {
+        (void)cog_obs_log(core->obs,
+                          rc == COG_OK ? COG_OBS_INFO : COG_OBS_ERROR,
+                          rc == COG_OK ? "core.run_stop" : "core.run_error",
+                          NULL, 0U);
+    }
     return rc;
 }
 

@@ -43,7 +43,7 @@ Guard: `COG_CORE_H`. The header includes the other cog-core public headers
 | `tool_table` | no | borrowed | May be NULL. |
 | `event_queue_capacity` | no | — | Zero selects a sensible default (64). |
 | `wait_fn` / `wait_arg` | no | borrowed | May be NULL (busy-wait with a short yield). |
-| `ipc_endpoint` | no | rejected | Non-NULL is rejected with `COG_ERROR_UNAVAILABLE` during the pre-IPC phase (fail closed); once IPC integration is enabled an accepted endpoint is owned and drained by the core. |
+| `ipc_endpoint` | no | owned | May be NULL (single-process). If non-NULL, the core takes ownership: it drains the endpoint during `cog_core_run` (accepting peers and receiving messages as `COG_EVENT_IPC_*` events) and destroys it in `cog_core_free`. The endpoint must be bound (listening or connected); an unbound endpoint is accepted but never drained. The caller must not use or free the endpoint after `cog_core_new`. |
 | `local_peer_id` | no | — | Zero = unidentified. |
 | `provider` | no | borrowed | Optional; may be NULL for tests / no-provider operation. Stored as-is. |
 | `obs` | no | borrowed | May be NULL. |
@@ -62,8 +62,7 @@ cog_result_t cog_core_new(cog_core_t **out, const cog_core_config_t *config);
 | `COG_OK` | A valid core was created; `*out` is set and owned by the caller. |
 | `COG_ERROR_NULL_PTR` | `out` or `config` is NULL. |
 | `COG_ERROR_INVALID_ARG` | `config->session` is NULL, `config->dispatch_table` is NULL, or `config->dispatch_table_size` is zero. |
-| `COG_ERROR_UNAVAILABLE` | `config->ipc_endpoint` is non-NULL before IPC integration is enabled. |
-| `COG_ERROR_NOMEM` | Allocation of the core, its event queue, or its pending FIFO fails. |
+| `COG_ERROR_NOMEM` | Allocation of the core, its event queue, its pending FIFO, or (when an IPC endpoint is configured) its receive buffer fails. |
 
 - On failure `*out` is NULL and no resources are held.
 - The core starts in state `0` (the first application state; the header
@@ -74,6 +73,11 @@ cog_result_t cog_core_new(cog_core_t **out, const cog_core_config_t *config);
 - `provider`, `obs`, and `store` are stored as-is (they may be NULL); the
   provider is documented optional and may be NULL for tests or
   no-provider operation.
+- If `config->ipc_endpoint` is non-NULL, the core takes ownership of it,
+  allocates a receive buffer sized to accept every valid frame
+  (`UINT16_MAX` bytes), and probes the endpoint's role (listener,
+  connected, or unbound).  On success the core logs `core.created`
+  through `obs` (when configured).
 
 ### `cog_core_free`
 
@@ -83,13 +87,14 @@ void cog_core_free(cog_core_t *core);
 
 - NULL `core` is a no-op.
 - Releases the event queue, the pending FIFO (and every queued message),
-  and the core struct.
+  the subagent registry, and the core struct.
 - Clears the session's `attached` flag so the session can be reset/freed
   independently.  The session itself is not freed (caller-owned).
-- No IPC endpoint is ever stored in this phase (`cog_core_new` rejects a
-  non-NULL endpoint with `COG_ERROR_UNAVAILABLE`), so there is nothing to
-  release.  Once IPC integration is enabled, an accepted endpoint will be
-  owned by the core and freed here.
+- Releases every in-flight IPC message payload copy that was never
+  dispatched, frees every accepted client (each disconnect removes it
+  from the listener's peer table), destroys the core's own IPC endpoint
+  (unlinking a listener's socket path), and releases the receive buffer.
+- Logs `core.destroyed` through `obs` (when configured).
 
 ### `cog_core_run`
 
@@ -123,10 +128,30 @@ cog_result_t cog_core_run(cog_core_t *core);
   shutdown (`COG_EVENT_SHUTDOWN`), streaming chunks
   (`COG_EVENT_LLM_CHUNK`), or any other event.
 - When the queue is empty the loop first honours a pending stop request
-  (exits without dequeuing a pending message), then tries to inject the
-  oldest pending message for the core's session as a
-  `COG_EVENT_USER_INPUT`; if none is pending it calls `wait_fn(wait_arg)`,
-  or busy-waits with a short yield when `wait_fn` is NULL.
+  (exits without dequeuing a pending message), then drains the IPC fabric
+  (see below), then tries to inject the oldest pending message for the
+  core's session as a `COG_EVENT_USER_INPUT`; if none is pending it calls
+  `wait_fn(wait_arg)`, or busy-waits with a short yield when `wait_fn` is
+  NULL.
+- **IPC drain.**  When an endpoint is configured, each empty-queue pass
+  drains it with non-blocking polls (timeout 0): a listener accepts every
+  pending connection (enqueuing `COG_EVENT_IPC_CONNECTED` per peer and
+  tracking the client), and every connected endpoint (the core's own or
+  an accepted client) is polled and received from.  A received frame is
+  enqueued as `COG_EVENT_IPC_MESSAGE` whose `cog_event_ipc_t` carries the
+  peer id and a core-owned copy of the payload; the copy is released
+  after the event is dispatched.  A disconnect or malformed frame (recv
+  `COG_ERROR_IO` / `COG_ERROR_OVERFLOW`) enqueues
+  `COG_EVENT_IPC_DISCONNECTED` and frees the client (accepted peers) or
+  leaves the core's own endpoint unbound.  A full event queue stops the
+  drain (remaining frames stay in the socket buffer); an allocation
+  failure aborts the loop and is returned.  Because the IPC transport is
+  blocking, a peer that stalls mid-frame can block the drain until the
+  frame completes or the connection closes; the core never blocks on
+  poll, so an idle fabric never stalls the loop.
+- The loop logs `core.run_start` on entry and, on exit, `core.run_stop`
+  (clean stop) or `core.run_error` (non-`COG_OK` result) through `obs`
+  (when configured).
 - `cog_core_stop` may be called from another thread or a signal handler;
   the loop exits at the next safe opportunity.
 - After the loop the running flag is cleared.
@@ -160,7 +185,7 @@ cog_result_t cog_core_enqueue(cog_core_t *core, const cog_event_t *event);
 | `cog_core_session` | NULL | the configured session |
 | `cog_core_state` | `0` | the current state id |
 | `cog_core_is_running` | `false` | the running flag |
-| `cog_core_ipc` | NULL | NULL (no endpoint is stored in this phase) |
+| `cog_core_ipc` | NULL | the configured endpoint (owned by the core; destroyed by `cog_core_free`) |
 | `cog_core_provider` | NULL | the provider (or NULL if not configured) |
 | `cog_core_obs` | NULL | the obs context (or NULL if not configured) |
 | `cog_core_store` | NULL | the store (or NULL if not configured) |
@@ -240,12 +265,9 @@ queue. The pending-message functions are not thread-safe.
   wait hook.
 - **Owned:** event queue, pending FIFO (and each queued message), the
   injected-message payload while in flight, the subagent registry (agent
-  records, their owned strings, and their child sessions).
-- **IPC endpoint:** during the pre-IPC phase a non-NULL endpoint is
-  rejected by `cog_core_new` with `COG_ERROR_UNAVAILABLE`; the core never
-  stores, dereferences, owns, or frees it.  Once IPC integration is
-  enabled, an accepted endpoint will be owned by the core and drained
-  during the event loop, and freed by `cog_core_free`.
+  records, their owned strings, and their child sessions), and (when
+  configured) the IPC endpoint, its accepted clients, the receive buffer,
+  and every in-flight IPC payload copy.
 
 ## Session attachment
 
@@ -271,11 +293,27 @@ queue capacity), NULL-free no-op, the inspectors/accessors for NULL and
 non-NULL cores, enqueue NULL/overflow, the run loop happy path (dispatch,
 handler invocation, transition application, wait-hook driving, clean stop),
 the already-running guard via a re-entrant `cog_core_run`, empty-queue stop,
-dispatch errors (NOT_FOUND, handler status, TRANSITION_DENIED), the IPC
-fail-closed guard (non-NULL endpoint rejected with `COG_ERROR_UNAVAILABLE`
-and `*out` NULL), and the pending FIFO (NULL checks, FIFO order,
-round-trip, buffer sizing overflow, bounded-capacity overflow, not-found,
-per-session isolation, and automatic injection into session history).
+dispatch errors (NOT_FOUND, handler status, TRANSITION_DENIED), IPC
+endpoint acceptance (a real endpoint is accepted, exposed by
+`cog_core_ipc`, and destroyed by `cog_core_free`), and the pending FIFO
+(NULL checks, FIFO order, round-trip, buffer sizing overflow,
+bounded-capacity overflow, not-found, per-session isolation, and automatic
+injection into session history).
+
+`tests/integration/test_core_ipc.c` verifies the core+IPC integration over
+real local Unix domain sockets: endpoint acceptance and ownership, a
+listener core accepting a peer (`COG_EVENT_IPC_CONNECTED`), an incoming
+message dispatched as `COG_EVENT_IPC_MESSAGE` with peer/session metadata,
+disconnect handling (`COG_EVENT_IPC_DISCONNECTED`), a malformed oversized
+frame closing the connection without deadlocking the loop, the core as a
+connected endpoint, and destruction (the listener's socket path is
+unlinked by `cog_core_free`).
+
+`tests/integration/test_core_obs.c` verifies the core+obs integration: a
+core configured with a real obs context logs `core.created`,
+`core.run_start`, `core.run_stop`/`core.run_error`, and `core.destroyed`
+through a capture sink, with no hidden allocations (clean under
+ASan/UBSan/LSan).
 
 `tests/integration/test_core_session.c` verifies the cross-module effects:
 session attachment (reset refused while attached, allowed after teardown),

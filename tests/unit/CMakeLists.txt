@@ -31,6 +31,20 @@ foreach(test ${COG_UNIT_TESTS})
     target_enable_warnings(${test})
 endforeach()
 
+# test_ipc and test_ipc_critic exercise the cog-ipc transport (ipc.c), so
+# they link cog::ipc rather than cog::core.  cog::ipc propagates the
+# cog-core include path via the header-only cog::result target, so the
+# public include path and C11 feature are inherited without linking the
+# cog-core archive.  Registration is owned by the integration ticket
+# (dd2f55e); the executables were merged with the ipc.c transport.
+add_executable(test_ipc test_ipc.c)
+target_link_libraries(test_ipc PRIVATE cog::ipc)
+target_enable_warnings(test_ipc)
+
+add_executable(test_ipc_critic test_ipc_critic.c)
+target_link_libraries(test_ipc_critic PRIVATE cog::ipc)
+target_enable_warnings(test_ipc_critic)
+
 # test_core exercises a concurrent cog_core_stop (shutdown must not drop a
 # pending message), so it needs the pthread library.
 find_package(Threads REQUIRED)
@@ -114,6 +128,14 @@ add_test(NAME unit-obs-types
 
 add_test(NAME unit-obs-critic
     COMMAND test_obs_critic
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME unit-ipc
+    COMMAND test_ipc
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME unit-ipc-critic
+    COMMAND test_ipc_critic
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
 # -----------------------------------------------------------------------
