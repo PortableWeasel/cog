@@ -158,13 +158,13 @@
   <rect x="970" y="310" width="590" height="900" rx="10" fill="#fff0bd" fill-opacity="0.35" stroke="#c18b00" stroke-width="2" stroke-dasharray="7,4"/>
   <rect x="970" y="310" width="590" height="30" rx="10" fill="#c18b00"/>
   <rect x="970" y="330" width="590" height="10" fill="#c18b00"/>
-  <text x="1265" y="331" text-anchor="middle" font-size="13" font-weight="bold" fill="#ffffff">REMAINING REAL-MODEL CLIENT — PROPOSED STAGE 14+</text>
+  <text x="1265" y="331" text-anchor="middle" font-size="13" font-weight="bold" fill="#ffffff">REMAINING REAL-MODEL CLIENT — STAGE 14 ROADMAP</text>
 
   <!-- A: Blueprint and PoCs -->
   <rect x="1000" y="360" width="530" height="100" rx="6" fill="#fff0bd" stroke="#c18b00" stroke-width="1.5"/>
   <rect x="1000" y="360" width="530" height="26" rx="6" fill="#d29a12"/>
   <rect x="1000" y="376" width="530" height="10" fill="#d29a12"/>
-  <text x="1265" y="378" text-anchor="middle" font-size="12" font-weight="bold" fill="#ffffff">A · Scope confirmation + risk-reduction PoCs</text>
+  <text x="1265" y="378" text-anchor="middle" font-size="12" font-weight="bold" fill="#ffffff">A · Delegated scope + risk-reduction PoCs</text>
   <text x="1018" y="408" font-size="10" fill="#70500a">Choose TLS/HTTP and JSON integration through measured PoCs</text>
   <text x="1018" y="428" font-size="10" fill="#70500a">Test fragmented SSE, cancellation, and sanitized wire fixtures</text>
   <text x="1018" y="448" font-size="10" fill="#70500a">Then amend headers and trace real-client scenarios before code</text>

@@ -1,5 +1,10 @@
 # Cog — Implementation Strategy
 
+> Current extension: [real-client blueprint](REAL_CLIENT_BLUEPRINT.md) and
+> [Stage 14 execution scaffold](REAL_CLIENT_WBS.md). The material below
+> describes the original engine/mock-CLI baseline, not real-client release
+> completion. Stage 14 uses technical gates under delegated design authority.
+
 How we implement 24 headers across 8 libraries without breaking contracts,
 while parallelizing where possible.
 

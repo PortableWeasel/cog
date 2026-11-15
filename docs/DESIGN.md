@@ -1,5 +1,10 @@
 # Cog — System Design Blueprint
 
+> Current extension: [real-client blueprint](REAL_CLIENT_BLUEPRINT.md) and
+> [Stage 14 execution scaffold](REAL_CLIENT_WBS.md). The material below
+> describes the original engine/mock-CLI baseline, not real-client release
+> completion. Stage 14 uses technical gates under delegated design authority.
+
 This document captures the software blueprint for Cog, an LLM harness and
 agent framework written in C. It follows the Jeep Method: the fewest
 essential parts that still make a working, maintainable system.
