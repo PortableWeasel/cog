@@ -16,14 +16,21 @@ int main(int argc, char **argv)
     cog_net_ctx_t *net = NULL;
     cog_cli_configuration_t *candidate = NULL;
     sigset_t signals, old_mask;
+    struct sigaction old_pipe, ignore_pipe = {0};
+    ignore_pipe.sa_handler = SIG_IGN;
+    (void)sigemptyset(&ignore_pipe.sa_mask);
+    if (sigaction(SIGPIPE, &ignore_pipe, &old_pipe) != 0) return 1;
     cog_result_t rc = cog_cli_options_parse(&options, argc, argv, &status);
-    if (rc == COG_ERROR_ABORTED) return status;
-    if (rc != COG_OK) return 2;
+    if (rc == COG_ERROR_ABORTED) { rc = COG_OK; goto done; }
+    if (rc != COG_OK) { status = 2; goto done; }
     /* Resolve backend before creating a real transport: explicit/configured
        MOCK remains usable on hosts without the audited resolver profile. */
     rc = cog_cli_configuration_new(&candidate, &options, 1U);
     if (rc != COG_OK) goto done;
-    bool real = cog_cli_configuration_options(candidate)->backend == COG_CLI_BACKEND_REAL;
+    const cog_cli_options_t *effective = cog_cli_configuration_options(candidate);
+    bool real = effective->backend == COG_CLI_BACKEND_REAL &&
+        effective->session_action != COG_CLI_SESSION_LIST &&
+        effective->session_action != COG_CLI_SESSION_RECOVER;
     size_t context = cog_cli_configuration_options(candidate)->max_context_bytes;
     cog_cli_configuration_free(candidate); candidate = NULL;
     if (real) {
@@ -46,8 +53,13 @@ int main(int argc, char **argv)
     rc = cog_cli_app_new(&app, &options);
     if (rc != COG_OK) goto done;
     app->signal_fd = signal_fd; /* Borrowed host descriptor, never global. */
+    if (!cog_cli_metadata(app) && app->opts.interactive && app->store != NULL &&
+        (fprintf(stderr, "Session: %s\n", cog_session_id(app->session)) < 0 || fflush(stderr) != 0)) {
+        rc = COG_ERROR_IO; goto done;
+    }
     rc = cog_cli_app_run(app);
 done:
+    if (fclose(stdout) != 0 && rc == COG_OK) rc = COG_ERROR_IO;
     if (rc != COG_OK) {
         (void)fprintf(stderr, "cog-cli: %s\n", cog_cli_result_name(rc)); status = 1;
     }
@@ -61,5 +73,6 @@ done:
         (void)close(signal_fd);
     }
     if (masked) (void)sigprocmask(SIG_SETMASK, &old_mask, NULL);
+    (void)sigaction(SIGPIPE, &old_pipe, NULL);
     return status;
 }

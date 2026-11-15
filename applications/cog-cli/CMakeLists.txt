@@ -30,6 +30,7 @@ add_library(cog-cli-lib STATIC
     src/app_turn.c
     src/app_tools.c
     src/app_display.c
+    src/app_sessions.c
     src/mock_provider.c
 )
 add_library(cog::cli ALIAS cog-cli-lib)

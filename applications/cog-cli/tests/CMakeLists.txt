@@ -182,3 +182,10 @@ find_package(Python3 COMPONENTS Interpreter REQUIRED)
 add_test(NAME cli-host-signal COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/run_host_signal.py $<TARGET_FILE:cog-cli>)
 set_tests_properties(cli-host-signal PROPERTIES TIMEOUT 15)
+
+add_executable(test_session_ux test_session_ux.c)
+target_include_directories(test_session_ux PRIVATE ../src)
+target_link_libraries(test_session_ux PRIVATE cog::cli)
+target_enable_warnings(test_session_ux)
+add_test(NAME cli-session-ux COMMAND test_session_ux)
+set_tests_properties(cli-session-ux PROPERTIES TIMEOUT 30)
