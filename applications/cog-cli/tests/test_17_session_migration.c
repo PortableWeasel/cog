@@ -169,6 +169,10 @@ static void test_migrate_via_store(void)
     cog_session_free(migrated);
     migrated = NULL;
 
+    /* Clean up the store files so the temp dir can be removed.  Do this
+     * before freeing the apps (which free their stores). */
+    (void)cog_store_delete(cog_cli_app_store(src), sid);
+
     cog_cli_app_free(dst);
     cog_cli_app_free(src);
 
