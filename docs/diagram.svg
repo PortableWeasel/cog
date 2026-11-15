@@ -268,15 +268,15 @@
   <!-- Row 1: cog-core -->
   <rect x="30" y="1028" width="1220" height="40" fill="#d4edda"/>
   <text x="50" y="1044" font-size="10" fill="#155724" font-weight="bold">cog-core</text>
-  <text x="220" y="1044" font-size="9" fill="#155724">core.h, event.h, session.h, state.h, handler.h, tool.h, result.h, agent.h</text>
-  <text x="220" y="1058" font-size="8" fill="#155724">(8 headers — most amended)</text>
+  <text x="220" y="1044" font-size="9" fill="#155724">core.h, event.h, session.h, session_store.h, state.h, handler.h, tool.h, result.h, agent.h, message.h</text>
+  <text x="220" y="1058" font-size="8" fill="#155724">(10 headers — most amended)</text>
   <text x="640" y="1044" font-size="9" fill="#155724">cog_core_t, cog_event_t, cog_session_t, cog_agent_t, cog_dispatch_entry_t</text>
   <text x="1080" y="1044" font-size="10" fill="#155724">✅ done</text>
 
   <!-- Row 2: cog-provider -->
   <rect x="30" y="1068" width="1220" height="30" fill="#d4edda"/>
   <text x="50" y="1088" font-size="10" fill="#155724" font-weight="bold">cog-provider</text>
-  <text x="220" y="1088" font-size="9" fill="#155724">provider.h, provider_vtable.h, provider_request.h, message.h, endpoint.h</text>
+  <text x="220" y="1088" font-size="9" fill="#155724">provider.h, provider_vtable.h, provider_request.h, endpoint.h</text>
   <text x="640" y="1088" font-size="9" fill="#155724">cog_provider_vtable_t, cog_endpoint_table_t, cog_provider_error_t</text>
   <text x="1080" y="1088" font-size="10" fill="#155724">✅ done</text>
 
