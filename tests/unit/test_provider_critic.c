@@ -74,12 +74,19 @@ static cog_result_t counting_next(cog_provider_t *p,cog_provider_delta_t *d,void
 { (void)s;(void)n;if(p==NULL||d==NULL||required==NULL)return COG_ERROR_NULL_PTR;*required=0U;return COG_ERROR_AGAIN; }
 static cog_result_t counting_error(const cog_provider_t *p,cog_provider_error_t *e)
 { if(p==NULL||e==NULL)return COG_ERROR_NULL_PTR;return COG_ERROR_NOT_FOUND; }
+static cog_result_t counting_preflight(cog_provider_t *p,
+    const cog_provider_request_t *r, cog_provider_preflight_stage_t stage)
+{
+    (void)stage;
+    if (p == NULL || r == NULL) return COG_ERROR_NULL_PTR;
+    return COG_OK;
+}
 static const cog_provider_vtable_t counting_vtable = {
     counting_connect,
     counting_disconnect,
     counting_send,
     counting_receive,
-    counting_poll, counting_cancel, counting_next, counting_error,
+    counting_poll, counting_cancel, counting_next, counting_error, counting_preflight,
 };
 
 /* The script for the next counting_connect.  Single-threaded test. */
@@ -393,8 +400,25 @@ static void test_validation_boundaries(void)
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
+static void test_required_preflight(void)
+{
+    /* Intentionally incomplete static implementation: reject before connect. */
+    static const cog_provider_vtable_t missing = {
+        counting_connect, counting_disconnect, counting_send, counting_receive,
+        counting_poll, counting_cancel, counting_next, counting_error, NULL};
+    cog_endpoint_t endpoint = {.vtable = &missing};
+    cog_provider_t *out = (cog_provider_t *)(uintptr_t)1U;
+    CHECK(cog_provider_connect(&endpoint, &out) == COG_ERROR_INVALID_ARG);
+    CHECK(out == NULL);
+    cog_provider_t instance = {&missing};
+    cog_provider_request_t request = {.model_id = "m1"};
+    CHECK(cog_provider_preflight(&instance, &request,
+          COG_PROVIDER_PREFLIGHT_COMPLETE) == COG_ERROR_INVALID_ARG);
+    CHECK(cog_provider_send(&instance, &request) == COG_ERROR_INVALID_ARG);
+}
 int main(void)
 {
+    test_required_preflight();
     test_out_param_preservation();
     test_call_counts_and_error_propagation();
     test_connect_failure_propagation();

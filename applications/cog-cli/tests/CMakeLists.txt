@@ -16,6 +16,10 @@ target_enable_warnings(test_cli_options)
 add_executable(test_mock_provider test_mock_provider.c)
 target_link_libraries(test_mock_provider PRIVATE cog::cli)
 target_enable_warnings(test_mock_provider)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_link_options(test_mock_provider PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc)
+    target_compile_definitions(test_mock_provider PRIVATE COG_MOCK_WRAP_ALLOC=1)
+endif()
 
 # End-to-end app flows through the real core/session/provider/obs/store:
 # streaming, queueing, cancellation, error+retry, shutdown, persistence.

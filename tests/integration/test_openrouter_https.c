@@ -194,6 +194,17 @@ int main(void)
                             .tool_call_count = 1U,
                             .opaque = opaque_len != 0U ? &continuation : NULL,
                             .opaque_count = opaque_len != 0U ? 1U : 0U};
+        /* Validate the real adapter's staged prefix before a result exists.
+         * The offline fixture admits exactly two wire turns, so an accidental
+         * preflight send/service cannot hide behind a scripted provider. */
+        request.message_count = 2U;
+        size_t active_before = cog_net_active_count(net);
+        rc = cog_provider_preflight(p, &request, COG_PROVIDER_PREFLIGHT_PENDING_TOOLS);
+        if (rc != COG_OK || cog_net_active_count(net) != active_before)
+        {
+            if (rc == COG_OK) rc = COG_ERROR_INVALID_STATE;
+            goto cleanup;
+        }
         messages[2] = (cog_message_t){.role = COG_MESSAGE_ROLE_TOOL,
                                       .content = "WIRE_OK",
                                       .content_len = 7U,
@@ -220,6 +231,7 @@ int main(void)
         if (rc == COG_OK && (id[0] != '\0' || strstr(text, "WIRE_OK") == NULL))
             rc = COG_ERROR_PROTOCOL;
     }
+cleanup:
     (void)cog_provider_disconnect(p);
     cog_net_free(net);
     volatile char *secret = key;
