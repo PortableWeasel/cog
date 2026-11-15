@@ -14,6 +14,15 @@
  * Threading model: a single @c cog_ipc_endpoint_t instance is not
  * thread-safe.  One thread at a time may operate on an endpoint.  Distinct
  * endpoints may be used by distinct threads without locking.
+ *
+ * Blocking model: endpoints are blocking.  @c cog_ipc_endpoint_send and
+ * @c cog_ipc_endpoint_recv block until the operation completes or fails;
+ * the @c COG_ERROR_AGAIN returns they document are unreachable through the
+ * current API because no endpoint can be placed in non-blocking mode.  A
+ * @c cog_ipc_endpoint_recv that has read a partial frame blocks until the
+ * rest of that frame arrives, so a peer that stalls mid-frame can block the
+ * caller indefinitely.  @c cog_ipc_endpoint_poll remains non-blocking and
+ * its timeout behaviour is exactly as documented.
  */
 #ifndef COG_IPC_H
 #define COG_IPC_H
@@ -126,7 +135,8 @@ cog_result_t cog_ipc_endpoint_new(cog_ipc_endpoint_t **out);
  * If the endpoint is still connected or listening, it is disconnected
  * before being freed.
  *
- * @param[in,out] endpoint Endpoint to destroy; may be NULL (no-op).
+ * @param[in,out] endpoint Endpoint to destroy; if NULL, no resources are
+ *                         held and @c COG_ERROR_NULL_PTR is returned.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p endpoint is NULL.
  *

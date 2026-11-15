@@ -2,21 +2,33 @@
 # cog-ipc — IPC fabric transport layer over Unix domain sockets.
 # -----------------------------------------------------------------------
 
-# Stage 6 header-only library.  Implementation files are added in a
-# follow-up ticket; for now the target exports the public include path and
-# the C11 compile feature so consumers can include the headers.
-add_library(cog-ipc INTERFACE)
+# Stage 12.3a: cog-ipc is now a real static library.  It compiles
+# src/ipc.c into an archive while preserving the public include path, the
+# C11 compile feature, the cog::ipc alias, and the strict-warning settings
+# that downstream consumers rely on.
+#
+# cog-ipc headers include cog-core headers (e.g. <cog/result.h>), so
+# consumers of cog::ipc must inherit cog-core's include path.  This is a
+# header/include dependency, not a symbol dependency: it is linked PUBLIC
+# so that the result.h include path propagates to cog::ipc consumers.
+add_library(cog-ipc STATIC
+    src/ipc.c
+)
 add_library(cog::ipc ALIAS cog-ipc)
 
 target_include_directories(cog-ipc
-    INTERFACE
+    PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
-target_compile_features(cog-ipc INTERFACE c_std_11)
+target_compile_features(cog-ipc PUBLIC c_std_11)
 
 # cog-ipc headers include cog-core headers (e.g. <cog/result.h>).
-target_link_libraries(cog-ipc INTERFACE cog::core)
+target_link_libraries(cog-ipc PUBLIC cog::core)
+
+# Apply the project-wide strict-warning policy (and ASan/UBSan when enabled)
+# to the production source.
+target_enable_warnings(cog-ipc)
 
 # -----------------------------------------------------------------------
 # Install rules
