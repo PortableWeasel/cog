@@ -23,6 +23,8 @@ typedef struct or_provider
     cog_request_id_t request_id;
     char *request, *line, *frame, *item_bytes, *opaque_bytes, *url, *headers;
     void *parser_pool, *writer_pool;
+    void *preflight_parser_pool, *preflight_writer_pool;
+    char *preflight_request;
     size_t line_len, frame_len, item_size, body_offset, text_len, opaque_len;
     or_tool *tools;
     yyjson_alc parser, writer;

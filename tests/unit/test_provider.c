@@ -158,6 +158,14 @@ static cog_result_t fake_error(const cog_provider_t *provider, cog_provider_erro
     *out = p->last_error; return COG_OK;
 }
 
+static cog_result_t fake_preflight(cog_provider_t *p,
+    const cog_provider_request_t *r, cog_provider_preflight_stage_t stage)
+{
+    (void)stage;
+    if (p == NULL || r == NULL) return COG_ERROR_NULL_PTR;
+    if (((fake_provider_t *)p)->sent) return COG_ERROR_INVALID_STATE;
+    return COG_OK;
+}
 static const cog_provider_vtable_t fake_vtable = {
     fake_connect,
     fake_disconnect,
@@ -167,6 +175,7 @@ static const cog_provider_vtable_t fake_vtable = {
     fake_cancel,
     fake_next,
     fake_error,
+    fake_preflight,
 };
 
 static cog_result_t fake_connect(const cog_endpoint_t *endpoint,
@@ -590,7 +599,10 @@ static void test_message_history(void)
     msgs[0].role = COG_MESSAGE_ROLE_SYSTEM;
     msgs[0].content = "sys";
     msgs[0].content_len = 3U;
-    msgs[1].role = COG_MESSAGE_ROLE_USER;
+    cog_message_tool_call_t call = {"call_calculator", "calculator", "{}", 2U};
+    msgs[1].role = COG_MESSAGE_ROLE_ASSISTANT;
+    msgs[1].tool_calls = &call;
+    msgs[1].tool_call_count = 1U;
     msgs[1].content = "user msg";
     msgs[1].content_len = 8U;
     msgs[2].role = COG_MESSAGE_ROLE_TOOL;

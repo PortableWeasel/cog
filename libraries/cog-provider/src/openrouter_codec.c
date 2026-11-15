@@ -153,21 +153,29 @@ static cog_result_t tools_supported(yyjson_mut_val *tools)
     }
     return COG_OK;
 }
-static bool opaque_entries_supported(yyjson_val *details)
+static cog_result_t opaque_entries_supported(yyjson_val *details)
 {
     size_t i, n;
     yyjson_val *entry;
     yyjson_arr_foreach(details, i, n, entry)
     {
         if (!yyjson_is_obj(entry))
-            return false;
+            return COG_ERROR_UNSUPPORTED;
         yyjson_val *type = yyjson_obj_get(entry, "type");
-        if (!yyjson_equals_str(type, "reasoning.text") &&
-            !yyjson_equals_str(type, "reasoning.summary") &&
-            !yyjson_equals_str(type, "reasoning.encrypted"))
-            return false;
+        const char *payload = NULL;
+        if (yyjson_equals_str(type, "reasoning.text"))
+            payload = "text";
+        else if (yyjson_equals_str(type, "reasoning.summary"))
+            payload = "summary";
+        else if (!yyjson_equals_str(type, "reasoning.encrypted"))
+            return COG_ERROR_UNSUPPORTED;
+        yyjson_val *value = payload == NULL ? NULL : yyjson_obj_get(entry, payload);
+        yyjson_val *signature = yyjson_obj_get(entry, "signature");
+        if ((value != NULL && !yyjson_is_str(value)) ||
+            (signature != NULL && !yyjson_is_str(signature)))
+            return COG_ERROR_PROTOCOL;
     }
-    return true;
+    return COG_OK;
 }
 cog_result_t or_encode(or_provider *p, const cog_provider_request_t *r,
                        size_t *len)
@@ -286,13 +294,17 @@ cog_result_t or_encode(or_provider *p, const cog_provider_request_t *r,
             yyjson_val *ov = yyjson_doc_get_root(od),
                        *details = yyjson_obj_get(ov, "reasoning_details");
             if (!yyjson_is_obj(ov) || yyjson_obj_size(ov) != 1U ||
-                !yyjson_is_arr(details) || !opaque_entries_supported(details))
+                !yyjson_is_arr(details))
                 rc = COG_ERROR_UNSUPPORTED;
             else
             {
-                yyjson_mut_val *copy = yyjson_val_mut_copy(d, details);
-                rc = add(d, msg, "reasoning_details", copy) ? COG_OK
-                                                            : COG_ERROR_LIMIT;
+                rc = opaque_entries_supported(details);
+                if (rc == COG_OK)
+                {
+                    yyjson_mut_val *copy = yyjson_val_mut_copy(d, details);
+                    rc = add(d, msg, "reasoning_details", copy) ? COG_OK
+                                                               : COG_ERROR_LIMIT;
+                }
             }
             yyjson_doc_free(od);
             if (rc != COG_OK)

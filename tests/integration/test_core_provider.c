@@ -153,6 +153,14 @@ static cog_result_t fake_error(const cog_provider_t *provider, cog_provider_erro
     *out = p->last_error; return COG_OK;
 }
 
+static cog_result_t fake_preflight(cog_provider_t *p,
+    const cog_provider_request_t *r, cog_provider_preflight_stage_t stage)
+{
+    (void)stage;
+    if (p == NULL || r == NULL) return COG_ERROR_NULL_PTR;
+    if (((fake_provider_t *)p)->sent) return COG_ERROR_INVALID_STATE;
+    return COG_OK;
+}
 static const cog_provider_vtable_t fake_vtable = {
     fake_connect,
     fake_disconnect,
@@ -162,6 +170,7 @@ static const cog_provider_vtable_t fake_vtable = {
     fake_cancel,
     fake_next,
     fake_error,
+    fake_preflight,
 };
 
 static cog_result_t fake_connect(const cog_endpoint_t *endpoint,

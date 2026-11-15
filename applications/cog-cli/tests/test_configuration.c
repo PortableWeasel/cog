@@ -181,6 +181,12 @@ static cog_result_t resolve(void *arg, const char *ref, char *out, size_t cap,
     memcpy(out, synthetic_secret, n);
     return *verdict;
 }
+static cog_result_t descriptor_preflight(cog_provider_t *p,
+    const cog_provider_request_t *r, cog_provider_preflight_stage_t stage)
+{
+    (void)p; (void)r; (void)stage;
+    return COG_ERROR_UNSUPPORTED; /* Identity-only descriptor, never driven. */
+}
 static int generation(void)
 {
     cog_cli_options_t o;
@@ -190,7 +196,7 @@ static int generation(void)
     size_t required = 0U;
     cog_result_t verdict = COG_OK;
     static const cog_provider_vtable_t descriptor = {
-        0}; /* identity only, never dispatched */
+        .preflight = descriptor_preflight}; /* identity only, never dispatched */
     cog_provider_limits_t limits = {1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U};
     char model[64] = "owned/model";
     CHECK(clean() == 0);
