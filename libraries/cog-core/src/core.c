@@ -252,6 +252,54 @@ static cog_result_t core_inject_pending(cog_core_t *core)
     return COG_OK;
 }
 
+/**
+ * @brief Undo a pending-message injection that was never dispatched.
+ *
+ * Called immediately after a successful @c core_inject_pending when a
+ * concurrent stop has landed before the injected event was dispatched.
+ * The event queue was empty before injection, so the injected event is the
+ * only entry; popping it returns exactly that event.  The message text
+ * (owned by @c core->injected_payload) is moved back into a fresh pending
+ * entry at the head of the FIFO, preserving FIFO order and text ownership.
+ * On allocation failure the text is released so nothing leaks; the message
+ * is dropped only in that OOM case.
+ */
+static void core_restore_injected(cog_core_t *core)
+{
+    cog_event_t injected;
+    const char *sid = cog_session_id(core->session);
+    char *sid_copy;
+    size_t i;
+
+    if (cog_event_queue_pop(core->event_queue, &injected) != COG_OK) {
+        /* The injected event is not in the queue (already dispatched or
+         * removed); nothing to restore. */
+        return;
+    }
+
+    /* The popped event must be the injected one: the queue was empty
+     * before injection, so the injected event is the only entry. */
+    assert(injected.payload == core->injected_payload);
+
+    sid_copy = (sid != NULL) ? strdup(sid) : NULL;
+    if (sid_copy == NULL) {
+        /* Cannot restore the session id; release the text to avoid a leak. */
+        free(core->injected_payload);
+        core->injected_payload = NULL;
+        return;
+    }
+
+    /* Re-insert at the head, preserving FIFO order. */
+    for (i = core->pending_count; i > 0U; --i) {
+        core->pending[i] = core->pending[i - 1U];
+    }
+    core->pending[0].session_id = sid_copy;
+    core->pending[0].text = core->injected_payload;
+    core->pending[0].text_len = injected.payload_len;
+    core->injected_payload = NULL;
+    ++core->pending_count;
+}
+
 /* ------------------------------------------------------------------ */
 /* IPC integration                                                     */
 /* ------------------------------------------------------------------ */
@@ -824,6 +872,16 @@ cog_result_t cog_core_run(cog_core_t *core)
             }
             /* Inject a pending message for our session, or wait. */
             if (core_inject_pending(core) == COG_OK) {
+                /* A stop may have landed between the pre-inject check and
+                 * the enqueue.  If so, the injected event has not been
+                 * dispatched: remove that exact event and restore the
+                 * pending message at the head of the FIFO so it is not
+                 * dropped, then exit before dispatch. */
+                if (atomic_load_explicit(&core->stop_requested,
+                                         memory_order_acquire)) {
+                    core_restore_injected(core);
+                    break;
+                }
                 continue;
             }
             if (atomic_load_explicit(&core->stop_requested,
