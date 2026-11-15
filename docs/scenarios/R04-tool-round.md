@@ -132,7 +132,7 @@ requires recovery. Cancelled unstarted proposals receive identified no-effect
 DENIED results; they are never mistaken for uncertain executed effects. Test the
 crash before STARTED save and cancel-after-proposal boundaries with zero effects.
 
-## Stage 14.I executable writer evidence
+## Stage 14.I executable acceptance evidence
 
 The toolkit implementation now has dedicated real-library tests for this trace:
 `test_toolkit_async`, `test_toolkit_resources`, `test_toolkit_fencing` and
@@ -140,4 +140,5 @@ The toolkit implementation now has dedicated real-library tests for this trace:
 output, constructor limits/OOM, disposable workspace refusal/effects and supported
 process-tree cancellation/reaping. Strict and ASan/UBSan writer suites pass;
 [delivery evidence](../REAL_CLIENT_I_EVIDENCE.md) records exact scope and limits.
-Independent review and application durable-loop integration remain pending.
+Independent review and library integration passed after one correction cycle.
+Application durable-loop integration remains with K.

@@ -1,10 +1,11 @@
-# Stage 14.I toolkit writer evidence
+# Stage 14.I toolkit implementation and acceptance evidence
 
 Delivery `03f60d7`, implementation children `c3b93b8` / `dd36fcf` / `d3b4f0b`,
 independent review `036ac33`, integration `8160196`, finalize `474323d`.
 Writer branch `codex/impl-toolkit`, based on integrated F/G/Q main `e35dc9f`.
-Independent review and real-client integration remain pending. This is writer
-validation, not acceptance gate M or a full release claim.
+Independent review and library integration passed after one correction cycle.
+Application durable-loop integration remains with K; this is not acceptance gate M
+or a full release claim.
 
 ## Implemented boundary
 
@@ -127,4 +128,36 @@ fsync case still proves unchanged target and removal of the owned temp.
 Revision writer validation is strict 8/8, ASan+UBSan/leaks 8/8 and TSan concurrency
 2/2. Successful retry cases observed TERM accepted on attempt 2 or 4, marker
 present and exit 0; persistent-backpressure cases observed no accepted TERM,
-KILL accepted on attempt 3 and exit 137. Independent rereview remains pending.
+KILL accepted on attempt 3 and exit 137. Independent rereview passed below.
+
+
+## Independent acceptance and main integration
+
+Review `036ac33` accepted corrected tip `4189fd3` after one rejection cycle.
+Independent clean rebuilds in `/tmp/cog-i-critic-strict`,
+`/tmp/cog-i-critic-asan` and `/tmp/cog-i-critic-tsan` passed strict 8/8,
+ASan+UBSan with leak detection 8/8 and TSan concurrency 2/2. Inspection confirmed
+that control retries make one attempt per poll, preserve pending TERM/KILL state,
+and never extend the original escalation deadline. The original failing test
+is permanently registered with the expanded process-failure matrix.
+
+Integration `8160196` merged the approved branch into main `ac454de` as
+`b2144ac`, without conflicts. Shared unit CMake, the config subtree and integrated
+F/Q/G changes were retained; approved public headers are unchanged. Fresh main
+builds `/tmp/cog-i-integration-strict`, `/tmp/cog-i-integration-asan` and
+`/tmp/cog-i-integration-tsan` passed the same toolkit 8/8, sanitized toolkit 8/8
+and TSan 2/2. The strict main run also passed both config tests, for 10/10.
+
+The post-merge installed result/core/IPC/obs/toolkit targets were consumed by a
+fresh external CMake executable linked only to `cog::toolkit`; call construction,
+destruction and access to all four workspace descriptors passed. The toolkit
+export contains no source/build path or private yyjson target, prefix generation
+checks pass, and the installed MIT license is present. This is the library target
+closure check, not full application installation or release relocation gate P.
+
+I is accepted for bounded schema/policy admission, at-most-once retained results,
+workspace operations and supported inherited-process-group cleanup. K still owns
+application STARTED/result persistence and responsive real conversation integration;
+M/N/P retain their scenario/release gates. No credential or authenticated request
+was used. All new file/process effects used disposable owned fixtures. Existing
+untracked `build_user/` in main was preserved.
