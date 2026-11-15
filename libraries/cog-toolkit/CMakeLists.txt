@@ -42,6 +42,18 @@ add_test(NAME unit-toolkit
     COMMAND test_toolkit
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
+# Critic regression tests for the acceptance-critical review questions
+# (concurrency, timeout boundaries, cancellation, stop_on_error).
+add_executable(test_toolkit_critic
+    ${PROJECT_SOURCE_DIR}/tests/unit/test_toolkit_critic.c
+)
+target_link_libraries(test_toolkit_critic PRIVATE cog::toolkit)
+target_enable_warnings(test_toolkit_critic)
+
+add_test(NAME unit-toolkit-critic
+    COMMAND test_toolkit_critic
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
 # -----------------------------------------------------------------------
 # Install rules
 # -----------------------------------------------------------------------
