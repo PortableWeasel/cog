@@ -778,6 +778,105 @@ static void test_stress_cleanup(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Critic regression tests                                             */
+/* ------------------------------------------------------------------ */
+
+static void test_result_null_len(void)
+{
+    /* cog_agent_result must tolerate a NULL out_result_len on both the
+     * success and the overflow paths (the header does not mark the
+     * parameter optional, but the implementation accepts NULL). */
+    cog_core_t *core;
+    cog_session_t *session;
+    cog_agent_config_t cfg;
+    cog_agent_id_t id = 0U;
+    char buf[64];
+    const char *result_text = "0123456789";
+
+    core = make_core(&session);
+    CHECK(core != NULL);
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.task = "t";
+    CHECK_EQ_INT(cog_agent_spawn(core, &cfg, &id), COG_OK);
+    CHECK_EQ_INT(cog_agent_internal_start(core, id), COG_OK);
+    CHECK_EQ_INT(cog_agent_internal_complete(core, id, result_text,
+                                             strlen(result_text)),
+                 COG_OK);
+
+    /* Success path with NULL out_result_len. */
+    CHECK_EQ_INT(cog_agent_result(core, id, buf, sizeof(buf), NULL), COG_OK);
+    CHECK_EQ_STR(buf, result_text);
+
+    /* Overflow path with NULL out_result_len: still OVERFLOW, no write. */
+    CHECK_EQ_INT(cog_agent_result(core, id, buf, 4U, NULL),
+                 COG_ERROR_OVERFLOW);
+
+    cog_core_free(core);
+    cog_session_free(session);
+}
+
+static void test_notify_parent_terminal(void)
+{
+    /* notify_parent is not gated on status: a cancelled (terminal) agent
+     * may still record a final status message.  The message is owned and
+     * released with the record. */
+    cog_core_t *core;
+    cog_session_t *session;
+    cog_agent_config_t cfg;
+    cog_agent_id_t id = 0U;
+    const cog_agent_entry_t *rec;
+
+    core = make_core(&session);
+    CHECK(core != NULL);
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.task = "t";
+    CHECK_EQ_INT(cog_agent_spawn(core, &cfg, &id), COG_OK);
+    CHECK_EQ_INT(cog_agent_cancel(core, id), COG_OK);
+
+    CHECK_EQ_INT(cog_agent_notify_parent(core, id, "cancelled by user"),
+                 COG_OK);
+    rec = cog_agent_internal_get(core, id);
+    CHECK(rec != NULL);
+    CHECK_EQ_STR(rec->status_msg, "cancelled by user");
+    CHECK_EQ_INT((int)rec->status, (int)COG_AGENT_STATUS_CANCELLED);
+
+    cog_core_free(core);
+    cog_session_free(session);
+}
+
+static void test_registry_growth_boundaries(void)
+{
+    /* The registry grows lazily (initial capacity 8, doubling up to the
+     * 256 maximum).  Verify ids stay contiguous and correct across every
+     * growth boundary, and that the registry-full boundary is exact. */
+    cog_core_t *core;
+    cog_session_t *session;
+    cog_agent_config_t cfg;
+    cog_agent_id_t id = 0U;
+    size_t i;
+
+    core = make_core(&session);
+    CHECK(core != NULL);
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.task = "x";
+
+    for (i = 0U; i < COG_AGENT_MAX_PER_CORE; ++i) {
+        CHECK_EQ_INT(cog_agent_spawn(core, &cfg, &id), COG_OK);
+        /* Ids are 1-based and contiguous. */
+        CHECK_EQ_INT((long long)id, (long long)(i + 1U));
+    }
+
+    /* Exactly at the boundary the registry is full. */
+    CHECK_EQ_INT(cog_agent_spawn(core, &cfg, &id), COG_ERROR_UNAVAILABLE);
+
+    cog_core_free(core);
+    cog_session_free(session);
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -797,6 +896,9 @@ int main(void)
     test_cancellation_cooperation();
     test_core_isolation();
     test_stress_cleanup();
+    test_result_null_len();
+    test_notify_parent_terminal();
+    test_registry_growth_boundaries();
 
     if (failures != 0) {
         fprintf(stderr, "test_agent: %d failure(s)\n", failures);
