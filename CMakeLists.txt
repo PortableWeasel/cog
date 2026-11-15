@@ -19,6 +19,7 @@ endif()
 option(COG_BUILD_CLI "Build the CLI application" ON)
 option(COG_ENABLE_ASAN "Enable AddressSanitizer + UBSan" OFF)
 option(COG_ENABLE_WERROR "Treat compiler warnings as errors" OFF)
+option(COG_BUILD_BENCHMARKS "Build benchmark executables (opt-in; not part of the default CTest run)" OFF)
 
 include(CTest)
 
