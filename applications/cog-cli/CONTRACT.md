@@ -19,11 +19,11 @@ applications/cog-cli/
   tests/              cli-* tests and executable scenarios 11–20
   CONTRACT.md         this file
   HARNESS.md          scenario-writer guide (fixtures and observation)
+```
 
 Scenarios 01–10 and the 05b shutdown regression live in
 `tests/scenarios/`. All 20 numbered scenarios plus 05b use the shared
 `scenario` CTest label.
-```
 
 ## Build targets
 
