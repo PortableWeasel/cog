@@ -2893,3 +2893,11 @@ bool cog_store_exists(cog_store_t *store, const char *id)
     }
     return store->backend->exists(store, id);
 }
+
+bool cog_store_auto_save(const cog_store_t *store)
+{
+    if (store == NULL) {
+        return false;
+    }
+    return store->auto_save;
+}

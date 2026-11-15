@@ -41,10 +41,10 @@ Both are plain `static const`-style vtable instances defined in
 
 ## Functions and error codes
 
-Every function returns `cog_result_t` except `cog_store_free` (void) and
-`cog_store_exists` (bool). Codes marked **(ext)** are fail-closed
-extensions not listed in the header's `@return` block but consistent with
-`cog/result.h`; they are pinned by the tests.
+Every function returns `cog_result_t` except `cog_store_free` (void),
+`cog_store_exists` (bool), and `cog_store_auto_save` (bool). Codes marked
+**(ext)** are fail-closed extensions not listed in the header's `@return`
+block but consistent with `cog/result.h`; they are pinned by the tests.
 
 | Function | Success | Errors |
 |----------|---------|--------|
@@ -56,6 +56,7 @@ extensions not listed in the header's `@return` block but consistent with
 | `cog_store_delete` | `COG_OK` | `NULL_PTR`, `NOT_FOUND`, `INVALID_ARG` (ext), `OVERFLOW` (ext), `IO` |
 | `cog_store_list` | `COG_OK` | `NULL_PTR` (store/out_ids/out_count NULL), `IO`, `NOMEM` |
 | `cog_store_exists` | bool | false for NULL store/id, unsafe/over-long id, or absent session |
+| `cog_store_auto_save` | bool | false for NULL store; otherwise the configured `auto_save` flag |
 
 `COG_ERROR_NOMEM` is not injectable through this API (no allocation-failure
 hook), so it is documented but not exercised by the tests.
@@ -158,11 +159,13 @@ Both flags are accepted and retained by the store.
   on-disk layout is plain JSONL + index, and the store does not pretend to
   compress. A `compress = true` store writes the same plain files and
   round-trips identically.
-- `auto_save` has **no trigger in this module**. Per `cog/core.h`, the
-  *core* auto-saves sessions after each exchange when a store is
-  configured; that trigger lives in the core integration layer and is not
-  wired into `core.c` in this stage. This module records the flag and
-  documents the boundary honestly rather than modifying `core.c` broadly.
+- `auto_save` is recorded by this module and exposed read-only through
+  `cog_store_auto_save()` (false for a NULL store). The store itself
+  performs **no implicit writes**: the *trigger* lives in the core. Per
+  `cog/core.h`, when a store is configured and `cog_store_auto_save()` is
+  true, `core.c` saves the session once after each successfully handled
+  `COG_EVENT_LLM_COMPLETE` exchange (see the core CONTRACT). This module
+  only records and reports the flag.
 
 ### Path safety
 
