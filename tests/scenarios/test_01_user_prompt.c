@@ -196,7 +196,7 @@ static void scenario_user_prompt(void)
 
     ui_len = end_capture(ui, sizeof(ui));
 
-    /* Step 5a: session history = user + one assistant node per chunk. */
+    /* Step 5a: session history = user + one complete assistant turn. */
     n = fixture_history(app, hist, 8U);
     CHECK_EQ_INT((long long)n, 2LL);
     CHECK(hist[0].role == COG_MESSAGE_ROLE_USER);

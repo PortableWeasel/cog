@@ -137,7 +137,7 @@ static void test_streaming_flow(void)
     CHECK(cog_cli_app_run(app) == COG_OK);
     CHECK(cog_cli_app_state(app) == (cog_state_t)0); /* IDLE */
 
-    /* Session: user + three assistant chunks. */
+    /* Session: user + one complete assistant turn. */
     CHECK_EQ_INT((long long)history_count(app), 2LL);
     CHECK(history_role(app, 0U) == COG_MESSAGE_ROLE_USER);
     CHECK(history_content(app, 0U) != NULL &&
@@ -210,7 +210,7 @@ static void test_cancel_flow(void)
     CHECK(cog_cli_app_run(app) == COG_OK);
     CHECK(cog_cli_app_state(app) == (cog_state_t)0); /* IDLE */
 
-    /* The user message is preserved; no assistant node. */
+    /* The user message and explicit cancelled assistant aggregate are preserved. */
     cog_cli_display_snapshot_t display;
     CHECK(cog_cli_app_display_snapshot(app, &display) == COG_OK);
     CHECK(display.item_count == 2U);

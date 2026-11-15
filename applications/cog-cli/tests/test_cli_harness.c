@@ -209,13 +209,13 @@ static void scenario_cancel(void)
     /* Submit the prompt first, then cancel: the CANCEL event is
      * dispatched while the turn is streaming (AWAITING_LLM), arming
      * provider cancellation; the next receive aborts and the partial
-     * turn is discarded. */
+     * turn is retained as cancelled. */
     CHECK(cog_cli_app_submit(app, "explain X", 9U) == COG_OK);
     CHECK(cog_cli_app_cancel(app) == COG_OK);
     CHECK(cog_cli_app_run(app) == COG_OK);
     CHECK(cog_cli_app_state(app) == (cog_state_t)0); /* IDLE */
 
-    /* Only the user message remains; no orphaned assistant node. */
+    /* The user message and cancelled assistant aggregate remain visible. */
     n = fixture_history(app, hist, 8U);
     CHECK_EQ_INT((long long)n, 2LL);
     CHECK(hist[1].status == COG_MESSAGE_CANCELLED);

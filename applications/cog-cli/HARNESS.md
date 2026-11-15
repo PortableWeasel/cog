@@ -73,7 +73,7 @@ ctest --test-dir build-k \
   --output-on-failure
 ```
 
-This selects 25 checks with the audited transport profile. Original03/07/09/10
+This selects 27 checks with the audited transport profile. Original03/07/09/10
 are broader agent/IPC/orchestrator scenarios; app fixture migrations preserve
 those assertions while O supplies their remaining runtime composition. The full
 release gate still runs every original scenario plus R01–R18; this selection is

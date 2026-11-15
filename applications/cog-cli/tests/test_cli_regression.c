@@ -6,8 +6,7 @@
  *  - non-retryable provider errors propagate out of cog_cli_app_run
  *    (fail loudly, no retry) and the process-facing contract holds;
  *  - NULL-pointer handling across the app API surface;
- *  - the store does NOT auto-save a cancelled turn (documented: only
- *    LLM_COMPLETE triggers a save), while a completed turn does save.
+ *  - the durable store preserves both completed and cancelled turn state.
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -138,10 +137,10 @@ static void test_null_handling(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Store auto-save: completed turn saves, cancelled turn does not      */
+/* Durable state: completed and cancelled turns are preserved      */
 /* ------------------------------------------------------------------ */
 
-static void test_store_save_on_complete_only(void)
+static void test_store_preserves_complete_and_cancelled(void)
 {
     char dir_ok[] = "/tmp/cog-cli-reg-store-XXXXXX";
     char dir_cancel[] = "/tmp/cog-cli-reg-store-XXXXXX";
@@ -155,7 +154,7 @@ static void test_store_save_on_complete_only(void)
         return;
     }
 
-    /* Completed turn: the store auto-saves on LLM_COMPLETE. */
+    /* Completed turn: the application saves the complete aggregate. */
     (void)memset(&opts, 0, sizeof(opts));
     opts.prompt = "hello";
     opts.chunks = "persisted";
@@ -168,7 +167,7 @@ static void test_store_save_on_complete_only(void)
     CHECK(cog_store_exists(cog_cli_app_store(app), sid));
     cog_cli_app_free(app);
 
-    /* Cancelled turn: no LLM_COMPLETE, so no auto-save (documented).  A
+    /* Cancelled turn: explicit CANCELLED state is also saved. A
      * fresh store dir avoids any session-id collision with the run above. */
     (void)memset(&opts, 0, sizeof(opts));
     opts.prompt = "hello";
@@ -193,7 +192,7 @@ int main(void)
 {
     test_nonretryable_error_propagates();
     test_null_handling();
-    test_store_save_on_complete_only();
+    test_store_preserves_complete_and_cancelled();
 
     if (failures != 0) {
         (void)fprintf(stderr, "test_cli_regression: %d failure(s)\n",

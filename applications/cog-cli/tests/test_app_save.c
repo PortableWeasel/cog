@@ -76,5 +76,22 @@ int main(void)
     REQUIRE(cog_cli_app_run(limited)==COG_ERROR_LIMIT);
     cog_mock_state_t state;REQUIRE(cog_mock_provider_state(limited->provider,&state)==COG_OK && state.send_count==1U);
     cog_cli_app_free(limited);
+    /* Exhaust the actual constructor node reservation, independently of the
+       injected append failure above. Safe sibling branches consume the pool. */
+    fail_assistant=false;
+    bounded.prompt="new";
+    cog_cli_app_t *full=NULL;REQUIRE(cog_cli_app_new(&full,&bounded)==COG_OK);
+    cog_message_t message={.role=COG_MESSAGE_ROLE_USER,.content="anchor",.content_len=6};
+    cog_session_node_t *anchor=NULL;REQUIRE(cog_session_append(full->session,&message,&anchor)==COG_OK);
+    message=(cog_message_t){.role=COG_MESSAGE_ROLE_ASSISTANT,.content="old",.content_len=3};
+    for(size_t i=0;i<CLI_NODES-2U;i++)
+        REQUIRE(cog_session_add_message(full->session,anchor,&message,NULL)==COG_OK);
+    REQUIRE(cog_cli_app_run(full)==COG_ERROR_LIMIT);
+    REQUIRE(cog_cli_app_display_snapshot(full,&snapshot)==COG_OK);
+    REQUIRE(snapshot.item_count==4U && snapshot.items[3].status==COG_MESSAGE_INCOMPLETE);
+    REQUIRE(snapshot.items[3].text_len==4U && memcmp(snapshot.items[3].text,"kept",4)==0);
+    REQUIRE(cog_cli_app_submit(full,"again",5)==COG_ERROR_LIMIT);
+    REQUIRE(cog_cli_app_run(full)==COG_ERROR_LIMIT);
+    cog_cli_app_free(full);
     return 0;
 }

@@ -3,9 +3,9 @@
  * @brief Scenario 20: user interrupt and queued message.
  *
  * Path A (immediate interrupt): the user submits a prompt and cancels
- * while the turn is streaming.  The partial assistant response node is
- * discarded (cog_session_discard_node via the CLI handler), the session
- * tree keeps only the user message, and the core returns to IDLE.
+ * while the turn is streaming.  The partial assistant response is
+ * retained as an explicit cancelled aggregate, and the session
+ * tree preserves both user work and cancellation evidence, and the core returns to IDLE.
  *
  * Path B (queued message): a message queued while a turn is pending is
  * auto-injected as the next turn after the current one completes.  Both
@@ -85,10 +85,10 @@ static size_t fixture_history(cog_cli_app_t *app, cog_message_t *out,
 }
 
 /* ------------------------------------------------------------------ */
-/* Path A: immediate interrupt discards the partial assistant node     */
+/* Path A: immediate interrupt retains the cancelled assistant aggregate     */
 /* ------------------------------------------------------------------ */
 
-static void test_interrupt_discards_partial(void)
+static void test_interrupt_retains_cancelled(void)
 {
     static const cog_mock_step_t steps[] = {
         {COG_MOCK_STEP_CHUNK, "partial", COG_OK, 0, false, 0U, NULL},
@@ -117,7 +117,7 @@ static void test_interrupt_discards_partial(void)
     CHECK(cog_cli_app_run(app) == COG_OK);
     CHECK(cog_cli_app_state(app) == (cog_state_t)0); /* IDLE */
 
-    /* Only the user message remains; no orphaned assistant node. */
+    /* The user message and cancelled assistant aggregate remain visible. */
     n = fixture_history(app, hist, 8U);
     CHECK_EQ_INT((long long)n, 2LL);
     CHECK(hist[1].status == COG_MESSAGE_CANCELLED);
@@ -227,7 +227,7 @@ static void test_pending_fifo(void)
 
 int main(void)
 {
-    test_interrupt_discards_partial();
+    test_interrupt_retains_cancelled();
     test_queue_auto_injects();
     test_pending_fifo();
 
