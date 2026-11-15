@@ -95,3 +95,13 @@ keeps subreaper/signal changes inside an owned helper, never the embedding host;
 the cancellation profile requires descendants remain in the owned group. Test
 ordinary inherited-group grandchildren outliving the shell, exact parser/depth
 limits, unsupported numeric ranges and result resize with one effect.
+
+## Stage 14.I executable writer evidence
+
+The toolkit implementation now has dedicated real-library tests for this trace:
+`test_toolkit_async`, `test_toolkit_resources`, `test_toolkit_fencing` and
+`test_workspace`. They cover policy/guard validation, retained at-most-once
+output, constructor limits/OOM, disposable workspace refusal/effects and supported
+process-tree cancellation/reaping. Strict and ASan/UBSan writer suites pass;
+[delivery evidence](../REAL_CLIENT_I_EVIDENCE.md) records exact scope and limits.
+Independent review and application durable-loop integration remain pending.

@@ -2,14 +2,20 @@
 # cog-toolkit — tool execution framework
 # -----------------------------------------------------------------------
 
-# Stage 12.4b: cog-toolkit is now a real static library.  It compiles the
-# call/exec/result modules into an archive while preserving the public
-# include path, the C11 compile feature, the cog::toolkit alias, and the
-# strict-warning settings that downstream INTERFACE consumers rely on.
+# Pinned private codec object is absorbed into the installed archive. All
+# exports are namespaced; consumers have no yyjson link/include dependency.
+# Upstream sources remain unmodified and separate from Cog warning policy.
 add_library(cog-toolkit-yyjson OBJECT vendor/yyjson/yyjson.c)
 target_compile_features(cog-toolkit-yyjson PRIVATE c_std_11)
 target_compile_options(cog-toolkit-yyjson PRIVATE
     -include ${CMAKE_CURRENT_SOURCE_DIR}/vendor/yyjson/prefix.h)
+
+if(COG_ENABLE_ASAN)
+    target_compile_options(cog-toolkit-yyjson PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+endif()
+if(COG_ENABLE_TSAN)
+    target_compile_options(cog-toolkit-yyjson PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
+endif()
 
 add_library(cog-toolkit STATIC
     src/toolkit_call.c
@@ -46,7 +52,7 @@ target_enable_warnings(cog-toolkit)
 #
 # The test is registered here (not in tests/unit/CMakeLists.txt) because
 # it links the cog-toolkit archive; the shared wiring in
-# tests/unit/CMakeLists.txt is owned by integration ticket 1433731.
+# tests/unit/CMakeLists.txt is shared with other delivery packages.
 # -----------------------------------------------------------------------
 add_executable(test_toolkit
     ${PROJECT_SOURCE_DIR}/tests/unit/test_toolkit.c
@@ -99,3 +105,22 @@ install(EXPORT cog-toolkit-targets
     NAMESPACE cog::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cog)
 install(FILES vendor/yyjson/YYJSON-LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/cog-toolkit RENAME yyjson-LICENSE)
+
+add_executable(test_toolkit_async ${PROJECT_SOURCE_DIR}/tests/unit/test_toolkit_async.c)
+target_link_libraries(test_toolkit_async PRIVATE cog::toolkit)
+target_enable_warnings(test_toolkit_async)
+add_test(NAME unit-toolkit-async COMMAND test_toolkit_async)
+add_executable(test_workspace ${PROJECT_SOURCE_DIR}/tests/unit/test_workspace.c)
+target_link_libraries(test_workspace PRIVATE cog::toolkit)
+target_enable_warnings(test_workspace)
+add_test(NAME unit-workspace COMMAND test_workspace)
+set_tests_properties(unit-workspace PROPERTIES TIMEOUT 15)
+add_executable(test_toolkit_resources ${PROJECT_SOURCE_DIR}/tests/unit/test_toolkit_resources.c)
+target_link_libraries(test_toolkit_resources PRIVATE cog::toolkit)
+target_enable_warnings(test_toolkit_resources)
+target_link_options(test_toolkit_resources PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
+add_test(NAME unit-toolkit-resources COMMAND test_toolkit_resources)
+add_executable(test_toolkit_fencing ${PROJECT_SOURCE_DIR}/tests/unit/test_toolkit_fencing.c)
+target_link_libraries(test_toolkit_fencing PRIVATE cog::toolkit)
+target_enable_warnings(test_toolkit_fencing)
+add_test(NAME unit-toolkit-fencing COMMAND test_toolkit_fencing)

@@ -92,7 +92,7 @@ static void schema_cases(void)
     expect_schema("{}", "{\"x\":1,\"x\":2}", COG_ERROR_INVALID_ARG);
     expect_schema("{}", "{\"x\":{\"a\":1,\"\\u0061\":2}}", COG_ERROR_INVALID_ARG);
     expect_schema("{}", "{\"x\":01}", COG_ERROR_INVALID_ARG);
-    expect_schema("{}", "{\"x\":1e999}", COG_ERROR_INVALID_ARG);
+    expect_schema("{}", "{\"x\":1e999}", COG_ERROR_UNSUPPORTED);
     expect_schema("{}", "{\"x\":\"\\ud800\"}", COG_ERROR_INVALID_ARG);
     expect_schema("{}", "{\"x\":\"\xc0\xaf\"}", COG_ERROR_INVALID_ARG);
     expect_schema("{}", "{\"x\":1} trailing", COG_ERROR_INVALID_ARG);
@@ -105,7 +105,7 @@ static void schema_cases(void)
     expect_schema("{\"properties\":{\"i\":{\"type\":\"integer\"}}}", "{\"i\":1.0e2}", COG_OK);
     expect_schema("{\"properties\":{\"i\":{\"type\":\"integer\"}}}", "{\"i\":9223372036854775807}", COG_OK);
     expect_schema("{\"properties\":{\"i\":{\"type\":\"integer\"}}}", "{\"i\":-9223372036854775808}", COG_OK);
-    expect_schema("{\"properties\":{\"i\":{\"type\":\"integer\"}}}", "{\"i\":9223372036854775808}", COG_ERROR_INVALID_ARG);
+    expect_schema("{\"properties\":{\"i\":{\"type\":\"integer\"}}}", "{\"i\":9223372036854775808}", COG_ERROR_UNSUPPORTED);
     expect_schema("{\"properties\":{\"i\":{\"type\":\"integer\"}}}", "{\"i\":9007199254740993.1}", COG_ERROR_INVALID_ARG);
     expect_schema("{\"properties\":{\"i\":{\"type\":\"integer\"}}}", "{\"i\":1.000000000000000000001}", COG_ERROR_INVALID_ARG);
     expect_schema("{\"properties\":{\"i\":{\"type\":\"number\",\"minimum\":2,\"maximum\":4}}}", "{\"i\":3.5}", COG_OK);

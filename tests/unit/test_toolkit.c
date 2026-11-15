@@ -1113,8 +1113,8 @@ static int verify_collection_get_errors(void)
 /** result_is_ok. */
 static int verify_result_is_ok(void)
 {
-    cog_toolkit_result_t ok = { COG_OK, NULL, 0U, NULL };
-    cog_toolkit_result_t bad = { COG_ERROR_IO, NULL, 0U, NULL };
+    cog_toolkit_result_t ok = { .status = COG_OK };
+    cog_toolkit_result_t bad = { .status = COG_ERROR_IO };
 
     if (!cog_toolkit_result_is_ok(&ok)) {
         return 1;

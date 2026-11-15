@@ -6,10 +6,11 @@
 #include <assert.h>
 static cog_core_t *toolkit_test_core;
 static cog_session_t *toolkit_test_session;
+static cog_store_t *toolkit_test_store;
 static cog_handler_result_t toolkit_test_handler(cog_core_t *core, const cog_event_t *event)
 {
     (void)core; (void)event;
-    cog_handler_result_t result = { COG_TRANSITION_STAY, COG_OK };
+    cog_handler_result_t result = { COG_TRANSITION_SELF, COG_OK };
     return result;
 }
 static void toolkit_core_create(void)
@@ -24,6 +25,7 @@ static void toolkit_core_create(void)
     assert(cog_session_new(&toolkit_test_session, &session) == COG_OK);
     cog_core_config_t config = {0};
     config.session = toolkit_test_session;
+    config.store = toolkit_test_store;
     config.dispatch_table = dispatch;
     config.dispatch_table_size = 1U;
     config.pending_session_capacity = 1U;

@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #define COG_WORKSPACE_PATH_BYTES 4096U
 #define COG_WORKSPACE_IO_BYTES 4096U
+typedef struct workspace_directory workspace_directory_t;
 struct cog_workspace {
     int root_fd;
     size_t max_file;
@@ -16,9 +17,13 @@ struct cog_workspace {
     bool commands;
     char **environment;
     char *strings;
+    char *file_workspace;
+    char *edit_workspace;
+    workspace_directory_t *traversal_workspace;
+    bool scratch_borrowed;
 };
 typedef enum workspace_operation { WORKSPACE_READ, WORKSPACE_SEARCH, WORKSPACE_EDIT, WORKSPACE_COMMAND } workspace_operation_t;
-typedef struct workspace_directory { int fd; char path[COG_WORKSPACE_PATH_BYTES]; } workspace_directory_t;
+struct workspace_directory { int fd; char path[COG_WORKSPACE_PATH_BYTES]; };
 typedef struct workspace_report { int status; int shell_status; bool shell_known; } workspace_report_t;
 typedef struct workspace_execution {
     cog_workspace_t *workspace;
@@ -62,6 +67,7 @@ typedef struct workspace_execution {
     uint64_t deadline;
     uint64_t kill_deadline;
     bool clock_set;
+    bool borrowed_scratch;
     bool started;
     bool done;
     bool cancelling;
@@ -71,6 +77,13 @@ typedef struct workspace_execution {
     bool report_eof;
     unsigned int phase;
     mode_t mode;
+    dev_t file_device;
+    ino_t file_inode;
+    off_t file_size;
+    int64_t file_mtime_seconds;
+    long file_mtime_nanoseconds;
+    int64_t file_ctime_seconds;
+    long file_ctime_nanoseconds;
     cog_tool_output_t output;
 } workspace_execution_t;
 int cog_workspace_open_path(cog_workspace_t *workspace, const char *path, int flags);

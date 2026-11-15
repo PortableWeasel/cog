@@ -5,6 +5,7 @@
 #include <cog/session_store.h>
 #include "toolkit_internal.h"
 #include <pthread.h>
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -23,11 +24,11 @@ static void invoke(cog_core_t *core, const cog_tool_table_t *table,
     call->invoked = true;
     cog_toolkit_result_t *out = &call->outcome;
     out->output = call->capture;
-    if (call->cancelled) { out->status = COG_ERROR_ABORTED; call->finished = true; return; }
+    if (call->cancelled) { out->status = COG_ERROR_ABORTED; out->error_message = "call cancelled before execution"; call->finished = true; return; }
     const cog_tool_t *tool;
     out->status = cog_tool_table_lookup(table, call->name, &tool);
-    if (out->status != COG_OK) { call->finished = true; return; }
-    if (tool->handler == NULL) { out->status = COG_ERROR_UNSUPPORTED; call->finished = true; return; }
+    if (out->status != COG_OK) { out->error_message = "tool unavailable"; call->finished = true; return; }
+    if (tool->handler == NULL) { out->status = COG_ERROR_UNSUPPORTED; out->error_message = "asynchronous tool requires execution handle"; call->finished = true; return; }
     uint32_t timeout = call->timeout_ms != 0U ? call->timeout_ms : default_timeout;
     uint64_t began = clock_ms();
     size_t length = 0U;
@@ -191,18 +192,16 @@ cog_result_t cog_toolkit_execute_all(cog_core_t *core, const cog_tool_table_t *t
         batch.ready = true;
         (void)pthread_cond_broadcast(&batch.condition);
         (void)pthread_mutex_unlock(&batch.mutex);
-        bool join_failed = false;
         for (size_t i = 0U; i < created; i++) {
-            if (pthread_join(threads[i], NULL) != 0) { join_failed = true; }
+            int joined = pthread_join(threads[i], NULL);
+            assert(joined == 0);
+            if (joined != 0) { abort(); } /* Never abandon an unjoined worker. */
         }
         (void)pthread_cond_destroy(&batch.condition);
         (void)pthread_mutex_destroy(&batch.mutex);
         free(threads);
         if (created != parallel) { cog_toolkit_result_collection_free(collection); return COG_ERROR_NOMEM; }
-        if (join_failed) { /* Valid joinable IDs on the owning thread cannot fail. */
-            *out_results = collection;
-            return COG_OK;
-        }
+
     }
     *out_results = collection;
     return COG_OK;

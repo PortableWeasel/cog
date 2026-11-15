@@ -35,7 +35,7 @@ static cog_result_t depth_check(const char *text, size_t len, size_t limit)
 }
 
 /* Exact integer arithmetic over a decimal JSON number, without double rounding. */
-static bool integer_value(yyjson_val *value, int64_t *out)
+static cog_result_t integer_parse(yyjson_val *value, int64_t *out)
 {
     const char *raw = yyjson_get_raw(value);
     const char *p = raw;
@@ -45,10 +45,10 @@ static bool integer_value(yyjson_val *value, int64_t *out)
     bool decimal = false;
     bool negative;
     int exponent = 0;
-    int shift;
+    int64_t shift;
     uint64_t magnitude = 0U;
     uint64_t bound;
-    if (raw == NULL) { return false; }
+    if (raw == NULL) { return COG_ERROR_INVALID_ARG; }
     negative = *p == '-';
     if (negative) { p++; }
     const char *start = p;
@@ -71,37 +71,52 @@ static bool integer_value(yyjson_val *value, int64_t *out)
         if (exp_negative) { exponent = -exponent; }
     }
     /* All-zero numbers remain exact even with extreme exponents. */
-    if (trailing == digits) { *out = 0; return true; }
-    if (fractional > (size_t)INT32_MAX) { return false; }
-    shift = exponent - (int)fractional;
-    if (shift < 0 && (size_t)(-shift) > trailing) { return false; }
+    if (trailing == digits) { *out = 0; return COG_OK; }
+    if (fractional > (size_t)INT32_MAX) { return COG_ERROR_INVALID_ARG; }
+    shift = (int64_t)exponent - (int64_t)fractional;
+    if (shift < 0 && (size_t)(-shift) > trailing) { return COG_ERROR_INVALID_ARG; }
     size_t consume = shift < 0 ? digits - (size_t)(-shift) : digits;
     bound = negative ? (uint64_t)INT64_MAX + 1U : (uint64_t)INT64_MAX;
     size_t seen = 0U;
     for (p = start; seen < consume; p++) {
         if (*p == '.') { continue; }
         uint64_t digit = (uint64_t)(unsigned char)(*p - '0');
-        if (magnitude > (bound - digit) / 10U) { return false; }
+        if (magnitude > (bound - digit) / 10U) { return COG_ERROR_UNSUPPORTED; }
         magnitude = magnitude * 10U + digit;
         seen++;
     }
-    if (shift > 19) { return false; }
+    if (shift > 19) { return COG_ERROR_UNSUPPORTED; }
     while (shift > 0) {
-        if (magnitude > bound / 10U) { return false; }
+        if (magnitude > bound / 10U) { return COG_ERROR_UNSUPPORTED; }
         magnitude *= 10U;
         shift--;
     }
     if (negative && magnitude == (uint64_t)INT64_MAX + 1U) { *out = INT64_MIN; }
     else { *out = negative ? -(int64_t)magnitude : (int64_t)magnitude; }
-    return true;
+    return COG_OK;
 }
+
+static bool integer_value(yyjson_val *value, int64_t *out)
+{
+    return integer_parse(value, out) == COG_OK;
+}
+
+/* The pinned fast floating reader allocates nothing. Explicit refusal callbacks
+   also prevent a future disabled-fast-reader build from falling back to libc. */
+static void *numeric_malloc(void *context, size_t bytes)
+{ (void)context; (void)bytes; return NULL; }
+static void *numeric_realloc(void *context, void *memory, size_t old_bytes, size_t bytes)
+{ (void)context; (void)memory; (void)old_bytes; (void)bytes; return NULL; }
+static void numeric_free(void *context, void *memory)
+{ (void)context; (void)memory; }
+static const yyjson_alc numeric_allocator = { numeric_malloc, numeric_realloc, numeric_free, NULL };
 
 static bool number_value(yyjson_val *value, double *out)
 {
     const char *raw = yyjson_get_raw(value);
     yyjson_val parsed;
     if (raw == NULL) { return false; }
-    const char *end = yyjson_read_number(raw, &parsed, 0U, NULL, NULL);
+    const char *end = yyjson_read_number(raw, &parsed, 0U, &numeric_allocator, NULL);
     if (end == NULL || *end != '\0') { return false; }
     *out = yyjson_get_num(&parsed);
     return isfinite(*out);
@@ -111,7 +126,7 @@ static cog_result_t strict_value(yyjson_val *value)
 {
     if (yyjson_is_raw(value)) {
         double number;
-        return number_value(value, &number) ? COG_OK : COG_ERROR_INVALID_ARG;
+        return number_value(value, &number) ? COG_OK : COG_ERROR_UNSUPPORTED;
     }
     if (yyjson_is_obj(value)) {
         size_t index, max;
@@ -267,6 +282,12 @@ static bool matches_type(yyjson_val *value, yyjson_val *type)
 
 static cog_result_t schema_apply(yyjson_val *value, yyjson_val *schema)
 {
+    yyjson_val *type = yyjson_obj_get(schema, "type");
+    if (is_name(type, "integer") && yyjson_is_raw(value)) {
+        int64_t integer;
+        cog_result_t numeric = integer_parse(value, &integer);
+        if (numeric == COG_ERROR_UNSUPPORTED) { return numeric; }
+    }
     if (!matches_type(value, yyjson_obj_get(schema, "type"))) {
         return COG_ERROR_INVALID_ARG;
     }

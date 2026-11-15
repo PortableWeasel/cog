@@ -16,18 +16,18 @@
 
 /* No embedding-process signal/subreaper/cwd changes. All such state below
    belongs to this explicit helper, which never calls back into Cog. */
-static void helper_close_descriptors(const int *keep, size_t count)
+static bool helper_close_descriptors(const int *keep, size_t count)
 {
-    unsigned int first = 3U;
+    unsigned int first = 0U;
     for (;;) {
         unsigned int next = UINT_MAX;
         for (size_t i = 0U; i < count; i++) {
-            if (keep[i] >= 3 && (unsigned int)keep[i] >= first && (unsigned int)keep[i] < next) {
+            if (keep[i] >= 0 && (unsigned int)keep[i] >= first && (unsigned int)keep[i] < next) {
                 next = (unsigned int)keep[i];
             }
         }
-        if (next > first) { (void)syscall(SYS_close_range, first, next - 1U, 0U); }
-        if (next == UINT_MAX) { break; }
+        if (next > first && syscall(SYS_close_range, first, next - 1U, 0U) != 0) { return false; }
+        if (next == UINT_MAX) { return true; }
         first = next + 1U;
     }
 }
@@ -43,8 +43,10 @@ static void process_helper(workspace_execution_t *execution, int control, int ou
                            int report_fd, int cwd)
 {
     const int keep[] = {control, output, report_fd, cwd};
-    helper_close_descriptors(keep, sizeof(keep) / sizeof(keep[0]));
     workspace_report_t report = { .status = COG_ERROR_IO };
+    if (!helper_close_descriptors(keep, sizeof(keep) / sizeof(keep[0]))) {
+        report.status = COG_ERROR_UNSUPPORTED; helper_report(report_fd, &report); _exit(0);
+    }
     struct sigaction disposition;
     memset(&disposition, 0, sizeof(disposition));
     disposition.sa_handler = SIG_DFL;
@@ -65,11 +67,12 @@ static void process_helper(workspace_execution_t *execution, int control, int ou
     if (shell < 0) { helper_report(report_fd, &report); _exit(0); }
     if (shell == 0) {
         if (setpgid(0, 0) != 0 || fchdir(cwd) != 0 ||
-            dup2(output, STDOUT_FILENO) < 0 || dup2(output, STDERR_FILENO) < 0) { _exit(126); }
-        int null_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+            dup2(output, STDOUT_FILENO) < 0 || dup2(output, STDERR_FILENO) < 0 ||
+            fcntl(STDOUT_FILENO, F_SETFD, 0) != 0 || fcntl(STDERR_FILENO, F_SETFD, 0) != 0) { _exit(126); }
+        int null_fd = open("/dev/null", O_RDONLY);
         if (null_fd < 0 || dup2(null_fd, STDIN_FILENO) < 0) { _exit(126); }
         const int shell_keep[] = { STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO };
-        helper_close_descriptors(shell_keep, sizeof(shell_keep) / sizeof(shell_keep[0]));
+        if (!helper_close_descriptors(shell_keep, sizeof(shell_keep) / sizeof(shell_keep[0]))) { _exit(126); }
         char *const argv[] = { (char *)"sh", (char *)"-c", (char *)(void *)execution->command, NULL };
         execve("/bin/sh", argv, execution->workspace->environment);
         _exit(127);
@@ -78,7 +81,6 @@ static void process_helper(workspace_execution_t *execution, int control, int ou
     (void)close(output);
     (void)close(cwd);
     report.status = COG_OK;
-    bool stopping = false;
     for (;;) {
         /* Every descendant in the supported inherited group is either still
            parented to its live ancestor or adopted here after that parent dies. */
@@ -92,21 +94,19 @@ static void process_helper(workspace_execution_t *execution, int control, int ou
         if (child < 0 && errno != EINTR) { report.status = COG_ERROR_INDETERMINATE; break; }
         struct pollfd descriptor = { .fd = control, .events = POLLIN | POLLHUP };
         int polled = poll(&descriptor, 1U, 10);
-        if (polled < 0 && errno != EINTR) { report.status = COG_ERROR_INDETERMINATE; (void)kill(-shell, SIGKILL); stopping = true; }
+        if (polled < 0 && errno != EINTR) { report.status = COG_ERROR_INDETERMINATE; (void)kill(-shell, SIGKILL); }
         if (polled > 0 && (descriptor.revents & (POLLIN | POLLHUP)) != 0) {
             char commands[16];
             ssize_t count = read(control, commands, sizeof(commands));
-            if (count == 0) { (void)kill(-shell, SIGKILL); stopping = true; }
+            if (count == 0) { (void)kill(-shell, SIGKILL); }
             else if (count > 0) {
                 for (ssize_t i = 0; i < count; i++) {
-                    if (commands[i] == 'T') { (void)kill(-shell, SIGTERM); stopping = true; }
-                    else if (commands[i] == 'K') { (void)kill(-shell, SIGKILL); stopping = true; }
+                    if (commands[i] == 'T') { (void)kill(-shell, SIGTERM); }
+                    else if (commands[i] == 'K') { (void)kill(-shell, SIGKILL); }
                 }
             }
         }
-        if (stopping && report.shell_known) {
-            /* A child that ignored TERM is handled when parent sends K. */
-        }
+
     }
     if (!report.shell_known && report.status == COG_OK) { report.status = COG_ERROR_INDETERMINATE; }
     helper_report(report_fd, &report);
@@ -137,7 +137,7 @@ cog_result_t cog_workspace_process_start(workspace_execution_t *execution)
     /* Fail before launching the helper if descriptor-safe cleanup is absent.
        Probe an empty range: a supported syscall returns EINVAL, not ENOSYS. */
     errno = 0;
-    if (syscall(SYS_close_range, 4U, 3U, 0U) < 0 && errno == ENOSYS) {
+    if (syscall(SYS_close_range, 4U, 3U, 0U) < 0 && errno != EINVAL) {
         result = COG_ERROR_UNSUPPORTED; goto cleanup;
     }
     pid_t helper = fork();

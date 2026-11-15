@@ -61,6 +61,31 @@ int cog_workspace_open_path(cog_workspace_t *workspace, const char *path, int fl
     return fd;
 }
 
+static int open_root(const char *path)
+{
+    if (*path == '\0' || strlen(path) >= COG_WORKSPACE_PATH_BYTES) { errno = EINVAL; return -1; }
+    char copy[COG_WORKSPACE_PATH_BYTES];
+    memcpy(copy, path, strlen(path) + 1U);
+    int directory = open(path[0] == '/' ? "/" : ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (directory < 0) { return -1; }
+    char *component = copy;
+    while (*component != '\0') {
+        while (*component == '/') { component++; }
+        if (*component == '\0') { break; }
+        char *end = strchr(component, '/');
+        if (end != NULL) { *end = '\0'; }
+        if (strcmp(component, "..") == 0) { (void)close(directory); errno = EINVAL; return -1; }
+        int next = openat(directory, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        int error = errno;
+        (void)close(directory);
+        if (next < 0) { errno = error; return -1; }
+        directory = next;
+        if (end == NULL) { break; }
+        component = end + 1;
+    }
+    return directory;
+}
+
 static cog_result_t path_error(void)
 {
     return errno == ELOOP || errno == ENOTDIR || errno == EINVAL ? COG_ERROR_INVALID_ARG :
@@ -102,7 +127,8 @@ cog_result_t cog_workspace_new(cog_workspace_t **out, const cog_workspace_config
         size_t name_len;
         if (environment[i] == NULL || !environment_name(environment[i], &name_len)) { return COG_ERROR_INVALID_ARG; }
         for (size_t j = 0U; j < i; j++) {
-            if (strncmp(environment[i], environment[j], name_len) == 0 && environment[j][name_len] == '=') { return COG_ERROR_INVALID_ARG; }
+            if (strchr(environment[j], '=') - environment[j] == (ptrdiff_t)name_len &&
+                memcmp(environment[i], environment[j], name_len) == 0) { return COG_ERROR_INVALID_ARG; }
         }
         size_t length = strlen(environment[i]) + 1U;
         if (length > SIZE_MAX - strings) { return COG_ERROR_INVALID_ARG; }
@@ -113,7 +139,11 @@ cog_result_t cog_workspace_new(cog_workspace_t **out, const cog_workspace_config
     workspace->root_fd = -1;
     workspace->environment = calloc(count + 1U, sizeof(char *));
     workspace->strings = malloc(strings);
-    if (workspace->environment == NULL || workspace->strings == NULL) {
+    workspace->file_workspace = malloc(config->max_file_bytes + 1U);
+    workspace->edit_workspace = malloc(config->max_file_bytes + 1U);
+    workspace->traversal_workspace = calloc(config->max_search_entries, sizeof(workspace_directory_t));
+    if (workspace->environment == NULL || workspace->strings == NULL ||
+        workspace->file_workspace == NULL || workspace->edit_workspace == NULL || workspace->traversal_workspace == NULL) {
         (void)cog_workspace_free(workspace); return COG_ERROR_NOMEM;
     }
     char *storage = workspace->strings;
@@ -126,9 +156,7 @@ cog_result_t cog_workspace_new(cog_workspace_t **out, const cog_workspace_config
         memcpy(storage, environment[i], length);
         storage += length;
     }
-    /* The root itself also refuses a symlink. Intermediate root components are
-       application-selected; all model-selected paths below it use openat. */
-    workspace->root_fd = open(config->root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    workspace->root_fd = open_root(config->root);
     if (workspace->root_fd < 0) { (void)cog_workspace_free(workspace); return COG_ERROR_IO; }
     workspace->max_file = config->max_file_bytes;
     workspace->max_entries = config->max_search_entries;
@@ -146,6 +174,9 @@ cog_result_t cog_workspace_free(cog_workspace_t *workspace)
     if (workspace->root_fd >= 0) { (void)close(workspace->root_fd); }
     free(workspace->environment);
     free(workspace->strings);
+    free(workspace->file_workspace);
+    free(workspace->edit_workspace);
+    free(workspace->traversal_workspace);
     free(workspace);
     return COG_OK;
 }
@@ -189,7 +220,7 @@ void cog_workspace_finish(workspace_execution_t *execution, cog_result_t status)
     if (execution->fd >= 0) { (void)close(execution->fd); execution->fd = -1; }
     if (execution->temporary_fd >= 0) { (void)close(execution->temporary_fd); execution->temporary_fd = -1; }
     if (execution->temporary[0] != '\0' && execution->parent_fd >= 0) {
-        (void)unlinkat(execution->parent_fd, execution->temporary, 0);
+        if (unlinkat(execution->parent_fd, execution->temporary, 0) != 0) { status = COG_ERROR_IO; }
         execution->temporary[0] = '\0';
     }
     if (execution->parent_fd >= 0) { (void)close(execution->parent_fd); execution->parent_fd = -1; }
@@ -213,9 +244,8 @@ static cog_result_t workspace_destroy(void *handle)
     cog_toolkit_json_free(&execution->json);
     execution->workspace->borrowers--;
     free(execution->capture);
-    free(execution->file);
-    free(execution->replacement);
-    free(execution->directories);
+    if (execution->borrowed_scratch) { execution->workspace->scratch_borrowed = false; }
+    else { free(execution->file); free(execution->replacement); free(execution->directories); }
     free(execution);
     return COG_OK;
 }
@@ -267,7 +297,13 @@ static cog_result_t workspace_new(cog_core_t *core, const char *request, size_t 
     }
     execution->capture = calloc(config->max_output_bytes + 1U, 1U);
     execution->output.output = execution->capture;
-    if (operation != WORKSPACE_COMMAND) {
+    if (operation != WORKSPACE_COMMAND && !workspace->scratch_borrowed) {
+        workspace->scratch_borrowed = true;
+        execution->borrowed_scratch = true;
+        execution->file = workspace->file_workspace;
+        execution->replacement = workspace->edit_workspace;
+        execution->directories = workspace->traversal_workspace;
+    } else if (operation != WORKSPACE_COMMAND) {
         execution->file = malloc(workspace->max_file + 1U);
         if (operation == WORKSPACE_EDIT) { execution->replacement = malloc(workspace->max_file + 1U); }
         if (operation == WORKSPACE_SEARCH) {
@@ -333,7 +369,15 @@ static cog_result_t workspace_start(void *handle, uint64_t now)
             execution->fd = -1;
         } else if (!S_ISREG(st.st_mode)) { r = COG_ERROR_INVALID_ARG; }
         else if (st.st_size < 0 || (uint64_t)st.st_size > execution->workspace->max_file) { r = COG_ERROR_LIMIT; }
-        else { execution->mode = st.st_mode; memcpy(execution->current_path, execution->path, strlen(execution->path) + 1U); }
+        else {
+            execution->mode = st.st_mode;
+            execution->file_device = st.st_dev; execution->file_inode = st.st_ino; execution->file_size = st.st_size;
+            execution->file_mtime_seconds = (int64_t)st.st_mtim.tv_sec;
+            execution->file_mtime_nanoseconds = st.st_mtim.tv_nsec;
+            execution->file_ctime_seconds = (int64_t)st.st_ctim.tv_sec;
+            execution->file_ctime_nanoseconds = st.st_ctim.tv_nsec;
+            memcpy(execution->current_path, execution->path, strlen(execution->path) + 1U);
+        }
     }
     if (r != COG_OK) { cog_workspace_finish(execution, r); }
     return COG_OK;
@@ -464,12 +508,12 @@ static cog_result_t file_step(workspace_execution_t *execution)
         }
         if (fsync(execution->temporary_fd) != 0) { return COG_ERROR_IO; }
         /* Refuse a final symlink/different target inserted since the read. */
-        struct stat before, current;
-        if (fstat(execution->fd, &before) != 0 ||
-            fstatat(execution->parent_fd, execution->leaf, &current, AT_SYMLINK_NOFOLLOW) != 0) { return COG_ERROR_IO; }
-        if (!S_ISREG(current.st_mode) || current.st_ino != before.st_ino || current.st_dev != before.st_dev ||
-            current.st_size != before.st_size || current.st_mtim.tv_sec != before.st_mtim.tv_sec ||
-            current.st_mtim.tv_nsec != before.st_mtim.tv_nsec) { return COG_ERROR_INVALID_STATE; }
+        struct stat current;
+        if (fstatat(execution->parent_fd, execution->leaf, &current, AT_SYMLINK_NOFOLLOW) != 0) { return COG_ERROR_IO; }
+        if (!S_ISREG(current.st_mode) || current.st_ino != execution->file_inode || current.st_dev != execution->file_device ||
+            current.st_size != execution->file_size || (int64_t)current.st_mtim.tv_sec != execution->file_mtime_seconds ||
+            current.st_mtim.tv_nsec != execution->file_mtime_nanoseconds ||
+            (int64_t)current.st_ctim.tv_sec != execution->file_ctime_seconds || current.st_ctim.tv_nsec != execution->file_ctime_nanoseconds) { return COG_ERROR_INVALID_STATE; }
         if (renameat(execution->parent_fd, execution->temporary, execution->parent_fd, execution->leaf) != 0) { return COG_ERROR_IO; }
         execution->temporary[0] = '\0';
         if (fsync(execution->parent_fd) != 0) { return COG_ERROR_INDETERMINATE; }

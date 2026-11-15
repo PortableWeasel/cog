@@ -12,11 +12,9 @@
  * @c toolkit_exec.c using the private layout in @c toolkit_internal.h;
  * this module provides the query and destruction functions.
  *
- * Schema validation implements a small, documented JSON Schema subset:
- * the @c type keyword (object/array/string/number/integer/boolean/null)
- * and, for objects, the @c required keyword (an array of property names).
- * Unknown keywords are ignored.  A NULL or empty schema means "no
- * validation required".
+ * Schema validation shares the strict bounded async subset. The compatibility
+ * validator uses an automatic local pool, with 64 KiB input and depth 64 limits.
+ * A NULL/empty schema requests no validation.
  *
  * The module holds no global mutable state.
  *
@@ -27,13 +25,8 @@
 #include "toolkit_internal.h"
 #include "toolkit_json.h"
 
-#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* Maximum number of required-property names a schema may list.  Schemas
- * that exceed this are rejected as malformed/unsupported. */
-#define COG_TOOLKIT_SCHEMA_MAX_REQUIRED 64U
 
 /* ------------------------------------------------------------------ */
 /* Result collection                                                   */
