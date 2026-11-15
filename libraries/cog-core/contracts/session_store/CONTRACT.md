@@ -275,3 +275,9 @@ wire versions, trailing bytes and strict v1 migration/inspection/tail behavior.
 Targeted C11-Werror and ASan/UBSan codec/session executions pass. This evidence
 does not establish atomic manifest transactions or ownership-fencing behavior;
 those remain G.2 transaction/backend delivery and independent-review work.
+
+Additional codec adversarial coverage mutates every byte of a valid structured
+record and checks bounded decode/restore without effects, exercises arbitrary
+scratch-buffer alignment, duplicate v1 fields, noncanonical base64 padding and
+embedded-NUL legacy payload refusal. Scratch allocation aligns actual addresses,
+including callers that supply an unaligned byte-buffer start.

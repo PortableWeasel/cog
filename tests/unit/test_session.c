@@ -271,6 +271,15 @@ static void test_snapshot_validation(void)
     audit.sequence = 1U; ledger.call_id = "other";
     CHECK(cog_session_restore(&s, &cfg, &sn) == COG_ERROR_PROTOCOL);
     cog_session_free(source);
+
+    source = session(4U, 4096U);
+    a = assistant(source, "id");
+    sn = snapshot(source);
+    cog_node_data_t illicit[2] = {sn.nodes[0], {.node_id = 2U, .parent_id = 1U,
+        .role = COG_NODE_USER, .content = "x", .content_len = 1U, .message = &m}};
+    sn.nodes = illicit; sn.node_count = 2U; sn.active_node_id = 2U; sn.node_id_high_water = 2U;
+    CHECK(cog_session_restore(&s, &cfg, &sn) == COG_ERROR_PROTOCOL);
+    cog_session_free(source);
 }
 
 static void test_legacy_and_incomplete(void)

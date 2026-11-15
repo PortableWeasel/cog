@@ -797,7 +797,8 @@ cog_result_t cog_session_restore(cog_session_t **out, const cog_session_config_t
     if ((snapshot->node_count != 0U && snapshot->nodes == NULL) ||
         (snapshot->ledger_count != 0U && snapshot->ledger == NULL) ||
         ((snapshot->node_count == 0U) != (snapshot->active_node_id == 0U))) return COG_ERROR_PROTOCOL;
-    if (snapshot->node_id_high_water == UINT64_MAX) return COG_ERROR_LIMIT;
+    rc = cog_session_snapshot_validate(snapshot);
+    if (rc != COG_OK) return rc;
     cog_session_config_t cfg = config == NULL ? (cog_session_config_t){0} : *config;
     cfg.id = snapshot->session_id;
     rc = cog_session_new(&s, &cfg);
@@ -822,4 +823,145 @@ cog_result_t cog_session_restore(cog_session_t **out, const cog_session_config_t
 fail:
     cog_session_free(s);
     return rc;
+}
+
+/* These view-only checks use snapshot arrays as their own bounded lookup table.
+ * Store owner/CAS/save admission can validate authoritative records without
+ * secretly constructing a temporary heap session. */
+static const cog_node_data_t *snapshot_node(const cog_session_snapshot_t *s, uint64_t id)
+{
+    for (size_t i = 0U; i < s->node_count; ++i) if (s->nodes[i].node_id == id) return &s->nodes[i];
+    return NULL;
+}
+static bool snapshot_path(const cog_session_snapshot_t *s, uint64_t leaf, uint64_t ancestor)
+{
+    for (size_t depth = 0U; leaf != 0U && depth < s->node_count; ++depth) {
+        if (leaf == ancestor) return true;
+        const cog_node_data_t *n = snapshot_node(s, leaf);
+        if (n == NULL) return false;
+        leaf = n->parent_id;
+    }
+    return false;
+}
+static const cog_node_data_t *snapshot_assistant(const cog_session_snapshot_t *s, uint64_t parent)
+{
+    for (size_t depth = 0U; parent != 0U && depth < s->node_count; ++depth) {
+        const cog_node_data_t *n = snapshot_node(s, parent);
+        if (n == NULL || n->role == COG_NODE_ASSISTANT) return n;
+        parent = n->parent_id;
+    }
+    return NULL;
+}
+static const cog_tool_ledger_record_t *snapshot_call(const cog_session_snapshot_t *s,
+    uint64_t assistant_id, const char *id)
+{
+    for (size_t i = 0U; i < s->ledger_count; ++i)
+        if (s->ledger[i].assistant_node_id == assistant_id && s->ledger[i].call_id != NULL &&
+            strcmp(s->ledger[i].call_id, id) == 0) return &s->ledger[i];
+    return NULL;
+}
+static size_t snapshot_results(const cog_session_snapshot_t *s, const cog_tool_ledger_record_t *l)
+{
+    size_t count_ = 0U;
+    for (size_t i = 0U; i < s->node_count; ++i) {
+        const cog_node_data_t *n = &s->nodes[i];
+        if (n->message == NULL || n->message->role != COG_MESSAGE_ROLE_TOOL ||
+            n->message->tool_call_id == NULL || strcmp(n->message->tool_call_id, l->call_id) != 0) continue;
+        const cog_node_data_t *a = snapshot_assistant(s, n->parent_id);
+        if (a != NULL && a->node_id == l->assistant_node_id) ++count_;
+    }
+    return count_;
+}
+
+cog_result_t cog_session_snapshot_validate(const cog_session_snapshot_t *s)
+{
+    if (s == NULL || s->session_id == NULL) return COG_ERROR_NULL_PTR;
+    if (s->session_id[0] == '\0' || (s->node_count != 0U && s->nodes == NULL) ||
+        (s->ledger_count != 0U && s->ledger == NULL) ||
+        ((s->node_count == 0U) != (s->active_node_id == 0U))) return COG_ERROR_PROTOCOL;
+    if (s->node_id_high_water == UINT64_MAX) return COG_ERROR_LIMIT;
+    size_t roots = 0U, expected_ledger = 0U;
+    bool active = s->node_count == 0U;
+    for (size_t i = 0U; i < s->node_count; ++i) {
+        const cog_node_data_t *n = &s->nodes[i];
+        if (n->node_id == 0U || n->node_id > s->node_id_high_water || n->role < COG_NODE_SYSTEM ||
+            n->role > COG_NODE_TOOL_RESULT || (n->content == NULL && n->content_len != 0U)) return COG_ERROR_PROTOCOL;
+        bool parent = n->parent_id == 0U;
+        for (size_t k = 0U; k < i; ++k) {
+            if (s->nodes[k].node_id == n->node_id) return COG_ERROR_PROTOCOL;
+            if (s->nodes[k].node_id == n->parent_id) parent = true;
+        }
+        if (!parent || (n->parent_id == 0U && ++roots != 1U)) return COG_ERROR_PROTOCOL;
+        if (n->node_id == s->active_node_id) active = true;
+        if (n->parent_id == s->active_node_id && s->active_node_id != 0U) return COG_ERROR_PROTOCOL;
+        if (n->message == NULL) {
+            if (n->role > COG_NODE_ASSISTANT) {
+                if (!s->inspection_only) return COG_ERROR_UNSUPPORTED;
+            } else {
+                const cog_message_t legacy_message = {.role = (cog_message_role_t)n->role,
+                    .content = n->content, .content_len = n->content_len};
+                if (cog_message_validate(&legacy_message) != COG_OK) return COG_ERROR_PROTOCOL;
+            }
+        } else {
+            const cog_message_t *m = n->message;
+            if (cog_message_validate(m) != COG_OK || n->role !=
+                (m->role == COG_MESSAGE_ROLE_TOOL ? COG_NODE_TOOL_RESULT : (cog_node_role_t)m->role)) return COG_ERROR_PROTOCOL;
+            if (m->tool_call_count > SIZE_MAX - expected_ledger) return COG_ERROR_LIMIT;
+            expected_ledger += m->tool_call_count;
+        }
+    }
+    if (!active || (s->node_count != 0U && roots != 1U) || expected_ledger != s->ledger_count) return COG_ERROR_PROTOCOL;
+    for (size_t i = 0U; i < s->ledger_count; ++i) {
+        const cog_tool_ledger_record_t *l = &s->ledger[i];
+        const cog_node_data_t *n = snapshot_node(s, l->assistant_node_id);
+        if (n == NULL || n->message == NULL || n->message->role != COG_MESSAGE_ROLE_ASSISTANT ||
+            l->call_id == NULL || l->call_id[0] == '\0' ||
+            l->state < COG_TOOL_EXECUTION_PROPOSED || l->state > COG_TOOL_EXECUTION_ACKNOWLEDGED ||
+            (l->audit_count != 0U && l->audit == NULL)) return COG_ERROR_PROTOCOL;
+        if (l->audit_count > AUDITS_PER_CALL) return COG_ERROR_LIMIT;
+        bool call = false;
+        for (size_t k = 0U; k < n->message->tool_call_count; ++k)
+            if (strcmp(n->message->tool_calls[k].id, l->call_id) == 0) call = true;
+        if (!call) return COG_ERROR_PROTOCOL;
+        for (size_t k = 0U; k < i; ++k)
+            if (s->ledger[k].assistant_node_id == l->assistant_node_id && strcmp(s->ledger[k].call_id, l->call_id) == 0)
+                return COG_ERROR_PROTOCOL;
+        cog_tool_execution_state_t state_ = COG_TOOL_EXECUTION_PROPOSED;
+        for (size_t k = 0U; k < l->audit_count; ++k) {
+            const cog_tool_audit_record_t *a = &l->audit[k];
+            if (a->sequence == 0U || a->sequence > s->audit_high_water || a->previous != state_ ||
+                (k != 0U && a->sequence <= l->audit[k - 1U].sequence)) return COG_ERROR_PROTOCOL;
+            const cog_message_t evidence = {.role = COG_MESSAGE_ROLE_USER,
+                .content = a->evidence, .content_len = a->evidence_len};
+            if (cog_message_validate(&evidence) != COG_OK) return COG_ERROR_PROTOCOL;
+            if (a->explicit_reconciliation) {
+                if (a->previous != COG_TOOL_EXECUTION_INDETERMINATE || !final_state(a->next) ||
+                    a->next == COG_TOOL_EXECUTION_DENIED || a->evidence_len == 0U) return COG_ERROR_PROTOCOL;
+            } else if (!legal_transition(state_, a->next)) return COG_ERROR_PROTOCOL;
+            for (size_t j = 0U; j < i; ++j)
+                for (size_t q = 0U; q < s->ledger[j].audit_count; ++q)
+                    if (s->ledger[j].audit[q].sequence == a->sequence) return COG_ERROR_PROTOCOL;
+            state_ = a->next;
+        }
+        if (state_ != l->state) return COG_ERROR_PROTOCOL;
+        const size_t results = snapshot_results(s, l);
+        if (final_state(l->state)) { if (results != 1U) return COG_ERROR_PROTOCOL; }
+        else {
+            if (results != 0U || !snapshot_path(s, s->active_node_id, l->assistant_node_id)) return COG_ERROR_PROTOCOL;
+            uint64_t descendant = s->active_node_id;
+            while (descendant != l->assistant_node_id) {
+                const cog_node_data_t *d = snapshot_node(s, descendant);
+                if (d == NULL || d->message == NULL || d->message->role != COG_MESSAGE_ROLE_TOOL) return COG_ERROR_PROTOCOL;
+                descendant = d->parent_id;
+            }
+        }
+    }
+    for (size_t i = 0U; i < s->node_count; ++i) {
+        const cog_node_data_t *n = &s->nodes[i];
+        if (n->message == NULL || n->message->role != COG_MESSAGE_ROLE_TOOL) continue;
+        const cog_node_data_t *a = snapshot_assistant(s, n->parent_id);
+        if (a == NULL || n->message->status != COG_MESSAGE_COMPLETE ||
+            snapshot_call(s, a->node_id, n->message->tool_call_id) == NULL) return COG_ERROR_PROTOCOL;
+    }
+    return COG_OK;
 }
