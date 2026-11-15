@@ -23,6 +23,7 @@
 #define COG_AGENT_INTERNAL_H
 
 #include "cog/agent.h"
+#include "cog/event.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -36,7 +37,7 @@ typedef struct cog_core cog_core_t;
  *
  * Legacy test fixture ceiling, retained for source compatibility. Runtime
  * reservations now come from core config.max_agents (default 16); a full
- * reservation returns LIMIT. N/O owns terminal release/reuse integration.
+ * reservation returns LIMIT.
  */
 #define COG_AGENT_MAX_PER_CORE ((size_t)256)
 
@@ -54,23 +55,28 @@ typedef struct cog_agent_entry {
     char *parent_session_id;        /**< Owned copy; NULL for no parent. */
     cog_session_t *session;         /**< Owned child session. */
     char *task;                   /**< Reserved copied task. */
-    char *result;                   /**< Owned final result; NULL until completed. */
+    char *result;                   /**< Reserved final result bytes. */
     size_t status_capacity, result_capacity; /**< Per-agent configured ceilings. */
     size_t result_len;              /**< Byte length of @p result, excluding NUL. */
-    char *status_msg;               /**< Owned last status message; may be NULL. */
+    char *status_msg;               /**< Reserved last status message. */
     uint64_t group_id;              /**< Fan-out group; zero = none. */
     uint32_t timeout_ms;            /**< Time limit; zero = none. */
     bool force_local;               /**< Placement hint: run locally. */
     bool cancelled;                 /**< Cancellation requested. */
+    cog_peer_id_t owner_peer;
+    uint64_t execution_epoch, sequence;
+    cog_result_t outcome;
+    size_t update_len;
+    bool has_update, notification_pending;
+    cog_event_agent_intent_t spawn_intent, cancel_intent;
+    size_t intent_leases;
 } cog_agent_entry_t;
 
 /**
  * @brief Subagent registry embedded in @c struct cog_core.
  *
  * Constructor-reserved by cog_core_new; never grows during agent operations.
- * Append-only for the lifetime of the core: agents are never removed
- * individually (agent.h declares no destroy API), so the registry is
- * released wholesale by cog_core_free.
+ * Slots are reused only after terminal release; IDs remain monotonic.
  */
 typedef struct cog_agent_registry {
     cog_agent_entry_t *entries;     /**< Owned dynamic array. */
@@ -92,6 +98,8 @@ typedef struct cog_agent_registry {
  * @return Pointer to the core's registry, or NULL if @p core is NULL.
  */
 cog_agent_registry_t *cog_core_agent_registry(cog_core_t *core);
+cog_result_t cog_core_enqueue_agent_intent(cog_core_t *core, const cog_event_t *event);
+void cog_agent_intent_dispatched(cog_core_t *core, const cog_event_t *event);
 
 /**
  * @brief Release every agent record and the registry array.
@@ -131,8 +139,7 @@ cog_result_t cog_agent_internal_start(cog_core_t *core, cog_agent_id_t agent_id)
  * @return COG_ERROR_NOT_FOUND if @p agent_id does not exist.
  * @return COG_ERROR_INVALID_STATE if the agent is not RUNNING (including
  *         cancelled agents: late results are rejected).
- * @return COG_ERROR_NOMEM if allocation fails (or @p result_len is
- *         SIZE_MAX, which would wrap the allocation size).
+ * @return COG_ERROR_LIMIT if the reserved result cannot fit.
  */
 cog_result_t cog_agent_internal_complete(cog_core_t *core, cog_agent_id_t agent_id,
                                          const char *result, size_t result_len);

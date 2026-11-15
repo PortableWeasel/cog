@@ -374,9 +374,9 @@ static void core_storage_free(cog_core_t *core)
     free(core->ipc_clients);
     free(core->ipc_arena);
     free(core->ipc_slices);
-    cog_agent_registry_reset(&core->agents);
     cog_event_queue_free(core->event_queue);
     cog_event_queue_free(core->ipc_events);
+    cog_agent_registry_reset(&core->agents);
     free(core);
 }
 cog_result_t cog_core_new(cog_core_t **out, const cog_core_config_t *config)
@@ -616,6 +616,7 @@ cog_result_t cog_core_run(cog_core_t *core)
             core->injected = false;
         }
         rc = core_dispatch(core, &event);
+        cog_agent_intent_dispatched(core, &event);
         if (event.kind == COG_EVENT_IPC_MESSAGE && event.payload != NULL) {
             const cog_event_ipc_t *ipc = event.payload;
             core_ipc_release(core, ipc->msg_payload);
@@ -675,6 +676,14 @@ cog_result_t cog_core_enqueue(cog_core_t *core, const cog_event_t *event)
     if (core == NULL || event == NULL) {
         return COG_ERROR_NULL_PTR;
     }
+    if (event->kind == COG_EVENT_SUBAGENT_SPAWN || event->kind == COG_EVENT_SUBAGENT_CANCEL) {
+        return COG_ERROR_INVALID_ARG;
+    }
+    return cog_event_queue_push(core->event_queue, event);
+}
+
+cog_result_t cog_core_enqueue_agent_intent(cog_core_t *core, const cog_event_t *event)
+{
     return cog_event_queue_push(core->event_queue, event);
 }
 

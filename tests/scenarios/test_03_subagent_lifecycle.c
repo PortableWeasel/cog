@@ -6,11 +6,8 @@
  * through the core owned by the CLI app.  The public agent API
  * (cog/agent.h) covers spawn, status, notify_parent, result, session_id,
  * and is_cancelled; the orchestrator layer that normally drives
- * execution (Stage 12.5) is not yet integrated, so this white-box test
- * uses the private status-transition hooks (cog_agent_internal_start /
- * cog_agent_internal_complete) declared in agent_internal.h — exactly as
- * the unit test tests/unit/test_agent.c does.  Everything else is the
- * real implementation, not a mock.
+ * execution (Stage 12.5) is not yet integrated; this test supplies correlated
+ * public attempt updates and explicitly acknowledges each snapshot.
  *
  * It verifies:
  *
@@ -33,6 +30,7 @@
 #include "cog_cli/mock_provider.h"
 
 #include "agent_internal.h"
+#include "agent_test_helpers.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -131,18 +129,23 @@ static void scenario_subagent_lifecycle(void)
     CHECK_EQ_INT((long long)rec->timeout_ms, 30000LL);
 
     /* Execute: start -> RUNNING. */
-    CHECK(cog_agent_internal_start(core, id) == COG_OK);
+    CHECK(scenario_agent_step(core, id, COG_AGENT_STATUS_RUNNING, COG_OK, "", 0U) == COG_OK);
     CHECK(cog_agent_status(core, id, &status) == COG_OK);
     CHECK_EQ_INT((long long)status, (long long)COG_AGENT_STATUS_RUNNING);
 
     /* Status update to the parent is recorded on the agent record. */
+    {
+        cog_agent_update_t snapshot; char bytes[32]; size_t needed;
+        CHECK(cog_agent_copy_update(core, id, &snapshot, bytes, sizeof(bytes), &needed) == COG_OK);
+        CHECK(cog_agent_ack_update(core, id, snapshot.execution_epoch, snapshot.sequence) == COG_OK);
+    }
     CHECK(cog_agent_notify_parent(core, id, "working on it") == COG_OK);
     rec = cog_agent_internal_get(core, id);
     CHECK(rec != NULL && rec->status_msg != NULL);
     CHECK(strcmp(rec->status_msg, "working on it") == 0);
 
     /* Complete -> COMPLETED with a final result. */
-    CHECK(cog_agent_internal_complete(core, id, "42", 2U) == COG_OK);
+    CHECK(scenario_agent_step(core, id, COG_AGENT_STATUS_COMPLETED, COG_OK, "42", 2U) == COG_OK);
     CHECK(cog_agent_status(core, id, &status) == COG_OK);
     CHECK_EQ_INT((long long)status, (long long)COG_AGENT_STATUS_COMPLETED);
 
@@ -188,18 +191,21 @@ static void scenario_subagent_cancel(void)
     CHECK(cog_agent_spawn(core, &cfg, &id) == COG_OK);
     CHECK(id != 0U);
 
-    /* Cancel a PENDING agent -> CANCELLED, is_cancelled true. */
+    /* Cancellation is admitted while PENDING; completion follows a drain. */
     CHECK(cog_agent_cancel(core, id) == COG_OK);
     CHECK(cog_agent_status(core, id, &status) == COG_OK);
-    CHECK_EQ_INT((long long)status, (long long)COG_AGENT_STATUS_CANCELLED);
+    CHECK_EQ_INT((long long)status, (long long)COG_AGENT_STATUS_PENDING);
     CHECK(cog_agent_is_cancelled(core, id, &cancelled) == COG_OK);
     CHECK(cancelled);
 
     /* A late result on a cancelled agent is rejected. */
-    CHECK(cog_agent_internal_complete(core, id, "late", 4U)
+    CHECK(scenario_agent_step(core, id, COG_AGENT_STATUS_COMPLETED, COG_OK, "late", 4U)
           == COG_ERROR_INVALID_STATE);
     CHECK(cog_agent_result(core, id, result, sizeof(result), &result_len)
           == COG_ERROR_INVALID_STATE);
+
+    CHECK(scenario_agent_step(core, id, COG_AGENT_STATUS_CANCELLED, COG_ERROR_ABORTED, "", 0U) == COG_OK);
+    CHECK(cog_agent_result(core, id, result, sizeof(result), &result_len) == COG_OK);
 
     /* Cancelling a terminal agent is an error. */
     CHECK(cog_agent_cancel(core, id) == COG_ERROR_INVALID_STATE);
