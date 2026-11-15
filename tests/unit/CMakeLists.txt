@@ -15,6 +15,7 @@ set(COG_UNIT_TESTS
     test_event
     test_state
     test_handler
+    test_core
 )
 
 foreach(test ${COG_UNIT_TESTS})
@@ -22,6 +23,11 @@ foreach(test ${COG_UNIT_TESTS})
     target_link_libraries(${test} PRIVATE cog::core)
     target_enable_warnings(${test})
 endforeach()
+
+# test_core exercises a concurrent cog_core_stop (shutdown must not drop a
+# pending message), so it needs the pthread library.
+find_package(Threads REQUIRED)
+target_link_libraries(test_core PRIVATE Threads::Threads)
 
 # -----------------------------------------------------------------------
 # CTest registration
@@ -48,6 +54,10 @@ add_test(NAME unit-state
 
 add_test(NAME unit-handler
     COMMAND test_handler
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME unit-core
+    COMMAND test_core
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
 # -----------------------------------------------------------------------

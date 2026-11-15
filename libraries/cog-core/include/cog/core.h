@@ -124,8 +124,12 @@ typedef struct cog_core_config {
     /**
      * @brief Optional IPC endpoint for multi-process operation.
      *
-     * If non-NULL, the core takes ownership of the endpoint and drains
-     * incoming messages during the event loop.  IPC events are enqueued
+     * During the pre-IPC integration phase, a non-NULL endpoint is
+     * rejected by @c cog_core_new with @c COG_ERROR_UNAVAILABLE; the
+     * core does not take ownership or promise to drain a resource it
+     * cannot yet service.  Once IPC integration is complete, a non-NULL
+     * endpoint will be accepted: the core takes ownership of the endpoint
+     * and drains incoming messages during the event loop, enqueuing them
      * as COG_EVENT_IPC_* events into the local queue.
      *
      * Set to NULL for single-process operation (the default).
@@ -141,11 +145,12 @@ typedef struct cog_core_config {
     cog_peer_id_t local_peer_id;
 
     /**
-     * @brief Active LLM provider instance.
+     * @brief Optional active LLM provider instance.
      *
-     * Must be non-NULL.  The provider is used by handlers to make LLM
-     * calls.  The caller creates the provider with cog_provider_connect
-     * and retains ownership; the core does not free it.
+     * May be NULL for tests or no-provider operation; if non-NULL, the
+     * provider is used by handlers to make LLM calls.  The caller creates
+     * the provider with cog_provider_connect and retains ownership; the
+     * core does not free it.
      */
     cog_provider_t *provider;
 
@@ -176,6 +181,8 @@ typedef struct cog_core_config {
  * @return COG_ERROR_INVALID_ARG if @p config->session is NULL, if
  *         @p config->dispatch_table is NULL, or if
  *         @p config->dispatch_table_size is zero.
+ * @return COG_ERROR_UNAVAILABLE if @p config->ipc_endpoint is non-NULL
+ *         before IPC integration is enabled.
  * @return COG_ERROR_NOMEM if allocation fails.
  *
  * @post On success, @p *out is a valid core and the caller owns it.
