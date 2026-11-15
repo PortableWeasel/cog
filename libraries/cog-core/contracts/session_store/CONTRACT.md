@@ -126,6 +126,23 @@ mid-save can leave an inconsistent store that `load` rejects with
 - `append` does not prune `max_sessions` (that is a `save`-time
   maintenance operation).
 
+### Delete failure safety
+
+Before unlinking anything, `delete_session_dir` enumerates the complete
+session directory and rejects unknown entries. It also rejects a directory
+masquerading as one of the six known store files (`meta.json`,
+`nodes.jsonl`, `index.bin`, and their `.tmp` siblings). An expected
+content-related failure therefore returns `COG_ERROR_IO` with the session
+and its metadata intact: `exists` remains true, a repeated delete reports
+`IO` rather than `NOT_FOUND`, and removing the obstruction allows delete
+to succeed.
+
+The store is single-threaded by contract. That contract does not make the
+preflight-plus-unlink sequence atomic against unrelated external
+filesystem mutation; such concurrent mutation is unsupported and may
+still produce an `IO` failure after a partial unlink. No filesystem-wide
+or cross-process locking is attempted.
+
 ### max_sessions pruning
 
 After a successful `save`, if `max_sessions > 0` and the store holds more

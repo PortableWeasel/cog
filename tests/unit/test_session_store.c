@@ -2482,6 +2482,78 @@ done:
 }
 
 /* ------------------------------------------------------------------ */
+/* Failed delete leaves the session and its metadata intact            */
+/* ------------------------------------------------------------------ */
+
+static int verify_delete_preflight(void)
+{
+    char *base = make_tmp("delpreflight");
+    cog_store_config_t cfg;
+    cog_store_t *st = NULL;
+    cog_session_t *s = NULL;
+    cog_session_config_t scfg;
+    char *dir = NULL;
+    char *stray = NULL;
+    char *meta = NULL;
+    size_t meta_len = 0U;
+    int fail = 0;
+
+    if (base == NULL) {
+        return 1;
+    }
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.base_dir = base;
+    memset(&scfg, 0, sizeof(scfg));
+    scfg.id = "keep-intact";
+    if (cog_store_new(&st, &cfg) != COG_OK ||
+        cog_session_new(&s, &scfg) != COG_OK ||
+        cog_session_append(s, MSG(COG_MESSAGE_ROLE_USER, "keep"), NULL) !=
+            COG_OK ||
+        cog_store_save(st, s) != COG_OK) {
+        fail = 1;
+        goto done;
+    }
+    dir = path_join(base, "keep-intact");
+    stray = path_join(dir, "stray.txt");
+    if (dir == NULL || stray == NULL) {
+        fail = 1;
+        goto done;
+    }
+    write_file(stray, "x", 1U);
+
+    /* The unknown entry is rejected before unlinking.  A repeated delete
+     * reports IO (not NOT_FOUND), and meta.json remains readable. */
+    if (cog_store_delete(st, "keep-intact") != COG_ERROR_IO ||
+        !cog_store_exists(st, "keep-intact") ||
+        cog_store_delete(st, "keep-intact") != COG_ERROR_IO ||
+        read_store_file(base, "keep-intact", "meta.json", &meta,
+                        &meta_len) != 0 ||
+        meta == NULL || strstr(meta, "\"version\":1") == NULL) {
+        fail = 1;
+        goto done;
+    }
+
+    /* Removing the obstruction makes the same delete succeed normally. */
+    if (unlink(stray) != 0 ||
+        cog_store_delete(st, "keep-intact") != COG_OK ||
+        cog_store_exists(st, "keep-intact") ||
+        cog_store_delete(st, "keep-intact") != COG_ERROR_NOT_FOUND) {
+        fail = 1;
+        goto done;
+    }
+
+done:
+    free(meta);
+    free(stray);
+    free(dir);
+    cog_store_free(st);
+    cog_session_free(s);
+    rmtree(base);
+    free(base);
+    return fail;
+}
+
+/* ------------------------------------------------------------------ */
 /* Default config: file backend in the current directory               */
 /* ------------------------------------------------------------------ */
 
@@ -2571,6 +2643,7 @@ int main(void)
     CHECK("path safety", verify_path_safety());
     CHECK("config flags", verify_config_flags());
     CHECK("stress", verify_stress());
+    CHECK("delete preflight", verify_delete_preflight());
     CHECK("default base dir", verify_default_base_dir());
 
 #undef CHECK

@@ -1162,7 +1162,21 @@ static cog_result_t write_file_atomic(const char *final_path,
     return COG_OK;
 }
 
-/** Delete one session directory (all files, tmp files, then rmdir). */
+/**
+ * Delete one session directory after preflighting its complete contents.
+ *
+ * Unknown entries and known names that are directories are rejected before
+ * anything is unlinked, so an expected rmdir obstruction (for example a
+ * stray file) cannot leave a ghost session with its metadata removed.
+ * Known entries are then unlinked and the directory is removed.
+ *
+ * The store's single-threaded contract covers callers of this API; it does
+ * not make directory enumeration plus unlinking atomic against unrelated
+ * external filesystem mutation.  Such concurrent mutation is unsupported
+ * and can still produce COG_ERROR_IO after a partial unlink.  Within the
+ * documented threading model, all expected content-related failures are
+ * detected by this preflight and leave the session intact.
+ */
 static cog_result_t delete_session_dir(const char *dir)
 {
     static const char *const kFiles[] = {
@@ -1173,9 +1187,65 @@ static cog_result_t delete_session_dir(const char *dir)
         COG_STORE_FILE_NODES ".tmp",
         COG_STORE_FILE_INDEX ".tmp",
     };
+    const size_t file_count = sizeof(kFiles) / sizeof(kFiles[0]);
+    DIR *dp;
+    struct dirent *de;
     size_t i;
 
-    for (i = 0U; i < sizeof(kFiles) / sizeof(kFiles[0]); i++) {
+    dp = opendir(dir);
+    if (dp == NULL) {
+        return COG_ERROR_IO;
+    }
+    while (true) {
+        errno = 0;
+        de = readdir(dp);
+        if (de == NULL) {
+            if (errno != 0) {
+                (void)closedir(dp);
+                return COG_ERROR_IO; /* incomplete preflight: do nothing */
+            }
+            break;
+        }
+        if (strcmp(de->d_name, ".") == 0 ||
+            strcmp(de->d_name, "..") == 0) {
+            continue;
+        }
+        for (i = 0U; i < file_count; i++) {
+            if (strcmp(de->d_name, kFiles[i]) == 0) {
+                break;
+            }
+        }
+        if (i == file_count) {
+            (void)closedir(dp);
+            return COG_ERROR_IO; /* unknown entry: nothing was removed */
+        }
+    }
+    if (closedir(dp) != 0) {
+        return COG_ERROR_IO;
+    }
+
+    /* A directory masquerading as a known file would make unlink fail
+     * after earlier files had been removed; reject it during preflight. */
+    for (i = 0U; i < file_count; i++) {
+        char *p = path_join2(dir, kFiles[i]);
+        struct stat sb;
+
+        if (p == NULL) {
+            return COG_ERROR_NOMEM;
+        }
+        if (lstat(p, &sb) == 0) {
+            if (S_ISDIR(sb.st_mode)) {
+                free(p);
+                return COG_ERROR_IO;
+            }
+        } else if (errno != ENOENT) {
+            free(p);
+            return COG_ERROR_IO;
+        }
+        free(p);
+    }
+
+    for (i = 0U; i < file_count; i++) {
         char *p = path_join2(dir, kFiles[i]);
         int e;
 
@@ -2367,14 +2437,17 @@ static cog_result_t file_load(void *vstore, const char *id,
                 if (rc != COG_OK) {
                     goto fail;
                 }
-                if (recs[rec_count].node_id == 0U) {
+                /* A successfully parsed record immediately joins the
+                 * cleanup-owned prefix.  Every later failure path frees
+                 * its decoded payload exactly once, including node_id 0. */
+                rec_count++;
+                if (recs[rec_count - 1U].node_id == 0U) {
                     rc = COG_ERROR_IO;
                     goto fail;
                 }
-                if (recs[rec_count].node_id > max_id) {
-                    max_id = recs[rec_count].node_id;
+                if (recs[rec_count - 1U].node_id > max_id) {
+                    max_id = recs[rec_count - 1U].node_id;
                 }
-                rec_count++;
             }
             if (nl == NULL) {
                 break;
