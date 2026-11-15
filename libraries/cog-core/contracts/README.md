@@ -16,9 +16,11 @@ Layout: one directory per module, named after its public header.
 - `core/CONTRACT.md` — verified by `tests/unit/test_core.c`
 - `agent/CONTRACT.md` — verified by `tests/unit/test_agent.c`
 - `tool/CONTRACT.md` — verified by `tests/unit/test_tool.c`
+- `session_store/CONTRACT.md` — verified by `tests/unit/test_session_store.c`
 
 The contract is written against the header only; it never expands the
 public API.  Cross-module composition of the Phase 1 primitives is
 verified separately by `tests/integration/test_core_primitives.c`;
 core.c + session.c composition is verified by
-`tests/integration/test_core_session.c`.
+`tests/integration/test_core_session.c`; the store + session + core
+borrow contract is verified by `tests/integration/test_store_session.c`.

@@ -18,6 +18,7 @@ add_library(cog-core STATIC
     src/core.c
     src/agent.c
     src/tool.c
+    src/session_store.c
 )
 add_library(cog::core ALIAS cog-core)
 
