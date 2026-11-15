@@ -6,6 +6,11 @@ field). Spawn owns a child session and copied configuration; its explicit
 session constructor is the allocation boundary. Exhausting the configured
 record or string capacity returns `COG_ERROR_LIMIT` without publishing an ID.
 IDs increase for the lifetime of a core, even when a released slot is reused.
+Spawn and cancellation each enqueue a core-owned intent atomically; queue-full
+returns OVERFLOW without publishing an ID or admitting cancellation. Intent
+payload leases last through dispatch, including error returns. Release refuses
+queued or in-dispatch leases; handlers copy intent and configuration to caller
+storage before deferring work. Public enqueue rejects forged intent kinds.
 
 A spawned attempt has an immutable owner peer and execution epoch. A remote
 owner supplies a nonzero epoch; a zero local epoch selects the assigned agent
@@ -36,3 +41,8 @@ The private `cog_agent_internal_*` hooks are legacy test seams that delegate
 to public update validation and retain notifications; they never auto-ack.
 New integration uses the public update/copy/ack protocol. All lifecycle operations are owner-thread only; no update, copy,
 acknowledgement, result or release allocates memory.
+
+The allocator regression in `tests/unit/test_agent.c` is enabled with
+`-DCOG_TEST_WRAP_ALLOC` and linker options
+`-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc`; it tracks update, copy, ack,
+result, cancel, intent dispatch and release after explicit spawn construction.

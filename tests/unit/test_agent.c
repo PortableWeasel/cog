@@ -45,7 +45,34 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#ifdef COG_TEST_WRAP_ALLOC
+static bool allocation_tracking;
+static size_t allocation_calls;
+void *__real_malloc(size_t size);
+void *__real_calloc(size_t count, size_t size);
+void *__real_realloc(void *pointer, size_t size);
+void *__wrap_malloc(size_t size);
+void *__wrap_calloc(size_t count, size_t size);
+void *__wrap_realloc(void *pointer, size_t size);
+void *__wrap_malloc(size_t size)
+{
+    if (allocation_tracking) ++allocation_calls;
+    return __real_malloc(size);
+}
+void *__wrap_calloc(size_t count, size_t size)
+{
+    if (allocation_tracking) ++allocation_calls;
+    return __real_calloc(count, size);
+}
+void *__wrap_realloc(void *pointer, size_t size)
+{
+    if (allocation_tracking) ++allocation_calls;
+    return __real_realloc(pointer, size);
+}
+#endif
 
 #ifndef COG_AGENT_H
 #error "COG_AGENT_H include guard missing"
@@ -216,6 +243,11 @@ static void test_spawn_validation(void)
     cfg.task = NULL;
     CHECK_EQ_INT(cog_agent_spawn(core, &cfg, &id), COG_ERROR_INVALID_ARG);
     cfg.task = "";
+    CHECK_EQ_INT(cog_agent_spawn(core, &cfg, &id), COG_ERROR_INVALID_ARG);
+    cfg.task = "\xff";
+    CHECK_EQ_INT(cog_agent_spawn(core, &cfg, &id), COG_ERROR_INVALID_ARG);
+    cfg.task = "task";
+    cfg.owner_peer = 2U;
     CHECK_EQ_INT(cog_agent_spawn(core, &cfg, &id), COG_ERROR_INVALID_ARG);
 
     cog_core_free(core);
@@ -1020,6 +1052,51 @@ static void test_intent_queue_full(void)
     cog_session_free(session);
 }
 
+#ifdef COG_TEST_WRAP_ALLOC
+static void test_update_operations_do_not_allocate(void)
+{
+    cog_session_t *session;
+    cog_core_t *core = make_core(&session);
+    cog_agent_config_t config = {0};
+    cog_agent_id_t id = 0U;
+    cog_agent_update_t update, copy;
+    char data[32];
+    size_t needed, length;
+    CHECK(core != NULL);
+    config.task = "bounded";
+    CHECK_EQ_INT(cog_agent_spawn(core, &config, &id), COG_OK);
+    CHECK_EQ_INT(cog_core_run(core), COG_OK); /* Drain the spawn lease. */
+    allocation_calls = 0U;
+    allocation_tracking = true;
+    update = (cog_agent_update_t){0U, id, 1U, COG_AGENT_STATUS_RUNNING, COG_OK, "go", 2U};
+    CHECK_EQ_INT(cog_agent_apply_update(core, id, &update), COG_OK);
+    CHECK_EQ_INT(cog_agent_copy_update(core, id, &copy, data, sizeof(data), &needed), COG_OK);
+    CHECK_EQ_INT(cog_agent_ack_update(core, id, id, 1U), COG_OK);
+    update.sequence = 2U; update.status = COG_AGENT_STATUS_COMPLETED;
+    CHECK_EQ_INT(cog_agent_apply_update(core, id, &update), COG_OK);
+    CHECK_EQ_INT(cog_agent_result(core, id, data, sizeof(data), &length), COG_OK);
+    CHECK_EQ_INT(cog_agent_ack_update(core, id, id, 2U), COG_OK);
+    CHECK_EQ_INT(cog_agent_release(core, id), COG_OK);
+    allocation_tracking = false;
+    CHECK_EQ_INT(allocation_calls, 0U);
+    CHECK_EQ_INT(cog_agent_spawn(core, &config, &id), COG_OK);
+    CHECK_EQ_INT(cog_core_run(core), COG_OK);
+    allocation_calls = 0U;
+    allocation_tracking = true;
+    CHECK_EQ_INT(cog_agent_cancel(core, id), COG_OK);
+    update = (cog_agent_update_t){0U, id, 1U, COG_AGENT_STATUS_CANCELLED,
+                                  COG_ERROR_ABORTED, "", 0U};
+    CHECK_EQ_INT(cog_agent_apply_update(core, id, &update), COG_OK);
+    CHECK_EQ_INT(cog_agent_ack_update(core, id, id, 1U), COG_OK);
+    CHECK_EQ_INT(cog_core_run(core), COG_OK); /* Drain cancellation intent. */
+    CHECK_EQ_INT(cog_agent_release(core, id), COG_OK);
+    allocation_tracking = false;
+    CHECK_EQ_INT(allocation_calls, 0U);
+    cog_core_free(core);
+    cog_session_free(session);
+}
+#endif
+
 static void test_update_wire(void)
 {
     cog_agent_update_t update = {5U, 9U, 1U, COG_AGENT_STATUS_FAILED,
@@ -1070,7 +1147,12 @@ static void test_retained_updates(void)
     cfg.max_status_bytes = 8U;
     cfg.max_result_bytes = 8U;
     CHECK_EQ_INT(cog_agent_spawn(core, &cfg, &id), COG_OK);
+    memset(&config_copy, 0, sizeof(config_copy));
+    config_copy.group_id = 999U;
+    config_storage[0] = 'X';
     CHECK_EQ_INT(cog_agent_copy_config(core, id, &config_copy, config_storage, 1U, &need), COG_ERROR_OVERFLOW);
+    CHECK_EQ_INT(config_copy.group_id, 999U);
+    CHECK_EQ_INT(config_storage[0], 'X');
     CHECK_EQ_INT(need, 5U);
     CHECK_EQ_INT(cog_agent_copy_config(core, id, &config_copy, config_storage, sizeof(config_storage), &need), COG_OK);
     CHECK_EQ_STR(config_copy.task, "work");
@@ -1142,6 +1224,9 @@ int main(void)
 {
     test_intent_error_releases_lease();
     test_intent_queue_full();
+#ifdef COG_TEST_WRAP_ALLOC
+    test_update_operations_do_not_allocate();
+#endif
     test_update_wire();
     test_retained_updates();
     test_spawn_validation();

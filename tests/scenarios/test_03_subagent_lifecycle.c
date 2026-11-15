@@ -98,6 +98,7 @@ static void scenario_subagent_lifecycle(void)
     (void)memset(&opts, 0, sizeof(opts));
     app = make_app(&opts);
     CHECK(app != NULL);
+    if (app == NULL) return;
     core = cog_cli_app_core(app);
     CHECK(core != NULL);
 
@@ -182,6 +183,7 @@ static void scenario_subagent_cancel(void)
     (void)memset(&opts, 0, sizeof(opts));
     app = make_app(&opts);
     CHECK(app != NULL);
+    if (app == NULL) return;
     core = cog_cli_app_core(app);
     CHECK(core != NULL);
 
