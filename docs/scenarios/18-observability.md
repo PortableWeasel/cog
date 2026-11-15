@@ -63,3 +63,13 @@ Future conformance requirements: Typed mismatch/overflow/sink failure, span nest
 Header tracing is complete only where the gap analysis says so. Production
 implementation and executable scenario migration remain gated by pass 3 and the
 independent final review; no passing runtime result is inferred from these tables.
+
+## Runtime observability amendment, pass 1
+
+Design `d32fafd` starts from main8c68b4a after K/L. Generic obs APIs are
+implemented but the scenario tests still manually emit observations. The
+[dedicated runtime contract](../REAL_CLIENT_OBSERVABILITY_CONTRACTS.md) defines
+the minimal production bridge; net.h supplies a numeric constructor-borrowed
+observer and checked latched status, with no payload/URL/secret pointers.
+Implementation and actual-path oracles are delivery `b64ee7c`, serialized after
+R12. No runtime passing claim follows from this header amendment.

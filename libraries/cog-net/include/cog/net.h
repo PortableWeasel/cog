@@ -43,6 +43,24 @@ typedef enum cog_net_dependency_memory {
     COG_NET_DEPENDENCY_MEMORY_DYNAMIC = 1
 } cog_net_dependency_memory_t;
 
+/** @brief Forward declaration of the numeric-only transport observation. */
+struct cog_net_observation;
+/**
+ * @brief Optional synchronous owner-thread observer, borrowed at construction.
+ * @param[in,out] user Host-owned context from cog_net_config_t::observer_user.
+ * @param[in] ctx Identity of the observed context; do not re-enter it.
+ * @param[in] observation Borrowed immutable value, valid only until return.
+ * @return COG_OK if accepted; any error latches as observer status and disables
+ * further observations on this context until destruction. The failed event is
+ * not retried. Transport outcomes, retained responses and request ownership are
+ * unchanged: observation failure never authorizes a network replay.
+ * @note No blocking, allocation or calls into this net context, including from
+ * downstream sinks. Copy anything retained into host-reserved storage. Both
+ * callback and user must outlive the context; no registration changes at runtime.
+ */
+typedef cog_result_t (*cog_net_observer_fn)(void *user,
+    const cog_net_ctx_t *ctx, const struct cog_net_observation *observation);
+
 /** @brief Context constructor settings; zero limits select documented defaults. */
 typedef struct cog_net_config {
     size_t max_connections; /**< Transfer slots; default 4, includes terminal retained. */
@@ -59,6 +77,8 @@ typedef struct cog_net_config {
     size_t chunks_per_request; /**< Body ring entries; default 8 plus reserved terminal. */
     uint32_t service_quantum; /**< Max accepted framing/completion units and request slots driven per service; default 16. */
     const char *ca_bundle; /**< Optional copied trust path; NULL uses system trust. */
+    cog_net_observer_fn observer; /**< Optional numeric lifecycle feed; NULL off. */
+    void *observer_user; /**< Borrowed host state, not copied/freed by Cog. */
 } cog_net_config_t;
 
 /** @brief Sanitized per-transfer failure class; HTTP is not a transport failure. */
@@ -72,6 +92,53 @@ typedef enum cog_net_error_kind {
     COG_NET_ERROR_CANCELLED,
     COG_NET_ERROR_DEPENDENCY
 } cog_net_error_kind_t;
+
+/** @brief Real per-request transport transitions; net never emits RETRY. */
+typedef enum cog_net_observation_kind {
+    COG_NET_OBSERVATION_OPEN = 0, /**< Successful request admission, before service. */
+    COG_NET_OBSERVATION_CONNECTED, /**< DNS/TCP/TLS ready for HTTP transmission. */
+    COG_NET_OBSERVATION_PROGRESS, /**< Nonzero accepted body-byte progress. */
+    COG_NET_OBSERVATION_STALLED, /**< Response inactivity timeout, before FAILED. */
+    COG_NET_OBSERVATION_CLOSED, /**< Wire terminal with outcome COG_OK, even HTTP429. */
+    COG_NET_OBSERVATION_FAILED /**< Wire terminal error or explicit cancellation. */
+} cog_net_observation_kind_t;
+
+/**
+ * @brief Payload-free lifecycle value, independent of retained response queues.
+ *
+ * Identity is (ctx,request_id), not request_id alone across different contexts.
+ * No URL, header, body, credential, error text or provider-opaque pointer appears
+ * here. The host assigns timestamps and optional sanitized application labels.
+ * Sequence starts at 1 (OPEN) per admitted request; no reuse/wrap. CONNECTED is
+ * observed only after actual DNS/TCP/TLS success, never inferred from send or a
+ * first response chunk. PROGRESS may coalesce; totals count each accepted body
+ * byte once, including across paused callback retries. Headers/TLS/framing are
+ * excluded. bytes_out counts request entity-body bytes actually uploaded, not
+ * the size merely submitted. Every non-PROGRESS delta is zero.
+ *
+ * While the observer stays healthy, OPEN precedes other events, CONNECTED occurs
+ * at most once, and one CLOSED/FAILED fixes the outcome; repeated cancel/release
+ * or later response acknowledgement emits no second terminal. HTTP status and
+ * transport outcome remain separate (HTTP429 is CLOSED/COG_OK, not a DNS error).
+ * A response-inactivity timeout emits STALLED then FAILED; downstream ring
+ * backpressure is not a network stall. Net emits no retry: the application alone
+ * records its admitted attempt and may join new request identities.
+ *
+ * Observer values never consume body-ring space or alter peek/ack selection.
+ * No Cog runtime allocation or event queue is introduced. Progress delivery is
+ * bounded/coalesced per service call. Sequence/counter exhaustion latches LIMIT
+ * and disables this observer, without corrupting transfer outcomes.
+ */
+typedef struct cog_net_observation {
+    cog_net_observation_kind_t kind;
+    cog_request_id_t request_id;
+    uint64_t sequence;
+    uint64_t bytes_in_delta, bytes_out_delta;
+    uint64_t bytes_in_total, bytes_out_total;
+    int http_status; /**< Latest parsed status, or 0 when unavailable. */
+    cog_result_t outcome; /**< Terminal transport result; otherwise COG_OK. */
+    cog_net_error_kind_t error_kind; /**< Terminal class; otherwise NONE. */
+} cog_net_observation_t;
 
 /**
  * @brief Retained response view; peek does not consume it.
@@ -105,14 +172,18 @@ typedef struct cog_net_response {
  * @return COG_OK; NULL_PTR; INVALID_ARG for invalid/overflowed limits, retries,
  * missing acknowledgement or lifecycle assertion; UNSUPPORTED for backend or
  * memory-limit mismatch; NOMEM for Cog/dependency setup OOM. No resources on
- * failure. Config strings are copied. Owner-thread only, no network effects.
+ * failure. Config strings are copied; observer/user are borrowed and no observer
+ * is called during construction or constructor unwind. Owner-thread only, no network effects.
  */
 cog_result_t cog_net_new(cog_net_ctx_t **out, const cog_net_config_t *config);
 /**
  * @brief Cancel/release all requests and free context-owned handles/workspaces.
  * @param[in,out] ctx NULL no-op. Host runtime must still be live.
  * @note Owner thread, outside callbacks. No DNS joins, peer waits or retry;
- * after return no context callbacks occur. Then host may clean up dependencies.
+ * after return no context callbacks occur. free itself emits no observations;
+ * it destroys the entire observation domain. For observable terminal cleanup,
+ * explicitly cancel/release requests and check observer_status before free.
+ * Then host may clean up dependencies.
  */
 void cog_net_free(cog_net_ctx_t *ctx);
 
@@ -129,6 +200,9 @@ void cog_net_free(cog_net_ctx_t *ctx);
  * exceed reserved capacity; NOMEM for dependency setup. Atomic failure sends
  * nothing and retains no slot. Match each success with request_release().
  * @note Owner thread, no blocking I/O. No redirects/proxy inheritance/retry.
+ * Success publishes out_id before synchronous OPEN. A failing observer does not
+ * turn this successful constructor into failure; inspect observer_status and
+ * still release the successfully constructed ID. Failed admission emits nothing.
  */
 cog_result_t cog_net_request(cog_net_ctx_t *ctx, const char *method,
                              const char *url, const char *headers,
@@ -214,6 +288,19 @@ cog_result_t cog_net_ack(cog_net_ctx_t *ctx, cog_request_id_t id, uint64_t seque
  * @note No implicit transport service. Owner thread.
  */
 cog_result_t cog_net_poll(cog_net_ctx_t *ctx, cog_net_response_t *out_response);
+/**
+ * @brief Read the first latched observation error without clearing it.
+ * @param[in] ctx Context; owner thread, outside callbacks.
+ * @return COG_OK if disabled by configuration or still healthy; NULL_PTR for
+ * NULL ctx; otherwise the observer's first error, or LIMIT for observation
+ * sequence/counter exhaustion. No allocation, network work or state change.
+ * @note Transport APIs keep their ordinary results. An observer-enabled host
+ * must check this status after net operations before authorizing subsequent
+ * application work. The host chooses whether to stop its owned work; unrelated
+ * requests in a shared context are never automatically cancelled by the feed.
+ */
+cog_result_t cog_net_observer_status(const cog_net_ctx_t *ctx);
+
 /**
  * @brief Legacy optional wake descriptor; never assumes one fd represents curl.
  * @param[in] ctx Context.
