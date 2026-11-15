@@ -53,8 +53,10 @@ static void test_defaults(void)
     CHECK(o.log_path == NULL);
     CHECK(o.socket_path == NULL);
     CHECK(o.queue_text == NULL);
-    CHECK(o.model_id != NULL && strcmp(o.model_id, "mock-model") == 0);
-    CHECK(o.endpoint_name != NULL && strcmp(o.endpoint_name, "mock") == 0);
+    CHECK(o.model_id == NULL);
+    CHECK(o.backend == COG_CLI_BACKEND_REAL);
+    CHECK(o.explicit_options == 0U);
+    CHECK(o.endpoint_name != NULL && strcmp(o.endpoint_name, "openrouter") == 0);
     CHECK(o.chunks != NULL && strcmp(o.chunks, "Hello from cog-cli!") == 0);
     CHECK(o.mock_mode == COG_CLI_MOCK_STREAM);
     CHECK_EQ_INT(exit_code, 0);
