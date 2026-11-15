@@ -1,14 +1,20 @@
 /**
  * @file session.h
- * @brief Opaque conversation session context.
+ * @brief Hierarchical conversation tree with forking, timing, and billing.
  *
- * A session holds the conversation state for a single agent loop:
- * message history, identity, and any context that must survive across
- * events and reconnections.  Internals are hidden; callers interact with
- * the session only through the functions declared here.
+ * A session is a tree of conversation nodes. Each node represents a single
+ * message exchange (user prompt, assistant response, tool call, tool result).
+ * The tree structure makes forking trivial: create a new branch from any
+ * existing node.
+ *
+ * The active path from root to leaf defines the current conversation context.
+ * Multiple active paths are possible (parallel subagents, fan-out).
+ *
+ * Each node preserves low-level provider data, timing information, and
+ * billing/cost data. Cumulative cost and timing can be computed up the tree.
  *
  * Threading model: a session is owned by exactly one core instance and is
- * not thread-safe.  All access happens on the thread that runs
+ * not thread-safe. All access happens on the thread that runs
  * @c cog_core_run.
  */
 #ifndef COG_SESSION_H
@@ -20,23 +26,37 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+/* ------------------------------------------------------------------ */
+/* Opaque types                                                        */
+/* ------------------------------------------------------------------ */
+
 /**
- * @brief Opaque conversation session.
+ * @brief Opaque conversation session (tree).
  *
  * Created with @c cog_session_new and destroyed with @c cog_session_free.
  */
 typedef struct cog_session cog_session_t;
 
 /**
- * @brief Configuration passed to @c cog_session_new.
+ * @brief Opaque conversation node.
  *
- * Callers should zero-initialise this struct to obtain defaults; adding
- * fields later will not break callers that zero-init.
+ * A node represents a single message exchange in the conversation tree.
+ * Nodes are owned by the session and must not be freed directly.
+ */
+typedef struct cog_session_node cog_session_node_t;
+
+/* ------------------------------------------------------------------ */
+/* Configuration                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Configuration passed to @c cog_session_new.
  */
 typedef struct cog_session_config {
     /**
@@ -48,17 +68,182 @@ typedef struct cog_session_config {
     const char *id;
 
     /**
-     * @brief Maximum number of conversation events retained as context.
+     * @brief Maximum number of nodes retained in the tree.
      *
-     * Zero selects a sensible default.
+     * Zero selects a sensible default. When exceeded, oldest leaf nodes
+     * are pruned.
      */
-    size_t max_context_events;
+    size_t max_nodes;
 } cog_session_config_t;
+
+/* ------------------------------------------------------------------ */
+/* Timing                                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Timing information for a single node.
+ */
+typedef struct cog_timing {
+    /**
+     * @brief When the request was sent (monotonic ms since session start).
+     */
+    uint64_t request_sent_ms;
+
+    /**
+     * @brief When the first token was received (monotonic ms).
+     */
+    uint64_t first_token_ms;
+
+    /**
+     * @brief When the last token was received (monotonic ms).
+     */
+    uint64_t last_token_ms;
+
+    /**
+     * @brief Total duration in milliseconds.
+     */
+    uint64_t duration_ms;
+
+    /**
+     * @brief Time to first token in milliseconds.
+     */
+    uint64_t ttft_ms;
+
+    /**
+     * @brief Tokens per second (output_tokens / duration_seconds).
+     */
+    double tokens_per_second;
+} cog_timing_t;
+
+/* ------------------------------------------------------------------ */
+/* Billing                                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Cost information for a single node.
+ */
+typedef struct cog_cost {
+    /**
+     * @brief Input tokens consumed by this exchange.
+     */
+    uint64_t input_tokens;
+
+    /**
+     * @brief Output tokens produced by this exchange.
+     */
+    uint64_t output_tokens;
+
+    /**
+     * @brief Cost per input token (from endpoint config).
+     */
+    double cost_per_input_token;
+
+    /**
+     * @brief Cost per output token (from endpoint config).
+     */
+    double cost_per_output_token;
+
+    /**
+     * @brief Total cost for this exchange.
+     */
+    double total_cost;
+} cog_cost_t;
+
+/* ------------------------------------------------------------------ */
+/* Node data                                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Role of the node in the conversation.
+ */
+typedef enum cog_node_role {
+    COG_NODE_SYSTEM = 0,
+    COG_NODE_USER,
+    COG_NODE_ASSISTANT,
+    COG_NODE_TOOL_CALL,
+    COG_NODE_TOOL_RESULT,
+} cog_node_role_t;
+
+/**
+ * @brief A conversation node with full context.
+ *
+ * This is a read-only view into a node. The session owns the data.
+ */
+typedef struct cog_node_data {
+    /**
+     * @brief Role of this node.
+     */
+    cog_node_role_t role;
+
+    /**
+     * @brief The message content (may be NULL for tool calls).
+     */
+    const char *content;
+
+    /**
+     * @brief Length of content in bytes.
+     */
+    size_t content_len;
+
+    /**
+     * @brief Tool call name (for COG_NODE_TOOL_CALL).
+     */
+    const char *tool_name;
+
+    /**
+     * @brief Tool call arguments JSON (for COG_NODE_TOOL_CALL).
+     */
+    const char *tool_args;
+
+    /**
+     * @brief Tool result content (for COG_NODE_TOOL_RESULT).
+     */
+    const char *tool_result;
+
+    /**
+     * @brief Raw provider request JSON (preserved for debugging).
+     */
+    const char *raw_request;
+
+    /**
+     * @brief Raw provider response JSON (preserved for debugging).
+     */
+    const char *raw_response;
+
+    /**
+     * @brief Number of streaming chunks received.
+     */
+    size_t chunk_count;
+
+    /**
+     * @brief Timing information.
+     */
+    cog_timing_t timing;
+
+    /**
+     * @brief Cost information.
+     */
+    cog_cost_t cost;
+
+    /**
+     * @brief Model used for this exchange (e.g. "claude-sonnet-4-20250514").
+     */
+    const char *model;
+
+    /**
+     * @brief Provider name (e.g. "anthropic", "openai").
+     */
+    const char *provider;
+} cog_node_data_t;
+
+/* ------------------------------------------------------------------ */
+/* Lifecycle                                                           */
+/* ------------------------------------------------------------------ */
 
 /**
  * @brief Create a new session.
  *
- * @param[out] out   Uninitialised pointer; set to the new session on success.
+ * @param[out] out    Uninitialised pointer; set to the new session on success.
  * @param[in]  config Configuration; may be NULL for defaults.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p out is NULL.
@@ -70,15 +255,14 @@ typedef struct cog_session_config {
  * Threading: not thread-safe.
  */
 cog_result_t cog_session_new(cog_session_t **out,
-                             const cog_session_config_t *config);
+                              const cog_session_config_t *config);
 
 /**
- * @brief Destroy a session.
+ * @brief Destroy a session and all its nodes.
  *
  * @param[in,out] session Session to destroy; may be NULL (no-op).
  *
- * @post All storage owned by @p session is released.  @p session must
- *       not be used after this call.
+ * @post All storage owned by @p session is released.
  *
  * Threading: not thread-safe.
  */
@@ -91,9 +275,6 @@ void cog_session_free(cog_session_t *session);
  * @return Pointer to a NUL-terminated id string, or NULL if @p session
  *         is NULL.
  *
- * @note The returned pointer remains valid until the session is freed or
- *       reset.
- *
  * Threading: not thread-safe.
  */
 const char *cog_session_id(const cog_session_t *session);
@@ -101,53 +282,200 @@ const char *cog_session_id(const cog_session_t *session);
 /**
  * @brief Reset a session to its initial empty state.
  *
+ * All nodes are freed. The session retains its id.
+ *
  * @param[in,out] session Session to reset.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p session is NULL.
- * @return COG_ERROR_INVALID_STATE if the session is currently active in a
- *         running core.
- *
- * @post The session retains its id but loses all accumulated context.
+ * @return COG_ERROR_INVALID_STATE if the session is active in a running core.
  *
  * Threading: not thread-safe.
  */
 cog_result_t cog_session_reset(cog_session_t *session);
 
 /**
- * @brief Return true if the session currently holds no context.
+ * @brief Return true if the session has no nodes.
  *
  * @param[in] session Session to query; may be NULL.
- * @return true if the session is NULL or empty, false otherwise.
+ * @return true if the session is NULL or empty.
  *
  * Threading: not thread-safe.
  */
 bool cog_session_is_empty(const cog_session_t *session);
 
+/* ------------------------------------------------------------------ */
+/* Tree navigation                                                     */
+/* ------------------------------------------------------------------ */
+
 /**
- * @brief Append a message to the session's conversation history.
+ * @brief Get the root node of the session.
  *
- * The message is copied into the session's internal storage.
+ * @param[in] session Session to query.
+ * @return Root node, or NULL if the session is empty.
+ *
+ * Threading: not thread-safe.
+ */
+cog_session_node_t *cog_session_root(const cog_session_t *session);
+
+/**
+ * @brief Get the active leaf node (end of current conversation path).
+ *
+ * @param[in] session Session to query.
+ * @return Active leaf node, or NULL if the session is empty.
+ *
+ * Threading: not thread-safe.
+ */
+cog_session_node_t *cog_session_active(const cog_session_t *session);
+
+/**
+ * @brief Get the parent of a node.
+ *
+ * @param[in] node Node to query.
+ * @return Parent node, or NULL if @p node is the root.
+ *
+ * Threading: not thread-safe.
+ */
+cog_session_node_t *cog_node_parent(const cog_session_node_t *node);
+
+/**
+ * @brief Get the first child of a node.
+ *
+ * @param[in] node Node to query.
+ * @return First child, or NULL if @p node is a leaf.
+ *
+ * Threading: not thread-safe.
+ */
+cog_session_node_t *cog_node_first_child(const cog_session_node_t *node);
+
+/**
+ * @brief Get the next sibling of a node.
+ *
+ * @param[in] node Node to query.
+ * @return Next sibling, or NULL if @p node is the last child.
+ *
+ * Threading: not thread-safe.
+ */
+cog_session_node_t *cog_node_next_sibling(const cog_session_node_t *node);
+
+/**
+ * @brief Get the number of children of a node.
+ *
+ * @param[in] node Node to query.
+ * @return Number of children.
+ *
+ * Threading: not thread-safe.
+ */
+size_t cog_node_child_count(const cog_session_node_t *node);
+
+/* ------------------------------------------------------------------ */
+/* Node data access                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Get the data for a node.
+ *
+ * @param[in] node Node to query.
+ * @return Pointer to node data, or NULL if @p node is NULL.
+ *
+ * @note The returned pointer is valid until the session is modified.
+ *
+ * Threading: not thread-safe.
+ */
+const cog_node_data_t *cog_node_data(const cog_session_node_t *node);
+
+/* ------------------------------------------------------------------ */
+/* Tree mutation                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Add a message as a child of the given parent node.
+ *
+ * Creates a new node and appends it to the parent's children. If @p parent
+ * is NULL, the message is added as a child of the root (or becomes the root
+ * if the session is empty).
  *
  * @param[in,out] session Session to modify.
- * @param[in]     msg     Message to append; must be non-NULL.
+ * @param[in]     parent  Parent node; may be NULL for root.
+ * @param[in]     msg     Message to add; must be non-NULL.
+ * @param[out]    out_node Receives the new node; may be NULL.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p session or @p msg is NULL.
  * @return COG_ERROR_NOMEM if allocation fails.
- * @return COG_ERROR_OVERFLOW if the session's history is full.
  *
  * Threading: not thread-safe.
  */
 cog_result_t cog_session_add_message(cog_session_t *session,
-                                      const cog_message_t *msg);
+                                      cog_session_node_t *parent,
+                                      const cog_message_t *msg,
+                                      cog_session_node_t **out_node);
 
 /**
- * @brief Get the conversation history for building a provider request.
+ * @brief Add a tool call node.
  *
- * The returned array is owned by the session and remains valid until
- * the next call that modifies the session.
+ * @param[in,out] session   Session to modify.
+ * @param[in]     parent    Parent node; may be NULL for root.
+ * @param[in]     tool_name Name of the tool being called.
+ * @param[in]     tool_args Arguments as JSON string.
+ * @param[out]    out_node  Receives the new node; may be NULL.
+ * @return COG_OK on success.
  *
- * @param[in]  session   Session to query.
- * @param[out] out_msgs  Receives pointer to the message array.
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_session_add_tool_call(cog_session_t *session,
+                                        cog_session_node_t *parent,
+                                        const char *tool_name,
+                                        const char *tool_args,
+                                        cog_session_node_t **out_node);
+
+/**
+ * @brief Add a tool result node.
+ *
+ * @param[in,out] session     Session to modify.
+ * @param[in]     parent      Parent node (the tool call); must be non-NULL.
+ * @param[in]     tool_result Result content.
+ * @param[out]    out_node    Receives the new node; may be NULL.
+ * @return COG_OK on success.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_session_add_tool_result(cog_session_t *session,
+                                          cog_session_node_t *parent,
+                                          const char *tool_result,
+                                          cog_session_node_t **out_node);
+
+/**
+ * @brief Fork the conversation from a given node.
+ *
+ * Creates a new branch starting from @p node. The forked branch shares
+ * all ancestor nodes but has its own children. This is cheap (shared
+ * immutable nodes).
+ *
+ * @param[in,out] session Session to modify.
+ * @param[in]     node    Node to fork from.
+ * @param[out]    out_node Receives the fork point node on the new branch.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if @p session or @p node is NULL.
+ * @return COG_ERROR_NOMEM if allocation fails.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_session_fork(cog_session_t *session,
+                               cog_session_node_t *node,
+                               cog_session_node_t **out_node);
+
+/* ------------------------------------------------------------------ */
+/* History / context building                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Get the conversation history from root to a given node.
+ *
+ * Returns the path of messages that should be sent to the LLM as context.
+ * The returned array is owned by the session.
+ *
+ * @param[in]  session  Session to query.
+ * @param[in]  node     Leaf node (end of conversation path).
+ * @param[out] out_msgs Receives pointer to the message array.
  * @param[out] out_count Receives the number of messages.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if any argument is NULL.
@@ -155,15 +483,85 @@ cog_result_t cog_session_add_message(cog_session_t *session,
  * Threading: not thread-safe.
  */
 cog_result_t cog_session_get_history(const cog_session_t *session,
+                                      const cog_session_node_t *node,
                                       const cog_message_t **out_msgs,
                                       size_t *out_count);
+
+/* ------------------------------------------------------------------ */
+/* Timing and billing                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Set timing information for a node.
+ *
+ * Called by the provider layer after a request completes.
+ *
+ * @param[in,out] session Session containing the node.
+ * @param[in]     node    Node to update.
+ * @param[in]     timing  Timing data to set.
+ * @return COG_OK on success.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_session_set_timing(cog_session_t *session,
+                                     cog_session_node_t *node,
+                                     const cog_timing_t *timing);
+
+/**
+ * @brief Set cost information for a node.
+ *
+ * Called by the provider layer after a request completes.
+ *
+ * @param[in,out] session Session containing the node.
+ * @param[in]     node    Node to update.
+ * @param[in]     cost    Cost data to set.
+ * @return COG_OK on success.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_session_set_cost(cog_session_t *session,
+                                   cog_session_node_t *node,
+                                   const cog_cost_t *cost);
+
+/**
+ * @brief Get cumulative cost from root to a given node.
+ *
+ * Sums the cost of all nodes on the path from root to @p node.
+ *
+ * @param[in] session Session to query.
+ * @param[in] node    Leaf node.
+ * @return Cumulative cost, or 0.0 if @p node is NULL.
+ *
+ * Threading: not thread-safe.
+ */
+double cog_session_cumulative_cost(const cog_session_t *session,
+                                    const cog_session_node_t *node);
+
+/**
+ * @brief Get cumulative timing from root to a given node.
+ *
+ * Sums the timing of all nodes on the path from root to @p node.
+ *
+ * @param[in]  session Session to query.
+ * @param[in]  node    Leaf node.
+ * @param[out] out     Receives cumulative timing.
+ * @return COG_OK on success.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_session_cumulative_timing(const cog_session_t *session,
+                                            const cog_session_node_t *node,
+                                            cog_timing_t *out);
+
+/* ------------------------------------------------------------------ */
+/* Parent session                                                      */
+/* ------------------------------------------------------------------ */
 
 /**
  * @brief Return the parent session identifier.
  *
  * @param[in] session Session to query; may be NULL.
- * @return Parent session id, or NULL if this is a root session or
- *         @p session is NULL.
+ * @return Parent session id, or NULL if this is a root session.
  *
  * Threading: not thread-safe.
  */
@@ -173,8 +571,7 @@ const char *cog_session_parent_id(const cog_session_t *session);
  * @brief Set the parent session identifier.
  *
  * @param[in,out] session   Session to modify.
- * @param[in]     parent_id Parent session id; copied.  May be NULL to
- *                          clear the parent.
+ * @param[in]     parent_id Parent session id; copied. May be NULL.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p session is NULL.
  * @return COG_ERROR_NOMEM if allocation fails.

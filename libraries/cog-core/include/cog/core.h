@@ -31,6 +31,7 @@
 #include <cog/provider_vtable.h>
 #include <cog/result.h>
 #include <cog/session.h>
+#include <cog/session_store.h>
 #include <cog/state.h>
 #include <cog/tool.h>
 
@@ -153,6 +154,14 @@ typedef struct cog_core_config {
      * this context.  The caller retains ownership.
      */
     cog_obs_t *obs;
+
+    /**
+     * @brief Optional session store for persistence.
+     *
+     * If non-NULL, the core auto-saves sessions after each exchange.
+     * The caller retains ownership of the store.
+     */
+    cog_store_t *store;
 } cog_core_config_t;
 
 /**
@@ -312,6 +321,16 @@ cog_provider_t *cog_core_provider(cog_core_t *core);
  * Threading: not thread-safe.
  */
 cog_obs_t *cog_core_obs(cog_core_t *core);
+
+/**
+ * @brief Return the session store.
+ *
+ * @param[in] core Core to query; may be NULL.
+ * @return The session store, or NULL if not configured or @p core is NULL.
+ *
+ * Threading: not thread-safe.
+ */
+cog_store_t *cog_core_store(cog_core_t *core);
 
 #ifdef __cplusplus
 }
