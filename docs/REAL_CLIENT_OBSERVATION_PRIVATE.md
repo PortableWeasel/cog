@@ -50,3 +50,35 @@ so refused sends cannot reuse an observation identity or change stale-event rule
 It adds tool-terminal once state for retained failed-insertion handles. An OPEN
 before binding is invalid; supported construction never sends before binding.
 EOF/cancel/recovery and R12 fixed resource semantics are unchanged.
+
+## Pass 3: consistency and error-domain review
+
+No callback invokes formatting, obs, stdio or net APIs; capture reads the
+nonblocking checked obs monotonic clock and copies fixed numeric/scope values.
+Bridge status and net observer_status are separate; deferred sink failure cannot
+be injected into net status and gates admission immediately without a further
+callback. Cleanup drains owned effects even if the feed is already incomplete.
+Terminal rows clear borrowed diagnostics before reuse; domain clear requires
+zero owned requests, including retained terminal slots. Net dies before host
+bridge memory, and obs detaches only after releases/drain/diagnostic clear.
+
+Provider/tool static span names carry no external content. Typed metadata and
+known usage use separate bounded records; unavailable labels/numbers are omitted
+with availability flags. Private configuration code alone compares labels with
+its credential bytes/reference; bridge scope receives only copied safe labels.
+No raw secret accessor, reference/URL/argument/output/body/error-text log or
+retired-generation borrow is introduced. Explicit generated-session omission
+does not change the actual session ID/history or make valid configuration fail.
+
+Observation identity is nonreused and independent of core request serial,
+configuration identity, durable owner epoch and display incarnation. Failed sends
+burn observation identities but create no fake net row. RETRY requires an actual
+OPEN from the newly admitted application retry and keeps its timestamp. The
+existing application budget remains the sole retry/effect authority.
+
+Required pointers and constructors have explicit errors/destructors. Existing
+R12 publication retains its infallible postcommit section; observation checks
+precede commit/alias retirement, while every consuming disconnect is drained
+before matching config storage clears. Final app_run result preserves work
+failure first, with observation failure returned only if work otherwise succeeds.
+No public declaration or net/core/provider implementation changes are needed.

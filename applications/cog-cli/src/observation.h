@@ -29,7 +29,8 @@ void cog_cli_observer_free(cog_cli_observer_t *observer);
  * @return OK; NULL_PTR for observer; INVALID_STATE for unsafe retarget/detach. */
 cog_result_t cog_cli_observer_bind(cog_cli_observer_t *observer, cog_obs_t *obs);
 /** Owner prepares one fixed copied scope immediately before provider_send.
- * Drain/check previous work first. Strings are bounded/validated, never retained
+ * Required NULL arguments return NULL_PTR. Drain/check previous work first.
+ * Strings are bounded/validated, never retained
  * by pointer. Failed preparation admits no wire work. @return OK or sticky error. */
 cog_result_t cog_cli_observer_prepare(cog_cli_observer_t *observer,
     const cog_net_ctx_t *net, const cog_cli_observation_scope_t *scope);
@@ -48,7 +49,8 @@ cog_result_t cog_cli_observer_capture(void *user, const cog_net_ctx_t *net,
  * Clears prepared scope after draining. On failure latch first deferred error,
  * never retry partially delivered records, discard remaining queued values as
  * an explicitly incomplete feed; cleanup may still release requests/clear rows.
- * @return OK or first sticky bridge error; no runtime allocation. */
+ * @return NULL_PTR for observer; otherwise OK or first sticky bridge error;
+ * no runtime allocation. */
 cog_result_t cog_cli_observer_drain(cog_cli_observer_t *observer);
 /** Query bridge-local callback/deferred error; never writes net observer_status.
  * @return NULL_PTR or first bridge error/OK. No callbacks or mutation. */
@@ -56,33 +58,36 @@ cog_result_t cog_cli_observer_status(const cog_cli_observer_t *observer);
 /** Drain then clear all rows for a still-live net with no owned request IDs.
  * Existing feed error stays latched, but rows/diagnostic borrows still clear.
  * Call before net destruction/memory reuse and before unbinding/freeing obs.
- * @return OK/sticky error; INVALID_STATE if net still owns requests. */
+ * @return NULL_PTR for required pointers; OK/sticky error; INVALID_STATE if net
+ * still owns requests. Even a lost feed cannot authorize clearing live IDs. */
 cog_result_t cog_cli_observer_clear(cog_cli_observer_t *observer, const cog_net_ctx_t *net);
 
 /** One immutable allowlisted typed field vocabulary; match app obs constructor. */
 const cog_obs_field_table_t *cog_cli_observation_fields(void);
 /** Owner admission checkpoint: drain own bridge, inspect net callback status and
  * app deferred timing/sink error independently. Preserve a nonOK primary result.
- * During existing cancel/drain, latch secondary errors without interrupting
+ * NULL app returns NULL_PTR. During existing cancel/drain, latch secondary errors without interrupting
  * durable cleanup; app_run merges them only after work cleanup finishes. */
 cog_result_t cog_cli_observation_check(cog_cli_app_t *app, cog_result_t primary);
 /** Prepare copied pinned scope, checked start time and static provider span;
  * caller sets admitted provider state before checking a successful send's OPEN.
  * Burn a nonreused private observation request ID, including failed sends;
  * core event serial and application retry-budget semantics remain unchanged.
- * No send/tool/session mutation. @return OK or first observation error. */
+ * No send/tool/session mutation. @return NULL_PTR; OK or first observation error. */
 cog_result_t cog_cli_observation_provider_begin(cog_cli_app_t *app);
 /** End one timed attempt once, including failed send or consumed semantic FINISH.
  * Typed duration/status/HTTP and known-usage snapshot only. Never changes work
- * result, retries or ledger. Failed trace_end is not retried during cleanup. */
+ * result, retries or ledger. Failed trace_end is not retried during cleanup.
+ * NULL app is a no-op. */
 void cog_cli_observation_provider_end(cog_cli_app_t *app, cog_result_t outcome, int http_status);
-/** Checked timer/span immediately before admitted execution start. */
+/** Checked timer/span immediately before admitted execution start.
+ * @return NULL_PTR; OK or first observation error. */
 cog_result_t cog_cli_observation_tool_begin(cog_cli_app_t *app);
 /** Terminal-once duration through reap, or explicit no-execution record when no
  * tool timer was started. Static recognized tool name/node/original ordinal,
  * no call ID/arguments/output. Identity/once state suppresses duplicate terminal
  * records if durable insertion fails and a terminal handle must stay retained.
- * Latches obs errors but never skips durable result. */
+ * Latches obs errors but never skips durable result. NULL app is a no-op. */
 void cog_cli_observation_tool_end(cog_cli_app_t *app, cog_result_t outcome,
     bool effects_possible, bool truncated);
 /** After all providers release IDs, drain/clear/unbind before app obs is freed.
