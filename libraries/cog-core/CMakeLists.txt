@@ -2,18 +2,38 @@
 # cog-core — agent loop, session state, event queue, and state-machine dispatch
 # -----------------------------------------------------------------------
 
-# Stage 6 header-only library.  Implementation files are added in a
-# follow-up ticket; for now the target exports the public include path and
-# the C11 compile feature so consumers can include the headers.
-add_library(cog-core INTERFACE)
+# Stage 12.1e: cog-core is now a real static library.  It compiles the
+# Phase 1 modules (session.c, event.c, state.c) into a single archive while
+# preserving the public include path, the C11 compile feature, the
+# cog::core alias, and the strict-warning settings that downstream
+# INTERFACE consumers (cog-provider, cog-toolkit) rely on.
+#
+# handler.h remains header-only: it declares the handler result type and
+# the cog_handler_fn signature but owns no implementation unit, so there is
+# deliberately no handler.c.
+add_library(cog-core STATIC
+    src/session.c
+    src/event.c
+    src/state.c
+)
 add_library(cog::core ALIAS cog-core)
 
 target_include_directories(cog-core
-    INTERFACE
+    PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
-target_compile_features(cog-core INTERFACE c_std_11)
+target_compile_features(cog-core PUBLIC c_std_11)
+
+# cog-core headers include cog-ipc headers (e.g. <cog/ipc.h> from event.h),
+# so the core propagates the ipc include path to its consumers.  cog-ipc is
+# an INTERFACE target, so this adds no link step and the dependency graph
+# stays acyclic in practice.
+target_link_libraries(cog-core PUBLIC cog::ipc)
+
+# Apply the project-wide strict-warning policy (and ASan/UBSan when enabled)
+# to the production sources.
+target_enable_warnings(cog-core)
 
 # -----------------------------------------------------------------------
 # Install rules
