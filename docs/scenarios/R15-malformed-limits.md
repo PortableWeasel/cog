@@ -69,5 +69,5 @@ limits, unsupported numeric ranges and result resize with one effect.
 The OpenRouter-specific constructor accepts JSON depth ceilings1..256;
 max_json_depth257 fails INVALID_ARG without a live provider or wire request.
 A strict fixture at depth256 exercises duplicate validation and repeated opaque
-metadata equality; reducing the configured depth to255 fails PROTOCOL. This
+metadata equality; reducing the configured depth to255 fails LIMIT. This
 narrow header amendment makes the implementation stack bound reviewable.

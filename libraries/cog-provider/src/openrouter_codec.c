@@ -6,7 +6,7 @@
 /* Depth preflight does not replace JSON validation. Duplicate detection
  * compares decoded key lengths/bytes, including escaped spellings and embedded
  * NUL. */
-static bool depth_ok(const char *s, size_t n, size_t max)
+static cog_result_t depth_check(const char *s, size_t n, size_t max)
 {
     size_t depth = 0U;
     bool quoted = false, escape = false;
@@ -27,16 +27,16 @@ static bool depth_ok(const char *s, size_t n, size_t max)
         else if (c == '{' || c == '[')
         {
             if (++depth > max)
-                return false;
+                return COG_ERROR_LIMIT;
         }
         else if (c == '}' || c == ']')
         {
             if (depth == 0U)
-                return false;
+                return COG_ERROR_PROTOCOL;
             --depth;
         }
     }
-    return depth == 0U && !quoted;
+    return depth == 0U && !quoted ? COG_OK : COG_ERROR_PROTOCOL;
 }
 static bool unique(yyjson_val *v)
 {
@@ -77,8 +77,9 @@ cog_result_t or_json_read(or_provider *p, const char *s, size_t n,
                           yyjson_doc **out)
 {
     *out = NULL;
-    if (!depth_ok(s, n, p->config.limits.max_json_depth))
-        return COG_ERROR_PROTOCOL;
+    cog_result_t depth = depth_check(s, n, p->config.limits.max_json_depth);
+    if (depth != COG_OK)
+        return depth;
     yyjson_read_err err;
     *out = yyjson_read_opts((char *)(void *)s, n, 0U, &p->parser, &err);
     if (*out == NULL)
@@ -120,6 +121,37 @@ static cog_result_t json_copy(or_provider *p, yyjson_mut_doc *d, const char *s,
     }
     yyjson_doc_free(parsed);
     return rc;
+}
+static cog_result_t tools_supported(yyjson_mut_val *tools)
+{
+    size_t count = yyjson_mut_arr_size(tools);
+    for (size_t i = 0; i < count; ++i)
+    {
+        yyjson_mut_val *tool = yyjson_mut_arr_get(tools, i);
+        yyjson_mut_val *type = yyjson_mut_obj_get(tool, "type");
+        yyjson_mut_val *fn = yyjson_mut_obj_get(tool, "function");
+        if (!yyjson_mut_is_obj(tool) ||
+            !yyjson_mut_equals_str(type, "function"))
+            return COG_ERROR_UNSUPPORTED;
+        yyjson_mut_val *name = yyjson_mut_obj_get(fn, "name");
+        yyjson_mut_val *schema = yyjson_mut_obj_get(fn, "parameters");
+        yyjson_mut_val *description = yyjson_mut_obj_get(fn, "description");
+        if (!yyjson_mut_is_obj(fn) || !yyjson_mut_is_str(name) ||
+            yyjson_mut_get_len(name) == 0U ||
+            memchr(yyjson_mut_get_str(name), 0, yyjson_mut_get_len(name)) !=
+                NULL ||
+            (schema != NULL && !yyjson_mut_is_obj(schema)) ||
+            (description != NULL && !yyjson_mut_is_str(description)))
+            return COG_ERROR_INVALID_ARG;
+        for (size_t j = 0; j < i; ++j)
+        {
+            yyjson_mut_val *prior =
+                yyjson_mut_obj_get(yyjson_mut_arr_get(tools, j), "function");
+            if (yyjson_mut_equals(name, yyjson_mut_obj_get(prior, "name")))
+                return COG_ERROR_INVALID_ARG;
+        }
+    }
+    return COG_OK;
 }
 static bool opaque_entries_supported(yyjson_val *details)
 {
@@ -172,6 +204,9 @@ cog_result_t or_encode(or_provider *p, const cog_provider_request_t *r,
     {
         yyjson_mut_val *tools = NULL;
         rc = json_copy(p, d, r->tools_json, r->tools_json_len, false, &tools);
+        if (rc != COG_OK)
+            goto end;
+        rc = tools_supported(tools);
         if (rc != COG_OK)
             goto end;
         rc = COG_ERROR_LIMIT;
@@ -515,9 +550,13 @@ cog_result_t or_decode(or_provider *p, const char *s, size_t n)
             size_t slot = i;
             if (p->stream)
             {
-                if (!yyjson_is_uint(index) ||
-                    yyjson_get_uint(index) >= p->config.limits.max_tool_calls)
+                if (!yyjson_is_uint(index))
                     goto end;
+                if (yyjson_get_uint(index) >= p->config.limits.max_tool_calls)
+                {
+                    rc = COG_ERROR_LIMIT;
+                    goto end;
+                }
                 slot = (size_t)yyjson_get_uint(index);
             }
             else if (slot >= p->config.limits.max_tool_calls)
