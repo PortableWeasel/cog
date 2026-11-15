@@ -890,6 +890,62 @@ static void verify_stray_file_delete_io(void)
     CHECK(cog_store_delete(st, "s") == COG_ERROR_IO);
     /* The session is still present (delete did not half-remove it). */
     CHECK(cog_store_exists(st, "s"));
+    /* Repeated delete still reports IO (not NOT_FOUND): the preflight
+     * rejects the unknown entry before any unlink. */
+    CHECK(cog_store_delete(st, "s") == COG_ERROR_IO);
+    CHECK(cog_store_exists(st, "s"));
+    /* Removing the obstruction lets the same delete succeed. */
+    {
+        char *sp = path_join(base, "s/stray.txt");
+
+        if (sp != NULL) {
+            (void)unlink(sp);
+            free(sp);
+        }
+    }
+    CHECK(cog_store_delete(st, "s") == COG_OK);
+    CHECK(!cog_store_exists(st, "s"));
+    cog_session_free(s);
+    cog_store_free(st);
+    rmtree(base);
+    free(base);
+}
+
+/* A directory masquerading as a known store file (meta.json) is rejected
+ * by the delete preflight without any modification. */
+static void verify_known_name_dir_delete_io(void)
+{
+    char *base = make_tmp("knowndir");
+    cog_store_config_t cfg;
+    cog_store_t *st = NULL;
+    cog_session_t *s = NULL;
+    cog_session_config_t scfg;
+    char *d;
+    char *p;
+
+    if (base == NULL) {
+        return;
+    }
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.base_dir = base;
+    CHECK(cog_store_new(&st, &cfg) == COG_OK);
+    memset(&scfg, 0, sizeof(scfg));
+    scfg.id = "s";
+    CHECK(cog_session_new(&s, &scfg) == COG_OK);
+    CHECK(cog_store_save(st, s) == COG_OK);
+    /* Replace meta.json with a directory of the same name. */
+    d = path_join(base, "s");
+    p = path_join(d, "meta.json");
+    if (p != NULL) {
+        (void)unlink(p);
+        (void)mkdir(p, 0700);
+        free(p);
+    }
+    free(d);
+    /* The known-name directory fails preflight before any unlink. */
+    CHECK(cog_store_delete(st, "s") == COG_ERROR_IO);
+    CHECK(cog_store_exists(st, "s"));
+    CHECK(cog_store_delete(st, "s") == COG_ERROR_IO);
     cog_session_free(s);
     cog_store_free(st);
     rmtree(base);
@@ -977,6 +1033,7 @@ int main(void)
     verify_prune_keeps_just_saved();
     verify_save_after_append_index();
     verify_stray_file_delete_io();
+    verify_known_name_dir_delete_io();
     verify_bootstrap_raw_fields();
 
     if (failures == 0U) {
