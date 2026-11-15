@@ -1,0 +1,47 @@
+{
+  "model": "deepseek/deepseek-v4-flash-0731",
+  "stream": true,
+  "max_tokens": 512,
+  "reasoning": {
+    "enabled": false
+  },
+  "provider": {
+    "require_parameters": true
+  },
+  "stream_options": {
+    "include_usage": true
+  },
+  "messages": [
+    {
+      "role": "user",
+      "content": "Call echo once with value equal to café \"wire\" followed by a newline and 😀. Do not explain."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "echo",
+        "description": "Return synthetic test input unchanged; no side effects.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "tool_choice": {
+    "type": "function",
+    "function": {
+      "name": "echo"
+    }
+  }
+}
