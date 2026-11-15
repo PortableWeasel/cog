@@ -216,11 +216,12 @@ static cog_result_t cancel_mock(cog_provider_t *base)
             p->cancel_after = true;
         else
             p->terminal_pending = true;
-        p->error = (cog_provider_error_t){.code = COG_ERROR_ABORTED,
-                                          .message = "mock turn cancelled",
-                                          .kind = COG_PROVIDER_ERROR_CANCELLED,
-                                          .output_accepted = p->sequence != 0U,
-                                          .replay_safe = p->sequence == 0U};
+        p->error = (cog_provider_error_t){
+            .code = COG_ERROR_ABORTED,
+            .message = "mock turn cancelled",
+            .kind = COG_PROVIDER_ERROR_CANCELLED,
+            .output_accepted = p->sequence != 0U || p->retained,
+            .replay_safe = p->sequence == 0U && !p->retained};
     }
     return COG_OK;
 }
@@ -322,6 +323,14 @@ static void consume(mock *p, const cog_provider_delta_t *d)
     }
     else
     {
+        /* A retained ordinary item remains accepted output when cancellation
+         * is already pending; terminal diagnostics must reflect its delivery.
+         */
+        if (p->error.code != COG_OK)
+        {
+            p->error.output_accepted = true;
+            p->error.replay_safe = false;
+        }
         if (d->kind == COG_PROVIDER_DELTA_TEXT)
             ++p->chunk_count;
         ++p->step_index;
@@ -424,7 +433,9 @@ static cog_result_t receive_mock(cog_provider_t *base,
         r->content[d.data_len] = '\0';
         r->content_len = d.data_len;
         consume(p, &d);
-        r->is_complete = p->terminal_pending;
+        /* Legacy receive may combine text with a successful STOP only.
+         * Cancellation keeps the retained text nonterminal, then ABORTED. */
+        r->is_complete = p->terminal_pending && p->error.code == COG_OK;
         r->finish_reason =
             r->is_complete ? COG_FINISH_REASON_STOP : COG_FINISH_REASON_NONE;
         if (r->is_complete)

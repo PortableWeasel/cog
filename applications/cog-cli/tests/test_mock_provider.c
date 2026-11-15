@@ -435,6 +435,8 @@ static void test_typed_cancel_error_after_retained_output(void)
     CHECK(do_send(p, "mock-model") == COG_OK);
     CHECK(cog_provider_next(p, &delta, NULL, 0U, &required) == COG_ERROR_OVERFLOW);
     CHECK(cog_provider_cancel(p) == COG_OK);
+    CHECK(cog_provider_get_error(p, &error) == COG_OK);
+    CHECK(error.output_accepted && !error.replay_safe);
     CHECK(cog_provider_next(p, &delta, bytes, sizeof(bytes), &required) == COG_OK);
     CHECK(delta.kind == COG_PROVIDER_DELTA_TEXT);
     CHECK(cog_provider_next(p, &delta, bytes, sizeof(bytes), &required) == COG_OK);

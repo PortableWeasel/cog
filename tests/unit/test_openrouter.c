@@ -511,12 +511,14 @@ static void nonstream_opaque_final_array(void)
 {
     static const char expected[] =
         "{\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"a\","
-        "\"id\":\"one\"},{\"type\":\"reasoning.text\",\"text\":\"b\",\"id\":\"two\"}]}";
+        "\"id\":\"one\"},{\"type\":\"reasoning.text\",\"text\":\"b\",\"id\":"
+        "\"two\"}]}";
     request.stream = false;
     cog_provider_t *p = start(
         "{\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
         "\"content\":\"\",\"reasoning_details\":[{\"type\":\"reasoning.text\","
-        "\"text\":\"a\",\"id\":\"one\"},{\"type\":\"reasoning.text\",\"text\":\"b\","
+        "\"text\":\"a\",\"id\":\"one\"},{\"type\":\"reasoning.text\",\"text\":"
+        "\"b\","
         "\"id\":\"two\"}]},\"finish_reason\":\"stop\"}]}");
     char bytes[20000];
     cog_provider_delta_t d = obtain(p, bytes, sizeof(bytes));
@@ -526,6 +528,42 @@ static void nonstream_opaque_final_array(void)
     d = obtain(p, bytes, sizeof(bytes));
     assert(d.kind == COG_PROVIDER_DELTA_FINISH && d.outcome == COG_OK);
     stop(p);
+    request.stream = true;
+}
+/* Final arrays preserve separate entries even when their metadata agrees. */
+static void nonstream_opaque_entry_boundaries(void)
+{
+    static const char *const arrays[] = {
+        "[{\"type\":\"reasoning.text\",\"text\":\"a\"},{\"type\":\"reasoning."
+        "text\",\"text\":\"b\"}]",
+        "[{\"type\":\"reasoning.text\",\"text\":\"a\",\"id\":\"same\"},{"
+        "\"type\":\"reasoning.text\",\"text\":\"b\",\"id\":\"same\"}]",
+        "[{\"type\":\"reasoning.summary\",\"summary\":\"a\",\"future\":{"
+        "\"tag\":1}},{\"type\":\"reasoning.summary\",\"summary\":\"b\","
+        "\"future\":{\"tag\":2}}]",
+        "[]"};
+    request.stream = false;
+    for (size_t i = 0U; i < sizeof(arrays) / sizeof(arrays[0]); ++i)
+    {
+        char frame[4096], expected[2048], bytes[20000];
+        int n = snprintf(frame, sizeof(frame),
+                         "{\"choices\":[{\"index\":0,\"message\":{\"role\":"
+                         "\"assistant\",\"content\":\"\",\"reasoning_details\":"
+                         "%s},\"finish_reason\":\"stop\"}]}",
+                         arrays[i]);
+        assert(n >= 0 && (size_t)n < sizeof(frame));
+        n = snprintf(expected, sizeof(expected), "{\"reasoning_details\":%s}",
+                     arrays[i]);
+        assert(n >= 0 && (size_t)n < sizeof(expected));
+        cog_provider_t *p = start(frame);
+        cog_provider_delta_t d = obtain(p, bytes, sizeof(bytes));
+        assert(d.kind == COG_PROVIDER_DELTA_OPAQUE);
+        assert(d.opaque.size == (size_t)n &&
+               memcmp(d.opaque.data, expected, (size_t)n) == 0);
+        d = obtain(p, bytes, sizeof(bytes));
+        assert(d.kind == COG_PROVIDER_DELTA_FINISH && d.outcome == COG_OK);
+        stop(p);
+    }
     request.stream = true;
 }
 static void constructor_failures(void)
@@ -639,6 +677,7 @@ int main(void)
     overflow_cancel();
     failures();
     nonstream_opaque_final_array();
+    nonstream_opaque_entry_boundaries();
     printf("OpenRouter retained fixture checks passed (%zu constructor "
            "allocations)\n",
            allocations);

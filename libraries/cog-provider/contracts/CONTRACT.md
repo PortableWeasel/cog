@@ -33,10 +33,13 @@ successful FINISH. Duplicate tool IDs, conflicting terminal metadata, nonempty
 post-finish data or unknown continuation types fail closed. Partial earlier
 text is retained on failure and cannot authorize a tool.
 
-Opaque text/summary updates merge consecutive unsigned blocks, retain signature
+Streaming opaque text/summary updates merge consecutive unsigned blocks, retain signature
 closure and the union of equal non-payload metadata. Encrypted entries stay
 discrete. Explicit empty-array presence is preserved. Unknown/conflicting merged
-members fail UNSUPPORTED. All output pointer lifetimes belong to caller storage.
+members fail UNSUPPORTED. Nonstream responses already contain their final array:
+entry boundaries/order and every value are retained without fragment merging,
+including adjacent entries with equal or differing metadata. All output pointer
+lifetimes belong to caller storage.
 
 next is a pure transactional copy: OVERFLOW changes only required, retains
 sequence/item and writes neither storage nor metadata. A configured retention

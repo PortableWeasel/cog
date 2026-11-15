@@ -353,7 +353,10 @@ static cog_result_t opaque_update(or_provider *p, yyjson_val *incoming)
         else if (!yyjson_equals_str(type, "reasoning.encrypted"))
             return COG_ERROR_UNSUPPORTED;
         yyjson_mut_val *last = yyjson_mut_arr_get_last(p->details);
-        bool merge = payload != NULL && last != NULL &&
+        /* Nonstream entries are an already-final ordered array, even when
+         * adjacent entries share a type/identity. Only stream fragments merge.
+         */
+        bool merge = p->stream && payload != NULL && last != NULL &&
                      yyjson_mut_equals_str(yyjson_mut_obj_get(last, "type"),
                                            yyjson_get_str(type)) &&
                      yyjson_mut_obj_get(last, "signature") == NULL;

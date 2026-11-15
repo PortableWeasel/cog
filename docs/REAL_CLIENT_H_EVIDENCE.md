@@ -92,3 +92,30 @@ sanitized usage/outcome lines are saved in
 [live-evidence.json](../libraries/cog-provider/live-evidence.json). No raw live
 headers/bodies, hidden reasoning or private source was captured. No additional
 live request is needed for independent review.
+
+## Revision 1 review corrections
+
+Independent review of7457252 rejected three semantic cases and committed
+permanent regression tests in32a6f36. This writer revision preserves those tests
+and fixes their production paths without changing public headers:
+
+- Nonstream reasoning_details is already a final ordered array. Its entries are
+  copied individually after strict validation; streaming reconstruction is now
+  gated on stream mode. Adjacent final text/summary entries retain their complete
+  values and boundaries whether metadata differs, agrees or is absent. Explicit
+  empty-array presence remains retained. Existing fragmented stream merging and
+  depth256 tests continue to pass.
+- Legacy mock receive combines retained text only with successful STOP. When
+  cancellation follows an overflow, retry delivers nonterminal retained text,
+  then exactly one ABORTED/CANCELLED completion; the following receive is idle.
+- Mock cancellation snapshots include accepted retained output immediately, and
+  delivery updates pending error metadata to output_accepted=true and
+  replay_safe=false. Both pre-delivery and final error snapshots are asserted.
+
+Additional exact-byte final-array tests cover absent/equal identity metadata,
+summary metadata conflicts that are legitimate between separate final entries,
+and an empty array. The critic's full nested request-overwrite fixture remains
+passing. Strict GCC6, ASan/UBSan6 and strict Clang5 targeted tests all pass after
+these corrections, including the actual offline HTTPS two-turn integration.
+No additional paid request or credential access occurred. Independent re-review
+is still required before H approval or merge.
