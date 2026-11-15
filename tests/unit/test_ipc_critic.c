@@ -112,6 +112,8 @@ static int raw_connect(const char *path)
     return fd;
 }
 
+#include "fixtures/ipc_driver.h"
+
 /* ------------------------------------------------------------------ */
 /* SIGPIPE safety                                                      */
 /* ------------------------------------------------------------------ */
@@ -200,8 +202,8 @@ static int sigpipe_ign_child(const char *path)
         cog_ipc_endpoint_new(&clientB) != COG_OK) {
         return 4;
     }
-    if (cog_ipc_endpoint_connect(clientA, path, NULL) != COG_OK ||
-        cog_ipc_endpoint_connect(clientB, path, NULL) != COG_OK) {
+    if (cog_ipc_endpoint_connect(clientA, path, NULL) != COG_ERROR_AGAIN ||
+        cog_ipc_endpoint_connect(clientB, path, NULL) != COG_ERROR_AGAIN) {
         return 5;
     }
     if (cog_ipc_endpoint_accept(listener, &serverA, NULL) != COG_OK ||
@@ -307,22 +309,22 @@ static void test_frame_boundary(void)
     CHECK_RESULT("new listener", COG_OK, cog_ipc_endpoint_new(&listener));
     CHECK_RESULT("listen", COG_OK, cog_ipc_endpoint_listen(listener, path));
     CHECK_RESULT("new client", COG_OK, cog_ipc_endpoint_new(&client));
-    CHECK_RESULT("connect", COG_OK, cog_ipc_endpoint_connect(client, path, NULL));
+    CHECK_RESULT("connect", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client, path, NULL));
     CHECK_RESULT("accept", COG_OK, cog_ipc_endpoint_accept(listener, &server, NULL));
-    CHECK_RESULT("msg_new out", COG_OK, cog_ipc_message_new(&out, 65535U));
+    CHECK_RESULT("msg_new out", COG_OK, cog_ipc_message_new(&out, 65536U));
     CHECK_RESULT("msg_new in", COG_OK, cog_ipc_message_new(&in, 65535U));
 
-    (void)memset(out.data, 'b', 65535U);
+    (void)memset(out.data, 'b', 65536U);
     out.len = 65535U;
 
-    /* 65535 is the inclusive maximum: must round-trip. */
+    /* Former legacy maximum still round-trips under the 1 MiB default. */
     CHECK_RESULT("send 65535", COG_OK, cog_ipc_endpoint_send(client, &out));
     CHECK_RESULT("recv 65535", COG_OK, cog_ipc_endpoint_recv(server, &in));
     CHECK("recv 65535 len", in.len == 65535U);
 
-    /* One past the max is rejected before any I/O. */
+    /* 65536 now also fits the explicit endpoint reservation. */
     out.len = 65536U;
-    CHECK_RESULT("send 65536", COG_ERROR_INVALID_ARG,
+    CHECK_RESULT("send 65536", COG_OK,
                  cog_ipc_endpoint_send(client, &out));
 
     CHECK_RESULT("free msg out", COG_OK, cog_ipc_message_free(&out));
@@ -366,16 +368,16 @@ static void test_recv_capacity_overflow(void)
         header[3] = (uint8_t)(60000U & 0xFFU);
         CHECK("write header", write(fd, header, 4) == 4);
         CHECK("write payload", write(fd, out.data, 60000U) == (ssize_t)60000U);
-        (void)close(fd);
     }
 
     CHECK_RESULT("accept", COG_OK, cog_ipc_endpoint_accept(listener, &server, NULL));
     CHECK_RESULT("recv cap overflow", COG_ERROR_OVERFLOW,
                  cog_ipc_endpoint_recv(server, &in));
-    /* Overflow closes the connection. */
-    CHECK_RESULT("recv after cap overflow", COG_ERROR_INVALID_STATE,
+    /* Overflow retains the same complete frame for a larger retry. */
+    CHECK_RESULT("recv retained cap overflow", COG_ERROR_OVERFLOW,
                  cog_ipc_endpoint_recv(server, &in));
 
+    (void)close(fd);
     CHECK_RESULT("free msg out", COG_OK, cog_ipc_message_free(&out));
     CHECK_RESULT("free msg in", COG_OK, cog_ipc_message_free(&in));
     CHECK_RESULT("free server", COG_OK, cog_ipc_endpoint_free(server));
@@ -403,10 +405,10 @@ static void test_freed_peer_broadcast(void)
     CHECK_RESULT("new listener", COG_OK, cog_ipc_endpoint_new(&listener));
     CHECK_RESULT("listen", COG_OK, cog_ipc_endpoint_listen(listener, path));
     CHECK_RESULT("new client1", COG_OK, cog_ipc_endpoint_new(&client1));
-    CHECK_RESULT("connect1", COG_OK, cog_ipc_endpoint_connect(client1, path, NULL));
+    CHECK_RESULT("connect1", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client1, path, NULL));
     CHECK_RESULT("accept1", COG_OK, cog_ipc_endpoint_accept(listener, &server1, NULL));
     CHECK_RESULT("new client2", COG_OK, cog_ipc_endpoint_new(&client2));
-    CHECK_RESULT("connect2", COG_OK, cog_ipc_endpoint_connect(client2, path, NULL));
+    CHECK_RESULT("connect2", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client2, path, NULL));
     CHECK_RESULT("accept2", COG_OK, cog_ipc_endpoint_accept(listener, &server2, NULL));
     CHECK_RESULT("msg_new out", COG_OK, cog_ipc_message_new(&out, 64U));
     CHECK_RESULT("msg_new in", COG_OK, cog_ipc_message_new(&in, 64U));
@@ -447,7 +449,7 @@ static void test_stale_session(void)
     CHECK_RESULT("new listener", COG_OK, cog_ipc_endpoint_new(&listener));
     CHECK_RESULT("listen", COG_OK, cog_ipc_endpoint_listen(listener, path));
     CHECK_RESULT("new client", COG_OK, cog_ipc_endpoint_new(&client));
-    CHECK_RESULT("connect", COG_OK, cog_ipc_endpoint_connect(client, path, &pid));
+    CHECK_RESULT("connect", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client, path, &pid));
     CHECK_RESULT("accept", COG_OK, cog_ipc_endpoint_accept(listener, &server, &pid));
     CHECK_RESULT("msg_new out", COG_OK, cog_ipc_message_new(&out, 16U));
     out.len = 0U;
@@ -494,7 +496,7 @@ static void test_listener_free_lifetime(void)
     CHECK_RESULT("new listener", COG_OK, cog_ipc_endpoint_new(&listener));
     CHECK_RESULT("listen", COG_OK, cog_ipc_endpoint_listen(listener, path));
     CHECK_RESULT("new client", COG_OK, cog_ipc_endpoint_new(&client));
-    CHECK_RESULT("connect", COG_OK, cog_ipc_endpoint_connect(client, path, NULL));
+    CHECK_RESULT("connect", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client, path, NULL));
     CHECK_RESULT("accept", COG_OK, cog_ipc_endpoint_accept(listener, &server, NULL));
     CHECK_RESULT("msg_new out", COG_OK, cog_ipc_message_new(&out, 64U));
     CHECK_RESULT("msg_new in", COG_OK, cog_ipc_message_new(&in, 64U));
@@ -571,7 +573,7 @@ static void test_partial_header(void)
     CHECK_RESULT("recv partial header", COG_ERROR_IO,
                  cog_ipc_endpoint_recv(server, &in));
     /* Connection closed by the transport after the mid-header EOF. */
-    CHECK_RESULT("recv after", COG_ERROR_INVALID_STATE,
+    CHECK_RESULT("recv after", COG_ERROR_IO,
                  cog_ipc_endpoint_recv(server, &in));
 
     CHECK("pthread join", pthread_join(th, NULL) == 0);
@@ -646,12 +648,12 @@ static void test_peer_id_increment(void)
     CHECK_RESULT("listen", COG_OK, cog_ipc_endpoint_listen(listener, path));
 
     CHECK_RESULT("new c1", COG_OK, cog_ipc_endpoint_new(&c1));
-    CHECK_RESULT("connect c1", COG_OK, cog_ipc_endpoint_connect(c1, path, NULL));
+    CHECK_RESULT("connect c1", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(c1, path, NULL));
     CHECK_RESULT("accept s1", COG_OK, cog_ipc_endpoint_accept(listener, &s1, &p1));
     CHECK("first peer id 1", p1 == 1U);
 
     CHECK_RESULT("new c2", COG_OK, cog_ipc_endpoint_new(&c2));
-    CHECK_RESULT("connect c2", COG_OK, cog_ipc_endpoint_connect(c2, path, NULL));
+    CHECK_RESULT("connect c2", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(c2, path, NULL));
     CHECK_RESULT("accept s2", COG_OK, cog_ipc_endpoint_accept(listener, &s2, &p2));
     CHECK("second peer id 2", p2 == 2U);
 
@@ -665,7 +667,7 @@ static void test_peer_id_increment(void)
         cog_peer_id_t p3 = COG_PEER_ID_INVALID;
 
         CHECK_RESULT("new c3", COG_OK, cog_ipc_endpoint_new(&c3));
-        CHECK_RESULT("connect c3", COG_OK, cog_ipc_endpoint_connect(c3, path, NULL));
+        CHECK_RESULT("connect c3", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(c3, path, NULL));
         CHECK_RESULT("accept s3", COG_OK, cog_ipc_endpoint_accept(listener, &s3, &p3));
         CHECK("third peer id 3 (no reuse)", p3 == 3U);
         CHECK("s2 id untouched", p2 == 2U);

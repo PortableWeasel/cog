@@ -1,3 +1,10 @@
+> Stage 14.Q supersedes the historical allocation/capacity text below:
+> core construction reserves max_agents records and max_agent_message_bytes
+> string buffers (defaults 16 and 65536). Local copied task/status/result
+> replacement cannot grow; exhaustion is atomic LIMIT. The new remote attempt,
+> notification acknowledgment and release/reuse protocol remains N/O work.
+> See the current core runtime contract and Q evidence for tested scope.
+
 # agent.h Contract
 
 `libraries/cog-core/include/cog/agent.h` — the subagent lifecycle: spawn,
