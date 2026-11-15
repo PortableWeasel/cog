@@ -2670,6 +2670,86 @@ done:
     return fail;
 }
 
+/* Tool-result round-trip: a COG_NODE_TOOL_RESULT created via
+ * cog_session_add_message (COG_MESSAGE_ROLE_TOOL) carries a direct
+ * tool_name and an embedded-NUL payload.  Both must survive save/load,
+ * and the loaded history must retain tool identity. */
+static int verify_tool_result_roundtrip(void)
+{
+    char *base = NULL;
+    cog_store_config_t cfg;
+    cog_store_t *st = NULL;
+    cog_session_t *s = NULL;
+    cog_session_t *out = NULL;
+    cog_session_node_t *root = NULL;
+    cog_session_node_t *tr = NULL;
+    cog_message_t m;
+    const char blob[] = {'o', 'k', '\0', 'x'};
+    const cog_message_t *msgs = NULL;
+    size_t count = 0U;
+    int fail = 0;
+
+    base = make_tmp("toolres");
+    if (base == NULL) {
+        return 1;
+    }
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.base_dir = base;
+    if (cog_store_new(&st, &cfg) != COG_OK) {
+        fail = 1;
+        goto done;
+    }
+    if (cog_session_new(&s, &(cog_session_config_t){.id = "rt-toolres"}) !=
+        COG_OK) {
+        fail = 1;
+        goto done;
+    }
+    if (cog_session_add_message(s, NULL, MSG(COG_MESSAGE_ROLE_USER, "q"),
+                                &root) != COG_OK) {
+        fail = 1;
+        goto done;
+    }
+    /* Direct tool_name + embedded-NUL result payload. */
+    memset(&m, 0, sizeof(m));
+    m.role = COG_MESSAGE_ROLE_TOOL;
+    m.name = "search";
+    m.content = blob;
+    m.content_len = sizeof(blob);
+    if (cog_session_add_message(s, root, &m, &tr) != COG_OK) {
+        fail = 1;
+        goto done;
+    }
+    if (cog_store_save(st, s) != COG_OK ||
+        cog_store_load(st, "rt-toolres", &out) != COG_OK || out == NULL) {
+        fail = 1;
+        goto done;
+    }
+    if (!trees_eq(s, out)) {
+        fail = 1;
+        goto done;
+    }
+    /* History identity + embedded-NUL payload preserved. */
+    if (cog_session_get_history(out, cog_session_active(out), &msgs,
+                                &count) != COG_OK) {
+        fail = 1;
+        goto done;
+    }
+    if (count != 2U || msgs[1].role != COG_MESSAGE_ROLE_TOOL ||
+        msgs[1].name == NULL || strcmp(msgs[1].name, "search") != 0 ||
+        msgs[1].content_len != sizeof(blob) ||
+        memcmp(msgs[1].content, blob, sizeof(blob)) != 0) {
+        fail = 1;
+        goto done;
+    }
+
+done:
+    cog_store_free(st);
+    cog_session_free(s);
+    cog_session_free(out);
+    free(base);
+    return fail;
+}
+
 int main(void)
 {
     unsigned failures = 0U;
@@ -2687,6 +2767,7 @@ int main(void)
     CHECK("file null args", verify_null_args());
     CHECK("empty roundtrip", verify_empty_roundtrip());
     CHECK("linear roundtrip", verify_linear_roundtrip());
+    CHECK("tool result roundtrip", verify_tool_result_roundtrip());
     CHECK("fork roundtrip", verify_fork_roundtrip());
     CHECK("append flows", verify_append_flows());
     CHECK("delete/list/exists", verify_delete_list_exists());

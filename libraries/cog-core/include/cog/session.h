@@ -462,6 +462,12 @@ cog_result_t cog_session_add_tool_call(cog_session_t *session,
 /**
  * @brief Add a tool result node.
  *
+ * The new node deep-copies the parent node's tool name (when the parent
+ * carries one, e.g. a tool-call node) so history messages retain tool
+ * identity.  When the parent has no tool name, the result node's
+ * tool_name is NULL.  The tool name is owned by the node and released by
+ * cog_session_free / cog_session_reset / discard / prune.
+ *
  * @param[in,out] session     Session to modify.
  * @param[in]     parent      Parent node (the tool call); must be non-NULL.
  * @param[in]     tool_result Result content.

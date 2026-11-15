@@ -217,13 +217,12 @@ static void scenario_multi_turn_tools(void)
     CHECK(msgs[1].content != NULL);
     CHECK(strcmp(msgs[1].content, "{\"q\":\"X\"}") == 0);
 
-    /* Tool result: role TOOL, payload = result.  The result content is
-     * preserved.  NOTE (genuine defect): cog_session_add_tool_result does
-     * not copy the tool name onto the result node, so msgs[2].name is
-     * NULL here even though the scenario doc says tool identity should be
-     * preserved.  We assert the preserved content and record the gap. */
+    /* Tool result: role TOOL, payload = result.  The result node inherits
+     * the parent tool call's name, so tool identity is preserved across
+     * the call/result pair. */
     CHECK(msgs[2].role == COG_MESSAGE_ROLE_TOOL);
-    CHECK(msgs[2].name == NULL); /* defect: tool name not carried */
+    CHECK(msgs[2].name != NULL);
+    CHECK(strcmp(msgs[2].name, "search") == 0);
     CHECK(msgs[2].content != NULL);
     CHECK(strcmp(msgs[2].content, "results for X") == 0);
 

@@ -210,9 +210,82 @@ static void scenario_persistence(void)
     }
 }
 
+/* Tool-call/result round-trip: the result node's tool identity must
+ * survive save/load, symmetric with the tool call. */
+static void scenario_tool_identity_roundtrip(void)
+{
+    char dir[] = "/tmp/cog-sc13-tool-XXXXXX";
+    cog_store_config_t store_cfg;
+    cog_store_t *store = NULL;
+    cog_session_t *s = NULL;
+    cog_session_t *loaded = NULL;
+    cog_session_node_t *root = NULL;
+    cog_session_node_t *tc = NULL;
+    cog_session_node_t *tr = NULL;
+    cog_message_t m;
+    const cog_message_t *msgs = NULL;
+    size_t count = 0U;
+
+    if (mkdtemp(dir) == NULL) {
+        (void)fprintf(stderr, "mkdtemp failed\n");
+        ++failures;
+        return;
+    }
+
+    (void)memset(&store_cfg, 0, sizeof(store_cfg));
+    store_cfg.base_dir = dir;
+    CHECK(cog_store_new(&store, &store_cfg) == COG_OK);
+
+    /* Build a session with a tool call + result. */
+    CHECK(cog_session_new(&s, &(cog_session_config_t){.id = "sc13-tool"}) ==
+          COG_OK);
+    (void)memset(&m, 0, sizeof(m));
+    m.role = COG_MESSAGE_ROLE_USER;
+    m.content = "q";
+    m.content_len = 1U;
+    CHECK(cog_session_add_message(s, NULL, &m, &root) == COG_OK);
+    CHECK(cog_session_add_tool_call(s, root, "search", "{\"q\":\"X\"}",
+                                    &tc) == COG_OK);
+    CHECK(cog_session_add_tool_result(s, tc, "results for X", &tr) ==
+          COG_OK);
+
+    /* Pre-save identity: the result inherits the call's name. */
+    CHECK(cog_node_data(tr)->tool_name != NULL);
+    CHECK(strcmp(cog_node_data(tr)->tool_name, "search") == 0);
+
+    CHECK(cog_store_save(store, s) == COG_OK);
+    CHECK(cog_store_load(store, "sc13-tool", &loaded) == COG_OK);
+    CHECK(loaded != NULL);
+
+    /* History identity survives the round-trip. */
+    CHECK(cog_session_get_history(loaded, cog_session_active(loaded),
+                                  &msgs, &count) == COG_OK);
+    CHECK_EQ_INT((long long)count, 3LL);
+    CHECK(msgs[1].role == COG_MESSAGE_ROLE_TOOL);
+    CHECK(msgs[1].name != NULL);
+    CHECK(strcmp(msgs[1].name, "search") == 0);
+    CHECK(msgs[2].role == COG_MESSAGE_ROLE_TOOL);
+    CHECK(msgs[2].name != NULL);
+    CHECK(strcmp(msgs[2].name, "search") == 0);
+    CHECK(msgs[2].content != NULL);
+    CHECK(strcmp(msgs[2].content, "results for X") == 0);
+
+    cog_session_free(loaded);
+    cog_session_free(s);
+    cog_store_free(store);
+
+    {
+        char path[256];
+        (void)snprintf(path, sizeof(path), "%s/sc13-tool", dir);
+        (void)rmdir(path);
+        (void)rmdir(dir);
+    }
+}
+
 int main(void)
 {
     scenario_persistence();
+    scenario_tool_identity_roundtrip();
 
     if (failures != 0) {
         (void)fprintf(stderr, "test_13_session_persistence: %d failure(s)\n",
