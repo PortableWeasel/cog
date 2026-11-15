@@ -5,7 +5,7 @@
   <rect x="15" y="50" width="1010" height="310" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-dasharray="7 4"/>
   <text x="30" y="74" font-size="15">Application process — explicit reload, no file watcher</text>
   <rect x="35" y="100" width="280" height="140" rx="8" fill="#fef3c7" stroke="#d97706"/>
-  <text x="50" y="128" font-size="17">Candidate constructor + config txn</text>
+  <text x="50" y="128" font-size="17">Candidate + config transaction</text>
   <text x="50" y="157" font-size="14">model / URL / credential reference</text>
   <text x="50" y="184" font-size="14">copied owner + idle provider</text>
   <text x="50" y="211" font-size="14">preflight before commit; rollback</text>

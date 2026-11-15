@@ -517,8 +517,8 @@ void cog_cli_app_free(cog_cli_app_t *app);
  * INVALID_STATE for LIST/RECOVER, shutdown/cancelling app or unsafe selected
  * history; INDETERMINATE for frozen normal admission; AGAIN while one published
  * replacement or its change notification awaits activation/retirement/dispatch;
- * LIMIT for bytes, constructor
- * capacity or the 64 eligible reload-attempt ceiling per app; NOMEM; NOT_FOUND,
+ * LIMIT for bytes, constructor capacity or the 64 eligible reload-attempt ceiling
+ * per app; NOMEM; NOT_FOUND,
  * DENIED, IO or UNSUPPORTED from candidate resolution/provider compatibility.
  * PROTOCOL for malformed provider data; no error commits a candidate generation.
  * @pre Outside dispatch/provider/tool/resolver callbacks; no recursive app drive.
@@ -530,12 +530,16 @@ void cog_cli_app_free(cog_cli_app_t *app);
  * secrets after disconnect. After successful commit, publication is infallible.
  * @note Construction is explicit here: replacement config/provider constructors
  * may allocate within unchanged per-generation limits, with matching discard or
- * app_free; service/activation never allocates. At most two generation owners
+ * app_free; background service/activation never allocates. Explicit terminal
+ * reload is such a constructor operation, even at an owner input hook. At most two generation owners
  * coexist. Startup is ID1; each eligible attempt burns one never-reused ID even
- * on failure, at most64 attempts. Argument/state/busy refusals burn no attempt.
+ * on failure, at most64 attempts. Initial required-pointer/presence/resolver-
+ * combination, mode/state/busy refusals burn no attempt; later candidate string,
+ * byte, compatibility, constructor or commit validation failures do consume one.
  * A supplied credential_ref re-resolves it even if equal to the old reference,
  * using only this call's callback or J's env: resolver. Callback/context and
- * temporary source/secret bytes are not retained. No callback means no shell.
+ * source buffers are not retained; only the separately owned resolved secret
+ * survives in its generation until disconnect/free. No callback means no shell.
  * Omitted credential_ref copies the old resolved secret without a resolver call.
  * No model wire work, tool start, durable session save or input admission occurs.
  * Calling reload never activates/disconnects the current provider. A committed
@@ -551,11 +555,15 @@ void cog_cli_app_free(cog_cli_app_t *app);
  * boundary, before queued/fresh input, switch app options/provider and the core
  * reference together, then disconnect the old provider before clearing/freeing
  * its generation. This is deferred to owner loop/input admission boundaries,
- * never the reload call; generation ID is publication, not activation completion. Metadata/frozen/draining work cannot activate a replacement.
+ * never the reload call; generation ID is publication, not activation completion.
+ * Metadata/frozen/draining work cannot activate a replacement. Input cannot
+ * begin another old-generation turn while a future owner awaits safe activation;
+ * defer that input without releasing/reassigning its reserved bytes/identity.
  * A later send revalidates future output/opaque not known at preparation time;
  * it may fail without rolling back a committed config or replaying old effects.
- * A failure in an old active turn or frozen result retains both owners until
- * safe cleanup; it does not activate or replay future work. Unexpected destructor
+ * An old failed/cancelled turn must drain before activation; it never grants
+ * fresh-input authorization. A frozen result retains both owners until safe
+ * cleanup, without activating or replaying future work. Unexpected destructor
  * failure after commit is an admission-freezing driver error, not a transaction
  * rollback; retain the old owner/secret until disconnect can be established.
  * Provider accessors are borrowed until the next activation/app_free; callers

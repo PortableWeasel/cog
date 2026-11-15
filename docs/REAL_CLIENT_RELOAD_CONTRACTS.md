@@ -50,7 +50,9 @@ one static validator) during app construction. It contains only `models.default`
 `providers.openrouter.base-url` and `providers.openrouter.credential-ref`, never a
 resolved secret. Startup seeds one transaction. At most64 eligible reload attempts
 consume the remaining identities; failures count and new attempts then return
-LIMIT. Busy/argument/state refusals do not count. Startup configuration ID is1;
+LIMIT. Initial pointer/presence/resolver-combination, mode/state/busy refusals
+do not count; candidate string/byte/constructor/compatibility/commit failures do.
+Startup configuration ID is1;
 attempts consume IDs2..65 without reuse, even on failure. Display/owner epochs
 and request serials keep their existing independent meanings.
 
@@ -202,3 +204,123 @@ This pass found four real contract gaps and amended the headers:
 | 13/14/17 | Durable owner/session/branch identity fixed; only actual selected prefix preflighted |
 | 16/18/19 | Candidate error is sanitized direct status, no wire or last-turn error replacement |
 | 20 | Existing cancel/fresh-input/queued continuation rules remain authoritative |
+
+
+## Pass 3 — consistency and final self-review
+
+The third actual pass cross-checked all twenty targeted rows, the original20
+mapping and public/private ownership/error declarations. Amendments in this pass:
+
+- Activation returns AGAIN when a future owner exists but old event/result/tool
+  state is not safely drained. Input handlers must defer without freeing or
+  reassigning their reserved input identity; they cannot quietly start another
+  old-generation turn. No new allocation or event-lease bypass is introduced.
+- An explicit terminal reload is a visible constructor operation; the surrounding
+  ordinary service/activation path still cannot allocate. Credential source
+  buffers/callback authority are borrowed only for that operation; the copied
+  resolved secret necessarily remains in its new owner until disconnect/free.
+- Terminal helper return semantics distinguish a handled sanitized candidate
+  refusal (OK, continue old work) from output IO. The public API still returns
+  the original candidate error with its output generation untouched.
+- Known selected history uses the pending fork point when present, otherwise
+  the selected active path. A genuinely unsafe currently selected prefix refuses;
+  no sibling inspection, fabricated result, opaque dropping or history rewrite.
+- Failed/cancelled old work must drain and retain its fresh-input rule. Ordinary
+  diagnostic continuation_required is not a new execution authorization; actual
+  indeterminate/frozen result admission cannot activate a future owner.
+
+### Exact fixed decisions and error ordering
+
+Required NULL pointers fail NULL_PTR before dereference. Then validate the
+three-field presence/pointer combinations (INVALID_ARG or fixed MOCK UNSUPPORTED),
+mode/shutdown/cancel/reentrant state (INVALID_STATE), actual frozen admission
+(INDETERMINATE), future/retiring/notice occupancy (AGAIN), and attempt capacity
+(LIMIT), before reserving an attempt or invoking constructors/resolvers. String syntax/
+byte validation belongs to candidate construction after that reservation; an
+INVALID_ARG/LIMIT there consumes an attempt. Once reserved its ID is burned even
+if candidate work fails. Candidate
+resolution/provider/preflight/config errors return directly after safe rollback.
+No failed call changes active/published config, input lease, current options,
+policy decision, old request/error/clock/delta or session/guard state; only its
+bounded attempt/transaction tombstone counters advance. On success
+out_generation changes once and the candidate is published; activation is later.
+
+The three control keys mirror the exact published reload subset, seeded from
+startup effective values (absent optional MOCK values need no invented secret).
+The tree is private, retains no caller transaction handles and stores no raw
+credential. Its static validator checks that fixed key/value profile only;
+credential resolution/provider construction occur before commit, not in a
+validator callback. Reset-LIMIT finalization is handled without reusing a stale
+transaction. App construction/free own the new_ex/tree_free pair. Repeated
+reload is intentionally bounded to64 attempts, with no tree rotation/global ID
+counter/unbounded tombstone growth. IDs are per-app, not a claimed process-global
+identity scheme; fresh apps start at1 after prior owners are gone.
+
+All nonreloadable fields remain byte/value-equivalent effective options and
+retain existing borrows; no original prompt/queue/session action is resubmitted,
+no constructor action/store admission is rerun. Callback authority is not
+recovered from effective J options, which intentionally erased it. Host net and
+app-wide obs context outlive both provider generations and final cleanup. Static
+vtable/model pointers belong to their own immutable config owner. The new core
+setter neither validates providers nor gains a provider implementation link;
+caller proves its serialized borrow/retirement boundary. Provider getters expose
+active state, not the future pending pointer, and must be reacquired after app
+mutation/drive. Valid supported provider disconnect is infallible by its existing
+contract; an unexpected violation freezes admission and must not falsely free
+still-borrowed secret storage or claim transactional rollback.
+
+### Mandatory executable oracles after independent header approval
+
+- Actual two-provider app composition, normal and restored-prefix request IDs,
+  old-turn retry/tool/policy pinning, next-turn new model/generation and stable
+  original prompt/queue identities; core and app getter equality around switch.
+- Credential callback lifetime/one-call resolution, unchanged omitted secret,
+  mutation/free of caller source buffers after return, rollback secret clearing
+  after candidate disconnect and old clear only after old disconnect.
+- Constructor OOM and real config validator/commit rejection including reset-LIMIT;
+  no publication on failure, exact previous running tree/provider still usable,
+  neither wire request nor durable STARTED/session save from reload itself.
+- Real provider no-wire preflight over supported/malformed/unsupported selected
+  opaque plus pending-group histories; compatible unknown bytes stay lossless.
+  Fake identity descriptors cannot establish this oracle.
+- Old next OVERFLOW and terminal/error/cancel/clock snapshots survive preparation;
+  future output limit/opaque failure never replays an old effect or drops data.
+- Saturated real core queue retains exactly one notification (source_id by value,
+  no payload); duplicate/stale CONFIG_CHANGED self events cannot change request
+  sequence/policy. Test a queued input before notice delivery and old stale event.
+- Busy/reentrant/mode/NULL/error precedence and exact64-attempt/transaction limits,
+  including failed attempts; no extra resolver/construction on refusals.
+- Shutdown/EOF/frozen output paths release or preserve both owners safely with
+  core references detached/freed first. Background service/activation allocate
+  nothing; instrument explicit constructor boundaries separately.
+
+Strict C11/C++ header self-containment, local links, SVG XML and diff checks are
+only syntax/design validation. No source `.c`, executable/runtime, paid/network
+or release evidence is claimed by this ticket. After this pass a DIFFERENT final
+reviewer must inspect the complete candidate before source writing is authorized.
+
+
+## Gated delivery strategy and exact file ownership
+
+All source children wait for `dffc59e` independent PASS and integration. Their
+parent is `af6956a`, already after completed L; M depends on that delivery. The
+reviewed header checkpoint is the source contract, not authority to code from an
+unmerged moving draft. No architecture/API extension is delegated to a writer.
+
+| Child | Owned implementation and substantive checks | Dependencies / parallel rule |
+|---|---|---|
+| `b488e99` R12.1 | `libraries/cog-core/src/core.c`, `tests/unit/test_core.c`, core contract evidence: pointer setter NULL/same/new/detach with zero provider/destructor/allocator/state side effects | Header gate; parallel with R12.2 only |
+| `55779c4` R12.2 | `applications/cog-cli/src/configuration.c`, `applications/cog-cli/tests/test_configuration.c`, `test_configuration_memory.c`: resolved clone, secret rotation/copy/clear, no precedence or authority retention | Header gate; no app lifecycle/CMake ownership |
+| `881cb81` R12.3 | New `applications/cog-cli/src/app_reload.c`; `cli.c`, `app_turn.c`, `app_sessions.c`; app and app-test `CMakeLists.txt`; new `tests/test_app_reload.c` in app; `test_app_memory.c`; `tests/scenarios/test_08_config_reload.c`; app CONTRACT/HARNESS and narrow evidence | R12.1+R12.2; serial across all shared app/CMake owners |
+| `faaf1ea` R12.4 | DIFFERENT independent critic, substantial missing boundary tests, strict GCC/Clang full builds, focused ASan/UBSan/LSan and affected concurrency; exact checkpoint verdict | R12.3; <=4 review-failure cycles |
+| `7ad3bf9` R12.5 | Authorized merge, scoped postmerge evidence, installed CLI/static consumer dependency closure, recoverable cleanup and finalization | R12.4 PASS + root authorization |
+
+R12.3 centralizes generation cleanup instead of leaving cli.c's old direct
+provider/config frees to double-destroy aliases. It initializes the control tree
+only for execution apps after startup config validity and handles all partial
+constructor exits. Both normal send in app_turn.c and resumed pending preflight
+in app_sessions.c use the pinned configuration ID; display generation is untouched.
+App linkage adds `cog::config` and preserves installed static consumer closure.
+CONFIG_CHANGED rows are static const self handlers in every normal app state;
+no dynamic registration. Root M/P gates retain their full applicable checks;
+scoped R12 oracles do not waive remote/headless O or final all38 coverage.

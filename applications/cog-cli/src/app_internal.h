@@ -3,7 +3,8 @@
 #define COG_CLI_APP_INTERNAL_H
 #include "configuration.h"
 #include <cog/workspace.h>
-#include <cog/config.h>
+/* Control-tree ownership is private; only app_reload.c needs config.h. */
+typedef struct cog_config_tree cog_config_tree_t;
 #include <stdatomic.h>
 #define CLI_NODES 1024U
 #define CLI_CALLS 16U
@@ -107,14 +108,17 @@ cog_result_t cog_cli_clock(uint64_t *now);
 cog_result_t cog_cli_tools_json(cog_cli_app_t *app);
 bool cog_cli_text_valid(const char *text, size_t length);
 /** Initialize the bounded three-key control tree after startup config is valid.
+ * @param[in,out] app Owner app; metadata modes skip the tree and return OK.
  * app-owned constructor: new_ex/free, limits64 nodes/65536 string bytes/65 txn
  * identities/1 validator; startup consumes one identity. No raw secrets in tree.
- * @return OK or constructor/seed/validation error; cleanup via reload_free. */
+ * @return OK; NULL_PTR; constructor/seed/validation error; cleanup via reload_free. */
 cog_result_t cog_cli_reload_init(cog_cli_app_t *app);
 /** Activate the single future generation only at a safe idle owner boundary,
+ * @param[in,out] app Normal owner app with a valid core for activation.
  * before input or restored proposal admission. Requires no active app/provider
  * turn, retained delta/event, execution, pending result/assistant, resuming policy,
- * cancellation, shutdown or frozen admission. Otherwise leave future untouched.
+ * cancellation, shutdown or frozen admission. Otherwise leave future untouched
+ * and return AGAIN; callers defer fresh/queued input without losing its lease.
  * May run at input-handler entry before acquiring any provider reference, or
  * in owner service/idle hooks, including immediately after terminal reload.
  * Uses cog_core_set_provider on a valid core (infallible), updates aliases before
@@ -122,30 +126,37 @@ cog_result_t cog_cli_reload_init(cog_cli_app_t *app);
  * fields until disconnect succeeds. Only current+future or current+retiring can
  * coexist; never a third constructed owner. No allocation, arbitrary app/resolver/
  * tool callback, wire or session mutation; provider disconnect is the destructor.
- * @return OK; unexpected disconnect contract violation freezes admission and
+ * @return OK if no future or successfully activated; NULL_PTR; AGAIN while
+ * future is blocked; unexpected disconnect contract violation freezes admission and
  * retains any still-borrowed generation, surfaced as the original error. */
 cog_result_t cog_cli_reload_activate(cog_cli_app_t *app);
-/** Fair service of one retained CONFIG_CHANGED notice. Enqueue uses source_id
+/** Fair service of one retained CONFIG_CHANGED notice.
+ * @param[in,out] app Normal owner app; no arbitrary callback recursion.
+ * Enqueue uses source_id
  * copied by value, NULL payload, no allocation; OVERFLOW retains pending notice
  * and returns OK for retry on later service. All app states have a self handler
  * that acknowledges only matching generation and clears notice flags. It must
  * not alter the ordinary request event_queued/sequence/policy state.
  * @return OK; NULL_PTR; unexpected enqueue error is a driver failure. */
 cog_result_t cog_cli_reload_service(cog_cli_app_t *app);
-/** Destroy future/current generation resources after core and turn work drain.
+/** Destroy future/current/retiring owners after core and turn work drain.
+ * @param[in,out] app Owner app; NULL is a no-op.
  * Disconnect every provider before clearing its config. Safe on partial init;
  * no callback/context ownership transfer; tree_free after all transactions end. */
 void cog_cli_reload_free(cog_cli_app_t *app);
 /** Handle only /reload model VALUE, /reload base-url VALUE and
  * /reload credential-ref VALUE, preserving the whole suffix as one field.
- * @param app Owner app; @param text Complete UTF-8 line; @param handled Output.
+ * @param[in,out] app Owner app; @param[in] text Complete UTF-8 line;
+ * @param[out] handled Whether this is a /reload command, even on refusal.
  * Recognize all /reload-prefixed commands as handled even on refusal. Terminal
  * input prints only sanitized status/generation and keeps old work running on
  * candidate errors (including NOMEM/IO/LIMIT); a failed output write is fatal IO.
  * Reload commands are checked before policy answers; never reinterpret them as
  * ALLOW/DENY, user prompts or model tool instructions. No secret/value echo.
- * @return reload result; NOT_FOUND/INVALID_ARG for unknown key/missing value;
- * IO only for checked output. Owner thread between dispatches, no callbacks. */
+ * @return OK for handled success or sanitized candidate refusal, including
+ * unknown key/missing value; NULL_PTR for invalid helper pointers; IO for checked
+ * output failure. Non-reload input leaves handled=false and returns OK. Owner
+ * thread between dispatches; only explicit reload constructor may call resolver. */
 cog_result_t cog_cli_reload_command(cog_cli_app_t *app, const char *text,
     bool *handled);
 bool cog_cli_metadata(const cog_cli_app_t *app);

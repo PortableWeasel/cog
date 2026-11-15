@@ -29,7 +29,8 @@ cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
  * @param[in] current Resolved current generation; remains unchanged.
  * @param[in] replacement Public reload subset, borrowed only until return.
  * @param[in] generation Nonzero fresh configuration ID supplied by app owner.
- * @return OK; NULL_PTR; INVALID_ARG; LIMIT; NOMEM; resolution errors.
+ * @return OK; NULL_PTR; INVALID_ARG; LIMIT; NOMEM; NOT_FOUND/DENIED/IO/PROTOCOL/
+ * UNSUPPORTED from explicit credential resolution or fixed profile validation.
  * @note No argv/environment/file precedence rerun. Only an explicit credential
  * reference is resolved (callback or env:); otherwise copy the old secret into
  * separate candidate storage. Copy all effective strings in existing J bounds;
