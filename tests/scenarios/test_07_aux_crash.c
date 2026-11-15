@@ -13,9 +13,11 @@
  *   2. sessions retained: the crashed core's registered sessions are
  *      still reported by cog_orchestrator_sessions after the crash, so
  *      recovery can find the affected subagents;
- *   3. recovery: affected subagents (spawned on the real core via
- *      cog_agent_spawn) are marked FAILED through the recovery path, and
- *      a fresh replacement agent can be spawned and completed from
+ *   3. recovery primitives: a subagent that was running on the crashed
+ *      core (spawned on the real core via cog_agent_spawn) is marked
+ *      FAILED via the internal fail hook — the action the parent takes
+ *      when the orchestrator reports the dead core's sessions — and a
+ *      fresh replacement agent can be spawned and completed from
  *      scratch;
  *   4. auto-replace only after actual reap: with auto_replace enabled, a
  *      SIGKILLed core is not replaced while its process is still
@@ -260,8 +262,10 @@ static void scenario_recovery_restart(void)
     CHECK(cog_agent_status(core, affected, &st) == COG_OK);
     CHECK_EQ_INT((long long)st, (long long)COG_AGENT_STATUS_RUNNING);
 
-    /* Recovery path: the orchestrator found the affected session on the
-     * dead peer and the parent marks the subagent FAILED. */
+    /* Recovery action: the parent marks the subagent that was running
+     * on the crashed core as FAILED (the orchestrator reports the dead
+     * peer's sessions via cog_orchestrator_sessions; the parent applies
+     * the fail transition). */
     CHECK(cog_agent_internal_fail(core, affected) == COG_OK);
     CHECK(cog_agent_status(core, affected, &st) == COG_OK);
     CHECK_EQ_INT((long long)st, (long long)COG_AGENT_STATUS_FAILED);

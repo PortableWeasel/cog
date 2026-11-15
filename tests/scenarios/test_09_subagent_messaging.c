@@ -23,7 +23,10 @@
  *
  * Peers run on helper threads because the IPC transport is blocking.
  * All sockets are local temporary paths; every endpoint is owned and
- * released by this test.
+ * released by this test.  Messaging is synchronized deterministically:
+ * the hub sends a "ready" handshake once both sessions are registered,
+ * so no "to:" message is ever routed before its destination session
+ * exists (no timing luck).
  *
  * Ticket: 0d8ff50 (Stage 12.6c — Scenario tests 06-10).
  */
@@ -146,6 +149,22 @@ static cog_handler_result_t on_ipc_message(cog_core_t *core,
         (void)cog_ipc_register_session(cog_core_ipc(core), buf + 9,
                                        ipc->peer);
         g_registered++;
+        /* Deterministic start: once both sessions are registered, tell
+         * the sender (agent-a) it may start messaging.  Without this
+         * handshake a "to:" message can be routed before its
+         * destination session has registered, and cog_ipc_send_to_session
+         * drops it with COG_ERROR_NOT_FOUND (a timing-luck race). */
+        if (g_registered == 2) {
+            cog_ipc_message_t ready;
+
+            if (cog_ipc_message_new(&ready, 6U) == COG_OK) {
+                (void)memcpy(ready.data, "ready", 5U);
+                ready.len = 5U;
+                (void)cog_ipc_send_to_session(cog_core_ipc(core), "agent-a",
+                                              &ready);
+                (void)cog_ipc_message_free(&ready);
+            }
+        }
         return (cog_handler_result_t){ST_IDLE, COG_OK};
     }
     if (strncmp(buf, "to:", 3U) == 0) {
@@ -285,6 +304,14 @@ static void *client_a_thread(void *arg)
         return NULL;
     }
     if (send_str(ep, "register:agent-a") != 0) {
+        (void)cog_ipc_endpoint_free(ep);
+        return NULL;
+    }
+    /* Wait for the hub to confirm both sessions are registered before
+     * messaging: a "to:" sent earlier would be routed before agent-b
+     * registers and dropped (COG_ERROR_NOT_FOUND). */
+    if (recv_str(ep, c->received, sizeof(c->received), 5000) != 0 ||
+        strcmp(c->received, "ready") != 0) {
         (void)cog_ipc_endpoint_free(ep);
         return NULL;
     }
