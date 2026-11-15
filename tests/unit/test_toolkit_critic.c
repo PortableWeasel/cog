@@ -344,6 +344,40 @@ static int verify_concurrency_wallclock(void)
     return elapsed >= 350U ? 1 : 0;
 }
 
+/** max_parallel=1 must keep the sequential caller-thread fast path. */
+static int verify_sequential_wallclock(void)
+{
+    cog_toolkit_call_t *calls[2];
+    cog_toolkit_result_collection_t *coll = NULL;
+    cog_toolkit_exec_opts_t opts;
+    uint64_t t0;
+    uint64_t elapsed;
+    cog_result_t r;
+
+    if (cog_toolkit_call_new(&calls[0], "sleep", "100", 3U) != COG_OK) {
+        return 1;
+    }
+    if (cog_toolkit_call_new(&calls[1], "sleep", "100", 3U) != COG_OK) {
+        cog_toolkit_call_free(calls[0]);
+        return 1;
+    }
+    memset(&opts, 0, sizeof(opts));
+    opts.max_parallel = 1U;
+    t0 = now_ms();
+    r = cog_toolkit_execute_all(dummy_core(), &kTable, calls, 2U, &opts,
+                                &coll);
+    elapsed = now_ms() - t0;
+    cog_toolkit_call_free(calls[0]);
+    cog_toolkit_call_free(calls[1]);
+    if (r != COG_OK || coll == NULL) {
+        return 1;
+    }
+    cog_toolkit_result_collection_free(coll);
+    (void)printf("  wallclock: 2x100ms sleeps with max_parallel=1 took "
+                 "%llu ms\n", (unsigned long long)elapsed);
+    return elapsed < 180U ? 1 : 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* 2. Concurrency: two-tool barrier                                    */
 /* ------------------------------------------------------------------ */
@@ -738,6 +772,14 @@ static int verify_schema_edges(void)
                      "accepted (expected INVALID_ARG)\n");
         return 1;
     }
+
+    /* Trailing JSON whitespace is accepted, including on non-empty
+     * schemas, without weakening rejection of other trailing bytes. */
+    if (cog_toolkit_result_validate_schema(&res, "{} \t\n") != COG_OK ||
+        cog_toolkit_result_validate_schema(
+            &res, "{\"required\":[\"name\"]} \r\n") != COG_OK) {
+        return 1;
+    }
     return 0;
 }
 
@@ -759,6 +801,7 @@ int main(void)
 
     (void)printf("critic: concurrency wall-clock measurement\n");
     CHECK("concurrency wallclock", verify_concurrency_wallclock());
+    CHECK("sequential wallclock", verify_sequential_wallclock());
     (void)printf("critic: concurrency barrier\n");
     CHECK("concurrency barrier", verify_concurrency_barrier());
     (void)printf("critic: timeout boundary\n");
