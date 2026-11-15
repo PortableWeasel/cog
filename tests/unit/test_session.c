@@ -1928,6 +1928,374 @@ static int test_node_ids_stable(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Critic additions (review 14519f8)                                   */
+/* ------------------------------------------------------------------ */
+
+/* Free-on-failure helper for the critic tests below (their failure
+ * paths must stay leak-clean even while the suite is red). */
+#define CRIT_FAIL(s)                                                       \
+    do {                                                                   \
+        cog_session_free(s);                                               \
+        return 1;                                                          \
+    } while (0)
+
+/* Fork a non-last sibling: the copy must be inserted immediately after
+ * the source, preserving sibling order ([a, copy, b], not [a, b, copy]). */
+static int test_fork_mid_sibling_order(void)
+{
+    cog_session_t *s = NULL;
+    cog_session_node_t *root = NULL;
+    cog_session_node_t *a = NULL;
+    cog_session_node_t *b = NULL;
+    cog_session_node_t *copy = NULL;
+
+    if (cog_session_new(&s, NULL) != COG_OK) {
+        return 1;
+    }
+    if (cog_session_add_message(s, NULL, MSG_USER("r"), &root) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_session_add_message(s, root, MSG_USER("a"), &a) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_session_add_message(s, root, MSG_USER("b"), &b) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_session_fork(s, a, &copy) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_node_first_child(root) != a || cog_node_next_sibling(a) != copy ||
+        cog_node_next_sibling(copy) != b || cog_node_next_sibling(b) != NULL) {
+        CRIT_FAIL(s);
+    }
+    if (cog_node_child_count(root) != 3U) {
+        CRIT_FAIL(s);
+    }
+    cog_session_free(s);
+    return 0;
+}
+
+/* CONTRACT decision 2: fork deep-copies the fork-point node's data.
+ * A TOOL message payload with embedded NUL bytes is stored verbatim
+ * (dup_bytes + content_len); the fork copy must preserve all bytes. */
+static int test_fork_tool_nul_preserved(void)
+{
+    static const char payload[] = {'o', 'k', '\0', 'x'};
+    cog_session_t *s = NULL;
+    cog_session_node_t *tr = NULL;
+    cog_session_node_t *copy = NULL;
+    cog_message_t m = {0};
+    const cog_node_data_t *d;
+    const cog_node_data_t *dc;
+
+    m.role = COG_MESSAGE_ROLE_TOOL;
+    m.content = payload;
+    m.content_len = sizeof(payload);
+    m.name = "t1";
+    if (cog_session_new(&s, NULL) != COG_OK) {
+        return 1;
+    }
+    if (cog_session_add_message(s, NULL, &m, &tr) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    d = cog_node_data(tr);
+    if (d == NULL || d->tool_result == NULL || strlen(d->tool_result) != 4U) {
+        CRIT_FAIL(s); /* source must retain the full 4-byte payload */
+    }
+    if (cog_session_fork(s, tr, &copy) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    dc = cog_node_data(copy);
+    if (dc == NULL || dc->tool_result == NULL || strlen(dc->tool_result) != 4U) {
+        CRIT_FAIL(s); /* deep copy must be byte-faithful */
+    }
+    if (dc->tool_result[0] != 'o' || dc->tool_result[1] != 'k' ||
+        dc->tool_result[2] != '\0' || dc->tool_result[3] != 'x') {
+        CRIT_FAIL(s);
+    }
+    cog_session_free(s);
+    return 0;
+}
+
+/* History must reproduce the caller's message: a TOOL payload with an
+ * embedded NUL must come back with the caller's content_len, not a
+ * strlen-truncated view. */
+static int test_history_tool_nul_len(void)
+{
+    static const char payload[] = {'o', 'k', '\0', 'x'};
+    cog_session_t *s = NULL;
+    cog_session_node_t *tr = NULL;
+    cog_message_t m = {0};
+    const cog_message_t *msgs = NULL;
+    size_t count = 0U;
+
+    m.role = COG_MESSAGE_ROLE_TOOL;
+    m.content = payload;
+    m.content_len = sizeof(payload);
+    m.name = "t1";
+    if (cog_session_new(&s, NULL) != COG_OK) {
+        return 1;
+    }
+    if (cog_session_add_message(s, NULL, &m, &tr) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_session_get_history(s, tr, &msgs, &count) != COG_OK ||
+        count != 1U) {
+        CRIT_FAIL(s);
+    }
+    if (msgs[0].content_len != sizeof(payload)) {
+        CRIT_FAIL(s); /* caller's length must round-trip */
+    }
+    if (msgs[0].content == NULL || msgs[0].content[0] != 'o' ||
+        msgs[0].content[1] != 'k' || msgs[0].content[2] != '\0' ||
+        msgs[0].content[3] != 'x') {
+        CRIT_FAIL(s);
+    }
+    cog_session_free(s);
+    return 0;
+}
+
+/* CONTRACT decision 5: max_nodes is a soft cap and pruning removes
+ * leaves only.  A single chain has exactly one leaf (the active node),
+ * which is excluded, so the cap is exceeded rather than the tree being
+ * corrupted.  Pin this documented behavior so it cannot silently
+ * regress into orphaned nodes. */
+static int test_max_nodes_chain_unbounded(void)
+{
+    cog_session_t *s = NULL;
+    cog_session_config_t cfg = {.id = NULL, .max_nodes = 5U};
+    cog_session_node_t *n = NULL;
+    cog_session_node_t *cur = NULL;
+    size_t i;
+    size_t depth = 0U;
+
+    if (cog_session_new(&s, &cfg) != COG_OK) {
+        return 1;
+    }
+    for (i = 0U; i < 20U; ++i) {
+        if (cog_session_append(s, MSG_USER("x"), &n) != COG_OK) {
+            CRIT_FAIL(s);
+        }
+    }
+    if (cog_session_active(s) != n) {
+        CRIT_FAIL(s);
+    }
+    for (cur = cog_session_root(s); cur != NULL;
+         cur = cog_node_first_child(cur)) {
+        ++depth;
+    }
+    if (depth != 20U) {
+        CRIT_FAIL(s); /* chain is retained in full; cap is exceeded */
+    }
+    cog_session_free(s);
+    return 0;
+}
+
+/* Discarding a leaf can turn its parent into a prunable leaf; a later
+ * insertion past the cap must then prune that (now-old) leaf safely. */
+static int test_discard_then_prune_new_leaf(void)
+{
+    cog_session_t *s = NULL;
+    cog_session_config_t cfg = {.id = NULL, .max_nodes = 4U};
+    cog_session_node_t *root = NULL;
+    cog_session_node_t *a = NULL;
+    cog_session_node_t *b = NULL;
+    cog_session_node_t *c = NULL;
+
+    if (cog_session_new(&s, &cfg) != COG_OK) {
+        return 1;
+    }
+    if (cog_session_add_message(s, NULL, MSG_USER("r"), &root) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_session_add_message(s, root, MSG_USER("a"), &a) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_session_add_message(s, a, MSG_USER("b"), &b) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_session_add_message(s, b, MSG_USER("c"), &c) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    /* Discard the chain leaf: the tree is now root(a(b)) with b a leaf. */
+    if (cog_session_discard_node(s, c) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    /* Push past the cap: the newly exposed leaf b must be prunable. */
+    if (cog_session_add_message(s, NULL, MSG_USER("z1"), NULL) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_session_add_message(s, NULL, MSG_USER("z2"), NULL) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    /* count 5 > cap 4: the oldest leaf (b, exposed by the discard) is
+     * pruned; the root and the active node must survive. */
+    if (cog_session_root(s) != root || cog_session_active(s) == NULL) {
+        CRIT_FAIL(s);
+    }
+    if (cog_node_child_count(a) != 0U) {
+        CRIT_FAIL(s); /* b must have been pruned */
+    }
+    if (cog_node_child_count(root) != 3U) {
+        CRIT_FAIL(s); /* a, z1, z2 remain */
+    }
+    cog_session_free(s);
+    return 0;
+}
+
+/* Forking while over the cap must never corrupt sibling chains or drop
+ * the active branch head (the fork copy is active and therefore not
+ * prunable in the same insertion). */
+static int test_fork_over_cap_no_corruption(void)
+{
+    cog_session_t *s = NULL;
+    cog_session_config_t cfg = {.id = NULL, .max_nodes = 3U};
+    cog_session_node_t *root = NULL;
+    cog_session_node_t *leaf = NULL;
+    cog_session_node_t *copy = NULL;
+    cog_session_node_t *cur = NULL;
+    size_t count = 0U;
+
+    if (cog_session_new(&s, &cfg) != COG_OK) {
+        return 1;
+    }
+    if (cog_session_add_message(s, NULL, MSG_USER("r"), &root) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_session_add_message(s, root, MSG_USER("a"), &leaf) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_session_add_message(s, leaf, MSG_USER("b"), NULL) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_session_fork(s, leaf, &copy) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_session_active(s) != copy) {
+        CRIT_FAIL(s);
+    }
+    for (cur = cog_node_first_child(root); cur != NULL;
+         cur = cog_node_next_sibling(cur)) {
+        ++count;
+    }
+    if (count != 2U) {
+        CRIT_FAIL(s); /* root -> [a(leaf), copy(leaf)]: sibling chain intact */
+    }
+    cog_session_free(s);
+    return 0;
+}
+
+/* Mixed fork/discard/append/prune/reset cycles: verify tree-wide
+ * invariants through the public API (parent chains reach the root,
+ * child_count matches actual children, ids unique and increasing,
+ * active node reachable). */
+static int test_mixed_stress_invariants(void)
+{
+    cog_session_t *s = NULL;
+    cog_session_config_t cfg = {.id = NULL, .max_nodes = 32U};
+    cog_session_node_t *root = NULL;
+    cog_session_node_t *cur = NULL;
+    uint64_t seen[4096];
+    size_t seen_count = 0U;
+    size_t i;
+    int unique_ok = 1;
+
+    if (cog_session_new(&s, &cfg) != COG_OK) {
+        return 1;
+    }
+    if (cog_session_add_message(s, NULL, MSG_USER("r"), &root) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    for (i = 0U; i < 3000U; ++i) {
+        cog_session_node_t *n = NULL;
+        if (i % 3U == 0U) {
+            /* append to the active branch (active is never prunable) */
+            if (cog_session_append(s, MSG_USER("m"), &n) != COG_OK) {
+                CRIT_FAIL(s);
+            }
+        } else if (i % 3U == 1U) {
+            /* fan out from the root when room permits */
+            if (cog_session_add_message(s, root, MSG_USER("s"), &n) !=
+                COG_OK) {
+                CRIT_FAIL(s);
+            }
+        } else {
+            /* fork the active node: the copy becomes the new active */
+            if (cog_session_fork(s, cog_session_active(s), &n) != COG_OK) {
+                CRIT_FAIL(s);
+            }
+        }
+        if (i % 97U == 0U) {
+            /* discard the just-inserted active leaf (still alive: the
+             * active node is never pruned by the same insertion) */
+            if (cog_session_discard_node(s, cog_session_active(s)) !=
+                COG_OK) {
+                CRIT_FAIL(s);
+            }
+        }
+    }
+    /* Walk the whole tree and check invariants through the public API. */
+    for (cur = cog_session_root(s); cur != NULL;) {
+        const cog_node_data_t *d = cog_node_data(cur);
+        cog_session_node_t *p;
+        cog_session_node_t *ch;
+        size_t cc = 0U;
+        size_t k;
+        if (d == NULL) {
+            return 1;
+        }
+        for (k = 0U; k < seen_count; ++k) {
+            if (seen[k] == d->node_id) {
+                unique_ok = 0;
+            }
+        }
+        if (seen_count < sizeof(seen) / sizeof(seen[0])) {
+            seen[seen_count++] = d->node_id;
+        }
+        /* parent chain must reach the root */
+        for (p = cur; p != NULL; p = cog_node_parent(p)) {
+            if (cog_node_parent(p) == NULL && p != root) {
+                return 1;
+            }
+        }
+        for (ch = cog_node_first_child(cur); ch != NULL;
+             ch = cog_node_next_sibling(ch)) {
+            ++cc;
+            if (cog_node_parent(ch) != cur) {
+                CRIT_FAIL(s);
+            }
+        }
+        if (cc != cog_node_child_count(cur)) {
+            CRIT_FAIL(s);
+        }
+        cur = cog_node_first_child(cur);
+    }
+    if (!unique_ok) {
+        CRIT_FAIL(s);
+    }
+    /* active must be inside the tree */
+    if (cog_session_active(s) != NULL) {
+        cog_session_node_t *p;
+        int found = 0;
+        for (p = cog_session_active(s); p != NULL; p = cog_node_parent(p)) {
+            if (p == root) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            CRIT_FAIL(s);
+        }
+    }
+    /* reset still leaves a consistent empty session */
+    if (cog_session_reset(s) != COG_OK || !cog_session_is_empty(s)) {
+        CRIT_FAIL(s);
+    }
+    cog_session_free(s);
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -2025,6 +2393,15 @@ int main(void)
 
     /* Stable ids */
     CHECK("node ids stable", test_node_ids_stable());
+
+    /* Critic additions (review 14519f8) */
+    CHECK("fork mid sibling order", test_fork_mid_sibling_order());
+    CHECK("fork tool NUL preserved", test_fork_tool_nul_preserved());
+    CHECK("history tool NUL len", test_history_tool_nul_len());
+    CHECK("max nodes chain unbounded", test_max_nodes_chain_unbounded());
+    CHECK("discard then prune new leaf", test_discard_then_prune_new_leaf());
+    CHECK("fork over cap no corruption", test_fork_over_cap_no_corruption());
+    CHECK("mixed stress invariants", test_mixed_stress_invariants());
 
 #undef CHECK
 
