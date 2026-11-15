@@ -140,6 +140,35 @@ static const cog_tool_table_t kTable = {
     .count = sizeof(kTools) / sizeof(kTools[0]),
 };
 
+/* A table with a NULL-name row and duplicate names, to pin the
+ * documented lookup semantics: a NULL name field is never matched, and
+ * the first descriptor in table order wins. */
+static const cog_tool_t kEdgeTools[] = {
+    {
+        .name = NULL,          /* malformed row: never matched */
+        .description = NULL,
+        .input_schema = NULL,
+        .handler = echo_tool,
+    },
+    {
+        .name = "dup",
+        .description = NULL,
+        .input_schema = NULL,
+        .handler = echo_tool,
+    },
+    {
+        .name = "dup",         /* duplicate: first match must win */
+        .description = NULL,
+        .input_schema = NULL,
+        .handler = strict_tool,
+    },
+};
+
+static const cog_tool_table_t kEdgeTable = {
+    .tools = kEdgeTools,
+    .count = sizeof(kEdgeTools) / sizeof(kEdgeTools[0]),
+};
+
 /* ------------------------------------------------------------------ */
 /* Runtime checks.                                                     */
 /* ------------------------------------------------------------------ */
@@ -282,6 +311,41 @@ static int verify_malformed_table(void)
     return 0;
 }
 
+/** A NULL name field in a row is never matched by a query. */
+static int verify_null_name_row_skipped(void)
+{
+    const cog_tool_t *tool = NULL;
+    cog_result_t r = cog_tool_table_lookup(&kEdgeTable, "echo", &tool);
+
+    /* "echo" is the handler of the NULL-name row, but the row's name
+     * field is NULL, so it must not match. */
+    if (r != COG_ERROR_NOT_FOUND) {
+        return 1;
+    }
+    if (tool != NULL) {
+        return 1;
+    }
+    return 0;
+}
+
+/** First descriptor in table order wins when names are duplicated. */
+static int verify_first_match_wins(void)
+{
+    const cog_tool_t *tool = NULL;
+    cog_result_t r = cog_tool_table_lookup(&kEdgeTable, "dup", &tool);
+
+    if (r != COG_OK) {
+        return 1;
+    }
+    if (tool != &kEdgeTools[1]) {
+        return 1;
+    }
+    if (tool->handler != echo_tool) {
+        return 1;
+    }
+    return 0;
+}
+
 /** cog_tool_fn is assignable and invocable through the pointer. */
 static int verify_fn_pointer(void)
 {
@@ -353,6 +417,8 @@ int main(void)
     CHECK("empty table null tools", verify_empty_table_null_tools());
     CHECK("empty table nonnull tools", verify_empty_table_nonnull_tools());
     CHECK("malformed table", verify_malformed_table());
+    CHECK("null name row skipped", verify_null_name_row_skipped());
+    CHECK("first match wins", verify_first_match_wins());
     CHECK("fn pointer", verify_fn_pointer());
     CHECK("overflow reporting", verify_overflow_reporting());
     CHECK("tool null core", verify_tool_null_core());
