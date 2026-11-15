@@ -70,3 +70,11 @@ accepted request, retained continuation document, deltas, clock or terminal
 error. Mock fixture preflight uses an independent 128 KiB arena and deliberately
 accepts arbitrary structurally valid opaque fixture data; it is not a protocol
 compatibility oracle. No preflight path allocates or touches the transport.
+
+The approved recognized opaque entry kinds share one inbound/outbound validator:
+actual-kind payloads are strings when present; common id is string/null, format
+is string, and index is a finite number. Optional fields remain optional and
+unknown members remain lossless, including payload-like names on other kinds.
+Null signature is outside the pinned profile (UNSUPPORTED); other malformed
+recognized kinds are PROTOCOL. No base64, index-range or format-value policy is
+introduced; see the approved REAL_CLIENT_OPAQUE_FIELD_PROFILE.md.

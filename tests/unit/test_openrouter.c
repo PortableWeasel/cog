@@ -810,6 +810,18 @@ static void preflight_state_and_limits(void)
     assert(cog_provider_get_error(p, &old) == COG_OK);
     cog_provider_request_t invalid = request; invalid.model_id = "unknown";
     expect_preflight(p, &invalid, COG_PROVIDER_PREFLIGHT_COMPLETE, COG_ERROR_NOT_FOUND);
+    static const char malformed[] =
+        "{\"reasoning_details\":[{\"type\":\"reasoning.encrypted\",\"data\":42}]}";
+    static const char unsupported[] =
+        "{\"reasoning_details\":[{\"type\":\"reasoning.text\",\"signature\":null}]}";
+    cog_message_opaque_t bad = {"openrouter.chat-completions", "json-v1",
+                                (const unsigned char *)malformed, sizeof(malformed) - 1U};
+    cog_message_t bad_message = {.role = COG_MESSAGE_ROLE_ASSISTANT,
+                                 .opaque = &bad, .opaque_count = 1U};
+    invalid = request; invalid.messages = &bad_message; invalid.message_count = 1U;
+    expect_preflight(p, &invalid, COG_PROVIDER_PREFLIGHT_COMPLETE, COG_ERROR_PROTOCOL);
+    bad.data = (const unsigned char *)unsupported; bad.size = sizeof(unsupported) - 1U;
+    expect_preflight(p, &invalid, COG_PROVIDER_PREFLIGHT_COMPLETE, COG_ERROR_UNSUPPORTED);
     expect_preflight(p, &request, COG_PROVIDER_PREFLIGHT_COMPLETE, COG_OK);
     assert(cog_provider_get_error(p, &after) == COG_OK);
     assert(after.code == old.code && after.message == old.message &&
@@ -868,8 +880,127 @@ static void preflight_state_and_limits(void)
     expect_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE, COG_ERROR_LIMIT); stop(p);
     config.limits.max_json_depth = depth_saved;
 }
+/* Exercise the approved recognized-field profile through both the actual
+ * no-wire encoder and incoming reconstruction. No default allocator is used. */
+static void opaque_field_case(const char *entry, cog_result_t expected)
+{
+    char blob[2048], frame[4096];
+    int n = snprintf(blob, sizeof(blob), "{\"reasoning_details\":[%s]}", entry);
+    assert(n >= 0 && (size_t)n < sizeof(blob));
+    cog_message_opaque_t o = {"openrouter.chat-completions", "json-v1",
+                              (const unsigned char *)blob, (size_t)n};
+    cog_message_tool_call_t call = {"field-call", "echo", "{}", 2U};
+    cog_message_t history[] = {
+        {.role = COG_MESSAGE_ROLE_ASSISTANT, .tool_calls = &call,
+         .tool_call_count = 1U, .opaque = &o, .opaque_count = 1U},
+        {.role = COG_MESSAGE_ROLE_TOOL, .tool_call_id = "field-call"}};
+    cog_provider_request_t r = request;
+    r.messages = history; r.message_count = 1U;
+    cog_provider_t *p = NULL;
+    assert(cog_provider_connect(&endpoint, &p) == COG_OK);
+    expect_preflight(p, &r, COG_PROVIDER_PREFLIGHT_PENDING_TOOLS, expected);
+    r.message_count = 2U;
+    expect_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE, expected);
+    if (expected != COG_OK)
+    {
+        size_t before_net = net_calls, before_alloc = allocations;
+        forbid_alloc = true;
+        assert(cog_provider_send(p, &r) == expected);
+        assert(net_calls == before_net && allocations == before_alloc);
+    }
+    cog_provider_error_t error;
+    assert(cog_provider_get_error(p, &error) == COG_ERROR_NOT_FOUND);
+    stop(p);
+    n = snprintf(frame, sizeof(frame),
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_details\":[%s]},"
+        "\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n", entry);
+    assert(n >= 0 && (size_t)n < sizeof(frame));
+    assert(check(frame) == expected);
+}
+static void opaque_recognized_fields(void)
+{
+    static const char *const kinds[] = {"reasoning.text", "reasoning.summary",
+                                        "reasoning.encrypted"};
+    static const char *const payloads[] = {"text", "summary", "data"};
+    static const char *const invalid[] = {"null", "false", "42", "{}", "[]"};
+    static const char *const fields[] = {"id", "format", "index", "signature"};
+    static const char *const values[] = {"\"unfamiliar\"", "null", "false", "42", "{}", "[]", "-1.5"};
+    char entry[512];
+    for (size_t kind = 0U; kind < 3U; ++kind)
+    {
+        int n = snprintf(entry, sizeof(entry), "{\"type\":\"%s\"}", kinds[kind]);
+        assert(n >= 0 && (size_t)n < sizeof(entry));
+        opaque_field_case(entry, COG_OK); /* No new mandatory members. */
+        n = snprintf(entry, sizeof(entry), "{\"type\":\"%s\",\"%s\":\"\"}",
+                     kinds[kind], payloads[kind]);
+        assert(n >= 0 && (size_t)n < sizeof(entry));
+        opaque_field_case(entry, COG_OK);
+        for (size_t value = 0U; value < sizeof(invalid) / sizeof(invalid[0]); ++value)
+        {
+            n = snprintf(entry, sizeof(entry), "{\"type\":\"%s\",\"%s\":%s}",
+                         kinds[kind], payloads[kind], invalid[value]);
+            assert(n >= 0 && (size_t)n < sizeof(entry));
+            opaque_field_case(entry, COG_ERROR_PROTOCOL);
+        }
+        for (size_t field = 0U; field < 4U; ++field)
+            for (size_t value = 0U; value < sizeof(values) / sizeof(values[0]); ++value)
+            {
+                bool allowed = field == 2U ? value == 3U || value == 6U :
+                               value == 0U || (field == 0U && value == 1U);
+                cog_result_t expected = allowed ? COG_OK :
+                    field == 3U && value == 1U ? COG_ERROR_UNSUPPORTED : COG_ERROR_PROTOCOL;
+                n = snprintf(entry, sizeof(entry), "{\"type\":\"%s\",\"%s\":%s}",
+                             kinds[kind], fields[field], values[value]);
+                assert(n >= 0 && (size_t)n < sizeof(entry));
+                opaque_field_case(entry, expected);
+            }
+    }
+    opaque_field_case("{\"type\":\"reasoning.encrypted\",\"data\":\"not base64\","
+                      "\"id\":null,\"format\":\"future-format\",\"index\":1e100,\"signature\":\"\"}", COG_OK);
+    /* Payload-like names on other kinds stay unknown, with arbitrary values. */
+    opaque_field_case("{\"type\":\"reasoning.text\",\"data\":42,\"summary\":null}", COG_OK);
+    opaque_field_case("{\"type\":\"reasoning.summary\",\"data\":{},\"text\":false}", COG_OK);
+    opaque_field_case("{\"type\":\"reasoning.encrypted\",\"text\":[],\"summary\":42}", COG_OK);
+}
+static void opaque_unknown_roundtrip_and_tool_gate(void)
+{
+    static const char entry[] =
+        "{\"type\":\"reasoning.encrypted\",\"id\":null,\"format\":\"future\","
+        "\"index\":-1.5,\"data\":\"arbitrary bytes\",\"text\":42,"
+        "\"unknown\":{\"nested\":[null,true,3,{\"x\":\"y\"}]}}";
+    char frame[4096], expected[2048], bytes[20000];
+    int n = snprintf(expected, sizeof(expected), "{\"reasoning_details\":[%s]}", entry);
+    assert(n >= 0 && (size_t)n < sizeof(expected));
+    size_t expected_len = (size_t)n;
+    n = snprintf(frame, sizeof(frame),
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_details\":[%s]},"
+        "\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n", entry);
+    assert(n >= 0 && (size_t)n < sizeof(frame));
+    cog_provider_t *p = start(frame);
+    cog_provider_delta_t d = obtain(p, bytes, sizeof(bytes));
+    assert(d.kind == COG_PROVIDER_DELTA_OPAQUE && d.opaque.size == expected_len &&
+           memcmp(d.opaque.data, expected, expected_len) == 0);
+    cog_message_opaque_t replay = d.opaque;
+    d = obtain(p, bytes + 10000, sizeof(bytes) - 10000U);
+    assert(d.kind == COG_PROVIDER_DELTA_FINISH && d.outcome == COG_OK);
+    cog_message_t message = {.role = COG_MESSAGE_ROLE_ASSISTANT,
+                             .opaque = &replay, .opaque_count = 1U};
+    cog_provider_request_t r = request; r.messages = &message; r.message_count = 1U;
+    expect_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE, COG_OK);
+    stop(p);
+
+    p = start("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,"
+              "\"id\":\"call\",\"type\":\"function\",\"function\":{\"name\":\"echo\","
+              "\"arguments\":\"{}\"}}],\"reasoning_details\":[{\"type\":\"reasoning.encrypted\","
+              "\"data\":42}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n");
+    d = obtain(p, bytes, sizeof(bytes));
+    assert(d.kind == COG_PROVIDER_DELTA_FINISH && d.outcome == COG_ERROR_PROTOCOL);
+    stop(p); /* No TOOL_BEGIN/ARGUMENTS/END escaped the malformed frame. */
+}
 int main(void)
 {
+    opaque_recognized_fields();
+    opaque_unknown_roundtrip_and_tool_gate();
     preflight_profile();
     preflight_state_and_limits();
     additional_capacity_checks();

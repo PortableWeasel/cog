@@ -153,27 +153,52 @@ static cog_result_t tools_supported(yyjson_mut_val *tools)
     }
     return COG_OK;
 }
+/* One pinned member-kind grammar for restored requests and incoming frames.
+ * Only the actual kind's payload is recognized; unfamiliar members remain
+ * opaque. The optional merge payload excludes encrypted data intentionally. */
+static cog_result_t opaque_entry_supported(yyjson_val *entry,
+                                           const char **out_merge_payload)
+{
+    if (!yyjson_is_obj(entry))
+        return COG_ERROR_PROTOCOL;
+    yyjson_val *type = yyjson_obj_get(entry, "type");
+    const char *payload = NULL, *merge_payload = NULL;
+    if (yyjson_equals_str(type, "reasoning.text"))
+        payload = merge_payload = "text";
+    else if (yyjson_equals_str(type, "reasoning.summary"))
+        payload = merge_payload = "summary";
+    else if (yyjson_equals_str(type, "reasoning.encrypted"))
+        payload = "data";
+    else
+        return COG_ERROR_UNSUPPORTED;
+    yyjson_val *value = yyjson_obj_get(entry, payload);
+    yyjson_val *id = yyjson_obj_get(entry, "id");
+    yyjson_val *format = yyjson_obj_get(entry, "format");
+    yyjson_val *index = yyjson_obj_get(entry, "index");
+    yyjson_val *signature = yyjson_obj_get(entry, "signature");
+    if ((value != NULL && !yyjson_is_str(value)) ||
+        (id != NULL && !yyjson_is_str(id) && !yyjson_is_null(id)) ||
+        (format != NULL && !yyjson_is_str(format)) ||
+        (index != NULL &&
+         (!yyjson_is_num(index) || !isfinite(yyjson_get_num(index)))))
+        return COG_ERROR_PROTOCOL;
+    if (yyjson_is_null(signature))
+        return COG_ERROR_UNSUPPORTED;
+    if (signature != NULL && !yyjson_is_str(signature))
+        return COG_ERROR_PROTOCOL;
+    if (out_merge_payload != NULL)
+        *out_merge_payload = merge_payload;
+    return COG_OK;
+}
 static cog_result_t opaque_entries_supported(yyjson_val *details)
 {
     size_t i, n;
     yyjson_val *entry;
     yyjson_arr_foreach(details, i, n, entry)
     {
-        if (!yyjson_is_obj(entry))
-            return COG_ERROR_UNSUPPORTED;
-        yyjson_val *type = yyjson_obj_get(entry, "type");
-        const char *payload = NULL;
-        if (yyjson_equals_str(type, "reasoning.text"))
-            payload = "text";
-        else if (yyjson_equals_str(type, "reasoning.summary"))
-            payload = "summary";
-        else if (!yyjson_equals_str(type, "reasoning.encrypted"))
-            return COG_ERROR_UNSUPPORTED;
-        yyjson_val *value = payload == NULL ? NULL : yyjson_obj_get(entry, payload);
-        yyjson_val *signature = yyjson_obj_get(entry, "signature");
-        if ((value != NULL && !yyjson_is_str(value)) ||
-            (signature != NULL && !yyjson_is_str(signature)))
-            return COG_ERROR_PROTOCOL;
+        cog_result_t rc = opaque_entry_supported(entry, NULL);
+        if (rc != COG_OK)
+            return rc;
     }
     return COG_OK;
 }
@@ -354,16 +379,11 @@ static cog_result_t opaque_update(or_provider *p, yyjson_val *incoming)
     yyjson_val *entry;
     yyjson_arr_foreach(incoming, i, n, entry)
     {
-        if (!yyjson_is_obj(entry))
-            return COG_ERROR_PROTOCOL;
-        yyjson_val *type = yyjson_obj_get(entry, "type");
         const char *payload = NULL;
-        if (yyjson_equals_str(type, "reasoning.text"))
-            payload = "text";
-        else if (yyjson_equals_str(type, "reasoning.summary"))
-            payload = "summary";
-        else if (!yyjson_equals_str(type, "reasoning.encrypted"))
-            return COG_ERROR_UNSUPPORTED;
+        cog_result_t rc = opaque_entry_supported(entry, &payload);
+        if (rc != COG_OK)
+            return rc;
+        yyjson_val *type = yyjson_obj_get(entry, "type");
         yyjson_mut_val *last = yyjson_mut_arr_get_last(p->details);
         /* Nonstream entries are an already-final ordered array, even when
          * adjacent entries share a type/identity. Only stream fragments merge.
@@ -372,12 +392,6 @@ static cog_result_t opaque_update(or_provider *p, yyjson_val *incoming)
                      yyjson_mut_equals_str(yyjson_mut_obj_get(last, "type"),
                                            yyjson_get_str(type)) &&
                      yyjson_mut_obj_get(last, "signature") == NULL;
-        yyjson_val *pv =
-            payload == NULL ? NULL : yyjson_obj_get(entry, payload);
-        yyjson_val *signature = yyjson_obj_get(entry, "signature");
-        if ((pv != NULL && !yyjson_is_str(pv)) ||
-            (signature != NULL && !yyjson_is_str(signature)))
-            return COG_ERROR_PROTOCOL;
         if (!merge)
         {
             yyjson_mut_val *copy = yyjson_val_mut_copy(p->opaque_doc, entry);

@@ -72,3 +72,35 @@ integration-openrouter-https. All builds use the existing admitted c-ares curl
 at `/tmp/cog-net-maintained/build`, its shared library and installed headers.
 No concurrency or dependency lifecycle behavior changes; preflight remains an
 operation on the provider's owner thread.
+
+## Review cycle 1: recognized opaque member kinds
+
+Independent review found that the first implementation did not validate encrypted
+`data` or the common `id`/`format`/`index` kinds. The separately approved
+[recognized-field profile](REAL_CLIENT_OPAQUE_FIELD_PROFILE.md), gate `a81767d`
+at `3e237a8`, now precedes this correction in the implementation history.
+
+One shared entry validator serves inbound reconstruction and outbound/preflight.
+It checks the actual entry kind's text, summary or data payload as a string;
+common id as string/null, format as string and index as a finite JSON number.
+Optional fields remain optional. Null signature is consistently UNSUPPORTED;
+other nonstring signatures are PROTOCOL. Encrypted data remains uninterpreted,
+negative/fractional indices and unfamiliar format strings remain supported, and
+unknown members, including payload-like names on other kinds, remain opaque.
+
+The writer's bounded 109-case table exercises these decisions through both
+preflight stages and incoming reconstruction. Additional checks preserve nested
+unknown JSON and replay the exact resulting opaque bytes, refuse malformed data
+before any TOOL_BEGIN/ARGUMENTS/END, and preserve a prior terminal error across
+PROTOCOL and UNSUPPORTED preflight returns. Allocation and all net entry-point
+counters remain unchanged for every preflight case. The independent critic's
+separate finite-state model (`1f27e90`) checks 55,987 histories and was left
+untouched by the writer's revision.
+
+Strict GCC and Clang full target builds and the focused ten-test set pass;
+Clang ASan/UBSan with leak detection also passes all ten. The ten-test set adds
+unit-provider-preflight-critic to the nine cases above. The final additional
+terminal-error field cases were rebuilt and rerun in unit-openrouter under all
+three profiles. No new full-suite or release-gate success is claimed; the earlier
+six unrelated orchestrator fixture failures remain recorded above. This is an
+implementation revision awaiting the different independent reviewer's verdict.
