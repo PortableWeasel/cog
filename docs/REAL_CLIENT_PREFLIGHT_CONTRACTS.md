@@ -211,3 +211,14 @@ Strict standalone C11/C++11 checks cover the changed public/private header graph
 they are syntax/contract checks, not runtime conformance. The independent final
 review is mandatory and must be performed by a different reviewer before any
 source implementation of this amendment.
+
+
+### Recognized member-kind clarification
+
+Independent runtime review found accepted known wrong kinds that the namespace
+check alone could not detect. [Profile gate a81767d](REAL_CLIENT_OPAQUE_FIELD_PROFILE.md)
+pins common id/format/index and per-kind payload value kinds, preserves unfamiliar
+members and keeps null signatures explicitly outside the current profile. It
+adds no API or preflight stage. Its targeted three passes and different final
+review precede the shared-validator correction; earlier implementation evidence
+does not waive this finding.
