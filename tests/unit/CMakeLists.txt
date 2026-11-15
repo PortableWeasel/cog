@@ -19,6 +19,7 @@ set(COG_UNIT_TESTS
     test_agent
     test_tool
     test_session_store
+    test_store_adversarial
 )
 
 foreach(test ${COG_UNIT_TESTS})
@@ -44,6 +45,13 @@ target_include_directories(test_agent PRIVATE
 # through session_internal.h, the same private layout session_store.c
 # uses.  The public contract is still exercised through cog/session_store.h.
 target_include_directories(test_session_store PRIVATE
+    ${PROJECT_SOURCE_DIR}/libraries/cog-core/src)
+
+# test_store_adversarial is a Critic white-box test (ticket 7ba4714): it
+# probes strict-schema rejections, append misuse, pruning, index
+# regeneration, stray-file delete, and bootstrap raw-field round-trips
+# through session_internal.h, the same private layout session_store.c uses.
+target_include_directories(test_store_adversarial PRIVATE
     ${PROJECT_SOURCE_DIR}/libraries/cog-core/src)
 
 # -----------------------------------------------------------------------
@@ -87,6 +95,10 @@ add_test(NAME unit-tool
 
 add_test(NAME unit-session-store
     COMMAND test_session_store
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME unit-store-adversarial
+    COMMAND test_store_adversarial
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
 # -----------------------------------------------------------------------
