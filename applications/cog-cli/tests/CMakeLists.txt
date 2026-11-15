@@ -211,6 +211,16 @@ target_link_libraries(test_app_reload PRIVATE cog::cli)
 target_enable_warnings(test_app_reload)
 add_test(NAME cli-app-reload COMMAND test_app_reload)
 set_tests_properties(cli-app-reload PROPERTIES TIMEOUT 30)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_definitions(test_app_reload PRIVATE COG_RELOAD_WRAPPERS)
+    target_link_options(test_app_reload PRIVATE
+        -Wl,--wrap=cog_cli_service -Wl,--wrap=cog_config_commit
+        -Wl,--wrap=cog_provider_connect -Wl,--wrap=cog_provider_disconnect
+        -Wl,--wrap=cog_provider_send -Wl,--wrap=cog_cli_configuration_free)
+endif()
+if(COG_NET_CURL_BUILD_DIR AND COG_NET_CURL_LIBRARY)
+    target_compile_definitions(test_app_reload PRIVATE COG_RELOAD_REAL_PROFILE)
+endif()
 set_tests_properties(cli-session-ux PROPERTIES TIMEOUT 30)
 add_test(NAME cli-installed-session-ux COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/run_installed_session_ux.py ${PROJECT_BINARY_DIR}

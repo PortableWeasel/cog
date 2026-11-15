@@ -179,6 +179,13 @@ cog_result_t cog_cli_reload_activate(cog_cli_app_t *app)
 {
     if (app == NULL) return COG_ERROR_NULL_PTR;
     if (app->future_configuration == NULL) return COG_OK;
+    if (app->stdin_eof) {
+        bool admitted = false;
+        for (size_t i = 0U; i < CLI_INPUTS; i++)
+            if (app->inputs[i].used && (!app->continuation_required || app->inputs[i].continuation_authorized))
+                admitted = true;
+        if (!admitted) return COG_ERROR_AGAIN;
+    }
     if (app->core == NULL || app->active || app->provider_active || app->delta_ready || app->event_queued ||
         app->execution != NULL || app->terminal_result_pending || app->assistant_pending || app->resuming_policy ||
         app->cancelling || app->shutdown || app->recovery || app->reload_cleanup_error != COG_OK ||
