@@ -2,7 +2,8 @@
 
 > [Stage 14.E final review](REAL_CLIENT_PASS3.md) passed after the additional
 > independent review of `8563f81`. The three header passes and final review are
-> complete; implementation and executable conformance remain delivery work.
+> complete. A–K/Q and local-agent/replay/assertion primitives are integrated;
+> L is in progress and M/N/O/P remain open. See the [current roadmap](REAL_CLIENT_WBS.md).
 
 > [Stage 14.F transport delivery](REAL_CLIENT_F_EVIDENCE.md) is independently
 > reviewed and integrated. The initial no-replay profile uses fresh HTTP/1.1
@@ -10,10 +11,10 @@
 > dependency closure remain gate P requirements.
 
 > [Stage 14.Q scheduler delivery](REAL_CLIENT_Q_EVIDENCE.md) is independently
-> reviewed and integrated. Real-library Q/G integration remains check `b8a6fc1`
-> after persistence migration and before gate P; N/O protocol work remains open.
+> reviewed and integrated. Combined real-library Q/G check `b8a6fc1` is complete
+> ([acceptance evidence](../libraries/cog-core/contracts/session_store/CONTRACT.md#independent-acceptance-and-combined-gq-integration)); N/O protocol integration remains open.
 
-Status: planning baseline, 2026-11-15. Parent ticket: `2b9d0ea`.
+Status: implementation through K integrated at `42c5e15`, 2026-11-15. Parent ticket: `2b9d0ea`.
 The user authorized autonomous design decisions and testing. This supersedes
 Stage 14's earlier scope-confirmation requirement. Header and implementation
 gates remain technical requirements, not repeated user approval requests.
@@ -76,20 +77,21 @@ provider matrix. These are follow-on scope, not silent release requirements.
    allocators; no fallback allocation or ad hoc JSON string concatenation.
    Pass 1 reserves constructor-owned pools and rejects duplicate keys at every
    level. Toolkit separately reserves its schema/parser pool. Dependency packaging
-   remains delivery work; the standalone PoC is not library code.
+   is implemented for provider/toolkit; final shipped dependency closure remains
+   gate P work. The standalone PoC is not library code.
 5. Constructor-owned bounded Cog workspaces hold asynchronous request copies,
    JSON state, deltas, sessions and tool results, with no runtime Cog growth.
    Pass 1 explicitly declares constructor-owned dependency handles may allocate
    inside curl/c-ares/TLS during service until matching destruction. Hosts must
    acknowledge dynamic dependency memory; a requested total dependency byte cap
    is unsupported. No per-context quota or constructor-only allocation claim is
-   made from the 72 measured polling allocations. Header gate E must independently
-   review this visible ownership profile before adoption, or reject the backend.
+   made from the 72 measured polling allocations. Passed header gate E accepted
+   this visible ownership profile; F delivery records its implementation checks.
 6. Pass 1 defines generic nonblocking poll/cancel/next/get_error, typed deltas,
    usage/finish metadata and the public first-member provider base. next reports
    exact storage capacity without consuming an overflowed item; retained queues
-   pause upstream work. The contract record fixes initial names/ABI; pass 2 must
-   trace and amend actual call coverage before final review.
+   pause upstream work. The contract record fixes initial names/ABI; pass 2 traced
+   and amended call coverage before the completed final review.
 7. Assemble one assistant message per completed model turn, with identified
    tool calls. Streaming display is separate from durable conversation
    history. Preserve provider-required opaque continuation metadata when
@@ -126,14 +128,16 @@ provider matrix. These are follow-on scope, not silent release requirements.
 ## Pass 2 contract trace status
 
 Stage D now supplies [all 38 individual traces and the amendment register](REAL_CLIENT_SCENARIO_PASS2.md).
-The writer reports no remaining required public-call gap; independent pass 3/E
-must verify that closure. No production implementation or new runtime scenario
-pass is claimed. REAL defaults to a durable store; explicit no-store is text-only.
+Independent pass 3/E verified the required public-call coverage and amendments.
+That header gate does not establish all-38 runtime conformance; the current
+[execution roadmap](REAL_CLIENT_WBS.md#verification-plan) separates scoped delivery
+evidence, M single-process acceptance and P full-suite release requirements.
+REAL defaults to a durable store; explicit no-store is text-only.
 Shared-net request-local retention, bounded nonblocking IPC, remote update ingress,
 active-display snapshots and quiescent same-host guarded migration are public
 contracts, with delivery ownership recorded in that register. Opaque streaming
 reconstruction and safe committed-prefix recovery are explicit amendments to the
-initial contracts. The dynamic dependency allocation profile still awaits E.
+initial contracts. E accepted the explicit dynamic dependency allocation profile.
 
 ## Scenario and header gap register
 
@@ -178,10 +182,11 @@ Local blackhole queries cancelled without residual threads or descriptors;
 independent review and integration runs measured sub-millisecond removal,
 with the configured 800ms timeout completing near 800ms. The threaded-resolver counterexample and
 QUICK_EXIT residual-thread result exclude those alternatives. Tests are
-empirical and profile-specific; constructor feature checks and shipped-profile
-validation still require implementation. Third-party allocation/OOM/memory-limit
-semantics remain unresolved at the public-header gate.
-Core scheduling delivery Q is separate from the synthetic fairness PoC.
+empirical and profile-specific; constructor feature checks and admitted-profile
+lifecycle validation are now recorded by F; validation of the shipped artifact remains
+gate P work. Gate E resolved the explicit third-party allocation/memory-limit
+contract; F records OOM checks. Integrated core scheduling delivery Q is separate
+from the synthetic fairness PoC.
 
 Protocol research B (`2e1cddf`) is also integrated and independently reviewed:
 [JSON/SSE and OpenRouter report](research/provider-wire.md) and
@@ -201,8 +206,8 @@ USD 0.00006864 total. Sanitized semantic fixtures preserve tool/result
 correlation and repeated finish metadata; they do not preserve transport
 fragment boundaries. No further live run is needed for review. Reasoning was
 disabled and opaque continuation was absent in this experiment; production
-headers must still specify bounded owned continuation data and a persistence/
-replay fixture separately from visible text.
+headers now specify bounded owned continuation separately from visible text;
+H/G provide component conformance evidence and P retains final coverage checks.
 
 Reviewed 2026-11-15:
 - [libcurl API overview](https://curl.se/libcurl/c/libcurl.html): multi interface
@@ -240,5 +245,6 @@ config generation lifetime, dependency initialization, tool policy and live
 budget. Made all implementation packages depend on a real header gate.
 Final planning review: preserve historical Stage 12 evidence; do not describe
 its mock gate as real-product completion. No public headers or implementation
-are changed here. Three actual header passes plus an extra full review remain
-mandatory before implementation; these planning passes do not replace them.
+were changed by the planning record. Three actual header passes plus the extra
+full review subsequently passed at E; these earlier planning passes did not
+replace them. Later contract amendments still require trace and review gates.
