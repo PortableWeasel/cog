@@ -63,3 +63,11 @@ keeps subreaper/signal changes inside an owned helper, never the embedding host;
 the cancellation profile requires descendants remain in the owned group. Test
 ordinary inherited-group grandchildren outliving the shell, exact parser/depth
 limits, unsupported numeric ranges and result resize with one effect.
+
+### H bounded recursion admission
+
+The OpenRouter-specific constructor accepts JSON depth ceilings1..256;
+max_json_depth257 fails INVALID_ARG without a live provider or wire request.
+A strict fixture at depth256 exercises duplicate validation and repeated opaque
+metadata equality; reducing the configured depth to255 fails PROTOCOL. This
+narrow header amendment makes the implementation stack bound reviewable.

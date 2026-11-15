@@ -131,3 +131,11 @@ start unrelated model/user/branch work. Crashed STARTED becomes INDETERMINATE an
 requires recovery. Cancelled unstarted proposals receive identified no-effect
 DENIED results; they are never mistaken for uncertain executed effects. Test the
 crash before STARTED save and cancel-after-proposal boundaries with zero effects.
+
+## H deterministic provider fixture amendment
+
+The narrow [H mock contract](../REAL_CLIENT_H_MOCK_AMENDMENT.md) adds
+`cog_mock_provider_new_deltas` in `cog_cli/mock_provider.h`. It supplies retained
+TOOL_BEGIN/ARGUMENTS/END/OPAQUE/FINISH fixtures through the same generic callbacks
+as the real adapter. K can exercise its tool admission loop without wire calls;
+this constructor itself executes no tool and grants no durable admission.
