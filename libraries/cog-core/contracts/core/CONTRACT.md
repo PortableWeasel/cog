@@ -47,7 +47,7 @@ Guard: `COG_CORE_H`. The header includes the other cog-core public headers
 | `local_peer_id` | no | — | Zero = unidentified. |
 | `provider` | no | borrowed | Optional; may be NULL for tests / no-provider operation. Stored as-is. |
 | `obs` | no | borrowed | May be NULL. |
-| `store` | no | borrowed | May be NULL. |
+| `store` | no | borrowed | May be NULL. When non-NULL and the store's `auto_save` flag is true, the core auto-saves the session once after each successfully handled `COG_EVENT_LLM_COMPLETE` exchange (see `cog_core_run`). |
 
 ## Functions
 
@@ -106,12 +106,22 @@ cog_result_t cog_core_run(cog_core_t *core);
 | `COG_ERROR_UNHANDLED` | The matching row has a NULL handler. |
 | handler status | A handler returned a non-`COG_OK` status. |
 | `COG_ERROR_TRANSITION_DENIED` | A handler requested a transition not in the row's allowed list. |
+| save error | Auto-save of the session failed after a successful `COG_EVENT_LLM_COMPLETE` exchange. |
 
 - Loop: pop one event, look up `(state, event->id)` in the static table,
   invoke the handler, validate the requested transition against the row's
   allowed list, and apply it (`COG_TRANSITION_SELF` keeps the state).
 - On any dispatch failure the state is left unchanged and the loop returns
   the error.
+- **Auto-save:** after a `COG_EVENT_LLM_COMPLETE` handler returns `COG_OK`
+  and its transition is allowed and applied, if `core->store != NULL` and
+  `cog_store_auto_save(core->store)` is true, the core calls
+  `cog_store_save(core->store, core->session)` exactly once.  The save
+  error (if any) is returned from the loop; the state transition has
+  already been applied.  No save occurs on handler failure, denied
+  transition, cancellation (`COG_EVENT_CANCEL` / `COG_EVENT_CANCELLED`),
+  shutdown (`COG_EVENT_SHUTDOWN`), streaming chunks
+  (`COG_EVENT_LLM_CHUNK`), or any other event.
 - When the queue is empty the loop first honours a pending stop request
   (exits without dequeuing a pending message), then tries to inject the
   oldest pending message for the core's session as a
@@ -272,5 +282,13 @@ session attachment (reset refused while attached, allowed after teardown),
 run-loop mutation of session history, and pending-message auto-injection
 appearing in session history in FIFO order.
 
-Both tests are compiled and run with strict warning flags and ASan/UBSan
+`tests/integration/test_store_session.c` verifies the auto-save trigger:
+with `auto_save=false` a full exchange leaves the store empty; with
+`auto_save=true` exactly one session is saved after one `LLM_COMPLETE`
+turn and is loadable as a real tree; a failing backend propagates its
+error from `cog_core_run` while leaving the applied state and session
+intact; `LLM_CHUNK` events never save (only `LLM_COMPLETE` does); and the
+borrowed store outlives `cog_core_free` and remains usable.
+
+All tests are compiled and run with strict warning flags and ASan/UBSan
 through the CMake/CTest build.

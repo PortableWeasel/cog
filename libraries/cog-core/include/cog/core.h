@@ -165,8 +165,11 @@ typedef struct cog_core_config {
     /**
      * @brief Optional session store for persistence.
      *
-     * If non-NULL, the core auto-saves sessions after each exchange.
-     * The caller retains ownership of the store.
+     * If non-NULL and the store's auto_save flag is true, the core
+     * auto-saves the session once after each successfully handled
+     * @c COG_EVENT_LLM_COMPLETE exchange, immediately after the valid
+     * state transition is applied.  Auto-save errors are propagated by
+     * @c cog_core_run.  The caller retains ownership of the store.
      */
     cog_store_t *store;
 } cog_core_config_t;
@@ -217,7 +220,7 @@ void cog_core_free(cog_core_t *core);
  * @return COG_OK if the loop exited because @c cog_core_stop was called.
  * @return COG_ERROR_NULL_PTR if @p core is NULL.
  * @return COG_ERROR_INVALID_STATE if the core is already running.
- * @return Another error code if dispatch fails.
+ * @return Another error code if dispatch or auto-save fails.
  *
  * @pre @p core has been created with @c cog_core_new and is not already
  *      running.
@@ -227,6 +230,12 @@ void cog_core_free(cog_core_t *core);
  * Threading: single-threaded driver.  Only one thread may call
  * @c cog_core_run at a time.  @c cog_core_stop may be called from
  * another thread or a signal handler.
+ *
+ * @note Auto-save, when enabled via the configured store, triggers only
+ *       after a @c COG_EVENT_LLM_COMPLETE handler returns @c COG_OK and
+ *       its requested transition is allowed and applied.  It does not
+ *       trigger on handler failure, denied transition, cancellation,
+ *       shutdown, or streaming chunks.
  */
 cog_result_t cog_core_run(cog_core_t *core);
 

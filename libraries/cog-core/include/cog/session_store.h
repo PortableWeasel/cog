@@ -284,6 +284,17 @@ cog_result_t cog_store_list(cog_store_t *store,
  */
 bool cog_store_exists(cog_store_t *store, const char *id);
 
+/**
+ * @brief Return true if the store is configured to auto-save.
+ *
+ * @param[in] store Store to query; may be NULL.
+ * @return true if @p store is non-NULL and its auto_save flag is enabled;
+ *         false otherwise.
+ *
+ * Threading: not thread-safe.
+ */
+bool cog_store_auto_save(const cog_store_t *store);
+
 /* ------------------------------------------------------------------ */
 /* Built-in backends                                                   */
 /* ------------------------------------------------------------------ */

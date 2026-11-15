@@ -158,6 +158,20 @@ static cog_result_t core_dispatch(cog_core_t *core, const cog_event_t *event)
     if (hr.transition != COG_TRANSITION_SELF) {
         core->state = hr.transition;
     }
+
+    /* Auto-save the session once after a successfully handled
+     * COG_EVENT_LLM_COMPLETE exchange, immediately after the valid state
+     * transition is applied.  The store is borrowed (caller-owned); its
+     * auto_save flag gates the save.  Save errors propagate to the caller
+     * (cog_core_run); the state transition has already been applied.  No
+     * save occurs on handler failure, denied transition, cancellation,
+     * shutdown, or streaming chunks — only LLM_COMPLETE reaches here. */
+    if (event->kind == COG_EVENT_LLM_COMPLETE &&
+        core->store != NULL &&
+        cog_store_auto_save(core->store)) {
+        return cog_store_save(core->store, core->session);
+    }
+
     return COG_OK;
 }
 

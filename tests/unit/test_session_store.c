@@ -2347,6 +2347,58 @@ done:
 }
 
 /* ------------------------------------------------------------------ */
+/* cog_store_auto_save query                                           */
+/* ------------------------------------------------------------------ */
+
+static int verify_auto_save_query(void)
+{
+    char *base = make_tmp("autosaveq");
+    cog_store_config_t cfg;
+    cog_store_t *st = NULL;
+    int fail = 0;
+
+    /* NULL store reports false. */
+    if (cog_store_auto_save(NULL)) {
+        fail = 1;
+    }
+    if (base == NULL) {
+        return 1;
+    }
+
+    /* Default (auto_save unset) reports false. */
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.base_dir = base;
+    if (cog_store_new(&st, &cfg) != COG_OK) {
+        fail = 1;
+        goto done;
+    }
+    if (cog_store_auto_save(st)) {
+        fail = 1;
+        goto done;
+    }
+    cog_store_free(st);
+    st = NULL;
+
+    /* auto_save=true reports true. */
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.base_dir = base;
+    cfg.auto_save = true;
+    if (cog_store_new(&st, &cfg) != COG_OK) {
+        fail = 1;
+        goto done;
+    }
+    if (!cog_store_auto_save(st)) {
+        fail = 1;
+        goto done;
+    }
+
+done:
+    cog_store_free(st);
+    free(base);
+    return fail;
+}
+
+/* ------------------------------------------------------------------ */
 /* Stress                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -2642,6 +2694,7 @@ int main(void)
     CHECK("corruption", verify_corruption());
     CHECK("path safety", verify_path_safety());
     CHECK("config flags", verify_config_flags());
+    CHECK("auto_save query", verify_auto_save_query());
     CHECK("stress", verify_stress());
     CHECK("delete preflight", verify_delete_preflight());
     CHECK("default base dir", verify_default_base_dir());
