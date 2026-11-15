@@ -45,3 +45,40 @@ Members other than type remain optional, preserving signature-only and payload-
 absent fragments already admitted by the pinned profile. No new requirement to
 supply id/format/index/data is added. Existing strict JSON/UTF-8/duplicate-key
 validation and constructor byte/depth ceilings still apply.
+
+
+## Pass 2: targeted field and state traces
+
+| Case | Local outcome before effects | Preserved boundary |
+|---|---|---|
+| encrypted data string, including empty/arbitrary synthetic text | OK within limits | No base64 decode or secret interpretation |
+| encrypted data object/array/number/bool/null | PROTOCOL | No STARTED/save/tool start or wire probe |
+| common id string or null | OK within limits | Presence and exact JSON value retained |
+| common id object/array/number/bool | PROTOCOL | No reinterpretation or guessed ID |
+| common format any string | OK within limits | No new allowlist for unfamiliar formats |
+| common format null/object/array/number/bool | PROTOCOL | No silent dropping |
+| common index finite number, including fractional/negative | OK within limits | No invented integer/nonnegative/range policy |
+| common index string/null/object/array/bool | PROTOCOL | No coercion |
+| own-kind text/summary string, including empty | OK within limits | Existing text-fragment merge contract |
+| own-kind text/summary number/bool/object/array/null | PROTOCOL | No malformed payload enters merge |
+| signature non-null string, including empty | OK within limits | Existing presence closes a text/summary block |
+| signature null | UNSUPPORTED | Official protocol shape outside pinned merge/closure profile |
+| signature other nonstring kind | PROTOCOL | No guess at cryptographic meaning |
+| recognized optional member absent | Existing supported behavior | No new mandatory id/format/index/payload |
+| unknown member nested object/array/scalar | Existing supported behavior | Unknown discrete metadata remains lossless |
+| a type-specific payload name on another supported kind | Existing supported behavior | It is unknown for that kind, not misclassified |
+| same bad field through restored preflight and incoming stream | Same recognized-field decision | Tool events remain gated by valid FINISH |
+| preflight rejected while old turn error exists | Direct validation result only | Prior get_error/message/clock/retained data unchanged |
+
+The pass-2 retrace found a scope risk: merely saying data/index are typed could
+be read as adding base64 decoding, integer/range checks, a format-value allowlist
+or mandatory keys. The header now explicitly excludes those changes. It also
+preserves unfamiliar members, including a payload-like name on a different
+supported entry kind. Only recognized fields for the actual kind and the stated
+common fields receive these kind checks.
+
+The same check applies to inbound entry reconstruction, outbound send and local
+preflight. A source fixture must demonstrate both paths, including invalid
+recognized fields never reaching tool readiness and a valid unknown member
+round-tripping unchanged. No new generic dispatch rule, request stage, storage
+codec, model feature, workspace operation or dependency allocation is needed.
