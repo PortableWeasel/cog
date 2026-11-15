@@ -365,7 +365,8 @@ static int schema_parse(const char *schema, size_t schema_len, schema_t *out)
     }
     if (js_peek(&j) == '}') {
         j.p++;
-        return JS_OBJECT; /* empty schema object: no constraints */
+        js_skip_ws(&j);
+        return j.p == j.end ? JS_OBJECT : JS_INVALID;
     }
     for (;;) {
         if (!js_string(&j, &key, &key_len)) {
@@ -400,7 +401,8 @@ static int schema_parse(const char *schema, size_t schema_len, schema_t *out)
         }
         if (js_peek(&j) == '}') {
             j.p++;
-            return JS_OBJECT;
+            js_skip_ws(&j);
+            return j.p == j.end ? JS_OBJECT : JS_INVALID;
         }
         return JS_INVALID;
     }

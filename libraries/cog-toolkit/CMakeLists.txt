@@ -19,7 +19,8 @@ target_include_directories(cog-toolkit
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 target_compile_features(cog-toolkit PUBLIC c_std_11)
-target_link_libraries(cog-toolkit PUBLIC cog::core)
+find_package(Threads REQUIRED)
+target_link_libraries(cog-toolkit PUBLIC cog::core Threads::Threads)
 
 # Apply the project-wide strict-warning policy (and ASan/UBSan when enabled)
 # to the production sources.
@@ -52,6 +53,19 @@ target_enable_warnings(test_toolkit_critic)
 
 add_test(NAME unit-toolkit-critic
     COMMAND test_toolkit_critic
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+# Bounded-worker scheduling plus deterministic pthread_create failure tests.
+# The link wrap is private to this test executable and does not affect the
+# production archive or other tests.
+add_executable(test_toolkit_parallel
+    ${PROJECT_SOURCE_DIR}/tests/unit/test_toolkit_parallel.c)
+target_link_libraries(test_toolkit_parallel PRIVATE cog::toolkit)
+target_enable_warnings(test_toolkit_parallel)
+target_link_options(test_toolkit_parallel PRIVATE "-Wl,--wrap=pthread_create")
+
+add_test(NAME unit-toolkit-parallel
+    COMMAND test_toolkit_parallel
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
 # -----------------------------------------------------------------------

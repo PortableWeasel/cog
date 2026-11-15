@@ -3,27 +3,26 @@
  * @brief Implementation of the tool execution dispatcher declared in
  *        cog/toolkit_exec.h.
  *
- * The dispatcher resolves a tool by name in the static const tool table,
- * invokes its @c cog_tool_fn implementation, and writes the outcome into
- * a caller-provided result value or an opaque result collection.
+ * The dispatcher resolves tools by name in the static const tool table and
+ * invokes their cog_tool_fn implementations.  Single calls write into a
+ * caller-provided result value.  cog_toolkit_execute_all writes into an
+ * opaque result collection.
  *
- * The dispatcher is single-threaded by design: calls are run to
- * completion on the invoking thread.  "Parallel" execution is cooperative
- * and bounded by @c max_parallel; because tools are synchronous C
- * functions that cannot be preempted, @c cog_toolkit_execute_all runs the
- * calls sequentially while preserving call order in the result collection.
+ * Batch execution has a caller-thread fast path for max_parallel == 1 (and
+ * for at most one call).  Otherwise a bounded set of POSIX worker threads
+ * claims call indices through a mutex-protected work index.  Each worker
+ * writes only the result slots belonging to the indices it claimed.  Every
+ * launched worker is joined before temporary storage is released or the
+ * collection is assembled on the caller thread.
  *
- * Timeout handling is advisory and enforced at the boundaries of each
- * tool invocation: a per-call wall-clock deadline is computed from the
- * call's timeout (or the dispatcher default) and checked after the tool
- * returns.  A tool that overruns its budget is recorded as
- * @c COG_ERROR_TIMEOUT.  Cancellation is cooperative: the flag is checked
- * before and after each invocation, and a cancelled call is recorded as
- * @c COG_ERROR_ABORTED.
+ * Timeout handling remains advisory and enforced at invocation boundaries.
+ * Cancellation remains cooperative and is observed before and after each
+ * tool invocation; tools are never preempted.
  *
  * The module holds no global mutable state.
  *
- * Ticket: 8d52c1a (Stage 12.4b — Implement toolkit)
+ * Ticket: 8d52c1a (Stage 12.4b — Implement toolkit), revision for review
+ * 9a39e07 and design 3614303.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -31,6 +30,7 @@
 #include "cog/toolkit_exec.h"
 #include "toolkit_internal.h"
 
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -55,14 +55,12 @@ static uint64_t now_ms(void)
 }
 
 /**
- * @brief Invoke a tool, growing the output buffer on overflow.
+ * @brief Invoke a tool, growing its result buffer on overflow.
  *
- * @p out_buf / @p out_cap describe a caller-owned buffer.  If @p out_buf
- * is NULL an initial buffer is allocated.  On @c COG_ERROR_OVERFLOW the
- * buffer is grown to the required size and the tool is re-invoked.  On
- * success @p out_len receives the result length (excluding the NUL).
- *
- * The caller owns the returned buffer and must free it.
+ * out_buf and out_cap belong exclusively to the claimed call.  If out_buf
+ * is NULL an initial buffer is allocated.  On COG_ERROR_OVERFLOW the buffer
+ * grows to the reported size and the tool is invoked again.  The caller of
+ * this helper owns the returned buffer.
  */
 static cog_result_t invoke_tool(cog_core_t *core,
                                 const cog_tool_t *tool,
@@ -93,7 +91,7 @@ static cog_result_t invoke_tool(cog_core_t *core,
         if (r == COG_ERROR_OVERFLOW && need > cap) {
             char *nbuf = (char *)realloc(buf, need + 1U);
             if (nbuf == NULL) {
-                /* realloc leaves buf intact on failure; caller frees it. */
+                /* realloc leaves buf intact on failure. */
                 return COG_ERROR_NOMEM;
             }
             buf = nbuf;
@@ -113,12 +111,7 @@ static cog_result_t invoke_tool(cog_core_t *core,
     return r;
 }
 
-/**
- * @brief Build a human-readable error message for a failed call.
- *
- * Returns a heap-allocated NUL-terminated string, or NULL on allocation
- * failure (in which case @p out_len is set to zero).
- */
+/** Allocate a human-readable error message for a failed call. */
 static char *make_error_message(const cog_toolkit_call_t *call,
                                 cog_result_t status,
                                 size_t *out_len)
@@ -168,6 +161,136 @@ static char *make_error_message(const cog_toolkit_call_t *call,
     msg[len] = '\0';
     *out_len = len;
     return msg;
+}
+
+/**
+ * State shared by a batch and all its workers.
+ *
+ * next_index, stop, first_error_index and first_error_status are protected
+ * by mutex.  All other pointer fields are initialised before workers launch
+ * and are read-only thereafter.  Each result array element is written only
+ * by the worker that claimed that element's index.
+ */
+typedef struct toolkit_batch {
+    cog_core_t *core;
+    const cog_tool_table_t *table;
+    cog_toolkit_call_t *const *calls;
+    size_t call_count;
+    uint32_t default_timeout_ms;
+    bool stop_on_error;
+
+    pthread_mutex_t mutex;
+    size_t next_index;
+    bool stop;
+    size_t first_error_index;
+    cog_result_t first_error_status;
+
+    char **bufs;
+    size_t *caps;
+    size_t *lens;
+    cog_result_t *statuses;
+    char **errors;
+    size_t *error_lens;
+} toolkit_batch_t;
+
+/** Run one claimed call, writing only that call's preallocated slots. */
+static void run_claimed_call(toolkit_batch_t *batch, size_t index)
+{
+    cog_toolkit_call_t *call = batch->calls[index];
+    const cog_tool_t *tool = NULL;
+    cog_result_t r;
+    uint32_t timeout_ms;
+    uint64_t deadline;
+    size_t len = 0U;
+    const char *request;
+    size_t request_len;
+
+    batch->statuses[index] = COG_OK;
+
+    if (cog_toolkit_call_is_cancelled(call)) {
+        batch->statuses[index] = COG_ERROR_ABORTED;
+        batch->errors[index] = make_error_message(
+            call, COG_ERROR_ABORTED, &batch->error_lens[index]);
+        return;
+    }
+
+    r = cog_tool_table_lookup(batch->table, cog_toolkit_call_name(call),
+                              &tool);
+    if (r != COG_OK) {
+        batch->statuses[index] = r;
+        batch->errors[index] = make_error_message(
+            call, r, &batch->error_lens[index]);
+        return;
+    }
+
+    timeout_ms = cog_toolkit_call_timeout_ms(call);
+    if (timeout_ms == 0U) {
+        timeout_ms = batch->default_timeout_ms;
+    }
+    deadline = now_ms() + (uint64_t)timeout_ms;
+
+    request = cog_toolkit_call_request(call, &request_len);
+    r = invoke_tool(batch->core, tool, request, request_len,
+                    &batch->bufs[index], &batch->caps[index], &len);
+    if (r != COG_OK) {
+        batch->statuses[index] = r;
+        batch->errors[index] = make_error_message(
+            call, r, &batch->error_lens[index]);
+        return;
+    }
+    if (now_ms() >= deadline) {
+        batch->statuses[index] = COG_ERROR_TIMEOUT;
+        batch->errors[index] = make_error_message(
+            call, COG_ERROR_TIMEOUT, &batch->error_lens[index]);
+        return;
+    }
+    if (cog_toolkit_call_is_cancelled(call)) {
+        batch->statuses[index] = COG_ERROR_ABORTED;
+        batch->errors[index] = make_error_message(
+            call, COG_ERROR_ABORTED, &batch->error_lens[index]);
+        return;
+    }
+    batch->lens[index] = len;
+}
+
+/** Claim and run calls until the batch is empty or stopped. */
+static void *batch_worker(void *arg)
+{
+    toolkit_batch_t *batch = (toolkit_batch_t *)arg;
+
+    for (;;) {
+        size_t index;
+
+        (void)pthread_mutex_lock(&batch->mutex);
+        if (batch->stop || batch->next_index >= batch->call_count) {
+            (void)pthread_mutex_unlock(&batch->mutex);
+            break;
+        }
+        index = batch->next_index;
+        batch->next_index++;
+        (void)pthread_mutex_unlock(&batch->mutex);
+
+        run_claimed_call(batch, index);
+
+        if (batch->stop_on_error && batch->statuses[index] != COG_OK) {
+            (void)pthread_mutex_lock(&batch->mutex);
+            if (index < batch->first_error_index) {
+                batch->first_error_index = index;
+                batch->first_error_status = batch->statuses[index];
+            }
+            batch->stop = true;
+            (void)pthread_mutex_unlock(&batch->mutex);
+        }
+    }
+    return NULL;
+}
+
+/** Ask all workers to stop claiming new work (running tools still finish). */
+static void batch_request_stop(toolkit_batch_t *batch)
+{
+    (void)pthread_mutex_lock(&batch->mutex);
+    batch->stop = true;
+    (void)pthread_mutex_unlock(&batch->mutex);
 }
 
 cog_result_t cog_toolkit_execute(cog_core_t *core,
@@ -234,16 +357,11 @@ cog_result_t cog_toolkit_execute_all(cog_core_t *core,
                                      cog_toolkit_result_collection_t **out_results)
 {
     cog_toolkit_exec_opts_t local_opts;
-    uint32_t default_timeout;
+    size_t max_parallel;
+    toolkit_batch_t batch;
     cog_result_t r = COG_OK;
     size_t i;
     cog_toolkit_result_collection_t *coll = NULL;
-    char **tmp_bufs = NULL;
-    size_t *tmp_caps = NULL;
-    size_t *tmp_lens = NULL;
-    cog_result_t *tmp_status = NULL;
-    char **tmp_err = NULL;
-    size_t *tmp_err_lens = NULL;
     size_t total_str = 0U;
     char *sp;
 
@@ -252,15 +370,12 @@ cog_result_t cog_toolkit_execute_all(cog_core_t *core,
     }
     *out_results = NULL;
 
-    if (call_count != 0U) {
-        for (i = 0U; i < call_count; i++) {
-            if (calls[i] == NULL) {
-                return COG_ERROR_INVALID_ARG;
-            }
+    for (i = 0U; i < call_count; i++) {
+        if (calls[i] == NULL) {
+            return COG_ERROR_INVALID_ARG;
         }
     }
 
-    /* Resolve options.  Zero-initialised fields select defaults. */
     if (opts != NULL) {
         local_opts = *opts;
     } else {
@@ -268,95 +383,126 @@ cog_result_t cog_toolkit_execute_all(cog_core_t *core,
         local_opts.max_parallel = 0U;
         local_opts.stop_on_error = false;
     }
-    default_timeout = local_opts.timeout_ms != 0U
-                          ? local_opts.timeout_ms
-                          : COG_TOOLKIT_DEFAULT_TIMEOUT_MS;
+
+    (void)memset(&batch, 0, sizeof(batch));
+    batch.core = core;
+    batch.table = table;
+    batch.calls = calls;
+    batch.call_count = call_count;
+    batch.default_timeout_ms = local_opts.timeout_ms != 0U
+                                  ? local_opts.timeout_ms
+                                  : COG_TOOLKIT_DEFAULT_TIMEOUT_MS;
+    batch.stop_on_error = local_opts.stop_on_error;
+    batch.first_error_index = call_count;
+    batch.first_error_status = COG_OK;
 
     if (call_count > 0U) {
-        tmp_bufs = (char **)calloc(call_count, sizeof(char *));
-        tmp_caps = (size_t *)calloc(call_count, sizeof(size_t));
-        tmp_lens = (size_t *)calloc(call_count, sizeof(size_t));
-        tmp_status = (cog_result_t *)calloc(call_count, sizeof(cog_result_t));
-        tmp_err = (char **)calloc(call_count, sizeof(char *));
-        tmp_err_lens = (size_t *)calloc(call_count, sizeof(size_t));
-        if (tmp_bufs == NULL || tmp_caps == NULL || tmp_lens == NULL ||
-            tmp_status == NULL || tmp_err == NULL || tmp_err_lens == NULL) {
+        batch.bufs = (char **)calloc(call_count, sizeof(char *));
+        batch.caps = (size_t *)calloc(call_count, sizeof(size_t));
+        batch.lens = (size_t *)calloc(call_count, sizeof(size_t));
+        batch.statuses = (cog_result_t *)calloc(call_count,
+                                               sizeof(cog_result_t));
+        batch.errors = (char **)calloc(call_count, sizeof(char *));
+        batch.error_lens = (size_t *)calloc(call_count, sizeof(size_t));
+        if (batch.bufs == NULL || batch.caps == NULL || batch.lens == NULL ||
+            batch.statuses == NULL || batch.errors == NULL ||
+            batch.error_lens == NULL) {
             r = COG_ERROR_NOMEM;
-            goto fail;
+            goto cleanup;
         }
     }
 
-    /* Run each call, recording status, output length, and error message. */
-    for (i = 0U; i < call_count; i++) {
-        cog_toolkit_call_t *call = calls[i];
-        const cog_tool_t *tool = NULL;
-        uint32_t timeout_ms;
-        uint64_t deadline;
-        size_t len = 0U;
-        const char *request;
-        size_t request_len;
+    max_parallel = local_opts.max_parallel != 0U
+                       ? local_opts.max_parallel
+                       : call_count;
 
-        tmp_status[i] = COG_OK;
+    /* Caller-thread fast path.  No mutex or worker state is needed. */
+    if (max_parallel <= 1U || call_count <= 1U) {
+        for (i = 0U; i < call_count; i++) {
+            run_claimed_call(&batch, i);
+            if (batch.stop_on_error && batch.statuses[i] != COG_OK) {
+                batch.first_error_index = i;
+                batch.first_error_status = batch.statuses[i];
+                batch.stop = true;
+                break;
+            }
+        }
+    } else {
+        const size_t worker_count = max_parallel < call_count
+                                        ? max_parallel
+                                        : call_count;
+        pthread_t *threads = (pthread_t *)calloc(worker_count,
+                                                sizeof(pthread_t));
+        size_t created = 0U;
+        bool create_failed = false;
+        bool join_failed = false;
 
-        if (cog_toolkit_call_is_cancelled(call)) {
-            tmp_status[i] = COG_ERROR_ABORTED;
-            tmp_err[i] = make_error_message(call, COG_ERROR_ABORTED,
-                                            &tmp_err_lens[i]);
-            goto after_call;
+        if (threads == NULL) {
+            r = COG_ERROR_NOMEM;
+            goto cleanup;
+        }
+        if (pthread_mutex_init(&batch.mutex, NULL) != 0) {
+            free(threads);
+            r = COG_ERROR_NOMEM;
+            goto cleanup;
         }
 
-        r = cog_tool_table_lookup(table, cog_toolkit_call_name(call), &tool);
-        if (r != COG_OK) {
-            tmp_status[i] = r;
-            tmp_err[i] = make_error_message(call, r, &tmp_err_lens[i]);
-            goto after_call;
+        for (i = 0U; i < worker_count; i++) {
+            int create_status;
+
+            /* If another worker has already failed, do not create more
+             * workers just to have them immediately exit. */
+            (void)pthread_mutex_lock(&batch.mutex);
+            create_status = batch.stop ? 1 : 0;
+            (void)pthread_mutex_unlock(&batch.mutex);
+            if (create_status != 0) {
+                break;
+            }
+
+            create_status = pthread_create(&threads[created], NULL,
+                                           batch_worker, &batch);
+            if (create_status != 0) {
+                create_failed = true;
+                batch_request_stop(&batch);
+                break;
+            }
+            created++;
         }
 
-        timeout_ms = cog_toolkit_call_timeout_ms(call);
-        if (timeout_ms == 0U) {
-            timeout_ms = default_timeout;
+        /* Every created worker is joined on both success and failure. */
+        for (i = 0U; i < created; i++) {
+            if (pthread_join(threads[i], NULL) != 0) {
+                join_failed = true;
+            }
         }
-        deadline = now_ms() + (uint64_t)timeout_ms;
+        (void)pthread_mutex_destroy(&batch.mutex);
+        free(threads);
 
-        request = cog_toolkit_call_request(call, &request_len);
-        r = invoke_tool(core, tool, request, request_len,
-                        &tmp_bufs[i], &tmp_caps[i], &len);
-        if (r != COG_OK) {
-            tmp_status[i] = r;
-            tmp_err[i] = make_error_message(call, r, &tmp_err_lens[i]);
-            goto after_call;
+        if (create_failed) {
+            r = COG_ERROR_NOMEM;
+            goto cleanup;
         }
-        if (now_ms() >= deadline) {
-            tmp_status[i] = COG_ERROR_TIMEOUT;
-            tmp_err[i] = make_error_message(call, COG_ERROR_TIMEOUT,
-                                            &tmp_err_lens[i]);
-            goto after_call;
-        }
-        if (cog_toolkit_call_is_cancelled(call)) {
-            tmp_status[i] = COG_ERROR_ABORTED;
-            tmp_err[i] = make_error_message(call, COG_ERROR_ABORTED,
-                                            &tmp_err_lens[i]);
-            goto after_call;
-        }
-        tmp_lens[i] = len;
-
-    after_call:
-        if (tmp_status[i] != COG_OK && local_opts.stop_on_error) {
-            r = tmp_status[i];
-            goto fail;
+        if (join_failed) {
+            r = COG_ERROR_IO;
+            goto cleanup;
         }
     }
 
-    /* Compute the total string storage needed by the collection. */
+    if (batch.stop_on_error && batch.first_error_index < call_count) {
+        r = batch.first_error_status;
+        goto cleanup;
+    }
+
+    /* All workers are joined.  Assemble the collection on this thread. */
     for (i = 0U; i < call_count; i++) {
-        total_str += tmp_lens[i] + 1U;
-        total_str += tmp_err_lens[i] + 1U;
+        total_str += batch.lens[i] + 1U;
+        total_str += batch.error_lens[i] + 1U;
     }
 
     coll = (cog_toolkit_result_collection_t *)malloc(sizeof(*coll));
     if (coll == NULL) {
         r = COG_ERROR_NOMEM;
-        goto fail;
+        goto cleanup;
     }
     coll->count = call_count;
     coll->results = NULL;
@@ -366,79 +512,61 @@ cog_result_t cog_toolkit_execute_all(cog_core_t *core,
             call_count, sizeof(cog_toolkit_result_t));
         if (coll->results == NULL) {
             r = COG_ERROR_NOMEM;
-            goto fail;
+            goto cleanup;
         }
         if (total_str > 0U) {
             coll->storage = (char *)malloc(total_str);
             if (coll->storage == NULL) {
                 r = COG_ERROR_NOMEM;
-                goto fail;
+                goto cleanup;
             }
         }
     }
 
-    /* Copy each result's output and error message into the collection's
-     * single storage block. */
     sp = coll->storage;
     for (i = 0U; i < call_count; i++) {
         cog_toolkit_result_t *res = &coll->results[i];
 
-        res->status = tmp_status[i];
-        res->output_len = tmp_lens[i];
-        if (tmp_lens[i] > 0U) {
-            (void)memcpy(sp, tmp_bufs[i], tmp_lens[i]);
-            sp[tmp_lens[i]] = '\0';
+        res->status = batch.statuses[i];
+        res->output_len = batch.lens[i];
+        if (batch.lens[i] > 0U) {
+            (void)memcpy(sp, batch.bufs[i], batch.lens[i]);
+            sp[batch.lens[i]] = '\0';
             res->output = sp;
-            sp += tmp_lens[i] + 1U;
+            sp += batch.lens[i] + 1U;
         } else {
             res->output = NULL;
         }
-        if (tmp_err_lens[i] > 0U) {
-            (void)memcpy(sp, tmp_err[i], tmp_err_lens[i]);
-            sp[tmp_err_lens[i]] = '\0';
+        if (batch.error_lens[i] > 0U) {
+            (void)memcpy(sp, batch.errors[i], batch.error_lens[i]);
+            sp[batch.error_lens[i]] = '\0';
             res->error_message = sp;
-            sp += tmp_err_lens[i] + 1U;
+            sp += batch.error_lens[i] + 1U;
         } else {
             res->error_message = NULL;
         }
     }
 
-    /* Release temporary per-call buffers. */
-    for (i = 0U; i < call_count; i++) {
-        free(tmp_bufs[i]);
-        free(tmp_err[i]);
-    }
-    free(tmp_bufs);
-    free(tmp_caps);
-    free(tmp_lens);
-    free(tmp_status);
-    free(tmp_err);
-    free(tmp_err_lens);
-
     *out_results = coll;
-    return COG_OK;
+    coll = NULL;
 
-fail:
+cleanup:
     if (coll != NULL) {
         free(coll->results);
         free(coll->storage);
         free(coll);
     }
-    /* Only dereference the per-call arrays when both were allocated.  On
-     * a partial allocation failure the individual entries are all NULL
-     * (calloc), so freeing the arrays themselves is sufficient. */
-    if (tmp_bufs != NULL && tmp_err != NULL) {
+    if (batch.bufs != NULL && batch.errors != NULL) {
         for (i = 0U; i < call_count; i++) {
-            free(tmp_bufs[i]);
-            free(tmp_err[i]);
+            free(batch.bufs[i]);
+            free(batch.errors[i]);
         }
     }
-    free(tmp_bufs);
-    free(tmp_caps);
-    free(tmp_lens);
-    free(tmp_status);
-    free(tmp_err);
-    free(tmp_err_lens);
-    *out_results = NULL;
+    free(batch.bufs);
+    free(batch.caps);
+    free(batch.lens);
+    free(batch.statuses);
+    free(batch.errors);
+    free(batch.error_lens);
     return r;
 }

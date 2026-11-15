@@ -588,6 +588,8 @@ static int verify_stop_on_error_skips(void)
     }
     memset(&opts, 0, sizeof(opts));
     opts.stop_on_error = true;
+    opts.max_parallel = 1U; /* pin sequential skip semantics; concurrent
+                             * calls may already be claimed on failure. */
 
     r = cog_toolkit_execute_all(dummy_core(), &kTable, calls, 3U, &opts,
                                 &coll);

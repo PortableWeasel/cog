@@ -81,11 +81,15 @@ cog_result_t cog_toolkit_call_new(cog_toolkit_call_t **out,
 | `max_parallel` | Max concurrent calls. | `call_count` |
 | `stop_on_error` | Stop launching new calls on first failure. | false |
 
-The dispatcher is single-threaded. Tools are synchronous C functions that
-cannot be preempted, so "parallel" execution is cooperative: calls run
-sequentially while the result collection preserves call order. `max_parallel`
-bounds the conceptual concurrency but does not change single-threaded
-behaviour.
+For `max_parallel == 1` (or at most one call), calls run sequentially on the
+caller thread. Otherwise the dispatcher starts up to
+`min(max_parallel, call_count)` POSIX workers and joins every launched worker
+before returning. A mutex-protected index assigns each call exactly once.
+Workers write only their claimed call's result slots; collection assembly and
+string copies occur on the caller thread after all joins. Tools are
+synchronous C functions that cannot be preempted. With concurrent execution,
+tool handlers must be reentrant and must synchronise any mutation of the
+shared core or other shared state.
 
 ### `cog_toolkit_execute`
 
@@ -154,10 +158,12 @@ cog_result_t cog_toolkit_execute_all(cog_core_t *core,
 
 #### `stop_on_error`
 
-- On the first non-OK result (tool error, not-found, timeout, or abort),
-  `execute_all` stops launching further calls, returns that result code,
-  and sets `*out_results` to NULL. In the single-threaded model there are
-  no already-running calls to await.
+- After the first observed non-OK result (tool error, not-found, timeout,
+  or abort), no further calls are claimed. Already-running tools finish and
+  every launched worker is joined. The final return is the earliest failing
+  result **by input index**, not completion order, and `*out_results` is
+  NULL. With concurrency, calls claimed before the failure was observed may
+  run even when their input index follows the failing call.
 
 ## Result types (`toolkit_result.h`)
 
@@ -188,6 +194,8 @@ the collection's storage and remain valid until the collection is freed.
 
 ### `cog_toolkit_result_validate_schema`
 
+- The schema must contain exactly one JSON object. Trailing whitespace is
+  accepted; any other trailing characters are malformed.
 - Implements a small, documented JSON Schema subset:
   - `type`: `object`, `array`, `string`, `number`, `integer` (treated as
     number), `boolean`, `null`.
