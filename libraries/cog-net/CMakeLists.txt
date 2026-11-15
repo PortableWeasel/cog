@@ -41,6 +41,19 @@ add_test(NAME unit-net
     COMMAND test_net
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
+# Adversarial contract tests (review ffb1ae0): EOF mid-frame, malformed
+# framing, slow-head stall semantics, FIN survival, multi-request ids,
+# slot reuse, and non-retried 4xx/429 surfacing.
+add_executable(test_net_adversarial
+    ${PROJECT_SOURCE_DIR}/tests/unit/test_net_adversarial.c
+)
+target_link_libraries(test_net_adversarial PRIVATE cog::net)
+target_enable_warnings(test_net_adversarial)
+
+add_test(NAME unit-net-adversarial
+    COMMAND test_net_adversarial
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
 # -----------------------------------------------------------------------
 # Install rules
 # -----------------------------------------------------------------------
