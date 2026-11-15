@@ -1,1521 +1,736 @@
-/**
- * @file net.c
- * @brief HTTP client with streaming, stall detection, and retry.
- *
- * Implements the public contract in <cog/net.h>.  The design follows the
- * hand-rolled HTTP/1.1 client proven in pocs/http-streaming:
- *
- *   - getaddrinfo + non-blocking connect (first reachable address).
- *   - A single request line with Host, user headers, Content-Length and
- *     Connection: close.
- *   - Response head parsing (status line + headers).
- *   - Body framing: Transfer-Encoding: chunked decoding, Content-Length,
- *     or plain read-until-close as a fallback.
- *   - Stall detection via poll() timeouts on every socket read.
- *   - Retry on transient failure (connect/network/stall/5xx) with a
- *     bounded backoff, up to config.max_retries.
- *
- * The whole module is single-threaded and poll-driven: cog_net_poll()
- * advances each in-flight request by one non-blocking step and returns
- * the next queued response chunk.  There is no global mutable state; all
- * state lives in the caller-allocated cog_net_ctx_t.  No provider-level
- * queuing is performed here — this library only speaks HTTP.
- */
-
-/* eventfd and MSG_NOSIGNAL both require _GNU_SOURCE on Linux/glibc. */
 #define _GNU_SOURCE
-
-#include "cog/net.h"
-
+#define _POSIX_C_SOURCE 200809L
+#include <cog/net.h>
+#include <curl/curl.h>
+#include <dlfcn.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <poll.h>
-#include <stdbool.h>
-#include <stdint.h>
+#include <openssl/evp.h>
 #include <stdio.h>
+#include <ctype.h>
+#include <limits.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/eventfd.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <time.h>
-#include <unistd.h>
 
-/* ------------------------------------------------------------------ */
-/* Tunables                                                            */
-/* ------------------------------------------------------------------ */
-
-/** Default maximum concurrent connections. */
-#define DEFAULT_MAX_CONNECTIONS 16U
-
-/** Default TCP connect timeout in milliseconds. */
-#define DEFAULT_CONNECT_TIMEOUT_MS 5000U
-
-/** Default stall threshold in milliseconds. */
-#define DEFAULT_STALL_TIMEOUT_MS 30000U
-
-/** Default maximum retries on transient failure. */
-#define DEFAULT_MAX_RETRIES 2U
-
-/** Default base backoff between retries in milliseconds. */
-#define DEFAULT_RETRY_BACKOFF_MS 200U
-
-/** Capacity of the buffered reader's internal buffer. */
-#define READ_BUF_CAP 4096U
-
-/** Cap on a single response head (status + headers). */
-#define HEAD_CAP 4096U
-
-/** Cap on a chunk-size / trailer line. */
-#define LINE_CAP 256U
-
-/** Reject absurd chunk sizes. */
-#define MAX_CHUNK_PAYLOAD (1024U * 1024U)
-
-/** Number of trailer lines tolerated after the terminal 0-chunk. */
-#define MAX_TRAILER_LINES 16U
-
-/* ------------------------------------------------------------------ */
-/* Private types                                                       */
-/* ------------------------------------------------------------------ */
-
-/** Lifecycle state of a single request. */
-typedef enum req_state {
-    REQ_QUEUED = 0,   /**< Not yet started. */
-    REQ_CONNECTING,   /**< Non-blocking connect in progress. */
-    REQ_SENDING,      /**< Sending request bytes. */
-    REQ_READING_HEAD, /**< Reading response head. */
-    REQ_READING_BODY, /**< Reading response body. */
-    REQ_BACKOFF,      /**< Waiting to retry. */
-    REQ_DONE,         /**< Completed; final node enqueued. */
-    REQ_FAILED,       /**< Terminally failed; error node enqueued. */
-    REQ_CANCELLED     /**< Cancelled by the caller. */
-} req_state_t;
-
-/** One queued response node (owns copies of its payload). */
-typedef struct cog_net_resp_node {
-    struct cog_net_resp_node *next;
-    cog_request_id_t id;
-    int http_status;
-    char *headers;      /**< Owned copy, may be NULL. */
-    char *chunk;        /**< Owned copy, may be NULL. */
-    size_t chunk_len;
-    bool is_complete;
-    cog_result_t error; /**< COG_OK for a normal node. */
-} cog_net_resp_node_t;
-
-/** One in-flight request slot. */
-typedef struct cog_net_req {
-    bool in_use;
-    cog_request_id_t id;
-    req_state_t state;
-
-    /* Owned request data. */
-    char *method;
-    char *url;
-    char *headers;
+/* All mutable state is owned by the caller's context. */
+typedef struct net_item {
+    cog_net_response_t view;
     char *body;
-    size_t body_len;
+    char *headers;
+    bool exposed;
+} net_item_t;
 
-    /* Parsed URL. */
-    char host[256];
-    uint16_t port;
-    const char *path; /* points into url */
+typedef struct net_request {
+    struct cog_net_ctx *ctx;
+    cog_request_id_t id;
+    CURL *easy;
+    CURLM *multi;
+    struct curl_slist *request_headers;
+    char *input;
+    char *header_buf;
+    size_t header_len;
+    net_item_t *items;
+    char *item_body;
+    char *item_headers;
+    size_t head, count;
+    uint64_t next_sequence;
+    uint64_t start_ms, last_byte_ms, pause_ms;
+    int status;
+    uint32_t retry_after;
+    bool retry_known, started, connected, response_started, active, paused, terminal;
+    cog_result_t callback_error, pending_result;
+    cog_net_error_kind_t pending_kind;
+    const char *pending_message;
+    bool pending_terminal;
+} net_request_t;
 
-    /* Socket. */
-    int fd;
-
-    /* Send state. */
-    char *send_buf;
-    size_t send_len;
-    size_t send_off;
-
-    /* Buffered reader. */
-    uint8_t rbuf[READ_BUF_CAP];
-    size_t rbuf_start;
-    size_t rbuf_end;
-
-    /* Response head. */
-    uint8_t head[HEAD_CAP];
-    size_t head_len;
-    int http_status;
-    bool chunked;
-    bool have_content_length;
-    size_t content_length;
-
-    /* Body framing. */
-    size_t chunk_remaining;
-    bool need_crlf;
-    bool in_trailers;
-    int trailer_lines;
-    uint8_t exact_buf[8];
-    size_t exact_len;
-    uint8_t line_buf[LINE_CAP];
-    size_t line_len;
-
-    /* Timing / retry. */
-    uint64_t phase_start_ms;
-    uint64_t last_activity_ms;
-    uint64_t backoff_until_ms;
-    unsigned attempt;
-
-    bool cancelled;
-} cog_net_req_t;
-
-/** The opaque network context. */
 struct cog_net_ctx {
-    cog_net_config_t config;
-    size_t max_connections;
-    cog_net_req_t *requests;
-    cog_request_id_t next_id;
-    cog_net_resp_node_t *out_head;
-    cog_net_resp_node_t *out_tail;
-    int wake_fd;
-    bool oom; /* set if an internal allocation failed */
-
-    /* Current response buffers (valid until the next cog_net_poll). */
-    char *current_headers;
-    size_t current_headers_cap;
-    char *current_chunk;
-    size_t current_chunk_cap;
+    net_request_t *requests;
+    size_t max_connections, request_bytes, header_bytes, chunk_bytes, chunks;
+    uint32_t connect_ms, stall_ms, quantum, budget;
+    uint64_t now, next_id;
+    bool clock_set;
+    char *ca_bundle;
+    size_t global_selected, fair_next, service_next;
 };
 
-/* ------------------------------------------------------------------ */
-/* Time helpers                                                        */
-/* ------------------------------------------------------------------ */
+#define NO_SELECTION SIZE_MAX
 
-/** Monotonic time in milliseconds (CLOCK_MONOTONIC). */
-static uint64_t now_ms(void)
+static bool mul_ok(size_t a, size_t b, size_t *out)
 {
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
-        return 0U;
-    }
-    return (uint64_t)ts.tv_sec * 1000U + (uint64_t)ts.tv_nsec / 1000000U;
+    if (a != 0U && b > SIZE_MAX / a) return false;
+    *out = a * b;
+    return true;
 }
-
-/* ------------------------------------------------------------------ */
-/* Output queue                                                        */
-/* ------------------------------------------------------------------ */
-
-/**
- * @brief Append a response node to the context's output queue.
- *
- * Copies @p headers and @p chunk into the node so the node outlives the
- * request slot that produced it.
- */
-static void req_enqueue(cog_net_ctx_t *ctx, cog_request_id_t id,
-                        int http_status, const char *headers,
-                        const char *chunk, size_t chunk_len,
-                        bool is_complete, cog_result_t error)
+static char *copy_string(const char *s)
 {
-    cog_net_resp_node_t *node = calloc(1U, sizeof *node);
-    if (node == NULL) {
-        ctx->oom = true;
-        return;
-    }
-    node->id = id;
-    node->http_status = http_status;
-    node->is_complete = is_complete;
-    node->error = error;
-    if (headers != NULL) {
-        node->headers = strdup(headers);
-        if (node->headers == NULL) {
-            ctx->oom = true;
-            free(node);
-            return;
-        }
-    }
-    if (chunk != NULL && chunk_len > 0U) {
-        node->chunk = malloc(chunk_len);
-        if (node->chunk == NULL) {
-            ctx->oom = true;
-            free(node->headers);
-            free(node);
-            return;
-        }
-        (void)memcpy(node->chunk, chunk, chunk_len);
-        node->chunk_len = chunk_len;
-    }
-    if (ctx->out_tail != NULL) {
-        ctx->out_tail->next = node;
-    } else {
-        ctx->out_head = node;
-    }
-    ctx->out_tail = node;
+    size_t n = strlen(s) + 1U;
+    char *p = malloc(n);
+    if (p != NULL) memcpy(p, s, n);
+    return p;
 }
-
-/** @brief Free a response node. */
-static void resp_node_free(cog_net_resp_node_t *node)
-{
-    if (node == NULL) {
-        return;
-    }
-    free(node->headers);
-    free(node->chunk);
-    free(node);
-}
-
-/* ------------------------------------------------------------------ */
-/* Request data ownership                                              */
-/* ------------------------------------------------------------------ */
-
-/** @brief Close the request socket, if any. */
-static void req_close_fd(cog_net_req_t *req)
-{
-    if (req->fd >= 0) {
-        (void)close(req->fd);
-        req->fd = -1;
-    }
-}
-
-/** @brief Free all owned request buffers and close the socket. */
-static void req_free_data(cog_net_req_t *req)
-{
-    req_close_fd(req);
-    free(req->method);
-    free(req->url);
-    free(req->headers);
-    free(req->body);
-    free(req->send_buf);
-    req->method = NULL;
-    req->url = NULL;
-    req->headers = NULL;
-    req->body = NULL;
-    req->send_buf = NULL;
-}
-
-/** @brief Reset per-attempt state for a retry (keeps request data). */
-static void req_reset_for_retry(cog_net_req_t *req)
-{
-    req_close_fd(req);
-    req->rbuf_start = 0U;
-    req->rbuf_end = 0U;
-    req->head_len = 0U;
-    req->http_status = 0;
-    req->chunked = false;
-    req->have_content_length = false;
-    req->content_length = 0U;
-    req->chunk_remaining = 0U;
-    req->need_crlf = false;
-    req->in_trailers = false;
-    req->trailer_lines = 0;
-    req->exact_len = 0U;
-    req->line_len = 0U;
-    req->send_off = 0U;
-}
-
-/* ------------------------------------------------------------------ */
-/* Header parsing helpers                                              */
-/* ------------------------------------------------------------------ */
-
-/** @brief Case-insensitive equality of a header field name with a literal. */
-static bool name_is(const uint8_t *name, size_t len, const char *lit)
+static net_request_t *find_request(const cog_net_ctx_t *ctx, cog_request_id_t id)
 {
     size_t i;
-    for (i = 0U; i < len; i++) {
-        if (lit[i] == '\0') {
-            return false;
-        }
-        if ((char)(name[i] | 0x20U) != lit[i]) {
-            return false;
-        }
-    }
-    return lit[i] == '\0';
-}
-
-/** @brief Case-insensitive substring search over a header value. */
-static bool value_has(const uint8_t *v, size_t vlen, const char *needle)
-{
-    size_t nlen = strlen(needle);
-    if (vlen < nlen) {
-        return false;
-    }
-    size_t i;
-    for (i = 0U; i + nlen <= vlen; i++) {
-        bool match = true;
-        size_t j;
-        for (j = 0U; j < nlen; j++) {
-            if ((char)(v[i + j] | 0x20U) != needle[j]) {
-                match = false;
-                break;
-            }
-        }
-        if (match) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/**
- * @brief Parse the response head.
- *
- * Extracts the HTTP status code, chunked framing, and Content-Length.
- *
- * @return 0 on success, -1 on a malformed head.
- */
-static int req_parse_head(cog_net_req_t *req)
-{
-    size_t line_end = 0U;
-    while (line_end < req->head_len && req->head[line_end] != '\n') {
-        line_end++;
-    }
-    if (line_end >= req->head_len || line_end < 12U ||
-        memcmp(req->head, "HTTP/", 5U) != 0) {
-        return -1;
-    }
-    char line[64];
-    size_t ln = line_end;
-    if (ln >= sizeof line) {
-        return -1;
-    }
-    if (ln > 0U && req->head[ln - 1U] == '\r') {
-        ln--;
-    }
-    (void)memcpy(line, req->head, ln);
-    line[ln] = '\0';
-    char *end = NULL;
-    unsigned long code = strtoul(line + 9U, &end, 10); /* past "HTTP/1.1 " */
-    if (end == line + 9U || code < 100UL || code > 999UL) {
-        return -1;
-    }
-    req->http_status = (int)code;
-
-    req->chunked = false;
-    req->have_content_length = false;
-    req->content_length = 0U;
-    size_t pos = line_end + 1U;
-    while (pos < req->head_len) {
-        size_t eol = pos;
-        while (eol < req->head_len && req->head[eol] != '\n') {
-            eol++;
-        }
-        size_t hlen = eol - pos;
-        if (hlen > 0U && req->head[pos + hlen - 1U] == '\r') {
-            hlen--;
-        }
-        if (hlen == 0U) {
-            break; /* blank line terminates the head */
-        }
-        size_t colon = 0U;
-        while (colon < hlen && req->head[pos + colon] != ':') {
-            colon++;
-        }
-        if (colon < hlen) {
-            const uint8_t *value = req->head + pos + colon + 1U;
-            size_t vlen = hlen - colon - 1U;
-            if (name_is(req->head + pos, colon, "transfer-encoding") &&
-                value_has(value, vlen, "chunked")) {
-                req->chunked = true;
-            }
-            if (name_is(req->head + pos, colon, "content-length")) {
-                char vbuf[32];
-                size_t vn = vlen < sizeof vbuf - 1U ? vlen : sizeof vbuf - 1U;
-                (void)memcpy(vbuf, value, vn);
-                vbuf[vn] = '\0';
-                char *vend = NULL;
-                unsigned long cl = strtoul(vbuf, &vend, 10);
-                if (vend != vbuf) {
-                    req->have_content_length = true;
-                    req->content_length = (size_t)cl;
-                }
-            }
-        }
-        pos = eol + 1U;
-    }
-    return 0;
-}
-
-/**
- * @brief Build the response header string (newline-separated key:value).
- *
- * Returns a newly allocated NUL-terminated string, or NULL on failure.
- */
-static char *build_headers_string(const cog_net_req_t *req)
-{
-    size_t pos = 0U;
-    while (pos < req->head_len && req->head[pos] != '\n') {
-        pos++;
-    }
-    if (pos >= req->head_len) {
-        return NULL;
-    }
-    pos++; /* skip past the status line's '\n' */
-
-    size_t cap = req->head_len - pos + 1U;
-    char *out = malloc(cap);
-    if (out == NULL) {
-        return NULL;
-    }
-    size_t o = 0U;
-    while (pos < req->head_len) {
-        size_t eol = pos;
-        while (eol < req->head_len && req->head[eol] != '\n') {
-            eol++;
-        }
-        size_t hlen = eol - pos;
-        if (hlen > 0U && req->head[pos + hlen - 1U] == '\r') {
-            hlen--;
-        }
-        if (hlen == 0U) {
-            break; /* blank line ends the header section */
-        }
-        if (o + hlen + 1U >= cap) {
-            break;
-        }
-        (void)memcpy(out + o, req->head + pos, hlen);
-        o += hlen;
-        out[o++] = '\n';
-        pos = eol + 1U;
-    }
-    if (o > 0U && out[o - 1U] == '\n') {
-        o--;
-    }
-    out[o] = '\0';
-    return out;
-}
-
-/* ------------------------------------------------------------------ */
-/* URL parsing                                                         */
-/* ------------------------------------------------------------------ */
-
-/**
- * @brief Split an "http://host[:port]/path" URL into its parts.
- *
- * @return 0 on success, -1 on parse failure.
- */
-static int split_url(const char *url, char *host, size_t host_cap,
-                     uint16_t *port, const char **path)
-{
-    static const char k_prefix[] = "http://";
-    static const size_t k_prefix_len = sizeof k_prefix - 1U;
-
-    if (url == NULL || host == NULL || host_cap == 0U || port == NULL ||
-        path == NULL) {
-        return -1;
-    }
-    if (strncmp(url, k_prefix, k_prefix_len) != 0) {
-        return -1;
-    }
-    const char *p = url + k_prefix_len;
-    size_t host_len = strcspn(p, ":/");
-    if (host_len == 0U || host_len >= host_cap) {
-        return -1;
-    }
-    (void)memcpy(host, p, host_len);
-    host[host_len] = '\0';
-
-    const char *q = p + host_len;
-    unsigned long parsed_port = 80UL;
-    if (*q == ':') {
-        char *end = NULL;
-        parsed_port = strtoul(q + 1U, &end, 10);
-        if (end == q + 1U || parsed_port == 0UL || parsed_port > 65535UL) {
-            return -1;
-        }
-        q = end;
-    }
-    *port = (uint16_t)parsed_port;
-    *path = (*q == '/') ? q : "/";
-    return 0;
-}
-
-/* ------------------------------------------------------------------ */
-/* Socket helpers                                                      */
-/* ------------------------------------------------------------------ */
-
-/**
- * @brief Open a non-blocking TCP connection to the first reachable address.
- *
- * @return 0 on success (connect initiated), -1 on failure.
- */
-static int req_open_connect(cog_net_req_t *req)
-{
-    if (req->path == NULL) {
-        if (split_url(req->url, req->host, sizeof req->host, &req->port,
-                      &req->path) != 0) {
-            return -1;
-        }
-    }
-    char port_str[8];
-    int pn = snprintf(port_str, sizeof port_str, "%u", (unsigned)req->port);
-    if (pn < 0 || (size_t)pn >= sizeof port_str) {
-        return -1;
-    }
-    struct addrinfo hints;
-    (void)memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    struct addrinfo *res = NULL;
-    int rc = getaddrinfo(req->host, port_str, &hints, &res);
-    if (rc != 0) {
-        return -1;
-    }
-    int fd = -1;
-    struct addrinfo *ai;
-    for (ai = res; ai != NULL; ai = ai->ai_next) {
-        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-        if (fd < 0) {
-            continue;
-        }
-        int flags = fcntl(fd, F_GETFL, 0);
-        if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
-            (void)close(fd);
-            fd = -1;
-            continue;
-        }
-        if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) {
-            break; /* connected immediately */
-        }
-        if (errno == EINPROGRESS) {
-            break; /* connect in progress */
-        }
-        (void)close(fd);
-        fd = -1;
-    }
-    freeaddrinfo(res);
-    if (fd < 0) {
-        return -1;
-    }
-    req->fd = fd;
-    return 0;
-}
-
-/**
- * @brief Check whether a non-blocking connect has completed.
- *
- * @return 1 if connected, 0 if still pending, -1 on error.
- */
-static int req_connect_done(cog_net_req_t *req)
-{
-    struct pollfd pfd;
-    pfd.fd = req->fd;
-    pfd.events = (short)POLLOUT;
-    pfd.revents = 0;
-    int rc;
-    do {
-        rc = poll(&pfd, 1, 0);
-    } while (rc < 0 && errno == EINTR);
-    if (rc == 0) {
-        return 0;
-    }
-    if (rc < 0) {
-        return -1;
-    }
-    int err = 0;
-    socklen_t elen = (socklen_t)sizeof err;
-    if (getsockopt(req->fd, SOL_SOCKET, SO_ERROR, &err, &elen) != 0) {
-        return -1;
-    }
-    if (err != 0) {
-        errno = err;
-        return -1;
-    }
-    return 1;
-}
-
-/**
- * @brief Send as much of the request as the socket will accept.
- *
- * @return 1 if all bytes sent, 0 if would-block (more to send), -1 on error.
- */
-static int req_send_step(cog_net_req_t *req)
-{
-    while (req->send_off < req->send_len) {
-        ssize_t w = send(req->fd, req->send_buf + req->send_off,
-                         req->send_len - req->send_off, MSG_NOSIGNAL);
-        if (w < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            if (errno == EAGAIN) {
-                return 0;
-            }
-            return -1;
-        }
-        req->send_off += (size_t)w;
-        req->last_activity_ms = now_ms();
-    }
-    return 1;
-}
-
-/* ------------------------------------------------------------------ */
-/* Buffered reader                                                     */
-/* ------------------------------------------------------------------ */
-
-/**
- * @brief Refill the read buffer from the socket (non-blocking).
- *
- * @return 1 if data was read, 0 if would-block, -1 on EOF, -2 on error.
- */
-static int req_rbuf_fill(cog_net_req_t *req)
-{
-    if (req->rbuf_start != 0U) {
-        size_t n = req->rbuf_end - req->rbuf_start;
-        (void)memmove(req->rbuf, req->rbuf + req->rbuf_start, n);
-        req->rbuf_start = 0U;
-        req->rbuf_end = n;
-    }
-    struct pollfd pfd;
-    pfd.fd = req->fd;
-    pfd.events = (short)POLLIN;
-    pfd.revents = 0;
-    int rc;
-    do {
-        rc = poll(&pfd, 1, 0);
-    } while (rc < 0 && errno == EINTR);
-    if (rc == 0) {
-        return 0; /* would-block */
-    }
-    if (rc < 0) {
-        return -2;
-    }
-    ssize_t n = recv(req->fd, req->rbuf + req->rbuf_end,
-                     sizeof req->rbuf - req->rbuf_end, 0);
-    if (n < 0) {
-        if (errno == EINTR) {
-            return req_rbuf_fill(req);
-        }
-        return -2;
-    }
-    if (n == 0) {
-        return -1; /* EOF */
-    }
-    req->rbuf_end += (size_t)n;
-    req->last_activity_ms = now_ms();
-    return 1;
-}
-
-/**
- * @brief Read a single buffered byte.
- *
- * @return 1 on success, 0 if would-block, -1 on EOF, -2 on error.
- */
-static int req_rbuf_getc(cog_net_req_t *req, uint8_t *out)
-{
-    if (req->rbuf_start < req->rbuf_end) {
-        *out = req->rbuf[req->rbuf_start++];
-        return 1;
-    }
-    int rc = req_rbuf_fill(req);
-    if (rc <= 0) {
-        return rc;
-    }
-    *out = req->rbuf[req->rbuf_start++];
-    return 1;
-}
-
-/**
- * @brief Read up to @p cap bytes into @p dst (non-blocking).
- *
- * @return bytes read (>0), 0 if would-block, -1 on EOF, -2 on error.
- */
-static int req_read_available(cog_net_req_t *req, uint8_t *dst, size_t cap)
-{
-    if (req->rbuf_start < req->rbuf_end) {
-        size_t avail = req->rbuf_end - req->rbuf_start;
-        size_t take = avail < cap ? avail : cap;
-        (void)memcpy(dst, req->rbuf + req->rbuf_start, take);
-        req->rbuf_start += take;
-        return (int)take;
-    }
-    int rc = req_rbuf_fill(req);
-    if (rc <= 0) {
-        return rc;
-    }
-    size_t avail = req->rbuf_end - req->rbuf_start;
-    size_t take = avail < cap ? avail : cap;
-    (void)memcpy(dst, req->rbuf + req->rbuf_start, take);
-    req->rbuf_start += take;
-    return (int)take;
-}
-
-/**
- * @brief Read a line (up to and including '\n') into req->line_buf.
- *
- * Stateful: partial lines survive would-block.  On completion the line is
- * NUL-terminated in req->line_buf and req->line_len is reset to 0.
- *
- * @return 1 on success, 0 if would-block, -1 on EOF, -2 on error.
- */
-static int req_read_line(cog_net_req_t *req)
-{
-    for (;;) {
-        uint8_t c;
-        int rc = req_rbuf_getc(req, &c);
-        if (rc == 0) {
-            return 0;
-        }
-        if (rc < 0) {
-            return rc;
-        }
-        if (c == '\n') {
-            if (req->line_len > 0U &&
-                req->line_buf[req->line_len - 1U] == '\r') {
-                req->line_len--;
-            }
-            req->line_buf[req->line_len] = '\0';
-            req->line_len = 0U;
-            return 1;
-        }
-        if (req->line_len + 1U >= LINE_CAP) {
-            return -2; /* line too long */
-        }
-        req->line_buf[req->line_len++] = c;
-    }
-}
-
-/**
- * @brief Read exactly @p want bytes into @p dst (stateful).
- *
- * @return 1 on success, 0 if would-block, -1 on EOF, -2 on error.
- */
-static int req_read_exact(cog_net_req_t *req, uint8_t *dst, size_t want)
-{
-    while (req->exact_len < want) {
-        int rc = req_rbuf_getc(req, &req->exact_buf[req->exact_len]);
-        if (rc == 0) {
-            return 0;
-        }
-        if (rc < 0) {
-            return rc;
-        }
-        req->exact_len++;
-    }
-    (void)memcpy(dst, req->exact_buf, want);
-    req->exact_len = 0U;
-    return 1;
-}
-
-/* ------------------------------------------------------------------ */
-/* Response head reading                                               */
-/* ------------------------------------------------------------------ */
-
-/**
- * @brief Read the response head up to CRLFCRLF.
- *
- * @return 1 when complete, 0 if would-block, -1 on EOF, -2 on error.
- */
-static int req_head_step(cog_net_req_t *req)
-{
-    for (;;) {
-        if (req->head_len >= 4U) {
-            size_t i = req->head_len - 4U;
-            size_t j = 0U;
-            while (j < 4U && req->head[i + j] == "\r\n\r\n"[j]) {
-                j++;
-            }
-            if (j == 4U) {
-                return 1;
-            }
-        }
-        uint8_t c;
-        int rc = req_rbuf_getc(req, &c);
-        if (rc == 0) {
-            return 0;
-        }
-        if (rc < 0) {
-            return rc;
-        }
-        if (req->head_len + 1U >= HEAD_CAP) {
-            return -2; /* head too long */
-        }
-        req->head[req->head_len++] = c;
-        req->last_activity_ms = now_ms();
-    }
-}
-
-/* ------------------------------------------------------------------ */
-/* Response body reading                                               */
-/* ------------------------------------------------------------------ */
-
-/** @brief Read chunked trailers until the terminal blank line. */
-static int req_trailers_step(cog_net_req_t *req)
-{
-    if (req->trailer_lines >= (int)MAX_TRAILER_LINES) {
-        return 1; /* done */
-    }
-    int rc = req_read_line(req);
-    if (rc == 0) {
-        return 0;
-    }
-    if (rc < 0) {
-        return rc;
-    }
-    if (req->line_buf[0] == '\0') {
-        return 1; /* blank line -> done */
-    }
-    req->trailer_lines++;
-    return 0;
-}
-
-/** @brief Read one step of a chunked-encoded body. */
-static int req_chunked_step(cog_net_ctx_t *ctx, cog_net_req_t *req)
-{
-    if (req->in_trailers) {
-        return req_trailers_step(req);
-    }
-    if (req->need_crlf) {
-        uint8_t crlf[2];
-        int rc = req_read_exact(req, crlf, 2U);
-        if (rc == 0) {
-            return 0;
-        }
-        if (rc < 0) {
-            return rc;
-        }
-        if (crlf[0] != '\r' || crlf[1] != '\n') {
-            return -2; /* protocol violation */
-        }
-        req->need_crlf = false;
-        req->chunk_remaining = 0U;
-        return 0;
-    }
-    if (req->chunk_remaining == 0U) {
-        int rc = req_read_line(req);
-        if (rc == 0) {
-            return 0;
-        }
-        if (rc < 0) {
-            return rc;
-        }
-        char *end = NULL;
-        unsigned long csize = strtoul((const char *)req->line_buf, &end, 16);
-        if (end == (const char *)req->line_buf) {
-            return -2; /* parse error */
-        }
-        if (csize == 0UL) {
-            req->in_trailers = true;
-            return req_trailers_step(req);
-        }
-        if (csize > MAX_CHUNK_PAYLOAD) {
-            return -2;
-        }
-        req->chunk_remaining = (size_t)csize;
-        return 0;
-    }
-    uint8_t slice[READ_BUF_CAP];
-    size_t want = req->chunk_remaining < sizeof slice
-                      ? req->chunk_remaining
-                      : sizeof slice;
-    int rc = req_read_available(req, slice, want);
-    if (rc > 0) {
-        req_enqueue(ctx, req->id, req->http_status, NULL, (const char *)slice,
-                    (size_t)rc, false, COG_OK);
-        req->chunk_remaining -= (size_t)rc;
-        req->last_activity_ms = now_ms();
-        if (req->chunk_remaining == 0U) {
-            req->need_crlf = true;
-            req->exact_len = 0U;
-        }
-        return 0;
-    }
-    if (rc == 0) {
-        return 0;
-    }
-    return rc;
-}
-
-/** @brief Read a plain body until the peer closes the connection. */
-static int req_until_close_step(cog_net_ctx_t *ctx, cog_net_req_t *req)
-{
-    uint8_t slice[READ_BUF_CAP];
-    int rc = req_read_available(req, slice, sizeof slice);
-    if (rc > 0) {
-        req_enqueue(ctx, req->id, req->http_status, NULL, (const char *)slice,
-                    (size_t)rc, false, COG_OK);
-        req->last_activity_ms = now_ms();
-        return 0;
-    }
-    if (rc == 0) {
-        return 0;
-    }
-    if (rc == -1) {
-        return 1; /* EOF is the normal end here */
-    }
-    return rc;
-}
-
-/** @brief Read one step of the response body. */
-static int req_body_step(cog_net_ctx_t *ctx, cog_net_req_t *req)
-{
-    if (req->chunked) {
-        return req_chunked_step(ctx, req);
-    }
-    if (req->have_content_length) {
-        if (req->content_length == 0U) {
-            return 1; /* complete */
-        }
-        uint8_t slice[READ_BUF_CAP];
-        size_t want = req->content_length < sizeof slice
-                          ? req->content_length
-                          : sizeof slice;
-        int rc = req_read_available(req, slice, want);
-        if (rc > 0) {
-            req_enqueue(ctx, req->id, req->http_status, NULL,
-                        (const char *)slice, (size_t)rc, false, COG_OK);
-            req->content_length -= (size_t)rc;
-            req->last_activity_ms = now_ms();
-            if (req->content_length == 0U) {
-                return 1;
-            }
-            return 0;
-        }
-        if (rc == 0) {
-            return 0;
-        }
-        return rc;
-    }
-    return req_until_close_step(ctx, req);
-}
-
-/* ------------------------------------------------------------------ */
-/* Request lifecycle                                                   */
-/* ------------------------------------------------------------------ */
-
-/** @brief Wake the external poll loop. */
-static void wake(cog_net_ctx_t *ctx)
-{
-    if (ctx->wake_fd < 0) {
-        return;
-    }
-    uint64_t one = 1U;
-    ssize_t rc = write(ctx->wake_fd, &one, sizeof one);
-    (void)rc;
-}
-
-/** @brief Emit the response headers node for a parsed head. */
-static void req_emit_headers(cog_net_ctx_t *ctx, cog_net_req_t *req)
-{
-    char *h = build_headers_string(req);
-    req_enqueue(ctx, req->id, req->http_status, h, NULL, 0U, false, COG_OK);
-    free(h);
-}
-
-/** @brief Enqueue a terminal error node and release the request slot. */
-static void req_fail(cog_net_ctx_t *ctx, cog_net_req_t *req,
-                     cog_result_t error)
-{
-    req_enqueue(ctx, req->id, req->http_status, NULL, NULL, 0U, true, error);
-    req_free_data(req);
-    req->in_use = false;
-}
-
-/** @brief Enqueue a terminal success node and release the request slot. */
-static void req_complete(cog_net_ctx_t *ctx, cog_net_req_t *req)
-{
-    req_enqueue(ctx, req->id, req->http_status, NULL, NULL, 0U, true, COG_OK);
-    req_free_data(req);
-    req->in_use = false;
-}
-
-/** @brief Handle a transient failure: retry if budget remains, else fail. */
-static void req_handle_transient(cog_net_ctx_t *ctx, cog_net_req_t *req,
-                                 cog_result_t error);
-
-/** @brief Move a request into the backoff state before a retry. */
-static void req_go_backoff(cog_net_ctx_t *ctx, cog_net_req_t *req)
-{
-    req->attempt++;
-    req_close_fd(req);
-    req->state = REQ_BACKOFF;
-    req->backoff_until_ms = now_ms() + ctx->config.retry_backoff_ms;
-    wake(ctx);
-}
-
-/** @brief Retry a request: reset per-attempt state and reconnect. */
-static void req_retry(cog_net_ctx_t *ctx, cog_net_req_t *req)
-{
-    req_reset_for_retry(req);
-    req->state = REQ_CONNECTING;
-    req->phase_start_ms = now_ms();
-    req->last_activity_ms = now_ms();
-    if (req_open_connect(req) != 0) {
-        req_handle_transient(ctx, req, COG_ERROR_IO);
-    }
-}
-
-/**
- * @brief Handle a transient failure: retry if budget remains, else fail.
- */
-static void req_handle_transient(cog_net_ctx_t *ctx, cog_net_req_t *req,
-                                 cog_result_t error)
-{
-    if (req->attempt < ctx->config.max_retries) {
-        req_go_backoff(ctx, req);
-    } else {
-        req_fail(ctx, req, error);
-    }
-}
-
-/** @brief Advance one request by a single non-blocking step. */
-static void req_step(cog_net_ctx_t *ctx, cog_net_req_t *req)
-{
-    uint64_t now = now_ms();
-    switch (req->state) {
-    case REQ_QUEUED:
-        req->state = REQ_CONNECTING;
-        req->phase_start_ms = now;
-        req->last_activity_ms = now;
-        if (req_open_connect(req) != 0) {
-            req_handle_transient(ctx, req, COG_ERROR_IO);
-        }
-        break;
-
-    case REQ_CONNECTING:
-        if (now - req->phase_start_ms > ctx->config.connect_timeout_ms) {
-            req_handle_transient(ctx, req, COG_ERROR_TIMEOUT);
-            break;
-        }
-        {
-            int rc = req_connect_done(req);
-            if (rc == 1) {
-                req->state = REQ_SENDING;
-                req->last_activity_ms = now;
-            } else if (rc < 0) {
-                req_handle_transient(ctx, req, COG_ERROR_IO);
-            }
-        }
-        break;
-
-    case REQ_SENDING: {
-        int rc = req_send_step(req);
-        if (rc == 1) {
-            req->state = REQ_READING_HEAD;
-            req->last_activity_ms = now;
-        } else if (rc < 0) {
-            req_handle_transient(ctx, req, COG_ERROR_IO);
-        } else if (now - req->last_activity_ms >
-                   ctx->config.stall_timeout_ms) {
-            req_handle_transient(ctx, req, COG_ERROR_TIMEOUT);
-        }
-        break;
-    }
-
-    case REQ_READING_HEAD:
-        if (now - req->last_activity_ms > ctx->config.stall_timeout_ms) {
-            req_handle_transient(ctx, req, COG_ERROR_TIMEOUT);
-            break;
-        }
-        {
-            int rc = req_head_step(req);
-            if (rc == 1) {
-                if (req_parse_head(req) != 0) {
-                    req_fail(ctx, req, COG_ERROR_IO);
-                    break;
-                }
-                req->last_activity_ms = now;
-                if (req->http_status >= 500) {
-                    if (req->attempt < ctx->config.max_retries) {
-                        req_go_backoff(ctx, req);
-                    } else {
-                        req_emit_headers(ctx, req);
-                        req_complete(ctx, req);
-                    }
-                    break;
-                }
-                req_emit_headers(ctx, req);
-                req->state = REQ_READING_BODY;
-            } else if (rc < 0) {
-                req_handle_transient(ctx, req, COG_ERROR_IO);
-            }
-        }
-        break;
-
-    case REQ_READING_BODY:
-        if (now - req->last_activity_ms > ctx->config.stall_timeout_ms) {
-            req_handle_transient(ctx, req, COG_ERROR_TIMEOUT);
-            break;
-        }
-        {
-            int rc = req_body_step(ctx, req);
-            if (rc == 1) {
-                req_complete(ctx, req);
-            } else if (rc < 0) {
-                req_handle_transient(ctx, req, COG_ERROR_IO);
-            }
-        }
-        break;
-
-    case REQ_BACKOFF:
-        if (now >= req->backoff_until_ms) {
-            req_retry(ctx, req);
-        }
-        break;
-
-    default:
-        break;
-    }
-}
-
-/** @brief Advance all active requests by one non-blocking step. */
-static void net_work(cog_net_ctx_t *ctx)
-{
-    size_t i;
-    for (i = 0U; i < ctx->max_connections; i++) {
-        cog_net_req_t *req = &ctx->requests[i];
-        if (!req->in_use) {
-            continue;
-        }
-        req_step(ctx, req);
-    }
-}
-
-/** @brief Find an active request by id. */
-static const cog_net_req_t *find_request(const cog_net_ctx_t *ctx,
-                                         cog_request_id_t id)
-{
-    size_t i;
-    for (i = 0U; i < ctx->max_connections; i++) {
-        const cog_net_req_t *req = &ctx->requests[i];
-        if (req->in_use && req->id == id) {
-            return req;
-        }
-    }
+    for (i = 0U; i < ctx->max_connections; ++i)
+        if (ctx->requests[i].id == id && id != 0U) return &ctx->requests[i];
     return NULL;
 }
-
-/* ------------------------------------------------------------------ */
-/* Public API                                                          */
-/* ------------------------------------------------------------------ */
-
-cog_result_t cog_net_new(cog_net_ctx_t **out, const cog_net_config_t *config)
+static void detach(net_request_t *r)
 {
-    if (out == NULL) {
-        return COG_ERROR_NULL_PTR;
+    if (r->active) {
+        (void)curl_multi_remove_handle(r->multi, r->easy);
+        r->active = false;
     }
-    *out = NULL;
-    cog_net_ctx_t *ctx = calloc(1U, sizeof *ctx);
-    if (ctx == NULL) {
-        return COG_ERROR_NOMEM;
-    }
-    ctx->config.max_connections = DEFAULT_MAX_CONNECTIONS;
-    ctx->config.connect_timeout_ms = DEFAULT_CONNECT_TIMEOUT_MS;
-    ctx->config.stall_timeout_ms = DEFAULT_STALL_TIMEOUT_MS;
-    ctx->config.max_retries = DEFAULT_MAX_RETRIES;
-    ctx->config.retry_backoff_ms = DEFAULT_RETRY_BACKOFF_MS;
-    if (config != NULL) {
-        ctx->config.max_connections =
-            config->max_connections != 0U ? config->max_connections
-                                          : DEFAULT_MAX_CONNECTIONS;
-        ctx->config.connect_timeout_ms =
-            config->connect_timeout_ms != 0U ? config->connect_timeout_ms
-                                             : DEFAULT_CONNECT_TIMEOUT_MS;
-        ctx->config.stall_timeout_ms =
-            config->stall_timeout_ms != 0U ? config->stall_timeout_ms
-                                           : DEFAULT_STALL_TIMEOUT_MS;
-        ctx->config.max_retries = config->max_retries;
-        ctx->config.retry_backoff_ms = config->retry_backoff_ms;
-    }
-    ctx->max_connections = ctx->config.max_connections;
-    ctx->requests = calloc(ctx->max_connections, sizeof *ctx->requests);
-    if (ctx->requests == NULL) {
-        free(ctx);
-        return COG_ERROR_NOMEM;
-    }
-    ctx->next_id = 1U;
-    ctx->wake_fd = eventfd(0U, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (ctx->wake_fd < 0) {
-        free(ctx->requests);
-        free(ctx);
-        return COG_ERROR_IO;
-    }
-    *out = ctx;
-    return COG_OK;
 }
-
-void cog_net_free(cog_net_ctx_t *ctx)
+static void clear_request(net_request_t *r)
 {
-    if (ctx == NULL) {
-        return;
-    }
-    size_t i;
-    for (i = 0U; i < ctx->max_connections; i++) {
-        cog_net_req_t *req = &ctx->requests[i];
-        if (req->in_use) {
-            req_free_data(req);
-            req->in_use = false;
-        }
-    }
-    while (ctx->out_head != NULL) {
-        cog_net_resp_node_t *n = ctx->out_head;
-        ctx->out_head = n->next;
-        resp_node_free(n);
-    }
-    ctx->out_tail = NULL;
-    if (ctx->wake_fd >= 0) {
-        (void)close(ctx->wake_fd);
-        ctx->wake_fd = -1;
-    }
-    free(ctx->current_headers);
-    free(ctx->current_chunk);
-    free(ctx->requests);
-    free(ctx);
+    detach(r);
+    if (r->easy != NULL) curl_easy_cleanup(r->easy);
+    if (r->multi != NULL) curl_multi_cleanup(r->multi);
+    curl_slist_free_all(r->request_headers);
+    free(r->input);
+    free(r->header_buf);
+    free(r->items);
+    free(r->item_body);
+    free(r->item_headers);
+    memset(r, 0, sizeof(*r));
 }
-
-cog_result_t cog_net_request(cog_net_ctx_t *ctx, const char *method,
-                             const char *url, const char *headers,
-                             const char *body, size_t body_len,
-                             cog_request_id_t *out_id)
+static void push_item(net_request_t *r, const char *body, size_t length,
+                      bool terminal, cog_result_t outcome,
+                      cog_net_error_kind_t kind, const char *message)
 {
-    if (ctx == NULL || method == NULL || url == NULL || out_id == NULL) {
-        return COG_ERROR_NULL_PTR;
+    cog_net_ctx_t *ctx = r->ctx;
+    size_t index = (r->head + r->count) % (ctx->chunks + 1U);
+    net_item_t *item = &r->items[index];
+    memset(&item->view, 0, sizeof(item->view));
+    item->exposed = false;
+    if (length != 0U) memcpy(item->body, body, length);
+    if (r->header_len != 0U) {
+        memcpy(item->headers, r->header_buf, r->header_len + 1U);
+        item->view.headers = item->headers;
     }
-    cog_net_req_t *req = NULL;
-    size_t i;
-    for (i = 0U; i < ctx->max_connections; i++) {
-        if (!ctx->requests[i].in_use) {
-            req = &ctx->requests[i];
-            break;
-        }
-    }
-    if (req == NULL) {
-        return COG_ERROR_OVERFLOW;
-    }
-
-    (void)memset(req, 0, sizeof *req);
-    /* The failure paths below call req_free_data(), which closes req->fd.
-     * Initialise it before the first allocation so stdin/fd 0 is never
-     * closed when an allocation fails. */
-    req->fd = -1;
-    req->method = strdup(method);
-    req->url = strdup(url);
-    if (req->method == NULL || req->url == NULL) {
-        req_free_data(req);
-        return COG_ERROR_NOMEM;
-    }
-    if (headers != NULL) {
-        req->headers = strdup(headers);
-        if (req->headers == NULL) {
-            req_free_data(req);
-            return COG_ERROR_NOMEM;
-        }
-    }
-    if (body != NULL && body_len > 0U) {
-        req->body = malloc(body_len);
-        if (req->body == NULL) {
-            req_free_data(req);
-            return COG_ERROR_NOMEM;
-        }
-        (void)memcpy(req->body, body, body_len);
-    }
-    req->body_len = body_len;
-    req->id = ctx->next_id++;
-    req->state = REQ_QUEUED;
-
-    /* Parse the URL so host/port/path are available for the request line. */
-    if (split_url(req->url, req->host, sizeof req->host, &req->port,
-                  &req->path) != 0) {
-        req_free_data(req);
-        return COG_ERROR_INVALID_ARG;
-    }
-
-    /* Build the request bytes. */
-    size_t path_len = strlen(req->path);
-    size_t method_len = strlen(req->method);
-    size_t host_len = strlen(req->host);
-    size_t headers_len = req->headers != NULL ? strlen(req->headers) : 0U;
-    size_t cap = method_len + path_len + host_len + headers_len + body_len +
-                 128U;
-    char *buf = malloc(cap);
-    if (buf == NULL) {
-        req_free_data(req);
-        return COG_ERROR_NOMEM;
-    }
-    size_t o = 0U;
-    (void)memcpy(buf + o, req->method, method_len);
-    o += method_len;
-    buf[o++] = ' ';
-    (void)memcpy(buf + o, req->path, path_len);
-    o += path_len;
-    (void)memcpy(buf + o, " HTTP/1.1\r\n", 11U);
-    o += 11U;
-    (void)memcpy(buf + o, "Host: ", 6U);
-    o += 6U;
-    (void)memcpy(buf + o, req->host, host_len);
-    o += host_len;
-    char port_str[8];
-    int pn = snprintf(port_str, sizeof port_str, ":%u", (unsigned)req->port);
-    if (pn < 0 || (size_t)pn >= sizeof port_str) {
-        free(buf);
-        req_free_data(req);
-        return COG_ERROR_INVALID_ARG;
-    }
-    (void)memcpy(buf + o, port_str, (size_t)pn);
-    o += (size_t)pn;
-    (void)memcpy(buf + o, "\r\n", 2U);
-    o += 2U;
-    if (req->headers != NULL && headers_len > 0U) {
-        (void)memcpy(buf + o, req->headers, headers_len);
-        o += headers_len;
-        (void)memcpy(buf + o, "\r\n", 2U);
-        o += 2U;
-    }
-    char cl[32];
-    int cln = snprintf(cl, sizeof cl, "Content-Length: %zu\r\n", body_len);
-    if (cln < 0 || (size_t)cln >= sizeof cl) {
-        free(buf);
-        req_free_data(req);
-        return COG_ERROR_INVALID_ARG;
-    }
-    (void)memcpy(buf + o, cl, (size_t)cln);
-    o += (size_t)cln;
-    (void)memcpy(buf + o, "Connection: close\r\n\r\n", 21U);
-    o += 21U;
-    if (req->body != NULL && body_len > 0U) {
-        (void)memcpy(buf + o, req->body, body_len);
-        o += body_len;
-    }
-    req->send_buf = buf;
-    req->send_len = o;
-    req->send_off = 0U;
-    req->in_use = true;
-
-    *out_id = req->id;
-    wake(ctx);
-    return COG_OK;
+    item->view.chunk = length != 0U ? item->body : NULL;
+    item->view.chunk_len = length;
+    item->view.http_status = r->status;
+    item->view.request_id = r->id;
+    item->view.sequence = r->next_sequence++;
+    item->view.is_complete = terminal;
+    item->view.outcome = outcome;
+    item->view.error_kind = kind;
+    item->view.error_message = message;
+    item->view.retry_after_ms = r->retry_after;
+    item->view.retry_after_known = r->retry_known;
+    ++r->count;
 }
-
-cog_result_t cog_net_cancel(cog_net_ctx_t *ctx, cog_request_id_t id)
+static void terminal(net_request_t *r, cog_result_t outcome,
+                     cog_net_error_kind_t kind, const char *message)
 {
-    if (ctx == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    const cog_net_req_t *creq = find_request(ctx, id);
-    if (creq == NULL) {
-        return COG_ERROR_NOT_FOUND;
-    }
-    cog_net_req_t *req = (cog_net_req_t *)creq;
-    if (req->cancelled) {
-        return COG_OK;
-    }
-    req->cancelled = true;
-    req_enqueue(ctx, id, req->http_status, NULL, NULL, 0U, true,
-                COG_ERROR_ABORTED);
-    req_free_data(req);
-    req->in_use = false;
-    wake(ctx);
-    return COG_OK;
+    if (r->terminal) return;
+    detach(r);
+    r->terminal = true;
+    push_item(r, NULL, 0U, true, outcome, kind, message);
 }
-
-cog_result_t cog_net_poll(cog_net_ctx_t *ctx, cog_net_response_t *out_response)
+/* libcurl invokes this after DNS, TCP and TLS have succeeded, including on
+ * reused connections, immediately before beginning the HTTP transfer. */
+static int connection_ready(void *data, char *primary_ip, char *local_ip,
+                            int primary_port, int local_port)
 {
-    if (ctx == NULL || out_response == NULL) {
-        return COG_ERROR_NULL_PTR;
+    net_request_t *r = data;
+    (void)primary_ip; (void)local_ip; (void)primary_port; (void)local_port;
+    /* An unexpected library-level retry must never transmit again. */
+    if (r->connected) return CURL_PREREQFUNC_ABORT;
+    r->connected = true;
+    if (r->ctx->budget != 0U) --r->ctx->budget;
+    return CURL_PREREQFUNC_OK;
+}
+static size_t receive_body(char *ptr, size_t size, size_t nmemb, void *data)
+{
+    net_request_t *r = data;
+    cog_net_ctx_t *ctx = r->ctx;
+    size_t n, need, remaining, offset;
+    if (!mul_ok(size, nmemb, &n)) { r->callback_error = COG_ERROR_LIMIT; return 0U; }
+    if (n == 0U) return 0U;
+    need = n / ctx->chunk_bytes + (n % ctx->chunk_bytes != 0U ? 1U : 0U);
+    if (need > ctx->chunks) { r->callback_error = COG_ERROR_LIMIT; return 0U; }
+    if (ctx->budget == 0U || need > ctx->chunks - r->count) {
+        if (!r->paused) r->pause_ms = ctx->now;
+        r->paused = true;
+        return CURL_WRITEFUNC_PAUSE;
     }
-    if (ctx->oom) {
-        return COG_ERROR_NOMEM;
+    --ctx->budget;
+    r->response_started = true;
+    r->last_byte_ms = ctx->now;
+    remaining = n;
+    offset = 0U;
+    while (remaining != 0U) {
+        size_t part = remaining < ctx->chunk_bytes ? remaining : ctx->chunk_bytes;
+        push_item(r, ptr + offset, part, false, COG_OK, COG_NET_ERROR_NONE, NULL);
+        remaining -= part;
+        offset += part;
     }
-    if (ctx->out_head == NULL) {
-        net_work(ctx);
-    }
-    if (ctx->oom) {
-        return COG_ERROR_NOMEM;
-    }
-    cog_net_resp_node_t *node = ctx->out_head;
-    if (node == NULL) {
-        return COG_ERROR_AGAIN;
-    }
-    ctx->out_head = node->next;
-    if (ctx->out_head == NULL) {
-        ctx->out_tail = NULL;
-    }
-
-    (void)memset(out_response, 0, sizeof *out_response);
-    out_response->http_status = node->http_status;
-    out_response->request_id = node->id;
-    out_response->is_complete = node->is_complete;
-
-    if (node->headers != NULL) {
-        size_t n = strlen(node->headers);
-        if (ctx->current_headers_cap < n + 1U) {
-            char *nb = realloc(ctx->current_headers, n + 1U);
-            if (nb == NULL) {
-                resp_node_free(node);
-                return COG_ERROR_NOMEM;
+    return n;
+}
+static size_t receive_header(char *ptr, size_t size, size_t nmemb, void *data)
+{
+    net_request_t *r = data;
+    cog_net_ctx_t *ctx = r->ctx;
+    size_t n;
+    if (!mul_ok(size, nmemb, &n)) { r->callback_error = COG_ERROR_LIMIT; return 0U; }
+    if (ctx->budget == 0U) { if (!r->paused) r->pause_ms = ctx->now; r->paused = true; return CURL_WRITEFUNC_PAUSE; }
+    --ctx->budget;
+    r->response_started = true;
+    r->last_byte_ms = ctx->now;
+    if (n >= 5U && memcmp(ptr, "HTTP/", 5U) == 0) {
+        const char *space = memchr(ptr, ' ', n);
+        if (space != NULL && (size_t)(ptr + n - space) >= 4U &&
+            isdigit((unsigned char)space[1]) && isdigit((unsigned char)space[2]) &&
+            isdigit((unsigned char)space[3])) {
+            r->status = (space[1]-'0')*100 + (space[2]-'0')*10 + (space[3]-'0');
+            r->header_len = 0U;
+            r->header_buf[0] = '\0';
+            r->retry_known = false;
+        }
+    } else if (n <= 2U && r->status >= 200) {
+        if (r->count >= ctx->chunks) {
+            if (!r->paused) r->pause_ms = ctx->now;
+            r->paused = true;
+            return CURL_WRITEFUNC_PAUSE;
+        }
+        push_item(r, NULL, 0U, false, COG_OK, COG_NET_ERROR_NONE, NULL);
+    } else if (n > 2U) {
+        size_t len = n;
+        size_t colon = 0U, k;
+        while (len != 0U && (ptr[len-1U] == '\r' || ptr[len-1U] == '\n')) --len;
+        while (colon < len && ptr[colon] != ':') {
+            unsigned char c = (unsigned char)ptr[colon];
+            if (!isalnum(c) && strchr("!#$%&'*+-.^_`|~", c) == NULL) return 0U;
+            ++colon;
+        }
+        if (colon == 0U || colon == len) return 0U;
+        for (k = colon + 1U; k < len; ++k) {
+            unsigned char c = (unsigned char)ptr[k];
+            if ((c < 32U && c != '\t') || c == 127U) return 0U;
+        }
+        if (len + 1U > ctx->header_bytes - r->header_len) {
+            r->callback_error = COG_ERROR_LIMIT;
+            return 0U;
+        }
+        memcpy(r->header_buf + r->header_len, ptr, len);
+        r->header_len += len;
+        r->header_buf[r->header_len++] = '\n';
+        r->header_buf[r->header_len] = '\0';
+        if (len >= 12U) {
+            static const char name[] = "retry-after:";
+            size_t i;
+            bool match = true;
+            for (i = 0U; i < sizeof(name)-1U; ++i)
+                if (tolower((unsigned char)ptr[i]) != name[i]) match = false;
+            if (match) {
+                uint64_t seconds = 0U;
+                i = sizeof(name)-1U;
+                while (i < len && (ptr[i] == ' ' || ptr[i] == '\t')) ++i;
+                if (i < len) {
+                    size_t start = i;
+                    while (i < len && isdigit((unsigned char)ptr[i])) {
+                        seconds = seconds * 10U + (uint64_t)(ptr[i]-'0');
+                        if (seconds > UINT32_MAX / 1000U) break;
+                        ++i;
+                    }
+                    while (i < len && (ptr[i] == ' ' || ptr[i] == '\t')) ++i;
+                    if (i == len && i > start && seconds <= UINT32_MAX / 1000U) {
+                        r->retry_after = (uint32_t)(seconds * 1000U);
+                        r->retry_known = true;
+                    }
+                }
             }
-            ctx->current_headers = nb;
-            ctx->current_headers_cap = n + 1U;
-        }
-        (void)memcpy(ctx->current_headers, node->headers, n + 1U);
-        out_response->headers = ctx->current_headers;
-    }
-    if (node->chunk != NULL && node->chunk_len > 0U) {
-        if (ctx->current_chunk_cap < node->chunk_len) {
-            char *nb = realloc(ctx->current_chunk, node->chunk_len);
-            if (nb == NULL) {
-                resp_node_free(node);
-                return COG_ERROR_NOMEM;
-            }
-            ctx->current_chunk = nb;
-            ctx->current_chunk_cap = node->chunk_len;
-        }
-        (void)memcpy(ctx->current_chunk, node->chunk, node->chunk_len);
-        out_response->chunk = ctx->current_chunk;
-        out_response->chunk_len = node->chunk_len;
-    }
-
-    cog_result_t err = node->error;
-    resp_node_free(node);
-    return err;
-}
-
-int cog_net_fd(const cog_net_ctx_t *ctx)
-{
-    if (ctx == NULL) {
-        return -1;
-    }
-    return ctx->wake_fd;
-}
-
-size_t cog_net_active_count(const cog_net_ctx_t *ctx)
-{
-    if (ctx == NULL) {
-        return 0U;
-    }
-    size_t n = 0U;
-    size_t i;
-    for (i = 0U; i < ctx->max_connections; i++) {
-        if (ctx->requests[i].in_use) {
-            n++;
         }
     }
     return n;
 }
 
-cog_result_t cog_net_active_ids(const cog_net_ctx_t *ctx,
-                                cog_request_id_t *out_ids, size_t max_ids,
-                                size_t *out_count)
+/* Bind the audited CMake resolver profile to the actually loaded ELF object.
+ * If either the loader identity or the digest cannot be established, fail
+ * closed. The deployment must protect the library path against replacement. */
+static cog_result_t verify_backend(void)
 {
-    if (ctx == NULL || out_ids == NULL || out_count == NULL) {
-        return COG_ERROR_NULL_PTR;
+#ifdef COG_NET_CURL_SHA256
+    curl_version_info_data *(*symbol)(CURLversion) = curl_version_info;
+    void *address = NULL;
+    Dl_info info;
+    FILE *file;
+    EVP_MD_CTX *hash;
+    unsigned char buf[8192], digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_len = 0U;
+    size_t n, i;
+    char hex[65];
+    cog_result_t result = COG_ERROR_UNSUPPORTED;
+    if (sizeof(address) != sizeof(symbol)) return COG_ERROR_UNSUPPORTED;
+    memcpy(&address, &symbol, sizeof(address));
+    if (dladdr(address, &info) == 0 || info.dli_fname == NULL) return COG_ERROR_UNSUPPORTED;
+    file = fopen(info.dli_fname, "rb");
+    if (file == NULL) return errno == ENOMEM ? COG_ERROR_NOMEM : COG_ERROR_UNSUPPORTED;
+    hash = EVP_MD_CTX_new();
+    if (hash == NULL) { (void)fclose(file); return COG_ERROR_NOMEM; }
+    if (hash != NULL && EVP_DigestInit_ex(hash, EVP_sha256(), NULL) == 1) {
+        while ((n = fread(buf, 1U, sizeof(buf), file)) != 0U)
+            if (EVP_DigestUpdate(hash, buf, n) != 1) goto done;
+        if (ferror(file) || EVP_DigestFinal_ex(hash, digest, &digest_len) != 1 || digest_len != 32U) goto done;
+        for (i = 0U; i < 32U; ++i) (void)snprintf(hex + 2U*i, 3U, "%02x", digest[i]);
+        hex[64] = '\0';
+        if (strcmp(hex, COG_NET_CURL_SHA256) == 0) result = COG_OK;
     }
-    size_t n = 0U;
-    size_t i;
-    for (i = 0U; i < ctx->max_connections; i++) {
-        if (ctx->requests[i].in_use) {
-            if (n >= max_ids) {
-                return COG_ERROR_OVERFLOW;
-            }
-            out_ids[n++] = ctx->requests[i].id;
-        }
-    }
-    *out_count = n;
-    return COG_OK;
+done:
+    EVP_MD_CTX_free(hash);
+    (void)fclose(file);
+    return result;
+#else
+    return COG_ERROR_UNSUPPORTED;
+#endif
 }
 
-cog_result_t cog_net_request_status(const cog_net_ctx_t *ctx,
-                                    cog_request_id_t id, bool *out_active)
+cog_result_t cog_net_new(cog_net_ctx_t **out, const cog_net_config_t *config)
 {
-    if (ctx == NULL || out_active == NULL) {
-        return COG_ERROR_NULL_PTR;
+    cog_net_ctx_t *ctx;
+    const curl_version_info_data *version;
+    CURL *probe;
+    CURLcode probe_status;
+    cog_result_t provenance_status;
+    size_t total, i, j;
+    if (out == NULL) return COG_ERROR_NULL_PTR;
+    *out = NULL;
+    if (config == NULL) return COG_ERROR_NULL_PTR;
+    if (!config->host_runtime_initialized || config->dependency_memory != COG_NET_DEPENDENCY_MEMORY_DYNAMIC ||
+        config->max_retries != 0U || config->retry_backoff_ms != 0U) return COG_ERROR_INVALID_ARG;
+    if (config->dependency_memory_limit != 0U) return COG_ERROR_UNSUPPORTED;
+    provenance_status = verify_backend();
+    if (provenance_status != COG_OK) return provenance_status;
+    version = curl_version_info(CURLVERSION_NOW);
+    if (version == NULL || (version->features & CURL_VERSION_ASYNCHDNS) == 0 ||
+        version->ares == NULL || version->ares[0] == '\0') return COG_ERROR_UNSUPPORTED;
+    probe = curl_easy_init();
+    if (probe == NULL) return COG_ERROR_NOMEM;
+    probe_status = curl_easy_setopt(probe, CURLOPT_DNS_SERVERS, "127.0.0.1");
+    if (probe_status != CURLE_OK) {
+        curl_easy_cleanup(probe);
+        return probe_status == CURLE_OUT_OF_MEMORY ? COG_ERROR_NOMEM : COG_ERROR_UNSUPPORTED;
     }
-    const cog_net_req_t *req = find_request(ctx, id);
-    if (req == NULL) {
-        return COG_ERROR_NOT_FOUND;
+    curl_easy_cleanup(probe);
+    ctx = calloc(1U, sizeof(*ctx));
+    if (ctx == NULL) return COG_ERROR_NOMEM;
+    ctx->max_connections = config->max_connections != 0U ? config->max_connections : 4U;
+    ctx->request_bytes = config->max_request_bytes != 0U ? config->max_request_bytes : 1048576U;
+    ctx->header_bytes = config->max_header_bytes != 0U ? config->max_header_bytes : 65536U;
+    ctx->chunk_bytes = config->chunk_bytes != 0U ? config->chunk_bytes : 16384U;
+    ctx->chunks = config->chunks_per_request != 0U ? config->chunks_per_request : 8U;
+    ctx->connect_ms = config->connect_timeout_ms != 0U ? config->connect_timeout_ms : 10000U;
+    ctx->stall_ms = config->stall_timeout_ms != 0U ? config->stall_timeout_ms : 30000U;
+    ctx->quantum = config->service_quantum != 0U ? config->service_quantum : 16U;
+    ctx->global_selected = NO_SELECTION;
+    if (ctx->chunks == SIZE_MAX || ctx->header_bytes == SIZE_MAX ||
+        !mul_ok(ctx->max_connections, sizeof(*ctx->requests), &total) ||
+        !mul_ok(ctx->chunks + 1U, sizeof(net_item_t), &total) ||
+        !mul_ok(ctx->chunks + 1U, ctx->chunk_bytes, &total) ||
+        !mul_ok(ctx->chunks + 1U, ctx->header_bytes + 1U, &total) ||
+        ctx->max_connections > (size_t)LONG_MAX || ctx->request_bytes == SIZE_MAX) {
+        free(ctx); return COG_ERROR_INVALID_ARG;
     }
-    *out_active = req->in_use;
+    ctx->requests = calloc(ctx->max_connections, sizeof(*ctx->requests));
+    if (config->ca_bundle != NULL) ctx->ca_bundle = copy_string(config->ca_bundle);
+    if (ctx->requests == NULL ||
+        (config->ca_bundle != NULL && ctx->ca_bundle == NULL)) goto nomem;
+    for (i = 0U; i < ctx->max_connections; ++i) {
+        net_request_t *r = &ctx->requests[i];
+        r->ctx = ctx;
+        r->multi = curl_multi_init();
+        r->input = malloc(ctx->request_bytes);
+        r->header_buf = malloc(ctx->header_bytes + 1U);
+        r->items = calloc(ctx->chunks + 1U, sizeof(*r->items));
+        r->item_body = malloc((ctx->chunks + 1U) * ctx->chunk_bytes);
+        r->item_headers = malloc((ctx->chunks + 1U) * (ctx->header_bytes + 1U));
+        if (r->multi == NULL || r->input == NULL || r->header_buf == NULL || r->items == NULL ||
+            r->item_body == NULL || r->item_headers == NULL) goto nomem;
+        if (curl_multi_setopt(r->multi, CURLMOPT_MAX_TOTAL_CONNECTIONS, 1L) != CURLM_OK ||
+            curl_multi_setopt(r->multi, CURLMOPT_MAXCONNECTS, 1L) != CURLM_OK) goto nomem;
+        for (j = 0U; j <= ctx->chunks; ++j) {
+            r->items[j].body = r->item_body + j * ctx->chunk_bytes;
+            r->items[j].headers = r->item_headers + j * (ctx->header_bytes + 1U);
+        }
+    }
+    *out = ctx;
+    return COG_OK;
+nomem:
+    cog_net_free(ctx);
+    return COG_ERROR_NOMEM;
+}
+
+void cog_net_free(cog_net_ctx_t *ctx)
+{
+    size_t i;
+    if (ctx == NULL) return;
+    if (ctx->requests != NULL)
+        for (i = 0U; i < ctx->max_connections; ++i) clear_request(&ctx->requests[i]);
+    free(ctx->requests);
+    free(ctx->ca_bundle);
+    free(ctx);
+}
+
+static bool valid_method(const char *s)
+{
+    static const char extra[] = "!#$%&'*+-.^_`|~";
+    if (*s == '\0') return false;
+    for (; *s != '\0'; ++s)
+        if (!isalnum((unsigned char)*s) && strchr(extra, *s) == NULL) return false;
+    return true;
+}
+static bool valid_url(const char *s)
+{
+    const char *p;
+    if (strncmp(s, "https://", 8U) != 0) return false;
+    p = s + 8;
+    if (*p == '\0' || *p == '/' || *p == '?' || *p == '#') return false;
+    while (*p != '\0' && *p != '/' && *p != '?' && *p != '#') {
+        if (*p == '@' || isspace((unsigned char)*p) || (unsigned char)*p < 32U) return false;
+        ++p;
+    }
+    for (; *p != '\0'; ++p)
+        if ((unsigned char)*p <= 32U || (unsigned char)*p == 127U) return false;
+    return true;
+}
+static bool valid_headers(const char *s)
+{
+    const char *p = s;
+    if (p == NULL || *p == '\0') return true;
+    while (*p != '\0') {
+        const char *start = p;
+        while (*p != '\0' && *p != ':' && *p != '\n' && *p != '\r') {
+            unsigned char c = (unsigned char)*p;
+            if (!isalnum(c) && strchr("!#$%&'*+-.^_`|~", c) == NULL) return false;
+            ++p;
+        }
+        if (p == start || *p != ':') return false;
+        ++p;
+        while (*p != '\0' && *p != '\n') {
+            unsigned char c = (unsigned char)*p++;
+            if ((c < 32U && c != '\t') || c == 127U) return false;
+        }
+        if (*p == '\n') ++p;
+    }
+    return true;
+}
+#define SETOPT(r, option, value) do { if (curl_easy_setopt((r)->easy, (option), (value)) != CURLE_OK) goto setup_failed; } while (0)
+cog_result_t cog_net_request(cog_net_ctx_t *ctx, const char *method, const char *url,
+                             const char *headers, const char *body, size_t body_len,
+                             cog_request_id_t *out_id)
+{
+    net_request_t *r = NULL;
+    size_t i, ml, ul, hl, used;
+    char *m, *u, *h, *b, *line;
+    if (ctx == NULL || method == NULL || url == NULL || out_id == NULL ||
+        (body == NULL && body_len != 0U)) return COG_ERROR_NULL_PTR;
+    if (!valid_method(method) || !valid_url(url) || !valid_headers(headers) ||
+        (body != NULL && body_len == 0U) || body_len > (size_t)INT64_MAX) return COG_ERROR_INVALID_ARG;
+    for (i = 0U; i < ctx->max_connections; ++i) if (ctx->requests[i].id == 0U) { r = &ctx->requests[i]; break; }
+    if (r == NULL) return COG_ERROR_OVERFLOW;
+    if (ctx->next_id == UINT64_MAX) return COG_ERROR_LIMIT;
+    ml = strlen(method)+1U; ul = strlen(url)+1U; hl = headers != NULL ? strlen(headers)+1U : 1U;
+    used = ctx->request_bytes;
+    if (ml > used) return COG_ERROR_LIMIT;
+    used -= ml;
+    if (ul > used) return COG_ERROR_LIMIT;
+    used -= ul;
+    if (hl > used) return COG_ERROR_LIMIT;
+    used -= hl;
+    if (body_len > used) return COG_ERROR_LIMIT;
+    m = r->input; u = m + ml; h = u + ul; b = h + hl;
+    memcpy(m, method, ml); memcpy(u, url, ul);
+    if (headers != NULL) memcpy(h, headers, hl); else *h = '\0';
+    if (body_len != 0U) memcpy(b, body, body_len);
+    r->header_len = 0U; r->header_buf[0] = '\0';
+    r->next_sequence = 1U;
+    r->easy = curl_easy_init();
+    if (r->easy == NULL) return COG_ERROR_NOMEM;
+    line = h;
+    while (*line != '\0') {
+        char *end = strchr(line, '\n');
+        struct curl_slist *new_list;
+        if (end != NULL) *end = '\0';
+        new_list = curl_slist_append(r->request_headers, line);
+        if (end != NULL) *end = '\n';
+        if (new_list == NULL) goto setup_failed;
+        r->request_headers = new_list;
+        if (end == NULL) break;
+        line = end + 1;
+    }
+    SETOPT(r, CURLOPT_URL, u);
+    SETOPT(r, CURLOPT_CUSTOMREQUEST, m);
+    if (strcmp(m, "HEAD") == 0) SETOPT(r, CURLOPT_NOBODY, 1L);
+    SETOPT(r, CURLOPT_HTTPHEADER, r->request_headers);
+    SETOPT(r, CURLOPT_PROXY, "");
+    SETOPT(r, CURLOPT_FOLLOWLOCATION, 0L);
+    SETOPT(r, CURLOPT_FRESH_CONNECT, 1L);
+    SETOPT(r, CURLOPT_FORBID_REUSE, 1L);
+    SETOPT(r, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    SETOPT(r, CURLOPT_SSL_ENABLE_ALPN, 0L);
+    SETOPT(r, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+    SETOPT(r, CURLOPT_NETRC, CURL_NETRC_IGNORED);
+    SETOPT(r, CURLOPT_UNRESTRICTED_AUTH, 0L);
+    SETOPT(r, CURLOPT_PREREQFUNCTION, connection_ready);
+    SETOPT(r, CURLOPT_PREREQDATA, r);
+    SETOPT(r, CURLOPT_SSL_VERIFYPEER, 1L);
+    SETOPT(r, CURLOPT_SSL_VERIFYHOST, 2L);
+    SETOPT(r, CURLOPT_NOSIGNAL, 1L);
+    SETOPT(r, CURLOPT_PROTOCOLS_STR, "https");
+    SETOPT(r, CURLOPT_CONNECTTIMEOUT_MS, (long)ctx->connect_ms);
+    SETOPT(r, CURLOPT_WRITEFUNCTION, receive_body);
+    SETOPT(r, CURLOPT_WRITEDATA, r);
+    SETOPT(r, CURLOPT_HEADERFUNCTION, receive_header);
+    SETOPT(r, CURLOPT_HEADERDATA, r);
+    SETOPT(r, CURLOPT_PRIVATE, r);
+    if (ctx->ca_bundle != NULL) SETOPT(r, CURLOPT_CAINFO, ctx->ca_bundle);
+    if (body != NULL) {
+        SETOPT(r, CURLOPT_POSTFIELDS, b);
+        SETOPT(r, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_len);
+    }
+    if (curl_multi_add_handle(r->multi, r->easy) != CURLM_OK) goto setup_failed;
+    r->id = ++ctx->next_id; r->active = true; r->ctx = ctx;
+    *out_id = r->id;
+    return COG_OK;
+setup_failed:
+    if (r->easy != NULL) curl_easy_cleanup(r->easy);
+    r->easy = NULL;
+    curl_slist_free_all(r->request_headers); r->request_headers = NULL;
+    return COG_ERROR_NOMEM;
+}
+
+cog_result_t cog_net_cancel(cog_net_ctx_t *ctx, cog_request_id_t id)
+{
+    net_request_t *r;
+    if (ctx == NULL) return COG_ERROR_NULL_PTR;
+    r = find_request(ctx, id);
+    if (r == NULL) return COG_ERROR_NOT_FOUND;
+    if (r->pending_terminal) {
+        terminal(r, r->pending_result, r->pending_kind, r->pending_message);
+        r->pending_terminal = false;
+    }
+    terminal(r, COG_ERROR_ABORTED, COG_NET_ERROR_CANCELLED, "cancelled");
+    return COG_OK;
+}
+cog_result_t cog_net_request_release(cog_net_ctx_t *ctx, cog_request_id_t id)
+{
+    net_request_t *r;
+    size_t index;
+    char *input, *headers, *bodies, *item_headers;
+    net_item_t *items;
+    CURLM *multi;
+    if (ctx == NULL) return COG_ERROR_NULL_PTR;
+    r = find_request(ctx, id);
+    if (r == NULL) return COG_ERROR_NOT_FOUND;
+    index = (size_t)(r - ctx->requests);
+    if (ctx->global_selected == index) ctx->global_selected = NO_SELECTION;
+    input = r->input; headers = r->header_buf; items = r->items; multi = r->multi;
+    bodies = r->item_body; item_headers = r->item_headers;
+    detach(r);
+    if (r->easy != NULL) curl_easy_cleanup(r->easy);
+    curl_slist_free_all(r->request_headers);
+    memset(r, 0, sizeof(*r));
+    r->ctx = ctx; r->multi = multi; r->input = input; r->header_buf = headers; r->items = items;
+    r->item_body = bodies; r->item_headers = item_headers;
+    return COG_OK;
+}
+static uint64_t deadline(uint64_t start, uint32_t delta)
+{
+    return UINT64_MAX - start < delta ? UINT64_MAX : start + delta;
+}
+/* Capture dependency completion as bookkeeping even if no publication budget
+ * remains. Detach immediately so a later timeout or cancel cannot replace it. */
+static void capture_completion(net_request_t *r, CURLcode code)
+{
+    if (r->callback_error == COG_ERROR_LIMIT) {
+        r->pending_result = COG_ERROR_LIMIT; r->pending_kind = COG_NET_ERROR_CAPACITY;
+        r->pending_message = "response capacity exceeded";
+    } else if (code == CURLE_OK) {
+        r->pending_result = COG_OK; r->pending_kind = COG_NET_ERROR_NONE;
+        r->pending_message = NULL;
+    } else if (code == CURLE_OUT_OF_MEMORY) {
+        r->pending_result = COG_ERROR_NOMEM; r->pending_kind = COG_NET_ERROR_DEPENDENCY;
+        r->pending_message = "dependency allocation failed";
+    } else if (code == CURLE_OPERATION_TIMEDOUT) {
+        r->pending_result = COG_ERROR_TIMEOUT; r->pending_kind = COG_NET_ERROR_TIMEOUT;
+        r->pending_message = "transport timed out";
+    } else if (code == CURLE_COULDNT_RESOLVE_HOST || code == CURLE_COULDNT_RESOLVE_PROXY) {
+        r->pending_result = COG_ERROR_IO; r->pending_kind = COG_NET_ERROR_DNS;
+        r->pending_message = "DNS resolution failed";
+    } else if (code == CURLE_SSL_CONNECT_ERROR || code == CURLE_PEER_FAILED_VERIFICATION ||
+               code == CURLE_SSL_CERTPROBLEM || code == CURLE_SSL_CACERT_BADFILE) {
+        r->pending_result = COG_ERROR_IO; r->pending_kind = COG_NET_ERROR_TLS;
+        r->pending_message = "TLS failed";
+    } else if (code == CURLE_COULDNT_CONNECT) {
+        r->pending_result = COG_ERROR_IO; r->pending_kind = COG_NET_ERROR_CONNECT;
+        r->pending_message = "connection failed";
+    } else {
+        r->pending_result = COG_ERROR_IO; r->pending_kind = COG_NET_ERROR_DEPENDENCY;
+        r->pending_message = "transport failed";
+    }
+    r->pending_terminal = true;
+    detach(r);
+}
+cog_result_t cog_net_service(cog_net_ctx_t *ctx, uint64_t now_ms, uint64_t *out_next_deadline_ms)
+{
+    size_t i;
+    uint32_t drivers = 0U;
+    uint64_t next = UINT64_MAX;
+    if (ctx == NULL || out_next_deadline_ms == NULL) return COG_ERROR_NULL_PTR;
+    if (ctx->clock_set && now_ms < ctx->now) return COG_ERROR_INVALID_ARG;
+    ctx->clock_set = true; ctx->now = now_ms; ctx->budget = ctx->quantum;
+    for (i = 0U; i < ctx->max_connections; ++i) {
+        size_t index = (ctx->service_next + i) % ctx->max_connections;
+        net_request_t *r = &ctx->requests[index];
+        uint64_t d;
+        int running, messages;
+        CURLMcode mc;
+        CURLMsg *msg;
+        long curl_timeout = -1L;
+        if (r->pending_terminal) {
+            if (ctx->budget == 0U) { next = now_ms; continue; }
+            terminal(r, r->pending_result, r->pending_kind, r->pending_message);
+            r->pending_terminal = false;
+            --ctx->budget;
+            continue;
+        }
+        if (!r->active) continue;
+        if (!r->started) { r->start_ms = now_ms; r->started = true; }
+        d = r->response_started ? deadline(r->last_byte_ms, ctx->stall_ms) :
+            (r->connected ? UINT64_MAX : deadline(r->start_ms, ctx->connect_ms));
+        if (d != UINT64_MAX && now_ms >= d && !r->paused) {
+            if (ctx->budget == 0U) { next = now_ms; continue; }
+            terminal(r, COG_ERROR_TIMEOUT, COG_NET_ERROR_TIMEOUT, "transport timed out");
+            --ctx->budget;
+            continue;
+        }
+        if (r->paused && r->count >= ctx->chunks) continue;
+        if (drivers >= ctx->quantum || ctx->budget == 0U) { next = now_ms; continue; }
+        ++drivers;
+        if (r->paused && r->count < ctx->chunks) {
+            uint64_t elapsed = now_ms - r->pause_ms;
+            if (r->response_started)
+                r->last_byte_ms = UINT64_MAX - r->last_byte_ms < elapsed ? UINT64_MAX : r->last_byte_ms + elapsed;
+            else
+                r->start_ms = UINT64_MAX - r->start_ms < elapsed ? UINT64_MAX : r->start_ms + elapsed;
+            r->paused = false;
+            if (curl_easy_pause(r->easy, CURLPAUSE_CONT) != CURLE_OK) {
+                r->pending_result = r->callback_error == COG_ERROR_LIMIT ? COG_ERROR_LIMIT : COG_ERROR_IO;
+                r->pending_kind = r->callback_error == COG_ERROR_LIMIT ? COG_NET_ERROR_CAPACITY : COG_NET_ERROR_DEPENDENCY;
+                r->pending_message = r->callback_error == COG_ERROR_LIMIT ? "response capacity exceeded" : "transport resume failed";
+                r->pending_terminal = true;
+                detach(r);
+                next = now_ms;
+                continue;
+            }
+        }
+        if (ctx->budget == 0U) { next = now_ms; continue; }
+        mc = curl_multi_perform(r->multi, &running);
+        if (mc != CURLM_OK) return mc == CURLM_OUT_OF_MEMORY ? COG_ERROR_NOMEM : COG_ERROR_IO;
+        /* One easy handle per multi: at most one DONE needs capture. */
+        msg = curl_multi_info_read(r->multi, &messages);
+        if (msg != NULL && msg->msg == CURLMSG_DONE && r->active) {
+            capture_completion(r, msg->data.result);
+            if (ctx->budget != 0U) {
+                terminal(r, r->pending_result, r->pending_kind, r->pending_message);
+                r->pending_terminal = false;
+                --ctx->budget;
+            } else next = now_ms;
+        }
+        if (!r->active) continue;
+        if (curl_multi_timeout(r->multi, &curl_timeout) != CURLM_OK) return COG_ERROR_IO;
+        if (!r->paused) {
+            d = r->response_started ? deadline(r->last_byte_ms, ctx->stall_ms) :
+                (r->connected ? UINT64_MAX : deadline(r->start_ms, ctx->connect_ms));
+            if (d < next) next = d;
+            if (curl_timeout >= 0L) {
+                d = deadline(now_ms, curl_timeout > (long)UINT32_MAX ? UINT32_MAX : (uint32_t)curl_timeout);
+                if (d < next) next = d;
+            }
+        }
+    }
+    ctx->service_next = (ctx->service_next + 1U) % ctx->max_connections;
+    if (ctx->budget == 0U) next = now_ms;
+    *out_next_deadline_ms = next;
+    return COG_OK;
+}
+cog_result_t cog_net_peek_request(cog_net_ctx_t *ctx, cog_request_id_t id, cog_net_response_t *out_response)
+{
+    net_request_t *r;
+    net_item_t *item;
+    if (ctx == NULL || out_response == NULL) return COG_ERROR_NULL_PTR;
+    r = find_request(ctx, id);
+    if (r == NULL) return COG_ERROR_NOT_FOUND;
+    if (r->count == 0U) return COG_ERROR_AGAIN;
+    item = &r->items[r->head]; item->exposed = true; *out_response = item->view;
+    return COG_OK;
+}
+cog_result_t cog_net_peek(cog_net_ctx_t *ctx, cog_net_response_t *out_response)
+{
+    size_t i;
+    if (ctx == NULL || out_response == NULL) return COG_ERROR_NULL_PTR;
+    if (ctx->global_selected != NO_SELECTION)
+        return cog_net_peek_request(ctx, ctx->requests[ctx->global_selected].id, out_response);
+    for (i = 0U; i < ctx->max_connections; ++i) {
+        size_t index = (ctx->fair_next + i) % ctx->max_connections;
+        if (ctx->requests[index].id != 0U && ctx->requests[index].count != 0U) {
+            ctx->global_selected = index;
+            return cog_net_peek_request(ctx, ctx->requests[index].id, out_response);
+        }
+    }
+    return COG_ERROR_AGAIN;
+}
+cog_result_t cog_net_ack(cog_net_ctx_t *ctx, cog_request_id_t id, uint64_t sequence)
+{
+    net_request_t *r;
+    size_t index;
+    net_item_t *item;
+    if (ctx == NULL) return COG_ERROR_NULL_PTR;
+    r = find_request(ctx, id);
+    if (r == NULL) return COG_ERROR_NOT_FOUND;
+    if (r->count == 0U) return COG_ERROR_INVALID_STATE;
+    item = &r->items[r->head];
+    if (!item->exposed || item->view.sequence != sequence) return COG_ERROR_INVALID_STATE;
+    item->exposed = false;
+    r->head = (r->head + 1U) % (ctx->chunks + 1U); --r->count;
+    index = (size_t)(r - ctx->requests);
+    if (ctx->global_selected == index) {
+        ctx->global_selected = NO_SELECTION;
+        ctx->fair_next = (index + 1U) % ctx->max_connections;
+    }
+    return COG_OK;
+}
+cog_result_t cog_net_poll(cog_net_ctx_t *ctx, cog_net_response_t *out_response)
+{
+    return cog_net_peek(ctx, out_response);
+}
+int cog_net_fd(const cog_net_ctx_t *ctx) { (void)ctx; return -1; }
+size_t cog_net_active_count(const cog_net_ctx_t *ctx)
+{
+    size_t i, count = 0U;
+    if (ctx == NULL) return 0U;
+    for (i = 0U; i < ctx->max_connections; ++i) if (ctx->requests[i].active) ++count;
+    return count;
+}
+cog_result_t cog_net_active_ids(const cog_net_ctx_t *ctx, cog_request_id_t *out_ids, size_t max_ids, size_t *out_count)
+{
+    size_t i, n = 0U;
+    if (ctx == NULL || out_count == NULL || (out_ids == NULL && max_ids != 0U)) return COG_ERROR_NULL_PTR;
+    *out_count = cog_net_active_count(ctx);
+    if (max_ids < *out_count) return COG_ERROR_OVERFLOW;
+    for (i = 0U; i < ctx->max_connections; ++i) if (ctx->requests[i].active) out_ids[n++] = ctx->requests[i].id;
+    return COG_OK;
+}
+cog_result_t cog_net_request_status(const cog_net_ctx_t *ctx, cog_request_id_t id, bool *out_active)
+{
+    net_request_t *r;
+    if (ctx == NULL || out_active == NULL) return COG_ERROR_NULL_PTR;
+    r = find_request(ctx, id);
+    if (r == NULL) return COG_ERROR_NOT_FOUND;
+    *out_active = r->active;
     return COG_OK;
 }
