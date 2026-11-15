@@ -35,12 +35,18 @@ provider matrix. These are follow-on scope, not silent release requirements.
    immutable data per configuration generation; do not mutate a static
    descriptor table or dynamically register provider implementations.
    In-flight instances retain their generation until teardown.
-3. Prefer libcurl multi for transport, subject to the lifecycle PoC. Its
+3. Keep libcurl multi a conditional transport candidate, subject to the
+   [lifecycle research](research/https-lifecycle.md) and backend adoption gates. Its
    process-global initialization must be explicit and host-owned, with no
    Cog global reference counter or lazy initialization. The host initializes
    the dependency before contexts and cleans up after all contexts. If this
    cannot meet the embedding contract, select a different backend at the
-   research gate rather than quietly weakening the no-global-state rule.
+   header gate rather than quietly weakening the no-global-state rule.
+   The installed threaded-resolver build is excluded from bounded DNS
+   cancellation/shutdown acceptance: a follow-up controlled resolver stall
+   blocked handle removal for about 1.9 seconds. A reproducible follow-up
+   report and an alternative such as c-ares remain required; ASYNCHDNS alone
+   does not establish bounded cancellation.
 4. Keep JSON behind a private provider boundary. Compare a mature parser with
    caller-supplied allocator/arena support against a small token parser.
    Decide from escaping, Unicode, depth/size limits, OOM behavior, license,
@@ -49,6 +55,10 @@ provider matrix. These are follow-on scope, not silent release requirements.
    parser state and deltas. send() must not retain borrowed request pointers.
    Document third-party allocations and explicit handle lifetimes; measure
    whether they satisfy the allocation contract before adopting a backend.
+   The research observed 72 curl allocation calls during successful polling;
+   constructor-only allocation and a total memory ceiling are not established.
+   Before gate E, specify third-party handle lifetimes, OOM and memory-limit
+   semantics compatible with the allocation contract, or reject the backend.
 6. Add provider-neutral polling, cancellation, error metadata, typed content
    and tool deltas, usage/finish metadata. Names and ABI are to be settled in
    headers, not inferred from this document. Overflow must not consume an
@@ -79,6 +89,12 @@ provider matrix. These are follow-on scope, not silent release requirements.
     of unsupported versions. Persist unfinished tool status so resume cannot
     duplicate side effects. Context overflow fails clearly; no silent history
     truncation or billing guesses when usage is unavailable.
+13. Core scheduling owns fairness independently of transport and CLI handlers.
+    Delivery Q (`bcd9c0a`) must service fallible nonblocking hooks at bounded
+    dispatch intervals while events remain queued, then bound idle waits by
+    the next deadline. Prove timer, IPC and cancellation progress under sustained
+    traffic before conversation-loop delivery K; do not introduce core link
+    dependencies on provider, net or toolkit implementations.
 
 ## Scenario and header gap register
 
@@ -109,6 +125,17 @@ the header/scenario work package. Re-trace all existing scenarios 01–20 too.
 
 ## Research evidence and open experiments
 
+Transport research A (`c5671b5`) is integrated and independently reviewed:
+[HTTPS lifecycle report](research/https-lifecycle.md) and
+[standalone reproduction](../pocs/https-lifecycle/README.md). Strict builds and
+normal plus ASan/UBSan/LSan runs each passed 12 transport cases and 80 injected
+curl allocation failures. This accepts research evidence, not a production
+backend or the public-header gate. The report records the original local
+fixture limits; subsequent controlled DNS evidence excludes the installed
+threaded resolver from bounded cancellation. DNS backend selection and
+third-party allocation semantics remain explicit header-gate decisions.
+Core scheduling delivery Q is separate from the synthetic fairness PoC.
+
 Reviewed 2026-11-15:
 - [libcurl API overview](https://curl.se/libcurl/c/libcurl.html): multi interface
   supports concurrent transfers on one thread.
@@ -129,7 +156,8 @@ Record model/date/status/usage without credentials or private source text.
 Testing is preapproved. pass list has no OpenRouter entry, but the user identified pi login storage.
 The OpenRouter entry in ~/.pi/agent/auth.json is accessible. Read its key only
 into the test process memory; never print it or pass it as a shell argument.
-No authenticated provider test or PoC has been performed in this planning pass.
+The transport PoC uses local fixtures; no authenticated provider test has been
+performed as part of that research.
 
 ## Three planning passes and final review
 

@@ -4,6 +4,10 @@
 > [Stage 14 execution scaffold](REAL_CLIENT_WBS.md). The material below
 > describes the original engine/mock-CLI baseline, not real-client release
 > completion. Stage 14 uses technical gates under delegated design authority.
+> [Transport research](research/https-lifecycle.md) is accepted as conditional
+> evidence only: allocation semantics and DNS backend acceptance remain header
+> gates, and the installed threaded resolver does not meet bounded cancellation.
+> Core fairness delivery Q must precede the real conversation-loop delivery K.
 
 This document captures the software blueprint for Cog, an LLM harness and
 agent framework written in C. It follows the Jeep Method: the fewest
