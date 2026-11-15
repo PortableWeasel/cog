@@ -69,8 +69,9 @@ first error. Counter/sequence exhaustion latches LIMIT. Transfer state/results,
 retained bytes and constructor ownership remain independent. Hosts read
 `cog_net_observer_status` after net operations before allowing subsequent work;
 application code must also check after provider calls that service the net.
-This net status covers callback enqueue/clock failures only. Deferred drain
-sink/format failures live in separate bridge/app state and are checked too;
+This net status covers net accounting errors and synchronous callback errors,
+including enqueue/clock failures. Deferred drain sink/format failures live in
+separate bridge/app state and are checked too;
 there is no setter or new API to inject a deferred error into net status.
 The affected host chooses to stop its own work, then cancels/drains normally;
 observation failure itself never cancels unrelated shared-net requests. The
@@ -94,7 +95,7 @@ cleanup. Only the host owns dependency global initialization/cleanup.
 
 The reference CLI has one app on its host net context. At OPEN, the bridge callback
 copies the active request's pinned session/model/configuration generation and
-application attempt number into a fixed row. The owner prepares this scope
+application attempt number into a reserved queue entry. The owner prepares this scope
 before calling provider_send; OPEN can occur synchronously inside that call.
 A send failure clears the prepared scope without inventing a network row.
 After the operation, the owner drains the queued OPEN into its row; later
@@ -217,7 +218,9 @@ request/tool drain, reap and durable cleanup. A later callback may return the
 latched bridge error to disable further net feed; this is not required for the
 app to notice an already-failed drain.
 
-Existing app_run/shutdown has one result channel. If no earlier work failure
+Existing app_run has one result channel. app_shutdown keeps its enqueue-only
+result contract; later shutdown/drain observation errors are reported by app_run.
+If no earlier work failure
 exists, return the first observation failure through that existing result. If
 an earlier work failure exists, preserve it as primary. No new public secondary
 app-error getter or reliable multi-error channel is promised. The reference host
@@ -323,6 +326,11 @@ Header-only validation commands (no runtime implementation tests):
 # gcc/clang C11 and g++/clang++ C++17 with strict warning-as-error flags.
 # No source/CMake/build option changes belong to this design branch.
 ```
+
+Independent critic clarification: the prose above includes net-internal
+accounting failures in observer status, preserves enqueue-only app_shutdown
+results, and distinguishes queued OPEN scope from the owner-published row.
+These align wording with already-reviewed APIs; no header semantics changed.
 
 ## Proposed shared DESIGN append (not applied here)
 
