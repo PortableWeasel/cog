@@ -34,6 +34,8 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "fixtures/ipc_driver.h"
+
 /* ------------------------------------------------------------------ */
 /* Test harness                                                        */
 /* ------------------------------------------------------------------ */
@@ -190,9 +192,9 @@ static void test_listen_connect_accept(void)
 
     /* connect */
     CHECK_RESULT("ep_new client", COG_OK, cog_ipc_endpoint_new(&client));
-    CHECK_RESULT("connect ok", COG_OK,
+    CHECK_RESULT("connect ok", COG_ERROR_AGAIN,
                  cog_ipc_endpoint_connect(client, path, &pid));
-    CHECK("connect peer id", pid != COG_PEER_ID_INVALID);
+    CHECK("connect identity pending", pid == COG_PEER_ID_INVALID);
 
     /* connect again -> INVALID_STATE */
     CHECK_RESULT("connect twice", COG_ERROR_INVALID_STATE,
@@ -250,7 +252,7 @@ static void test_roundtrip(void)
     CHECK_RESULT("new listener", COG_OK, cog_ipc_endpoint_new(&listener));
     CHECK_RESULT("listen", COG_OK, cog_ipc_endpoint_listen(listener, path));
     CHECK_RESULT("new client", COG_OK, cog_ipc_endpoint_new(&client));
-    CHECK_RESULT("connect", COG_OK, cog_ipc_endpoint_connect(client, path, NULL));
+    CHECK_RESULT("connect", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client, path, NULL));
     CHECK_RESULT("accept", COG_OK, cog_ipc_endpoint_accept(listener, &server, NULL));
 
     CHECK_RESULT("msg_new out", COG_OK, cog_ipc_message_new(&out, 64U));
@@ -295,7 +297,7 @@ static void test_framing_multiple(void)
     CHECK_RESULT("new listener", COG_OK, cog_ipc_endpoint_new(&listener));
     CHECK_RESULT("listen", COG_OK, cog_ipc_endpoint_listen(listener, path));
     CHECK_RESULT("new client", COG_OK, cog_ipc_endpoint_new(&client));
-    CHECK_RESULT("connect", COG_OK, cog_ipc_endpoint_connect(client, path, NULL));
+    CHECK_RESULT("connect", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client, path, NULL));
     CHECK_RESULT("accept", COG_OK, cog_ipc_endpoint_accept(listener, &server, NULL));
     CHECK_RESULT("msg_new out", COG_OK, cog_ipc_message_new(&out, 64U));
     CHECK_RESULT("msg_new in", COG_OK, cog_ipc_message_new(&in, 64U));
@@ -338,7 +340,7 @@ static void test_large_message(void)
     CHECK_RESULT("new listener", COG_OK, cog_ipc_endpoint_new(&listener));
     CHECK_RESULT("listen", COG_OK, cog_ipc_endpoint_listen(listener, path));
     CHECK_RESULT("new client", COG_OK, cog_ipc_endpoint_new(&client));
-    CHECK_RESULT("connect", COG_OK, cog_ipc_endpoint_connect(client, path, NULL));
+    CHECK_RESULT("connect", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client, path, NULL));
     CHECK_RESULT("accept", COG_OK, cog_ipc_endpoint_accept(listener, &server, NULL));
     CHECK_RESULT("msg_new out", COG_OK, cog_ipc_message_new(&out, len));
     CHECK_RESULT("msg_new in", COG_OK, cog_ipc_message_new(&in, len));
@@ -408,7 +410,7 @@ static void test_full_duplex(void)
     CHECK_RESULT("new listener", COG_OK, cog_ipc_endpoint_new(&listener));
     CHECK_RESULT("listen", COG_OK, cog_ipc_endpoint_listen(listener, path));
     CHECK_RESULT("new client", COG_OK, cog_ipc_endpoint_new(&client));
-    CHECK_RESULT("connect", COG_OK, cog_ipc_endpoint_connect(client, path, NULL));
+    CHECK_RESULT("connect", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client, path, NULL));
     CHECK_RESULT("accept", COG_OK, cog_ipc_endpoint_accept(listener, &server, NULL));
 
     CHECK_RESULT("msg_new cout", COG_OK, cog_ipc_message_new(&cout, 64U));
@@ -557,18 +559,18 @@ static void test_overflow(void)
     CHECK("raw connect", fd >= 0);
     if (fd >= 0) {
         /* Declare a frame far larger than the 16-byte buffer. */
-        CHECK("write huge header", raw_write_header(fd, 0x00010000U) == 0);
-        (void)close(fd);
+        CHECK("write huge header", raw_write_header(fd, 0x00100001U) == 0);
     }
 
     CHECK_RESULT("accept", COG_OK, cog_ipc_endpoint_accept(listener, &server, NULL));
-    CHECK_RESULT("recv overflow", COG_ERROR_OVERFLOW,
+    CHECK_RESULT("recv declared limit", COG_ERROR_LIMIT,
                  cog_ipc_endpoint_recv(server, &in));
 
-    /* The connection is closed after an overflow; recv now fails. */
-    CHECK_RESULT("recv after overflow", COG_ERROR_INVALID_STATE,
+    /* A declared frame above the endpoint ceiling is terminal LIMIT. */
+    CHECK_RESULT("recv after limit", COG_ERROR_LIMIT,
                  cog_ipc_endpoint_recv(server, &in));
 
+    (void)close(fd);
     CHECK_RESULT("free msg in", COG_OK, cog_ipc_message_free(&in));
     CHECK_RESULT("free server", COG_OK, cog_ipc_endpoint_free(server));
     CHECK_RESULT("free listener", COG_OK, cog_ipc_endpoint_free(listener));
@@ -623,7 +625,7 @@ static void test_send_recv_invalid(void)
         cog_ipc_message_t big;
         CHECK_RESULT("msg_new big", COG_OK, cog_ipc_message_new(&big, 70000U));
         big.len = 70000U;
-        CHECK_RESULT("send len>max", COG_ERROR_INVALID_ARG,
+        CHECK_RESULT("send unbound valid size", COG_ERROR_INVALID_STATE,
                      cog_ipc_endpoint_send(e, &big));
         CHECK_RESULT("free big", COG_OK, cog_ipc_message_free(&big));
     }
@@ -650,7 +652,7 @@ static void test_poll(void)
     CHECK_RESULT("new listener", COG_OK, cog_ipc_endpoint_new(&listener));
     CHECK_RESULT("listen", COG_OK, cog_ipc_endpoint_listen(listener, path));
     CHECK_RESULT("new client", COG_OK, cog_ipc_endpoint_new(&client));
-    CHECK_RESULT("connect", COG_OK, cog_ipc_endpoint_connect(client, path, NULL));
+    CHECK_RESULT("connect", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client, path, NULL));
     CHECK_RESULT("accept", COG_OK, cog_ipc_endpoint_accept(listener, &server, NULL));
     CHECK_RESULT("msg_new out", COG_OK, cog_ipc_message_new(&out, 16U));
     CHECK_RESULT("msg_new in", COG_OK, cog_ipc_message_new(&in, 16U));
@@ -662,6 +664,7 @@ static void test_poll(void)
     CHECK_RESULT("poll zero events", COG_ERROR_INVALID_ARG,
                  cog_ipc_endpoint_poll(client, 0, 0, &revents));
 
+    test_ipc_drive(client); /* Finish the retained identity handshake. */
     /* timeout on a quiet connected endpoint -> AGAIN */
     CHECK_RESULT("poll timeout", COG_ERROR_AGAIN,
                  cog_ipc_endpoint_poll(client, COG_IPC_POLL_IN, 10, &revents));
@@ -683,7 +686,7 @@ static void test_poll(void)
     {
         cog_ipc_endpoint_t *c2 = NULL;
         CHECK_RESULT("new c2", COG_OK, cog_ipc_endpoint_new(&c2));
-        CHECK_RESULT("connect c2", COG_OK,
+        CHECK_RESULT("connect c2", COG_ERROR_AGAIN,
                      cog_ipc_endpoint_connect(c2, path, NULL));
         CHECK_RESULT("poll listener", COG_OK,
                      cog_ipc_endpoint_poll(listener, COG_IPC_POLL_IN, 100,
@@ -730,11 +733,11 @@ static void test_peer_id(void)
     CHECK_RESULT("peer id listener", COG_ERROR_INVALID_STATE,
                  cog_ipc_endpoint_get_peer_id(listener, &pid));
 
-    CHECK_RESULT("connect", COG_OK, cog_ipc_endpoint_connect(client, path, &pid));
-    CHECK("connect pid", pid != COG_PEER_ID_INVALID);
-    CHECK_RESULT("peer id client", COG_OK,
+    CHECK_RESULT("connect", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client, path, &pid));
+    CHECK("connect identity pending", pid == COG_PEER_ID_INVALID);
+    CHECK_RESULT("peer id client pending", COG_ERROR_INVALID_STATE,
                  cog_ipc_endpoint_get_peer_id(client, &pid));
-    CHECK("client pid non-invalid", pid != COG_PEER_ID_INVALID);
+    CHECK("client pid unchanged", pid == COG_PEER_ID_INVALID);
 
     CHECK_RESULT("accept", COG_OK, cog_ipc_endpoint_accept(listener, &server, &pid));
     CHECK("accept pid", pid != COG_PEER_ID_INVALID);
@@ -769,10 +772,10 @@ static void test_broadcast(void)
     CHECK_RESULT("listen", COG_OK, cog_ipc_endpoint_listen(listener, path));
 
     CHECK_RESULT("new client1", COG_OK, cog_ipc_endpoint_new(&client1));
-    CHECK_RESULT("connect1", COG_OK, cog_ipc_endpoint_connect(client1, path, NULL));
+    CHECK_RESULT("connect1", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client1, path, NULL));
     CHECK_RESULT("accept1", COG_OK, cog_ipc_endpoint_accept(listener, &server1, NULL));
     CHECK_RESULT("new client2", COG_OK, cog_ipc_endpoint_new(&client2));
-    CHECK_RESULT("connect2", COG_OK, cog_ipc_endpoint_connect(client2, path, NULL));
+    CHECK_RESULT("connect2", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client2, path, NULL));
     CHECK_RESULT("accept2", COG_OK, cog_ipc_endpoint_accept(listener, &server2, NULL));
 
     CHECK_RESULT("msg_new out", COG_OK, cog_ipc_message_new(&out, 64U));
@@ -833,10 +836,10 @@ static void test_session_routing(void)
     CHECK_RESULT("listen", COG_OK, cog_ipc_endpoint_listen(listener, path));
 
     CHECK_RESULT("new client1", COG_OK, cog_ipc_endpoint_new(&client1));
-    CHECK_RESULT("connect1", COG_OK, cog_ipc_endpoint_connect(client1, path, &pid1));
+    CHECK_RESULT("connect1", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client1, path, &pid1));
     CHECK_RESULT("accept1", COG_OK, cog_ipc_endpoint_accept(listener, &server1, &pid1));
     CHECK_RESULT("new client2", COG_OK, cog_ipc_endpoint_new(&client2));
-    CHECK_RESULT("connect2", COG_OK, cog_ipc_endpoint_connect(client2, path, &pid2));
+    CHECK_RESULT("connect2", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client2, path, &pid2));
     CHECK_RESULT("accept2", COG_OK, cog_ipc_endpoint_accept(listener, &server2, &pid2));
 
     CHECK_RESULT("msg_new out", COG_OK, cog_ipc_message_new(&out, 64U));
@@ -926,7 +929,7 @@ static void test_session_overflow(void)
     CHECK_RESULT("new listener", COG_OK, cog_ipc_endpoint_new(&listener));
     CHECK_RESULT("listen", COG_OK, cog_ipc_endpoint_listen(listener, path));
     CHECK_RESULT("new client", COG_OK, cog_ipc_endpoint_new(&client));
-    CHECK_RESULT("connect", COG_OK, cog_ipc_endpoint_connect(client, path, &pid));
+    CHECK_RESULT("connect", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client, path, &pid));
     CHECK_RESULT("accept", COG_OK, cog_ipc_endpoint_accept(listener, &server, &pid));
 
     /* Fill the session table (64 entries). */
@@ -974,7 +977,7 @@ static void test_disconnect_reconnect(void)
 
     /* First connection. */
     CHECK_RESULT("new client", COG_OK, cog_ipc_endpoint_new(&client));
-    CHECK_RESULT("connect", COG_OK, cog_ipc_endpoint_connect(client, path, NULL));
+    CHECK_RESULT("connect", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client, path, NULL));
     CHECK_RESULT("accept", COG_OK, cog_ipc_endpoint_accept(listener, &server, NULL));
 
     /* disconnect the client; it returns to unbound state. */
@@ -991,7 +994,7 @@ static void test_disconnect_reconnect(void)
     CHECK_RESULT("free old server", COG_OK, cog_ipc_endpoint_free(server));
 
     /* Reconnect on the same client endpoint. */
-    CHECK_RESULT("reconnect", COG_OK, cog_ipc_endpoint_connect(client, path, NULL));
+    CHECK_RESULT("reconnect", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client, path, NULL));
     CHECK_RESULT("accept again", COG_OK, cog_ipc_endpoint_accept(listener, &server, NULL));
     CHECK_RESULT("send after reconnect", COG_OK, cog_ipc_endpoint_send(client, &out));
     CHECK_RESULT("recv after reconnect", COG_OK, cog_ipc_endpoint_recv(server, &in));
@@ -1053,7 +1056,7 @@ static void test_listener_disconnect_detaches(void)
     CHECK_RESULT("new listener", COG_OK, cog_ipc_endpoint_new(&listener));
     CHECK_RESULT("listen", COG_OK, cog_ipc_endpoint_listen(listener, path));
     CHECK_RESULT("new client", COG_OK, cog_ipc_endpoint_new(&client));
-    CHECK_RESULT("connect", COG_OK, cog_ipc_endpoint_connect(client, path, NULL));
+    CHECK_RESULT("connect", COG_ERROR_AGAIN, cog_ipc_endpoint_connect(client, path, NULL));
     CHECK_RESULT("accept", COG_OK, cog_ipc_endpoint_accept(listener, &server, NULL));
     CHECK_RESULT("msg_new out", COG_OK, cog_ipc_message_new(&out, 64U));
     CHECK_RESULT("msg_new in", COG_OK, cog_ipc_message_new(&in, 64U));

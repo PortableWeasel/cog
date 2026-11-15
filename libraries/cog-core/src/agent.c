@@ -13,8 +13,8 @@
  *
  * - The subagent registry is embedded in @c struct cog_core (see
  *   agent_internal.h) and reached through @c cog_core_agent_registry().
- *   It is append-only for the lifetime of the core: agent.h declares no
- *   destroy API, so agents are released wholesale by cog_core_free.
+ *   Q reserves records and copied strings at construction. N/O owns the
+ *   declared release/reuse and remote-notification protocol migration.
  * - Spawn creates a child session (cog_session_new), links it to the
  *   parent via cog_session_set_parent, and records the agent as PENDING.
  *   The child session is owned by the agent record.
@@ -39,9 +39,8 @@
  *   message is stored so the orchestrator can read it via
  *   cog_agent_internal_get.  This deliberately avoids enqueueing an
  *   event whose payload lifetime the core cannot track.
- * - The registry is bounded (COG_AGENT_MAX_PER_CORE); a full registry
- *   makes cog_agent_spawn return COG_ERROR_UNAVAILABLE ("no core has
- *   capacity").
+ * - The registry is bounded by core config.max_agents; full reservations
+ *   return LIMIT without growth. Child sessions use an explicit constructor.
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -54,8 +53,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/** Initial registry capacity; grows by doubling up to the maximum. */
-#define COG_AGENT_INITIAL_CAPACITY ((size_t)8)
 
 /* ------------------------------------------------------------------ */
 /* Internal helpers                                                    */
@@ -97,25 +94,23 @@ static cog_agent_entry_t *agent_lookup(cog_core_t *core, cog_agent_id_t id)
 /* Registry lifecycle (called by core.c)                               */
 /* ------------------------------------------------------------------ */
 
+cog_result_t cog_agent_registry_init(cog_agent_registry_t *reg, size_t capacity, size_t message_bytes)
+{
+    if (capacity == 0U || message_bytes == 0U || capacity > SIZE_MAX / sizeof(*reg->entries) ||
+        capacity > SIZE_MAX / 5U || capacity * 5U > SIZE_MAX / message_bytes) { return COG_ERROR_INVALID_ARG; }
+    reg->entries = calloc(capacity, sizeof(*reg->entries));
+    reg->storage = malloc(capacity * 5U * message_bytes);
+    if (reg->entries == NULL || reg->storage == NULL) {
+        free(reg->entries); free(reg->storage); memset(reg, 0, sizeof(*reg)); return COG_ERROR_NOMEM;
+    }
+    reg->capacity = capacity; reg->message_bytes = message_bytes; return COG_OK;
+}
 void cog_agent_registry_reset(cog_agent_registry_t *reg)
 {
     size_t i;
-
-    if (reg == NULL) {
-        return;
-    }
-    for (i = 0U; i < reg->count; ++i) {
-        free(reg->entries[i].session_id);
-        free(reg->entries[i].parent_session_id);
-        free(reg->entries[i].result);
-        free(reg->entries[i].status_msg);
-        cog_session_free(reg->entries[i].session);
-    }
-    free(reg->entries);
-    reg->entries = NULL;
-    reg->count = 0U;
-    reg->capacity = 0U;
-    reg->next_id = 0U;
+    if (reg == NULL) { return; }
+    for (i = 0U; i < reg->count; ++i) { cog_session_free(reg->entries[i].session); }
+    free(reg->entries); free(reg->storage); memset(reg, 0, sizeof(*reg));
 }
 
 /* ------------------------------------------------------------------ */
@@ -141,28 +136,14 @@ cog_result_t cog_agent_spawn(cog_core_t *core,
     }
 
     reg = cog_core_agent_registry(core);
-    if (reg->count >= COG_AGENT_MAX_PER_CORE) {
-        return COG_ERROR_UNAVAILABLE;
+    if (reg->count >= reg->capacity || reg->next_id == UINT64_MAX ||
+        strnlen(config->task, reg->message_bytes) == reg->message_bytes ||
+        (config->parent_session_id != NULL && strnlen(config->parent_session_id, reg->message_bytes) == reg->message_bytes)) {
+        return COG_ERROR_LIMIT;
     }
-
-    /* Grow the registry array on demand. */
-    if (reg->count == reg->capacity) {
-        size_t new_capacity = (reg->capacity == 0U)
-                                  ? COG_AGENT_INITIAL_CAPACITY
-                                  : reg->capacity * 2U;
-        cog_agent_entry_t *grown;
-
-        if (new_capacity > COG_AGENT_MAX_PER_CORE) {
-            new_capacity = COG_AGENT_MAX_PER_CORE;
-        }
-        grown = (cog_agent_entry_t *)realloc(
-            reg->entries, new_capacity * sizeof(*grown));
-        if (grown == NULL) {
-            return COG_ERROR_NOMEM;
-        }
-        reg->entries = grown;
-        reg->capacity = new_capacity;
-    }
+    if (config->force_local && config->owner_peer != COG_PEER_ID_INVALID) { return COG_ERROR_INVALID_ARG; }
+    if (config->max_status_bytes > reg->message_bytes || config->max_result_bytes > reg->message_bytes) { return COG_ERROR_LIMIT; }
+    if (config->owner_peer != COG_PEER_ID_INVALID) { return COG_ERROR_UNSUPPORTED; }
 
     /* Create the child session and link it to the parent.  cog_session_new
      * generates a unique id when config->id is NULL, so sid is never NULL
@@ -191,19 +172,19 @@ cog_result_t cog_agent_spawn(cog_core_t *core,
     entry->group_id = config->group_id;
     entry->timeout_ms = config->timeout_ms;
     entry->force_local = config->force_local;
-    entry->session_id = strdup(sid);
-    if (entry->session_id == NULL) {
-        cog_session_free(child);
-        return COG_ERROR_NOMEM;
-    }
-    if (config->parent_session_id != NULL) {
-        entry->parent_session_id = strdup(config->parent_session_id);
-        if (entry->parent_session_id == NULL) {
-            free(entry->session_id);
-            cog_session_free(child);
-            return COG_ERROR_NOMEM;
-        }
-    }
+    entry->status_capacity = config->max_status_bytes != 0U ? config->max_status_bytes : reg->message_bytes;
+    entry->result_capacity = config->max_result_bytes != 0U ? config->max_result_bytes : reg->message_bytes;
+    if (strlen(sid) >= reg->message_bytes) { cog_session_free(child); return COG_ERROR_LIMIT; }
+    entry->session_id = reg->storage + reg->count * 5U * reg->message_bytes;
+    entry->parent_session_id = entry->session_id + reg->message_bytes;
+    entry->task = entry->parent_session_id + reg->message_bytes;
+    entry->result = entry->task + reg->message_bytes;
+    entry->status_msg = entry->result + reg->message_bytes;
+    memcpy(entry->session_id, sid, strlen(sid) + 1U);
+    if (config->parent_session_id != NULL) { memcpy(entry->parent_session_id, config->parent_session_id, strlen(config->parent_session_id) + 1U); }
+    else { entry->parent_session_id = NULL; }
+    memcpy(entry->task, config->task, strlen(config->task) + 1U);
+    entry->result[0] = '\0'; entry->status_msg[0] = '\0';
 
     ++reg->count;
     *out_id = entry->id;
@@ -263,7 +244,6 @@ cog_result_t cog_agent_notify_parent(cog_core_t *core,
                                      const char *status_msg)
 {
     cog_agent_entry_t *entry;
-    char *copy;
 
     if (core == NULL || status_msg == NULL) {
         return COG_ERROR_NULL_PTR;
@@ -272,12 +252,13 @@ cog_result_t cog_agent_notify_parent(cog_core_t *core,
     if (entry == NULL) {
         return COG_ERROR_NOT_FOUND;
     }
-    copy = strdup(status_msg);
-    if (copy == NULL) {
-        return COG_ERROR_NOMEM;
+    {
+        cog_agent_registry_t *reg = cog_core_agent_registry(core);
+        size_t length = strnlen(status_msg, entry->status_capacity);
+        (void)reg;
+        if (length == entry->status_capacity) { return COG_ERROR_LIMIT; }
+        memcpy(entry->status_msg, status_msg, length + 1U);
     }
-    free(entry->status_msg);
-    entry->status_msg = copy;
     return COG_OK;
 }
 
@@ -389,7 +370,6 @@ cog_result_t cog_agent_internal_complete(cog_core_t *core,
                                          size_t result_len)
 {
     cog_agent_entry_t *entry;
-    char *copy;
 
     if (core == NULL) {
         return COG_ERROR_NULL_PTR;
@@ -401,7 +381,7 @@ cog_result_t cog_agent_internal_complete(cog_core_t *core,
      * size zero and then write past it.  Reject it as an unsatisfiable
      * allocation. */
     if (result_len == SIZE_MAX) {
-        return COG_ERROR_NOMEM;
+        return COG_ERROR_LIMIT;
     }
     entry = agent_lookup(core, agent_id);
     if (entry == NULL) {
@@ -410,16 +390,9 @@ cog_result_t cog_agent_internal_complete(cog_core_t *core,
     if (entry->status != COG_AGENT_STATUS_RUNNING) {
         return COG_ERROR_INVALID_STATE;
     }
-    copy = (char *)malloc(result_len + 1U);
-    if (copy == NULL) {
-        return COG_ERROR_NOMEM;
-    }
-    if (result_len > 0U) {
-        (void)memcpy(copy, result, result_len);
-    }
-    copy[result_len] = '\0';
-    free(entry->result);
-    entry->result = copy;
+    if (result_len >= entry->result_capacity) { return COG_ERROR_LIMIT; }
+    if (result_len > 0U) { memcpy(entry->result, result, result_len); }
+    entry->result[result_len] = '\0';
     entry->result_len = result_len;
     entry->status = COG_AGENT_STATUS_COMPLETED;
     return COG_OK;

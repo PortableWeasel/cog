@@ -1,164 +1,89 @@
-/**
- * @file core.c
- * @brief Agent core implementation for cog-core.
- *
- * Implements the public contract declared in @c cog/core.h: construction
- * and destruction, the agent event loop (@c cog_core_run), the stop
- * request, event enqueue, the state/running inspectors, the provider /
- * obs / store / ipc accessors, and the session-scoped pending-message
- * FIFO (queue / dequeue / pending_count).
- *
- * Design notes (the full executable contract is recorded in
- * libraries/cog-core/contracts/core/CONTRACT.md):
- *
- * - The core owns its event queue, its pending-message FIFO, and (when
- *   configured) its IPC endpoint.  The session, provider, obs, and store
- *   are borrowed (the caller retains ownership).  A non-NULL
- *   config->ipc_endpoint is accepted and owned by the core: it is drained
- *   during the event loop (incoming connections and messages are enqueued
- *   as COG_EVENT_IPC_* events) and destroyed by cog_core_free.
- * - The run loop pops one event, looks up the (state, event) row in the
- *   static dispatch table, invokes the handler, validates the requested
- *   transition against the row's allowed list, and applies it.  A
- *   non-COG_OK handler status or a denied transition aborts the loop and
- *   is returned to the caller.  When the queue is empty the loop first
- *   tries to inject a pending message for the core's session (delivering
- *   it as a COG_EVENT_USER_INPUT), then falls back to the caller's wait
- *   hook (or a short yield when none is supplied).
- * - The pending FIFO is a single bounded array (default capacity 8)
- *   whose entries are tagged with a session id.  queue_message appends;
- *   dequeue_message / pending_count filter by session id, giving
- *   per-session isolation while keeping the whole FIFO bounded.  The
- *   core auto-injects the oldest pending message for its own session
- *   when the event queue drains (i.e. after the current turn's events
- *   have been processed).
- * - Session attachment: the core marks the session's private `attached`
- *   flag so cog_session_reset refuses while the core is alive, and
- *   clears it on cog_core_free.  The flag lives in the private
- *   session_internal.h layout shared with session.c (there is no public
- *   attach API); see session_internal.h.
- * - Subagent registry host: the core embeds the subagent registry
- *   (agent_internal.h) and exposes it through cog_core_agent_registry().
- *   agent.c owns every operation on it; cog_core_free releases it via
- *   cog_agent_registry_reset().
+/** @file core.c
+ * @brief Fair, constructor-bounded single-threaded event scheduler.
  */
 #define _POSIX_C_SOURCE 200809L
-
 #include "cog/core.h"
-
 #include "agent_internal.h"
 #include "session_internal.h"
-
+#include "../../cog-ipc/private/core_ipc.h"
 #include <assert.h>
 #include <stdatomic.h>
-#include <stddef.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-/** Default event-queue capacity when config->event_queue_capacity is zero. */
-#define COG_CORE_DEFAULT_EVENT_QUEUE_CAPACITY ((size_t)64)
-
-/** Default pending-message FIFO capacity (per the header: 8 messages). */
-#define COG_CORE_DEFAULT_PENDING_CAPACITY ((size_t)8)
-
-/**
- * @brief Capacity of the core-owned IPC receive buffer.
- *
- * Matches the IPC layer's maximum frame payload (UINT16_MAX), so the
- * core accepts every valid frame.  A frame larger than this is rejected
- * by cog_ipc_endpoint_recv with COG_ERROR_OVERFLOW and the connection is
- * closed (reported as a disconnect).
- */
-#define COG_CORE_IPC_RECV_CAPACITY ((size_t)UINT16_MAX)
-
-/* ------------------------------------------------------------------ */
-/* Internal structures                                                 */
-/* ------------------------------------------------------------------ */
-
-/** One entry in the session-scoped pending-message FIFO. */
-typedef struct cog_pending_msg {
-    char *session_id;  /**< Owned copy of the target session id. */
-    char *text;        /**< Owned copy of the message text, NUL-terminated. */
-    size_t text_len;   /**< Byte length of @p text, excluding the NUL. */
-} cog_pending_msg_t;
-
-/**
- * @brief Opaque core layout (definition of @c cog_core_t).
- *
- * The session, provider, obs, and store are borrowed.  The event queue,
- * the pending FIFO, and the subagent registry are owned.  The IPC
- * endpoint is owned per the header but its release is deferred to the
- * IPC phase.
- */
+typedef struct core_pending_owner {
+    char id[128];
+    size_t count;
+} core_pending_owner_t;
+typedef struct core_pending_item {
+    size_t length;
+} core_pending_item_t;
+typedef struct core_slice {
+    size_t offset, length, charge;
+} core_slice_t;
 struct cog_core {
     cog_session_t *session;
     const cog_dispatch_entry_t *dispatch_table;
     size_t dispatch_table_size;
     const cog_tool_table_t *tool_table;
     cog_event_queue_t *event_queue;
+    cog_event_queue_t *ipc_events;
+    bool prefer_ipc, active;
     cog_wait_fn wait_fn;
     void *wait_arg;
-    void *user;               /**< Borrowed caller-owned context; stored
-                                   verbatim, never freed/mutated. */
+    cog_service_fn service_fn;
+    void *service_arg;
+    cog_idle_fn idle_fn;
+    void *idle_arg;
+    size_t service_interval;
+    uint32_t max_idle_wait_ms;
+    void *user;
     cog_ipc_endpoint_t *ipc_endpoint;
     cog_peer_id_t local_peer_id;
-    int ipc_is_listener;          /**< 1=listener, 2=connected, 0=unbound. */
-    cog_ipc_endpoint_t **ipc_clients; /**< Owned accepted clients (listener). */
-    size_t ipc_client_count;      /**< Live entries in @p ipc_clients. */
-    size_t ipc_client_capacity;   /**< Allocated slots in @p ipc_clients. */
-    cog_ipc_message_t ipc_recv;   /**< Owned receive buffer. */
-    void **ipc_inflight;          /**< Owned in-flight IPC payload copies. */
-    size_t ipc_inflight_count;    /**< Live entries in @p ipc_inflight. */
-    size_t ipc_inflight_capacity; /**< Allocated slots in @p ipc_inflight. */
+    int ipc_is_listener;
+    cog_ipc_endpoint_t **ipc_clients;
+    size_t ipc_client_count, ipc_client_capacity, ipc_cursor, ipc_quantum;
+    size_t ipc_max_frame;
+    unsigned char *ipc_arena;
+    size_t ipc_arena_capacity, ipc_arena_head, ipc_arena_tail, ipc_arena_used;
+    core_slice_t *ipc_slices;
+    size_t ipc_slice_capacity, ipc_slice_head, ipc_slice_count;
     cog_provider_t *provider;
     cog_obs_t *obs;
     cog_store_t *store;
     cog_state_t state;
-    _Atomic bool running;        /**< Set/cleared by cog_core_run; cleared
-                                      by cog_core_stop from another thread. */
-    _Atomic bool stop_requested; /**< Set by cog_core_stop (any thread),
-                                      read by the run loop. */
-    cog_pending_msg_t *pending;   /**< Owned FIFO array. */
-    size_t pending_capacity;      /**< Allocated entries in @p pending. */
-    size_t pending_count;         /**< Live entries in @p pending. */
-    void *injected_payload;       /**< Text of the pending message currently
-                                       injected into the event queue; freed
-                                       after dispatch. */
-    cog_agent_registry_t agents;  /**< Subagent registry; see agent_internal.h. */
+    _Atomic bool running, stop_requested;
+    core_pending_owner_t *pending_owners;
+    core_pending_item_t *pending_items;
+    char *pending_text;
+    size_t pending_owner_capacity, pending_per_owner, pending_bytes;
+    char *injected_payload;
+    size_t injected_owner;
+    bool injected;
+    cog_agent_registry_t agents;
 };
-
-/* ------------------------------------------------------------------ */
-/* Internal helpers                                                    */
-/* ------------------------------------------------------------------ */
-
-/** Yield the CPU briefly (used when no wait hook is configured). */
-static void core_yield(void)
+static size_t core_default(size_t value, size_t fallback)
 {
-    struct timespec ts;
-
-    ts.tv_sec = 0;
-    ts.tv_nsec = 1000000L; /* 1 ms */
-    (void)nanosleep(&ts, NULL);
+    return value != 0U ? value : fallback;
 }
-
-/**
- * @brief Dispatch one event through the static table.
- *
- * Looks up the (state, event->id) row, invokes the handler, validates the
- * requested transition against the row's allowed list, and applies it.
- * Returns the handler status or the transition-validation result on
- * failure; the state is left unchanged on any failure.
- */
+static cog_result_t core_now(uint64_t *now)
+{
+    struct timespec time;
+    if (clock_gettime(CLOCK_MONOTONIC, &time) != 0 || time.tv_sec < 0) {
+        return COG_ERROR_IO;
+    }
+    *now = (uint64_t)time.tv_sec * 1000U + (uint64_t)time.tv_nsec / 1000000U;
+    return COG_OK;
+}
 static cog_result_t core_dispatch(cog_core_t *core, const cog_event_t *event)
 {
     const cog_dispatch_entry_t *entry = NULL;
     cog_handler_result_t hr;
     cog_result_t rc;
 
-    rc = cog_state_lookup(core->dispatch_table, core->dispatch_table_size,
-                          core->state, event->id, &entry);
+    rc = cog_state_lookup(core->dispatch_table, core->dispatch_table_size, core->state,
+                          event->id, &entry);
     if (rc != COG_OK) {
         return rc;
     }
@@ -187,8 +112,7 @@ static cog_result_t core_dispatch(cog_core_t *core, const cog_event_t *event)
      * (cog_core_run); the state transition has already been applied.  No
      * save occurs on handler failure, denied transition, cancellation,
      * shutdown, or streaming chunks — only LLM_COMPLETE reaches here. */
-    if (event->kind == COG_EVENT_LLM_COMPLETE &&
-        core->store != NULL &&
+    if (event->kind == COG_EVENT_LLM_COMPLETE && core->store != NULL &&
         cog_store_auto_save(core->store)) {
         return cog_store_save(core->store, core->session);
     }
@@ -196,545 +120,334 @@ static cog_result_t core_dispatch(cog_core_t *core, const cog_event_t *event)
     return COG_OK;
 }
 
-/**
- * @brief Inject the oldest pending message for the core's session.
- *
- * Called when the event queue is empty.  If the core's session has a
- * pending message, the oldest one is dequeued and enqueued as a
- * COG_EVENT_USER_INPUT whose payload borrows the message text.  The text
- * ownership transfers to @c core->injected_payload and is freed after the
- * event is dispatched.
- *
- * @return COG_OK if a message was injected.
- * @return COG_ERROR_NOT_FOUND if the session has no pending message.
- * @return Another error code if the enqueue fails (the message is left in
- *         the FIFO).
- */
+static size_t core_pending_owner(const cog_core_t *core, const char *id)
+{
+    size_t i;
+    for (i = 0U; i < core->pending_owner_capacity; ++i) {
+        if (core->pending_owners[i].count != 0U &&
+            strcmp(core->pending_owners[i].id, id) == 0) {
+            return i;
+        }
+    }
+    return SIZE_MAX;
+}
+static char *core_pending_text(cog_core_t *core, size_t owner, size_t index)
+{
+    return core->pending_text +
+           (owner * core->pending_per_owner + index) * core->pending_bytes;
+}
+static void core_pending_remove(cog_core_t *core, size_t owner)
+{
+    core_pending_owner_t *entry = &core->pending_owners[owner];
+    size_t base = owner * core->pending_per_owner;
+    --entry->count;
+    if (entry->count != 0U) {
+        memmove(core->pending_items + base, core->pending_items + base + 1U,
+                entry->count * sizeof(*core->pending_items));
+        memmove(core_pending_text(core, owner, 0U), core_pending_text(core, owner, 1U),
+                entry->count * core->pending_bytes);
+    }
+}
 static cog_result_t core_inject_pending(cog_core_t *core)
 {
-    const char *sid = cog_session_id(core->session);
-    size_t i;
-    cog_pending_msg_t *msg;
-    cog_event_t event;
+    size_t owner = core_pending_owner(core, cog_session_id(core->session));
+    cog_event_t event = {0};
     cog_result_t rc;
-
-    if (sid == NULL) {
+    if (owner == SIZE_MAX) {
         return COG_ERROR_NOT_FOUND;
     }
-
-    for (i = 0U; i < core->pending_count; ++i) {
-        if (strcmp(core->pending[i].session_id, sid) == 0) {
-            break;
-        }
-    }
-    if (i == core->pending_count) {
-        return COG_ERROR_NOT_FOUND;
-    }
-
-    msg = &core->pending[i];
-
+    memcpy(core->injected_payload, core_pending_text(core, owner, 0U),
+           core->pending_items[owner * core->pending_per_owner].length + 1U);
     event.id = (cog_event_id_t)COG_EVENT_USER_INPUT;
     event.kind = COG_EVENT_USER_INPUT;
-    event.payload = msg->text;
-    event.payload_len = msg->text_len;
-    event.source_id = 0U;
-
+    event.payload = core->injected_payload;
+    event.payload_len = core->pending_items[owner * core->pending_per_owner].length;
     rc = cog_event_queue_push(core->event_queue, &event);
-    if (rc != COG_OK) {
-        return rc; /* queue full; the message stays in the FIFO */
-    }
-
-    /* Transfer text ownership to the core and remove the entry. */
-    core->injected_payload = msg->text;
-    free(msg->session_id);
-    for (; i + 1U < core->pending_count; ++i) {
-        core->pending[i] = core->pending[i + 1U];
-    }
-    --core->pending_count;
-    return COG_OK;
-}
-
-/**
- * @brief Undo a pending-message injection that was never dispatched.
- *
- * Called immediately after a successful @c core_inject_pending when a
- * concurrent stop has landed before the injected event was dispatched.
- * The event queue was empty before injection, so the injected event is the
- * only entry; popping it returns exactly that event.  The message text
- * (owned by @c core->injected_payload) is moved back into a fresh pending
- * entry at the head of the FIFO, preserving FIFO order and text ownership.
- * On allocation failure the text is released so nothing leaks; the message
- * is dropped only in that OOM case.
- */
-static void core_restore_injected(cog_core_t *core)
-{
-    cog_event_t injected;
-    const char *sid = cog_session_id(core->session);
-    char *sid_copy;
-    size_t i;
-
-    if (cog_event_queue_pop(core->event_queue, &injected) != COG_OK) {
-        /* The injected event is not in the queue (already dispatched or
-         * removed); nothing to restore. */
-        return;
-    }
-
-    /* The popped event must be the injected one: the queue was empty
-     * before injection, so the injected event is the only entry. */
-    assert(injected.payload == core->injected_payload);
-
-    sid_copy = (sid != NULL) ? strdup(sid) : NULL;
-    if (sid_copy == NULL) {
-        /* Cannot restore the session id; release the text to avoid a leak. */
-        free(core->injected_payload);
-        core->injected_payload = NULL;
-        return;
-    }
-
-    /* Re-insert at the head, preserving FIFO order. */
-    for (i = core->pending_count; i > 0U; --i) {
-        core->pending[i] = core->pending[i - 1U];
-    }
-    core->pending[0].session_id = sid_copy;
-    core->pending[0].text = core->injected_payload;
-    core->pending[0].text_len = injected.payload_len;
-    core->injected_payload = NULL;
-    ++core->pending_count;
-}
-
-/* ------------------------------------------------------------------ */
-/* IPC integration                                                     */
-/* ------------------------------------------------------------------ */
-
-/**
- * @brief Probe the role of an IPC endpoint.
- *
- * Returns 1 for a listener, 2 for a connected endpoint, and 0 for an
- * unbound endpoint.  A connected endpoint reports a peer id; a listener
- * reports none but accepts poll on its bound socket; an unbound endpoint
- * has no file descriptor and fails poll with COG_ERROR_INVALID_STATE.
- */
-static int core_ipc_probe_role(cog_ipc_endpoint_t *ep)
-{
-    cog_result_t rc;
-    cog_peer_id_t peer_id = COG_PEER_ID_INVALID;
-
-    rc = cog_ipc_endpoint_get_peer_id(ep, &peer_id);
     if (rc == COG_OK) {
-        return 2; /* connected */
+        core->injected = true;
+        core->injected_owner = owner;
     }
-    rc = cog_ipc_endpoint_poll(ep, COG_IPC_POLL_IN, 0, NULL);
-    if (rc == COG_OK || rc == COG_ERROR_AGAIN) {
-        return 1; /* listener */
-    }
-    return 0; /* unbound */
+    /* Keep the FIFO head reserved until actual dispatch; stop cannot lose it. */
+    return rc;
 }
-
-/**
- * @brief Track an in-flight IPC payload copy.
- *
- * @return COG_OK on success, COG_ERROR_NOMEM if the list cannot grow.
- */
-static cog_result_t core_ipc_inflight_add(cog_core_t *core, void *ptr)
+static cog_result_t core_ipc_enqueue(cog_core_t *core, cog_event_kind_t kind,
+                                     cog_peer_id_t peer, const void *data,
+                                     size_t length)
 {
-    if (core->ipc_inflight_count >= core->ipc_inflight_capacity) {
-        size_t new_capacity = core->ipc_inflight_capacity == 0U
-                                  ? 8U
-                                  : core->ipc_inflight_capacity * 2U;
-        void **new_list = (void **)realloc(
-            core->ipc_inflight, new_capacity * sizeof(*new_list));
-
-        if (new_list == NULL) {
-            return COG_ERROR_NOMEM;
-        }
-        core->ipc_inflight = new_list;
-        core->ipc_inflight_capacity = new_capacity;
-    }
-    core->ipc_inflight[core->ipc_inflight_count] = ptr;
-    ++core->ipc_inflight_count;
-    return COG_OK;
-}
-
-/**
- * @brief Remove an in-flight IPC payload copy from the tracking list.
- */
-static void core_ipc_inflight_remove(cog_core_t *core, void *ptr)
-{
-    size_t i;
-
-    for (i = 0U; i < core->ipc_inflight_count; ++i) {
-        if (core->ipc_inflight[i] == ptr) {
-            if (i + 1U < core->ipc_inflight_count) {
-                (void)memmove(&core->ipc_inflight[i],
-                              &core->ipc_inflight[i + 1U],
-                              (core->ipc_inflight_count - i - 1U) *
-                                  sizeof(core->ipc_inflight[0]));
-            }
-            --core->ipc_inflight_count;
-            return;
-        }
-    }
-}
-
-/**
- * @brief Release an in-flight IPC payload copy (if tracked).
- */
-static void core_ipc_inflight_free(cog_core_t *core, void *ptr)
-{
-    if (ptr == NULL) {
-        return;
-    }
-    core_ipc_inflight_remove(core, ptr);
-    free(ptr);
-}
-
-/**
- * @brief Track an accepted client endpoint (listener case).
- *
- * @return COG_OK on success, COG_ERROR_NOMEM if the list cannot grow.
- */
-static cog_result_t core_ipc_client_add(cog_core_t *core,
-                                        cog_ipc_endpoint_t *client)
-{
-    if (core->ipc_client_count >= core->ipc_client_capacity) {
-        size_t new_capacity = core->ipc_client_capacity == 0U
-                                  ? 4U
-                                  : core->ipc_client_capacity * 2U;
-        cog_ipc_endpoint_t **new_list = (cog_ipc_endpoint_t **)realloc(
-            core->ipc_clients, new_capacity * sizeof(*new_list));
-
-        if (new_list == NULL) {
-            return COG_ERROR_NOMEM;
-        }
-        core->ipc_clients = new_list;
-        core->ipc_client_capacity = new_capacity;
-    }
-    core->ipc_clients[core->ipc_client_count] = client;
-    ++core->ipc_client_count;
-    return COG_OK;
-}
-
-/**
- * @brief Remove and free an accepted client endpoint.
- *
- * Freeing the client disconnects it, which removes it from the owning
- * listener's peer table (see ipc.c).
- */
-static void core_ipc_client_remove(cog_core_t *core,
-                                   cog_ipc_endpoint_t *client)
-{
-    size_t i;
-
-    for (i = 0U; i < core->ipc_client_count; ++i) {
-        if (core->ipc_clients[i] == client) {
-            if (i + 1U < core->ipc_client_count) {
-                (void)memmove(&core->ipc_clients[i],
-                              &core->ipc_clients[i + 1U],
-                              (core->ipc_client_count - i - 1U) *
-                                  sizeof(core->ipc_clients[0]));
-            }
-            --core->ipc_client_count;
-            break;
-        }
-    }
-    (void)cog_ipc_endpoint_free(client);
-}
-
-/**
- * @brief Enqueue a COG_EVENT_IPC_* event.
- *
- * Copies @p payload (if any) into a core-owned buffer so the message
- * bytes survive until the event is dispatched, and tracks that buffer in
- * the core's in-flight list so it is released after dispatch.  The
- * cog_event_ipc_t struct itself is snapshotted by the event queue (see
- * event.h / the event CONTRACT.md), so only the inner msg_payload needs
- * core-managed lifetime.
- *
- * @return COG_OK on success.
- * @return COG_ERROR_NOMEM if the payload copy or in-flight tracking fails.
- * @return COG_ERROR_OVERFLOW if the event queue is full (the payload copy
- *         is released; the caller should stop draining).
- */
-static cog_result_t core_ipc_enqueue(cog_core_t *core,
-                                     cog_event_kind_t kind,
-                                     cog_peer_id_t peer,
-                                     const void *payload,
-                                     size_t payload_len)
-{
-    cog_event_t event;
-    cog_event_ipc_t ipc;
-    void *copy = NULL;
-    cog_result_t rc;
-
-    if (payload_len > 0U) {
-        copy = malloc(payload_len);
-        if (copy == NULL) {
-            return COG_ERROR_NOMEM;
-        }
-        (void)memcpy(copy, payload, payload_len);
-        rc = core_ipc_inflight_add(core, copy);
-        if (rc != COG_OK) {
-            free(copy);
-            return rc;
-        }
-    }
-
+    cog_event_ipc_t ipc = {0};
+    cog_event_t event = {0};
     ipc.peer = peer;
-    ipc.msg_type = 0U;
-    ipc.msg_payload = copy;
-    ipc.msg_payload_len = payload_len;
-
+    ipc.msg_payload = data;
+    ipc.msg_payload_len = length;
     event.id = (cog_event_id_t)kind;
     event.kind = kind;
     event.payload = &ipc;
     event.payload_len = sizeof(ipc);
-    event.source_id = 0U;
-
-    rc = cog_event_queue_push(core->event_queue, &event);
-    if (rc != COG_OK) {
-        if (copy != NULL) {
-            core_ipc_inflight_remove(core, copy);
-            free(copy);
-        }
+    return cog_event_queue_push(core->ipc_events, &event);
+}
+static void core_ipc_release(cog_core_t *core, const void *payload)
+{
+    core_slice_t *slice;
+    if (core->ipc_slice_count == 0U) {
+        return;
+    }
+    slice = &core->ipc_slices[core->ipc_slice_head];
+    if (payload != core->ipc_arena + slice->offset) {
+        return;
+    }
+    core->ipc_arena_used -= slice->charge;
+    core->ipc_arena_head = (slice->offset + slice->length) % core->ipc_arena_capacity;
+    core->ipc_slice_head = (core->ipc_slice_head + 1U) % core->ipc_slice_capacity;
+    --core->ipc_slice_count;
+    if (core->ipc_slice_count == 0U) {
+        core->ipc_arena_head = 0U;
+        core->ipc_arena_tail = 0U;
+        core->ipc_arena_used = 0U;
+    }
+}
+static void core_ipc_remove(cog_core_t *core, size_t index)
+{
+    (void)cog_ipc_endpoint_free(core->ipc_clients[index]);
+    --core->ipc_client_count;
+    memmove(core->ipc_clients + index, core->ipc_clients + index + 1U,
+            (core->ipc_client_count - index) * sizeof(*core->ipc_clients));
+    if (core->ipc_cursor > index) {
+        --core->ipc_cursor;
+    }
+}
+static cog_result_t core_ipc_receive(cog_core_t *core, cog_ipc_endpoint_t *ep)
+{
+    unsigned char dummy;
+    cog_ipc_message_t probe = {&dummy, 0U, 0U};
+    cog_peer_id_t peer = 0U;
+    cog_result_t rc;
+    size_t offset, charge, padding = 0U, slot;
+    core_slice_t *slice;
+    if (cog_event_queue_is_full(core->ipc_events)) {
+        return COG_ERROR_AGAIN;
+    }
+    (void)cog_ipc_endpoint_get_peer_id(ep, &peer);
+    rc = cog_ipc_endpoint_recv(ep, &probe);
+    if (rc == COG_OK) {
+        return core_ipc_enqueue(core, COG_EVENT_IPC_MESSAGE, peer, NULL, 0U);
+    }
+    if (rc != COG_ERROR_OVERFLOW) {
         return rc;
     }
+    if (probe.len > core->ipc_max_frame) {
+        return COG_ERROR_LIMIT;
+    }
+    if (core->ipc_slice_count == core->ipc_slice_capacity) {
+        return COG_ERROR_AGAIN;
+    }
+    offset = core->ipc_arena_tail;
+    if (probe.len > core->ipc_arena_capacity - offset) {
+        padding = core->ipc_arena_capacity - offset;
+        offset = 0U;
+    }
+    if (padding > core->ipc_arena_capacity - core->ipc_arena_used ||
+        probe.len > core->ipc_arena_capacity - core->ipc_arena_used - padding) {
+        return COG_ERROR_AGAIN;
+    }
+    charge = padding + probe.len;
+    probe.data = core->ipc_arena + offset;
+    probe.capacity = probe.len;
+    /* Event and arena reservations are established before consuming the frame.
+     * No callback can mutate either reservation between receive and enqueue. */
+    rc = cog_ipc_endpoint_recv(ep, &probe);
+    if (rc != COG_OK) {
+        return rc;
+    }
+    rc = core_ipc_enqueue(core, COG_EVENT_IPC_MESSAGE, peer, probe.data, probe.len);
+    assert(rc == COG_OK);
+    if (rc != COG_OK) {
+        return rc;
+    }
+    slot = (core->ipc_slice_head + core->ipc_slice_count) % core->ipc_slice_capacity;
+    slice = &core->ipc_slices[slot];
+    slice->offset = offset;
+    slice->length = probe.len;
+    slice->charge = charge;
+    ++core->ipc_slice_count;
+    core->ipc_arena_used += charge;
+    core->ipc_arena_tail = (offset + probe.len) % core->ipc_arena_capacity;
     return COG_OK;
 }
-
-/**
- * @brief Poll and receive one message from a connected endpoint.
- *
- * @param[in,out] core  Core owning the endpoint and the receive buffer.
- * @param[in,out] ep    Connected endpoint to read from.
- * @param[in]     owned Non-zero if @p ep is a core-owned accepted client
- *                      that must be freed on disconnect; zero for the
- *                      core's own configured endpoint.
- * @return COG_OK if a message was received and enqueued, or if nothing
- *         was ready, or (owned == 0) if the endpoint disconnected.
- * @return COG_ERROR_IO if an owned client disconnected and was freed.
- * @return COG_ERROR_OVERFLOW if the event queue is full (stop draining).
- * @return COG_ERROR_NOMEM if a payload copy or tracking allocation fails.
- */
-static cog_result_t core_ipc_recv_one(cog_core_t *core,
-                                      cog_ipc_endpoint_t *ep,
-                                      int owned)
+static cog_result_t core_ipc_step(cog_core_t *core, uint64_t now, uint64_t *deadline)
 {
-    cog_result_t rc;
-    int revents = 0;
-    cog_peer_id_t peer_id = COG_PEER_ID_INVALID;
-
-    rc = cog_ipc_endpoint_poll(ep, COG_IPC_POLL_IN, 0, &revents);
-    if (rc == COG_ERROR_INVALID_STATE) {
-        return COG_OK; /* endpoint already disconnected; nothing to do */
-    }
-    if (rc != COG_OK || (revents & (COG_IPC_POLL_IN | COG_IPC_POLL_ERR)) == 0) {
-        return COG_OK; /* timeout or transient; nothing ready */
-    }
-
-    (void)cog_ipc_endpoint_get_peer_id(ep, &peer_id);
-
-    rc = cog_ipc_endpoint_recv(ep, &core->ipc_recv);
-    if (rc == COG_OK) {
-        return core_ipc_enqueue(core, COG_EVENT_IPC_MESSAGE, peer_id,
-                                core->ipc_recv.data, core->ipc_recv.len);
-    }
-
-    /* Disconnect or malformed frame: ipc.c has already closed the
-     * connection.  Report the disconnect.  For an owned client, free it
-     * (removing it from the listener's peer table). */
-    if (owned) {
-        core_ipc_client_remove(core, ep);
-        (void)core_ipc_enqueue(core, COG_EVENT_IPC_DISCONNECTED, peer_id,
-                               NULL, 0U);
-        return COG_ERROR_IO;
-    }
-    (void)core_ipc_enqueue(core, COG_EVENT_IPC_DISCONNECTED, peer_id, NULL,
-                           0U);
-    return COG_OK;
-}
-
-/**
- * @brief Accept all pending connections on the core's listener.
- *
- * Each accepted client is tracked and reported with a
- * COG_EVENT_IPC_CONNECTED event.  Stops accepting when no connection is
- * pending or the event queue is full.
- *
- * @return COG_OK on success.
- * @return COG_ERROR_NOMEM if a client-list or event allocation fails.
- * @return COG_ERROR_IO if accept fails.
- * @return COG_ERROR_OVERFLOW if the event queue is full (stop draining).
- */
-static cog_result_t core_ipc_accept_pending(cog_core_t *core)
-{
-    for (;;) {
-        cog_ipc_endpoint_t *client = NULL;
-        cog_peer_id_t peer_id = COG_PEER_ID_INVALID;
-        cog_result_t rc;
-        int revents = 0;
-
-        rc = cog_ipc_endpoint_poll(core->ipc_endpoint, COG_IPC_POLL_IN, 0,
-                                   &revents);
-        if (rc != COG_OK || (revents & COG_IPC_POLL_IN) == 0) {
-            break; /* no pending connection */
-        }
-
-        rc = cog_ipc_endpoint_accept(core->ipc_endpoint, &client, &peer_id);
-        if (rc == COG_ERROR_AGAIN) {
-            break; /* raced; no pending connection */
-        }
-        if (rc != COG_OK) {
-            return rc; /* accept failed */
-        }
-
-        rc = core_ipc_client_add(core, client);
-        if (rc != COG_OK) {
-            (void)cog_ipc_endpoint_free(client);
-            return rc;
-        }
-
-        rc = core_ipc_enqueue(core, COG_EVENT_IPC_CONNECTED, peer_id, NULL,
-                             0U);
-        if (rc != COG_OK) {
-            /* Queue full or allocation failure: stop accepting.  The
-             * client stays tracked and will be drained for messages on a
-             * later pass. */
-            return rc;
-        }
-    }
-    return COG_OK;
-}
-
-/**
- * @brief Drain every accepted client of the core's listener.
- *
- * @return COG_OK on success.
- * @return COG_ERROR_NOMEM if a payload copy or tracking allocation fails.
- * @return COG_ERROR_OVERFLOW if the event queue is full (stop draining).
- */
-static cog_result_t core_ipc_drain_clients(cog_core_t *core)
-{
-    size_t i = 0U;
-
-    while (i < core->ipc_client_count) {
-        cog_result_t rc = core_ipc_recv_one(core, core->ipc_clients[i], 1);
-
-        if (rc == COG_ERROR_IO) {
-            continue; /* client freed; the list shifted, @p i is current */
-        }
-        if (rc != COG_OK) {
-            return rc;
-        }
-        ++i;
-    }
-    return COG_OK;
-}
-
-/**
- * @brief Drain the core's IPC fabric.
- *
- * Accepts pending connections and receives messages on the core's own
- * endpoint (connected case) or its accepted clients (listener case),
- * enqueuing COG_EVENT_IPC_* events.  A full event queue is not an error:
- * the drain stops and the loop dispatches what it has.
- *
- * @return COG_OK on success.
- * @return COG_ERROR_NOMEM if an allocation fails.
- * @return COG_ERROR_IO if accept fails.
- */
-static cog_result_t core_ipc_drain(cog_core_t *core)
-{
-    cog_result_t rc;
-
-    if (core->ipc_endpoint == NULL) {
+    size_t unit;
+    if (core->ipc_endpoint == NULL || core->ipc_is_listener == 0) {
         return COG_OK;
     }
-
-    if (core->ipc_is_listener == 1) {
-        rc = core_ipc_accept_pending(core);
-        if (rc == COG_ERROR_OVERFLOW) {
-            return COG_OK;
+    for (unit = 0U; unit < core->ipc_quantum; ++unit) {
+        cog_ipc_endpoint_t *ep;
+        cog_result_t rc;
+        uint64_t next = UINT64_MAX;
+        size_t index = 0U;
+        if (atomic_load_explicit(&core->stop_requested, memory_order_acquire)) {
+            break;
         }
-        if (rc != COG_OK) {
+        /* Rotate acceptance with existing peers; a permanently readable peer
+         * cannot monopolize the step and queue saturation never consumes ingress. */
+        if (core->ipc_is_listener == 1 && core->ipc_cursor >= core->ipc_client_count) {
+            cog_ipc_endpoint_t *client = NULL;
+            cog_peer_id_t peer = 0U;
+            core->ipc_cursor = 0U;
+            if (!cog_event_queue_is_full(core->ipc_events) &&
+                core->ipc_client_count < core->ipc_client_capacity) {
+                rc = cog_ipc_endpoint_accept(core->ipc_endpoint, &client, &peer);
+                if (rc == COG_OK) {
+                    core->ipc_clients[core->ipc_client_count++] = client;
+                    rc =
+                        core_ipc_enqueue(core, COG_EVENT_IPC_CONNECTED, peer, NULL, 0U);
+                    assert(rc == COG_OK);
+                }
+                if (rc != COG_OK && rc != COG_ERROR_AGAIN) {
+                    return rc;
+                }
+            }
+            if (core->ipc_client_count == core->ipc_client_capacity) {
+                rc = cog_ipc_internal_refuse(core->ipc_endpoint);
+                if (rc != COG_OK && rc != COG_ERROR_AGAIN) {
+                    return rc;
+                }
+            }
+            if (core->ipc_client_count == 0U) {
+                break;
+            }
+            continue;
+        }
+        if (core->ipc_is_listener == 1) {
+            index = core->ipc_cursor++;
+            ep = core->ipc_clients[index];
+        } else {
+            ep = core->ipc_endpoint;
+        }
+        rc = cog_ipc_internal_service_one(ep, now, &next);
+        if (next < *deadline) {
+            *deadline = next;
+        }
+        if (rc != COG_OK && rc != COG_ERROR_AGAIN &&
+            cog_event_queue_is_full(core->ipc_events)) {
+            continue;
+        }
+        /* Retained complete frames precede disconnect reporting even if the
+         * service observed EOF after framing them. */
+        rc = core_ipc_receive(core, ep);
+        if (rc == COG_OK || rc == COG_ERROR_AGAIN || rc == COG_ERROR_INVALID_STATE) {
+            continue;
+        }
+        if (cog_event_queue_is_full(core->ipc_events)) {
+            continue;
+        }
+        {
+            cog_peer_id_t peer = 0U;
+            (void)cog_ipc_endpoint_get_peer_id(ep, &peer);
+            (void)core_ipc_enqueue(core, COG_EVENT_IPC_DISCONNECTED, peer, NULL, 0U);
+        }
+        if (core->ipc_is_listener == 1) {
+            core_ipc_remove(core, index);
+        } else {
+            (void)cog_ipc_endpoint_disconnect(ep);
+            core->ipc_is_listener = 0;
+        }
+        if (rc != COG_ERROR_IO) {
             return rc;
         }
-        rc = core_ipc_drain_clients(core);
-        if (rc == COG_ERROR_OVERFLOW) {
-            return COG_OK;
-        }
-        return rc;
     }
-
-    if (core->ipc_is_listener == 2) {
-        rc = core_ipc_recv_one(core, core->ipc_endpoint, 0);
-        if (rc == COG_ERROR_OVERFLOW) {
-            return COG_OK;
-        }
-        return rc;
-    }
-
-    return COG_OK; /* unbound: nothing to drain */
+    return COG_OK;
 }
-
-/* ------------------------------------------------------------------ */
-/* Lifecycle                                                           */
-/* ------------------------------------------------------------------ */
-
+static void core_storage_free(cog_core_t *core)
+{
+    free(core->pending_owners);
+    free(core->pending_items);
+    free(core->pending_text);
+    free(core->injected_payload);
+    free(core->ipc_clients);
+    free(core->ipc_arena);
+    free(core->ipc_slices);
+    cog_agent_registry_reset(&core->agents);
+    cog_event_queue_free(core->event_queue);
+    cog_event_queue_free(core->ipc_events);
+    free(core);
+}
 cog_result_t cog_core_new(cog_core_t **out, const cog_core_config_t *config)
 {
-    struct cog_core *core;
-    size_t queue_capacity;
+    cog_core_t *core;
+    size_t queue, entries;
     cog_result_t rc;
-
-    if (out == NULL || config == NULL) {
+    if (out == NULL) {
         return COG_ERROR_NULL_PTR;
     }
     *out = NULL;
-
-    if (config->session == NULL ||
-        config->dispatch_table == NULL ||
-        config->dispatch_table_size == 0U) {
+    if (config == NULL) {
+        return COG_ERROR_NULL_PTR;
+    }
+    if (config->session == NULL || config->dispatch_table == NULL ||
+        config->dispatch_table_size == 0U ||
+        (config->wait_fn != NULL &&
+         (config->service_fn != NULL || config->idle_fn != NULL))) {
         return COG_ERROR_INVALID_ARG;
     }
-
-    core = (struct cog_core *)calloc(1U, sizeof(*core));
+    core = calloc(1U, sizeof(*core));
     if (core == NULL) {
         return COG_ERROR_NOMEM;
     }
-
-    queue_capacity = config->event_queue_capacity;
-    if (queue_capacity == 0U) {
-        queue_capacity = COG_CORE_DEFAULT_EVENT_QUEUE_CAPACITY;
+    queue = core_default(config->event_queue_capacity, 64U);
+    core->pending_owner_capacity = core_default(config->pending_session_capacity, 17U);
+    core->pending_per_owner = core_default(config->pending_messages_per_session, 8U);
+    core->pending_bytes = core_default(config->pending_message_bytes, 65536U);
+    core->ipc_client_capacity = core_default(config->ipc_peer_capacity, 16U);
+    core->ipc_max_frame = core_default(config->ipc_max_frame_bytes, 1048576U);
+    core->ipc_arena_capacity = core_default(config->ipc_payload_bytes, 8388608U);
+    core->ipc_quantum = core_default(config->ipc_service_quantum, 16U);
+    core->ipc_slice_capacity = core->ipc_quantum;
+    if (core->pending_owner_capacity > SIZE_MAX / core->pending_per_owner ||
+        core->pending_owner_capacity > SIZE_MAX / sizeof(*core->pending_owners) ||
+        core->ipc_client_capacity > SIZE_MAX / sizeof(*core->ipc_clients) ||
+        core->ipc_slice_capacity > SIZE_MAX / sizeof(*core->ipc_slices) ||
+        core->ipc_max_frame > UINT32_MAX ||
+        core->ipc_arena_capacity < core->ipc_max_frame) {
+        free(core);
+        return COG_ERROR_INVALID_ARG;
     }
-
-    rc = cog_event_queue_new(&core->event_queue, queue_capacity);
+    entries = core->pending_owner_capacity * core->pending_per_owner;
+    if (entries > SIZE_MAX / sizeof(*core->pending_items) ||
+        entries > SIZE_MAX / core->pending_bytes) {
+        free(core);
+        return COG_ERROR_INVALID_ARG;
+    }
+    rc = cog_event_queue_new(&core->event_queue, queue);
     if (rc != COG_OK) {
         free(core);
         return rc;
     }
-
-    core->pending = (cog_pending_msg_t *)calloc(
-        COG_CORE_DEFAULT_PENDING_CAPACITY, sizeof(cog_pending_msg_t));
-    if (core->pending == NULL) {
-        cog_event_queue_free(core->event_queue);
-        free(core);
+    rc = cog_event_queue_new(&core->ipc_events, core->ipc_slice_capacity);
+    if (rc != COG_OK) {
+        core_storage_free(core);
+        return rc;
+    }
+    core->pending_owners =
+        calloc(core->pending_owner_capacity, sizeof(*core->pending_owners));
+    core->pending_items = calloc(entries, sizeof(*core->pending_items));
+    core->pending_text = malloc(entries * core->pending_bytes);
+    core->injected_payload = malloc(core->pending_bytes);
+    core->ipc_clients = calloc(core->ipc_client_capacity, sizeof(*core->ipc_clients));
+    core->ipc_slices = calloc(core->ipc_slice_capacity, sizeof(*core->ipc_slices));
+    core->ipc_arena = malloc(core->ipc_arena_capacity);
+    if (core->pending_owners == NULL || core->pending_items == NULL ||
+        core->pending_text == NULL || core->injected_payload == NULL ||
+        core->ipc_clients == NULL || core->ipc_slices == NULL ||
+        core->ipc_arena == NULL) {
+        core_storage_free(core);
         return COG_ERROR_NOMEM;
     }
-
-    /* Accept and take ownership of an optional IPC endpoint.  The core
-     * drains it during cog_core_run and destroys it in cog_core_free.
-     * The receive buffer is sized to accept every valid frame. */
-    if (config->ipc_endpoint != NULL) {
-        rc = cog_ipc_message_new(&core->ipc_recv, COG_CORE_IPC_RECV_CAPACITY);
-        if (rc != COG_OK) {
-            free(core->pending);
-            cog_event_queue_free(core->event_queue);
-            free(core);
-            return rc;
-        }
-        core->ipc_is_listener = core_ipc_probe_role(config->ipc_endpoint);
+    rc = cog_agent_registry_init(&core->agents, core_default(config->max_agents, 16U),
+                                 core_default(config->max_agent_message_bytes, 65536U));
+    if (rc != COG_OK) {
+        core_storage_free(core);
+        return rc;
     }
-
     core->session = config->session;
     core->dispatch_table = config->dispatch_table;
     core->dispatch_table_size = config->dispatch_table_size;
@@ -742,193 +455,185 @@ cog_result_t cog_core_new(cog_core_t **out, const cog_core_config_t *config)
     core->wait_fn = config->wait_fn;
     core->wait_arg = config->wait_arg;
     core->user = config->user;
+    core->service_fn = config->service_fn;
+    core->service_arg = config->service_arg;
+    core->idle_fn = config->idle_fn;
+    core->idle_arg = config->idle_arg;
+    core->service_interval = core_default(config->service_interval, 16U);
+    core->max_idle_wait_ms =
+        config->max_idle_wait_ms != 0U ? config->max_idle_wait_ms : 10U;
     core->ipc_endpoint = config->ipc_endpoint;
+    core->ipc_is_listener = cog_ipc_internal_role(config->ipc_endpoint);
     core->local_peer_id = config->local_peer_id;
     core->provider = config->provider;
     core->obs = config->obs;
     core->store = config->store;
-    core->state = 0U;
     atomic_init(&core->running, false);
     atomic_init(&core->stop_requested, false);
-    core->pending_capacity = COG_CORE_DEFAULT_PENDING_CAPACITY;
-    core->pending_count = 0U;
-    core->injected_payload = NULL;
-
-    /* Attach the session so cog_session_reset refuses while the core is
-     * alive (see session.c). */
     ((struct cog_session *)core->session)->attached = true;
-
     if (core->obs != NULL) {
         (void)cog_obs_log(core->obs, COG_OBS_INFO, "core.created", NULL, 0U);
     }
-
     *out = core;
     return COG_OK;
 }
-
 void cog_core_free(cog_core_t *core)
 {
     size_t i;
-
     if (core == NULL) {
         return;
     }
-
-    /* Detach the session so it can be reset/freed independently. */
     ((struct cog_session *)core->session)->attached = false;
-
-    for (i = 0U; i < core->pending_count; ++i) {
-        free(core->pending[i].session_id);
-        free(core->pending[i].text);
-    }
-    free(core->pending);
-    free(core->injected_payload);
-    cog_event_queue_free(core->event_queue);
-
-    /* Release every subagent record and its child session. */
-    cog_agent_registry_reset(&core->agents);
-
-    /* Release any in-flight IPC message payload copies that were never
-     * dispatched (e.g. the core was freed with events still queued). */
-    for (i = 0U; i < core->ipc_inflight_count; ++i) {
-        free(core->ipc_inflight[i]);
-    }
-    free(core->ipc_inflight);
-
-    /* Free accepted clients first so each disconnect removes itself from
-     * the listener's peer table while the listener is still alive. */
     for (i = 0U; i < core->ipc_client_count; ++i) {
         (void)cog_ipc_endpoint_free(core->ipc_clients[i]);
     }
-    free(core->ipc_clients);
-
-    /* Destroy the core's own endpoint (listener or connected). */
     if (core->ipc_endpoint != NULL) {
         (void)cog_ipc_endpoint_free(core->ipc_endpoint);
     }
-
-    /* Release the receive buffer (no-op when no endpoint was configured). */
-    (void)cog_ipc_message_free(&core->ipc_recv);
-
     if (core->obs != NULL) {
-        (void)cog_obs_log(core->obs, COG_OBS_INFO, "core.destroyed", NULL,
-                          0U);
+        (void)cog_obs_log(core->obs, COG_OBS_INFO, "core.destroyed", NULL, 0U);
     }
-
-    free(core);
+    core_storage_free(core);
 }
-
-/* ------------------------------------------------------------------ */
-/* Run loop                                                            */
-/* ------------------------------------------------------------------ */
-
 cog_result_t cog_core_run(cog_core_t *core)
 {
-    cog_result_t rc;
-
+    cog_result_t rc = COG_OK;
+    uint64_t deadline = 0U;
+    size_t dispatched = 0U;
+    bool service_due = true;
     if (core == NULL) {
         return COG_ERROR_NULL_PTR;
     }
-    if (atomic_load_explicit(&core->running, memory_order_relaxed)) {
+    if (core->active) {
         return COG_ERROR_INVALID_STATE;
     }
-
-    atomic_store_explicit(&core->running, true, memory_order_relaxed);
-    atomic_store_explicit(&core->stop_requested, false, memory_order_relaxed);
-
+    core->active = true;
     if (core->obs != NULL) {
-        (void)cog_obs_log(core->obs, COG_OBS_INFO, "core.run_start", NULL,
-                          0U);
+        (void)cog_obs_log(core->obs, COG_OBS_INFO, "core.run_start", NULL, 0U);
     }
-
-    rc = COG_OK;
-    while (!atomic_load_explicit(&core->stop_requested,
-                                 memory_order_acquire)) {
+    atomic_store_explicit(&core->stop_requested, false, memory_order_relaxed);
+    atomic_store_explicit(&core->running, true, memory_order_relaxed);
+    while (!atomic_load_explicit(&core->stop_requested, memory_order_acquire)) {
+        uint64_t now;
         cog_event_t event;
-        cog_result_t pop_rc;
-
-        pop_rc = cog_event_queue_pop(core->event_queue, &event);
-        if (pop_rc == COG_ERROR_AGAIN) {
-            /* Queue empty.  Honour a pending stop request before doing any
-             * further work: injecting a pending message here would dequeue
-             * it and then drop it unprocessed on shutdown. */
-            if (atomic_load_explicit(&core->stop_requested,
-                                     memory_order_acquire)) {
+        rc = core_now(&now);
+        if (rc != COG_OK) {
+            break;
+        }
+        if (service_due || dispatched >= core->service_interval || now >= deadline ||
+            cog_event_queue_is_empty(core->event_queue)) {
+            uint64_t next = UINT64_MAX;
+            deadline = UINT64_MAX;
+            if (core->service_fn != NULL) {
+                rc = core->service_fn(core->service_arg, now, &next);
+                if (rc != COG_OK && rc != COG_ERROR_AGAIN) {
+                    break;
+                }
+                deadline = next;
+            }
+            if (atomic_load_explicit(&core->stop_requested, memory_order_acquire)) {
+                rc = COG_OK;
                 break;
             }
-            /* Drain the IPC fabric: accept new peers and receive messages,
-             * enqueuing COG_EVENT_IPC_* events.  A drain failure (e.g.
-             * allocation failure) is fatal to the loop and is returned; a
-             * full event queue is not (the drain stops and the loop
-             * dispatches what it has). */
-            rc = core_ipc_drain(core);
+            rc = core_ipc_step(core, now, &deadline);
             if (rc != COG_OK) {
                 break;
             }
-            if (atomic_load_explicit(&core->stop_requested,
-                                     memory_order_acquire)) {
+            dispatched = 0U;
+            service_due = false;
+            if (atomic_load_explicit(&core->stop_requested, memory_order_acquire)) {
                 break;
             }
-            /* If IPC produced events, pop them before waiting. */
-            if (!cog_event_queue_is_empty(core->event_queue)) {
+        }
+        if (core->prefer_ipc) {
+            rc = cog_event_queue_pop(core->ipc_events, &event);
+            if (rc == COG_ERROR_AGAIN) {
+                rc = cog_event_queue_pop(core->event_queue, &event);
+            }
+        } else {
+            rc = cog_event_queue_pop(core->event_queue, &event);
+            if (rc == COG_ERROR_AGAIN) {
+                rc = cog_event_queue_pop(core->ipc_events, &event);
+            }
+        }
+        core->prefer_ipc = !core->prefer_ipc;
+        if (rc == COG_ERROR_AGAIN) {
+            uint32_t budget = core->max_idle_wait_ms;
+            rc = core_inject_pending(core);
+            if (rc == COG_OK) {
                 continue;
             }
-            /* Inject a pending message for our session, or wait. */
-            if (core_inject_pending(core) == COG_OK) {
-                /* A stop may have landed between the pre-inject check and
-                 * the enqueue.  If so, the injected event has not been
-                 * dispatched: remove that exact event and restore the
-                 * pending message at the head of the FIFO so it is not
-                 * dropped, then exit before dispatch. */
-                if (atomic_load_explicit(&core->stop_requested,
-                                         memory_order_acquire)) {
-                    core_restore_injected(core);
-                    break;
-                }
-                continue;
-            }
-            if (atomic_load_explicit(&core->stop_requested,
-                                     memory_order_acquire)) {
+            if (rc != COG_ERROR_NOT_FOUND) {
                 break;
+            }
+            if (atomic_load_explicit(&core->stop_requested, memory_order_acquire)) {
+                rc = COG_OK;
+                break;
+            }
+            rc = core_now(&now);
+            if (rc != COG_OK) {
+                break;
+            }
+            if (deadline <= now) {
+                budget = 0U;
+            } else if (deadline - now < budget) {
+                budget = (uint32_t)(deadline - now);
             }
             if (core->wait_fn != NULL) {
                 core->wait_fn(core->wait_arg);
+                rc = COG_OK;
+            } else if (core->idle_fn != NULL) {
+                rc = core->idle_fn(core->idle_arg, budget);
             } else {
-                core_yield();
+                struct timespec pause;
+                pause.tv_sec = (time_t)(budget / 1000U);
+                pause.tv_nsec = (long)(budget % 1000U) * 1000000L;
+                if (budget != 0U) {
+                    (void)nanosleep(&pause, NULL);
+                }
+                rc = COG_OK;
             }
+            if (rc != COG_OK && rc != COG_ERROR_AGAIN) {
+                break;
+            }
+            service_due = true;
+            rc = COG_OK;
             continue;
         }
-        if (pop_rc != COG_OK) {
-            rc = pop_rc; /* unexpected queue error */
+        if (rc != COG_OK) {
             break;
         }
-
-        rc = core_dispatch(core, &event);
-        /* Release the IPC message payload copy after dispatch.  The
-         * cog_event_ipc_t struct itself is snapshotted by the event queue;
-         * only the inner msg_payload needs core-managed lifetime. */
-        if (event.kind == COG_EVENT_IPC_MESSAGE && event.payload != NULL) {
-            const cog_event_ipc_t *ipc =
-                (const cog_event_ipc_t *)event.payload;
-            core_ipc_inflight_free(core, (void *)ipc->msg_payload);
+        if (core->injected && event.payload == core->injected_payload) {
+            core_pending_remove(core, core->injected_owner);
+            core->injected = false;
         }
-        free(core->injected_payload);
-        core->injected_payload = NULL;
+        rc = core_dispatch(core, &event);
+        if (event.kind == COG_EVENT_IPC_MESSAGE && event.payload != NULL) {
+            const cog_event_ipc_t *ipc = event.payload;
+            core_ipc_release(core, ipc->msg_payload);
+        }
+        ++dispatched;
         if (rc != COG_OK) {
             break;
         }
     }
-
-    atomic_store_explicit(&core->running, false, memory_order_relaxed);
-    if (core->obs != NULL) {
-        (void)cog_obs_log(core->obs,
-                          rc == COG_OK ? COG_OBS_INFO : COG_OBS_ERROR,
-                          rc == COG_OK ? "core.run_stop" : "core.run_error",
-                          NULL, 0U);
+    /* An injected item stays at the FIFO head until dispatch. Remove its
+     * queue descriptor on stop, preserving the reserved bytes for run retry. */
+    if (core->injected) {
+        cog_event_t event;
+        cog_result_t pop = cog_event_queue_pop(core->event_queue, &event);
+        assert(pop == COG_OK && event.payload == core->injected_payload);
+        (void)pop;
+        core->injected = false;
     }
+    if (core->obs != NULL) {
+        (void)cog_obs_log(core->obs, rc == COG_OK ? COG_OBS_INFO : COG_OBS_ERROR,
+                          rc == COG_OK ? "core.run_stop" : "core.run_error", NULL, 0U);
+    }
+    core->active = false;
+    atomic_store_explicit(&core->running, false, memory_order_relaxed);
     return rc;
 }
-
 void cog_core_stop(cog_core_t *core)
 {
     if (core == NULL) {
@@ -964,8 +669,7 @@ cog_state_t cog_core_state(const cog_core_t *core)
 
 bool cog_core_is_running(const cog_core_t *core)
 {
-    return (core != NULL) &&
-           atomic_load_explicit(&core->running, memory_order_relaxed);
+    return (core != NULL) && atomic_load_explicit(&core->running, memory_order_relaxed);
 }
 
 void *cog_core_user(const cog_core_t *core)
@@ -1002,117 +706,72 @@ cog_agent_registry_t *cog_core_agent_registry(cog_core_t *core)
     return (core != NULL) ? &core->agents : NULL;
 }
 
-/* ------------------------------------------------------------------ */
-/* Pending message FIFO                                                */
-/* ------------------------------------------------------------------ */
-
-cog_result_t cog_core_queue_message(cog_core_t *core,
-                                     const char *session_id,
-                                     const char *text,
-                                     size_t text_len)
+cog_result_t cog_core_queue_message(cog_core_t *core, const char *session_id,
+                                    const char *text, size_t text_len)
 {
-    char *sid_copy;
-    char *text_copy;
-
+    size_t owner, i, n, slot;
+    core_pending_owner_t *entry;
     if (core == NULL || session_id == NULL || text == NULL) {
         return COG_ERROR_NULL_PTR;
     }
-
-    if (core->pending_count >= core->pending_capacity) {
+    n = strnlen(session_id, sizeof(core->pending_owners[0].id));
+    if (n == sizeof(core->pending_owners[0].id) || text_len >= core->pending_bytes) {
+        return COG_ERROR_LIMIT;
+    }
+    owner = core_pending_owner(core, session_id);
+    if (owner == SIZE_MAX) {
+        for (i = 0U; i < core->pending_owner_capacity; ++i) {
+            if (core->pending_owners[i].count == 0U) {
+                break;
+            }
+        }
+        if (i == core->pending_owner_capacity) {
+            return COG_ERROR_LIMIT;
+        }
+        owner = i;
+    }
+    entry = &core->pending_owners[owner];
+    if (entry->count == core->pending_per_owner) {
         return COG_ERROR_OVERFLOW;
     }
-
-    /* text_len + 1 must not wrap: a length of SIZE_MAX would make the
-     * allocation size zero and then write past it.  Reject it as an
-     * unsatisfiable allocation. */
-    if (text_len == SIZE_MAX) {
-        return COG_ERROR_NOMEM;
-    }
-
-    sid_copy = strdup(session_id);
-    if (sid_copy == NULL) {
-        return COG_ERROR_NOMEM;
-    }
-    text_copy = (char *)malloc(text_len + 1U);
-    if (text_copy == NULL) {
-        free(sid_copy);
-        return COG_ERROR_NOMEM;
-    }
-    if (text_len > 0U) {
-        (void)memcpy(text_copy, text, text_len);
-    }
-    text_copy[text_len] = '\0';
-
-    core->pending[core->pending_count].session_id = sid_copy;
-    core->pending[core->pending_count].text = text_copy;
-    core->pending[core->pending_count].text_len = text_len;
-    ++core->pending_count;
+    memcpy(entry->id, session_id, n + 1U);
+    slot = owner * core->pending_per_owner + entry->count;
+    memmove(core_pending_text(core, owner, entry->count), text, text_len);
+    core_pending_text(core, owner, entry->count)[text_len] = '\0';
+    core->pending_items[slot].length = text_len;
+    ++entry->count;
     return COG_OK;
 }
-
-cog_result_t cog_core_dequeue_message(cog_core_t *core,
-                                       const char *session_id,
-                                       char *out_buf,
-                                       size_t buf_capacity,
-                                       size_t *out_len)
+cog_result_t cog_core_dequeue_message(cog_core_t *core, const char *session_id,
+                                      char *out_buf, size_t capacity, size_t *out_len)
 {
-    size_t i;
-    cog_pending_msg_t *msg;
-
+    size_t owner, length;
     if (core == NULL || session_id == NULL || out_buf == NULL) {
         return COG_ERROR_NULL_PTR;
     }
-
-    for (i = 0U; i < core->pending_count; ++i) {
-        if (strcmp(core->pending[i].session_id, session_id) == 0) {
-            break;
-        }
-    }
-    if (i == core->pending_count) {
+    owner = core_pending_owner(core, session_id);
+    if (owner == SIZE_MAX) {
         return COG_ERROR_NOT_FOUND;
     }
-
-    msg = &core->pending[i];
-
-    if (msg->text_len >= buf_capacity) {
-        if (out_len != NULL) {
-            *out_len = msg->text_len; /* required capacity, excluding NUL */
-        }
+    length = core->pending_items[owner * core->pending_per_owner].length;
+    if (out_len != NULL) {
+        *out_len = length;
+    }
+    if (length >= capacity) {
         return COG_ERROR_OVERFLOW;
     }
-
-    (void)memcpy(out_buf, msg->text, msg->text_len);
-    out_buf[msg->text_len] = '\0';
-    if (out_len != NULL) {
-        *out_len = msg->text_len;
-    }
-
-    free(msg->session_id);
-    free(msg->text);
-    for (; i + 1U < core->pending_count; ++i) {
-        core->pending[i] = core->pending[i + 1U];
-    }
-    --core->pending_count;
+    memmove(out_buf, core_pending_text(core, owner, 0U), length + 1U);
+    core_pending_remove(core, owner);
     return COG_OK;
 }
-
-cog_result_t cog_core_pending_count(const cog_core_t *core,
-                                     const char *session_id,
-                                     size_t *out_count)
+cog_result_t cog_core_pending_count(const cog_core_t *core, const char *session_id,
+                                    size_t *out_count)
 {
-    size_t i;
-    size_t count;
-
+    size_t owner;
     if (core == NULL || session_id == NULL || out_count == NULL) {
         return COG_ERROR_NULL_PTR;
     }
-
-    count = 0U;
-    for (i = 0U; i < core->pending_count; ++i) {
-        if (strcmp(core->pending[i].session_id, session_id) == 0) {
-            ++count;
-        }
-    }
-    *out_count = count;
+    owner = core_pending_owner(core, session_id);
+    *out_count = owner == SIZE_MAX ? 0U : core->pending_owners[owner].count;
     return COG_OK;
 }

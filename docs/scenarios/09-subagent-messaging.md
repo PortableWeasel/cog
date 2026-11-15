@@ -83,3 +83,17 @@ reported LIMIT, rather than an endless OVERFLOW loop. Accepted endpoint
 constructors remain explicit and peer-count-bounded; private intrusive listener
 links need no additional public allocation surface. Test just-below/exact/above
 frame limits, full arena/full event queue, and caller payload mutation after enqueue.
+
+## Q identity-scope consistency amendment (ee411f9)
+
+A peer number belongs to one listener/fabric, not a process-global registry.
+Cross-fabric consumers use `(owning endpoint/fabric, peer_id)`. In the executable
+Q fixture, two independent listeners each accept their first peer as ID1 and
+register the same session label; routing through listener A reaches only A's
+peer, and routing through B reaches only B's peer. Numeric equality never
+creates a cross-fabric route. Within each listener, IDs increase without reuse;
+uint64 exhaustion returns LIMIT before accepting a new peer. The endpoint
+constructor introduces no global mutable identity state. This narrows obsolete
+process-wide type prose to the existing single-fabric routing boundary and
+changes no function declaration or layout. Independent Q review verifies this
+header/trace/fixture consistency amendment before integration.

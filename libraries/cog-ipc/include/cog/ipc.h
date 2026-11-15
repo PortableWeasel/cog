@@ -15,14 +15,12 @@
  * thread-safe.  One thread at a time may operate on an endpoint.  Distinct
  * endpoints may be used by distinct threads without locking.
  *
- * Blocking model: endpoints are blocking.  @c cog_ipc_endpoint_send and
- * @c cog_ipc_endpoint_recv block until the operation completes or fails;
- * the @c COG_ERROR_AGAIN returns they document are unreachable through the
- * current API because no endpoint can be placed in non-blocking mode.  A
- * @c cog_ipc_endpoint_recv that has read a partial frame blocks until the
- * rest of that frame arrives, so a peer that stalls mid-frame can block the
- * caller indefinitely.  @c cog_ipc_endpoint_poll remains non-blocking and
- * its timeout behaviour is exactly as documented.
+ * Nonblocking model: every socket is nonblocking. Send copies a whole frame
+ * into a constructor-reserved queue; receive consumes only complete retained
+ * frames. endpoint_service advances bounded partial I/O and identity handshake
+ * work without waiting. Callers explicitly drive service and handle AGAIN.
+ * Only endpoint_poll permits the documented legacy positive/indefinite wait;
+ * responsive service hooks and the core use no positive poll waits.
  */
 #ifndef COG_IPC_H
 #define COG_IPC_H
@@ -44,10 +42,12 @@ extern "C" {
 /**
  * @brief Remote peer identifier.
  *
- * Identifies a connected peer within the local process.  The value is
- * assigned by @c cog_ipc_endpoint_accept or @c cog_ipc_endpoint_connect
- * and is unique among peers of the calling process for the lifetime of
- * the connection.
+ * Identifies a connected peer within its owning listener/fabric. Accept
+ * assigns monotonically increasing nonzero IDs, never reused during that
+ * listener lifetime; connect learns the same ID through its handshake.
+ * Independent fabrics may assign the same numeric ID. Cross-fabric consumers
+ * must use the composite (owning endpoint/fabric, peer_id), never the number
+ * alone. Exhausted listener identity space rejects further accepts with LIMIT.
  */
 typedef uint64_t cog_peer_id_t;
 
