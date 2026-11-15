@@ -47,3 +47,19 @@ The attempted full default Werror build reproduces the unrelated existing
 scenario-15 missing `cog_tool_t.async` initializer; full release validation is
 not claimed. In-place overlapping codec buffers are not a promised API facility
 and were not assumed by the review. O still owns headless/snapshot integration.
+
+## Main integration
+
+Authorized integration merged reviewed `b69e944` into main at
+`ea2ab06cf04fbaf740c8e712234636674693efc7` with a topology-preserving merge,
+without conflicts or implementation changes. Main already included the local
+agent lifecycle integration (`8989dcd`); the combined tree passed all five IPC
+suites again in fresh strict GCC, strict Clang and Clang ASan/UBSan builds
+(`build-replay-merge-gcc`, `build-replay-merge-clang`,
+`build-replay-merge-asan`). Sanitizer runs used leak detection and
+halt-on-error. No warnings or sanitizer diagnostics were reported. The existing
+untracked `build_user/` directory was preserved.
+
+Ticket 91108c5 is complete for the bounded replay primitive. There are no scoped
+child tickets. O runtime reconnect/snapshot wiring and the full release gate
+remain open; these local checks do not establish end-to-end headless behavior.
