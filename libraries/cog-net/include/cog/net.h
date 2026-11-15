@@ -57,6 +57,7 @@ struct cog_net_observation;
  * @note No blocking, allocation or calls into this net context, including from
  * downstream sinks. Copy anything retained into host-reserved storage. Both
  * callback and user must outlive the context; no registration changes at runtime.
+ * NULL user is valid; a NULL configured observer ignores observer_user.
  */
 typedef cog_result_t (*cog_net_observer_fn)(void *user,
     const cog_net_ctx_t *ctx, const struct cog_net_observation *observation);
@@ -129,7 +130,11 @@ typedef enum cog_net_observation_kind {
  * bounded/coalesced per service call: at most one CONNECTED, one PROGRESS, one
  * STALLED and one terminal callback per request in a service call. Before a
  * terminal callback, any final unreported body progress is emitted first, so
- * its totals equal the terminal totals. No callback is retried after pause.
+ * its totals equal the terminal totals. OPEN totals are zero; deltas add exactly
+ * to monotonic totals. CONNECTED/STALLED/terminal retain the latest totals.
+ * No callback is retried after pause. Cancellation/release outside service can
+ * emit at most one final PROGRESS and one terminal each. Constructor OPEN emits
+ * at most once, after publication. Peek/ack/status queries emit no observations.
  * Sequence/counter exhaustion latches LIMIT; unavailable/inconsistent upload
  * accounting latches IO. Both disable observation without changing transfers.
  *
@@ -141,11 +146,13 @@ typedef enum cog_net_observation_kind {
  * observation domain without callbacks (see free).
  */
 typedef struct cog_net_observation {
-    cog_net_observation_kind_t kind;
-    cog_request_id_t request_id;
-    uint64_t sequence;
-    uint64_t bytes_in_delta, bytes_out_delta;
-    uint64_t bytes_in_total, bytes_out_total;
+    cog_net_observation_kind_t kind; /**< Transition recorded by this value. */
+    cog_request_id_t request_id; /**< Nonzero admitted ID in callback ctx. */
+    uint64_t sequence; /**< Starts at1; independent of response sequence/ack. */
+    uint64_t bytes_in_delta; /**< Accepted inbound body bytes since prior progress. */
+    uint64_t bytes_out_delta; /**< Actual uploaded body bytes since prior progress. */
+    uint64_t bytes_in_total; /**< Cumulative accepted inbound body bytes. */
+    uint64_t bytes_out_total; /**< Cumulative actual uploaded body bytes. */
     int http_status; /**< Latest parsed status, or 0 when unavailable. */
     cog_result_t outcome; /**< Terminal transport result; otherwise COG_OK. */
     cog_net_error_kind_t error_kind; /**< Terminal class; otherwise NONE. */

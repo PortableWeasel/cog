@@ -88,3 +88,13 @@ owned drain/persistence precedes failure reporting, without replaying an effect
 to regenerate telemetry. The concurrent R12 generations share app/host obs
 lifetime but never borrow diagnostic strings from retired configuration storage.
 The dedicated contract pins this composition; no new public obs API is needed.
+
+## Runtime pass 3: error and privacy boundary
+
+Timing/log failures stop later app admission through normal owned cleanup, never
+make an already completed effect replayable. Diagnostic strings are bridge-owned
+copies, separate from replaceable config/secret lifetime. Config-private label
+screening exposes only safe bounded labels/availability, never secret storage.
+No shared obs stack is used for nonnested simultaneous providers. All callbacks
+remain on the owner thread, with reserved storage and checked downstream errors.
+Header-only validation establishes contracts/compilation, not runtime conformance.

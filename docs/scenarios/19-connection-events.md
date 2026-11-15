@@ -96,3 +96,14 @@ and joins cleanup. Context free ends the whole observation domain without a
 callback; observable terminal evidence uses explicit cancel/release before free.
 The dedicated contract traces15 success/failure/lifetime cases and actual-path
 required oracles. Existing hand-emitted test19 remains component-only evidence.
+
+## Runtime pass 3: consistency boundary
+
+Observation sequence is independent of retained body sequence and never acked.
+OPEN has zero counters; every PROGRESS delta contributes exactly once to its
+totals, with a final progress flush before terminal. Per-request callback counts
+are bounded (4/service,2/cancel-or-release,1/request constructor). Observer
+failure disables only the feed, not the transfer, and remains explicitly sticky.
+A caller never reports this lost feed as complete. Header includes remain acyclic
+and zero-init leaves the optional feed off. Different final header review and
+actual implementation/oracles are still required before runtime acceptance.

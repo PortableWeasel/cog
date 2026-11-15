@@ -118,7 +118,12 @@ availability flags, never silently truncated and never a new failure of an
 otherwise valid4096-byte configuration field. Model labels allow ASCII letters,
 digits and `._:/-` only; session labels use the same safe alphabet. Before output,
 compare candidate labels with the pinned credential bytes/reference and omit a
-label containing either. Real endpoint/provider names are static `openrouter`;
+label containing either. Compute/cache label safety inside the existing private
+effective-configuration constructor while the credential is available; expose
+only the safe label/availability to the bridge, never add a public secret getter.
+This is a private implementation contract for b64ee7c after R12, not an amendment
+to the concurrently owned cli/config headers. Empty/long credentials do not turn
+an unavailable label into guessed safe text. Real endpoint/provider names are static `openrouter`;
 mock uses static `mock`. Request/generation/node/ordinal numeric identities remain
 available even when a human-readable label is omitted. These rules constrain
 logging labels only; they do not rewrite stored sessions, model configuration,
@@ -144,7 +149,8 @@ OK. DNS/TLS/connect/capacity/cancel are sanitized transport classes, not HTTP429
 ## Provider/tool typed records
 
 Use a static const obs field table. Emit only bounded allowlisted metadata:
-`session`, `request`, `configuration_generation`, `provider`, `model`, `attempt`,
+`session`, `session_label_available`, `request`, `configuration_generation`,
+`provider`, `model`, `model_label_available`, `attempt`,
 `duration_ns`, `status`, `http_status`, token/cost availability and values when
 known. Tool records add assistant node ID, call ordinal, static tool name,
 terminal status, side-effects-possible/truncated flags and duration. Do not log
@@ -218,7 +224,7 @@ No app source is changed in parallel with R12. Proposed cohesive ownership:
 | Unit | Files / responsibility | Required oracle |
 |---|---|---|
 | Net facts | net.c and narrow net tests, net.h already approved | Actual readiness, zero-payload callback, coalesced counters, pause/no-duplicate, terminal-once, callback error independent of transfer, no runtime Cog allocation |
-| CLI bridge/timing | main/cli/app_turn/app_tools/private bridge header after R12 | Pinned generation/session identity, stable copied labels/rows, typed duration/status/availability, owner lifetime and checked errors |
+| CLI bridge/timing | main/cli/app_turn/app_tools plus private config label helper/bridge header after R12 | Pinned generation/session identity, stable copied labels/rows, typed duration/status/availability, owner lifetime and checked errors |
 | Composition | new app observability test + local TLS fixture, narrow CMake ownership | Real success/tool/429/new attempt/stall/DNS-TLS/cancel, copied consumer, exact counters/classification/order, no secrets/body/opaque in records |
 | Independent review/integration | different critic; strict builds/sanitizers/install consumption | Header contract matches source, optimized assertions actually execute, existing F/K/L/R12 behavior unchanged |
 
@@ -226,6 +232,46 @@ Local deterministic tests suffice for this delivery; no paid requests are
 required. M still owns bounded actual-model acceptance. P retains all38 full
 runtime/sanitizer/installed-consumer gates. Existing synthetic obs tests remain
 valid component tests but cannot substitute for real event generation.
+
+## Pass 3: final consistency and edge review
+
+- Net has no obs/provider/app include or link dependency. All old APIs/config
+  zero-init behavior remain source-compatible; new ABI fields require rebuilding
+  consumers, as other pre-alpha header amendments do. Every new value/field is
+  documented in net.h; the only new operation reads the sticky observation error.
+- Error domains stay separate: callbacks cannot rewrite a request constructor's
+  successful publication, fixed wire completion, provider semantic finish or
+  durable tool effect. A host treats any nonOK observer status (including AGAIN)
+  as lost observation and never guesses a complete feed or retries the callback.
+- Zero observer ignores its user pointer, and NULL user is valid for a configured
+  callback. Constructor/unwind, observer_status, peek/ack and context free invoke
+  no callback. Explicit cancel/release before free is the observable destructor
+  path; bridge strings/rows/target survive it, then clear before target teardown.
+- OPEN totals are zero. Each PROGRESS delta is the difference from last reported
+  totals, and final progress flush precedes the one terminal. Monotonic integer
+  values never wrap; unavailable upload accounting cannot pretend zero progress.
+  At most4callbacks/request/service,2/request/cancel-or-release,1/request constructor
+  are possible, without a new retained event queue or Cog runtime allocation.
+- Main owns a fresh transport context and bridge. External shared-net hosts keep
+  their existing constructor observer/routing ownership; apps never overwrite it.
+  Multiple contexts use host-assigned obs IDs so context-local request ID1 does
+  not alias another context's ID1. Destroying a context clears its bridge domain.
+- Provider/tool spans close in stack order and no candidate reload span outlives
+  unrelated old work. Denial has no execution duration/effect claim. Callback
+  labels are copied, bounded and screened privately before exposing them; long
+  valid model/session configuration stays valid with explicit absent labels.
+- Original18/19 now link the actual numeric-source callback and latched status;
+  no nonexistent special log API remains. The15 trace cases above identify real
+  future oracles, not a claimed runtime pass. Different final critic still gates
+  source implementation. The design does not close M/R12/N/O/P.
+
+Header-only validation commands (no runtime implementation tests):
+
+```sh
+# Each changed public header standalone, plus reverse net/obs/provider includes:
+# gcc/clang C11 and g++/clang++ C++17 with strict warning-as-error flags.
+# No source/CMake/build option changes belong to this design branch.
+```
 
 ## Proposed shared DESIGN append (not applied here)
 
