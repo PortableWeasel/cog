@@ -255,6 +255,23 @@ static int lookup_null_table_nonzero_size_returns_null_ptr(void)
     return 0;
 }
 
+/* The "unchanged on failure" guarantee also holds on the NULL_PTR path:
+ * a distinguishable (non-NULL) sentinel must survive the call. */
+static int lookup_null_ptr_error_leaves_out_unchanged(void)
+{
+    const cog_dispatch_entry_t *entry = &table[1];
+
+    if (cog_state_lookup(NULL, 1U, ST_IDLE, EV_START, &entry) !=
+        COG_ERROR_NULL_PTR) {
+        return 1;
+    }
+    if (entry != &table[1]) {
+        (void)fprintf(stderr, "*out_entry modified on NULL_PTR error\n");
+        return 1;
+    }
+    return 0;
+}
+
 /* out_entry may be NULL: presence-only lookup. */
 static int lookup_presence_only_with_null_out(void)
 {
@@ -486,6 +503,8 @@ int main(void)
           lookup_empty_table_returns_not_found());
     CHECK("lookup NULL table non-zero size returns NULL_PTR",
           lookup_null_table_nonzero_size_returns_null_ptr());
+    CHECK("lookup NULL_PTR error leaves out unchanged",
+          lookup_null_ptr_error_leaves_out_unchanged());
     CHECK("lookup presence-only with NULL out", lookup_presence_only_with_null_out());
     CHECK("lookup boundary ids", lookup_boundary_ids());
     CHECK("lookup reserved ids never match", lookup_reserved_ids_never_match());
