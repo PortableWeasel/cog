@@ -44,7 +44,8 @@ typedef cog_result_t (*cog_provider_connect_fn)(const cog_endpoint_t *endpoint,
                                                cog_provider_t **out_provider);
 /**
  * @brief Release instance including active requests and all owned buffers.
- * @param[in,out] provider NULL is COG_OK. No use after success.
+ * @param[in,out] provider NULL is COG_OK. A non-NULL handle is consumed on
+ * every return, including cleanup error; never retry or use it afterward.
  * @return COG_OK, or backend cleanup error after resources are released.
  * @note Owner thread, outside callbacks; never sends/retries or waits for peer.
  * Uses the explicitly selected bounded-cancellation dependency backend.

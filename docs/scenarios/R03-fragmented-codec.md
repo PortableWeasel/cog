@@ -48,3 +48,13 @@ pocs/provider-wire tests already establish strict JSON/SSE, Unicode/OOM/depth an
 **Required future executable evidence:** H: split-identity fixture, typed expansion cursor, malformed/duplicate-key/depth/OOM and opaque stream reconstruction tests.
 
 **Amendment references:** D02,D03,D04,D05 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+
+## Pass-3 opaque preservation retrace (E04)
+
+The codec retains explicit `reasoning_details: []` presence. Merged text/summary
+blocks preserve non-payload members as a union; conflicting repeated JSON values
+fail UNSUPPORTED instead of discarding unknown continuation metadata. Absence
+does not erase a previous member. These rules are pinned in
+[openrouter.h](../../libraries/cog-provider/include/cog/openrouter.h). Future
+fixtures cover absent vs empty, signature-only suffixes and unknown equal/conflicting
+members, then compare exact generated opaque bytes through save/load/fork/replay.

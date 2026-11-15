@@ -48,3 +48,33 @@ Existing applications/cog-cli/tests/test_cli_options.c and test_cli_regression.c
 **Required future executable evidence:** J: deterministic precedence cross-product, credential redaction and every constructor failure; no live provider required. F: c-ares admission tests.
 
 **Amendment references:** D01,D08,D09 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+
+## Pass-3 bounded configuration retrace (E07)
+
+`cog_config_tree_new_ex` reserves aggregate node/string, transaction-identity
+and validator limits through `cog_config_limits_t`
+([config.h](../../libraries/cog-config/include/cog/config.h)). begin/set/register
+never grow storage. Finalized transaction handles retain identity only up to the
+configured ceiling; begin then returns LIMIT with no candidate. A rejected commit
+may return LIMIT and finalize only its candidate if reset cannot fit; running
+configuration and the already published provider generation stay unchanged.
+Every config operation, including reads, stays on its owner thread. Delivery J
+must test exact pool/identity limits and retain the old generation on each failure.
+
+## Independent final-review revision: active path and unstarted work (E09/E11)
+
+While any call/result is unresolved, `cog_session_fork` and arbitrary-parent
+`cog_session_add_message` cannot switch to a safe sibling or ancestor. Only a
+matching TOOL result at the active leaf, or atomic reconcile_tool, may extend
+that path. REPLAY load rejects off-active unresolved state; no recovery target
+can be stranded. An incomplete text-only turn without tool ledger still permits
+an explicit fork from its safe ancestor. Crash oracle: create a safe sibling,
+then save active STARTED; attempted sibling switch must fail before the crash,
+and restored INDETERMINATE remains reachable for reconciliation.
+
+PROPOSED is unresolved lifecycle state but proves no STARTED admission happened:
+normal guard acquisition may resume that current policy/denial phase. It cannot
+start unrelated model/user/branch work. Crashed STARTED becomes INDETERMINATE and
+requires recovery. Cancelled unstarted proposals receive identified no-effect
+DENIED results; they are never mistaken for uncertain executed effects. Test the
+crash before STARTED save and cancel-after-proposal boundaries with zero effects.

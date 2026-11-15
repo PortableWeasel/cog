@@ -96,7 +96,12 @@ typedef struct cog_event {
  *
  * Embedded in cog_event_t.payload.  The event queue copies this struct;
  * the message payload pointer refers to memory owned by the IPC layer
- * and is valid only during handler execution.
+ * and is valid only during handler execution. Core ingress reserves bounded
+ * payload arena/event capacity before endpoint receive, copies into that arena,
+ * and retains it until handler return; source frames are not consumed if those
+ * reservations fail. The standalone event queue copies only this descriptor,
+ * never allocates/copies msg_payload; external producers retain their payload
+ * owner until the consuming handler returns.
  */
 typedef struct cog_event_ipc {
     cog_peer_id_t peer;       /**< Source or destination peer. */

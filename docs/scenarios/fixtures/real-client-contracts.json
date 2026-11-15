@@ -150,5 +150,61 @@
     "stale_prepared_ack": "INVALID_STATE",
     "uncertain_publish": "INDETERMINATE",
     "automatic_tool_replay": false
+  },
+  "pass3_recovery": {
+    "before": "INDETERMINATE",
+    "automatic_invocations": 0,
+    "normal_guard": "INDETERMINATE",
+    "recovery_guard_borrow": "INVALID_STATE",
+    "explicit_unknown_resolution": "ACKNOWLEDGED",
+    "identified_result": "Previous effect outcome remains unknown; explicitly closed without rerun.",
+    "failed_save": "retain recovery ownership and uncertainty",
+    "resume": "durable reconciliation then release/new epoch/normal acquire"
+  },
+  "pass3_opaque_cases": [
+    {
+      "input": {
+        "reasoning_details": []
+      },
+      "preserve_presence": true
+    },
+    {
+      "merged_unknown_equal_member": "preserve once"
+    },
+    {
+      "merged_unknown_conflict": "UNSUPPORTED before effects"
+    }
+  ],
+  "pass3_bounds": {
+    "config_finalized_handles": "count toward max_transactions, never reused",
+    "queued_prompt": "backing text leased until handler return",
+    "core_ipc_arena_full": "do not consume endpoint frame",
+    "core_oversized_frame": "peer-specific LIMIT",
+    "schema_string_length": "Unicode scalar values",
+    "schema_integer_range": "signed int64 exactly"
+  },
+  "final_review_revision_1": {
+    "saved_started_leaf": {
+      "discard": "INVALID_STATE",
+      "reset": "INVALID_STATE",
+      "replacement_save": "INVALID_STATE or PROTOCOL",
+      "automatic_invocations": 0
+    },
+    "sibling_switch_with_unresolved": "INVALID_STATE before crash",
+    "persisted_proposed": {
+      "normal_guard": "allowed for current explicit policy/denial",
+      "automatic_effects": 0
+    },
+    "custom_restore": {
+      "sparse_node_ids": [
+        2,
+        10
+      ],
+      "active_node_id": 10,
+      "node_id_high_water": 12,
+      "private_layout": false,
+      "dummy_nodes": false,
+      "larger_constructor_recovery_retry": true
+    }
   }
 }

@@ -81,6 +81,11 @@ typedef cog_result_t (*cog_tool_fn)(cog_core_t *core,
 /** @brief Constructor reservation and explicit application-owned tool context. */
 typedef struct cog_tool_async_config {
     size_t max_output_bytes; /**< Nonzero capture bound excluding NUL. */
+    size_t max_argument_bytes; /**< Zero defaults 65536, including copied argument NUL. */
+    size_t max_schema_bytes; /**< Zero defaults 65536, including copied schema NUL. */
+    size_t max_json_depth; /**< Zero defaults 64; applies to arguments/schema. */
+    size_t codec_workspace_bytes; /**< Zero defaults 1 MiB; parser/schema/writer
+       pools reserved at construction, no default allocator fallback or growth. */
     uint32_t timeout_ms; /**< Nonzero monotonic execution deadline. */
     uint32_t terminate_grace_ms; /**< TERM-to-KILL grace, zero means immediate KILL. */
     void *user; /**< Borrowed workspace/policy config; valid until destroy. */
@@ -109,6 +114,12 @@ typedef struct cog_tool_output {
  * without execution. cancel is idempotent; it sets no global/signal flag.
  * Process tools own a distinct process group: TERM then deadline-driven KILL,
  * drain pipes and reap all owned children with nonblocking checks before done.
+ * A dedicated supervisor/helper may adopt descendants so a shell exit does not
+ * lose ownership. Any subreaper/signal disposition is confined to that helper;
+ * never mutate the embedding host's process-wide child handling. The supported
+ * cancellation profile requires descendants to remain in the owned process
+ * group; deliberate daemonization/group escape is outside that profile and is
+ * not a containment guarantee. Report uncertainty, never false successful reap.
  * A timeout/cancel/error can leave file effects; report side_effects_possible.
  * destroy requires never-started or done, otherwise INVALID_STATE, and returns
  * all constructor resources. No handles/callbacks/child zombies after success.

@@ -52,3 +52,34 @@ Existing original15 covers baseline tool result only; new denial/schema/policy c
 **Required future executable evidence:** I/K: denied/invalid/UNDECIDED/ASK/no-store matrix with side-effect counter exactly zero.
 
 **Amendment references:** D01,D06 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+
+## Pass-3 parser/process bounds retrace (E03)
+
+`cog_tool_async_config_t` now fixes argument/schema bytes, JSON depth and codec
+workspace capacity ([tool.h](../../libraries/cog-core/include/cog/tool.h)).
+Construction rejects over-limit input before effects, duplicate keys and invalid
+UTF-8. Scalar-count string lengths, finite numeric semantics and unsupported
+schema keywords are pinned in [toolkit_exec.h](../../libraries/cog-toolkit/include/cog/toolkit_exec.h).
+No remote schema fetch or hidden parser growth occurs. Process-tree supervision
+keeps subreaper/signal changes inside an owned helper, never the embedding host;
+the cancellation profile requires descendants remain in the owned group. Test
+ordinary inherited-group grandchildren outliving the shell, exact parser/depth
+limits, unsupported numeric ranges and result resize with one effect.
+
+## Independent final-review revision: active path and unstarted work (E09/E11)
+
+While any call/result is unresolved, `cog_session_fork` and arbitrary-parent
+`cog_session_add_message` cannot switch to a safe sibling or ancestor. Only a
+matching TOOL result at the active leaf, or atomic reconcile_tool, may extend
+that path. REPLAY load rejects off-active unresolved state; no recovery target
+can be stranded. An incomplete text-only turn without tool ledger still permits
+an explicit fork from its safe ancestor. Crash oracle: create a safe sibling,
+then save active STARTED; attempted sibling switch must fail before the crash,
+and restored INDETERMINATE remains reachable for reconciliation.
+
+PROPOSED is unresolved lifecycle state but proves no STARTED admission happened:
+normal guard acquisition may resume that current policy/denial phase. It cannot
+start unrelated model/user/branch work. Crashed STARTED becomes INDETERMINATE and
+requires recovery. Cancelled unstarted proposals receive identified no-effect
+DENIED results; they are never mistaken for uncertain executed effects. Test the
+crash before STARTED save and cancel-after-proposal boundaries with zero effects.

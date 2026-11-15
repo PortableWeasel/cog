@@ -68,3 +68,28 @@ Future conformance requirements: Public-only external provider consumer; bad c-a
 Header tracing is complete only where the gap analysis says so. Production
 implementation and executable scenario migration remain gated by pass 3 and the
 independent final review; no passing runtime result is inferred from these tables.
+
+## Pass-3 IPC ownership retrace (E02)
+
+Core constructor settings `cog_core_config_t.ipc_max_frame_bytes` and
+`cog_core_config_t.ipc_payload_bytes` bound admitted frames and queued payload
+bytes ([core.h](../../libraries/cog-core/include/cog/core.h)). Reserve an event
+slot and owned arena bytes before endpoint receive; if unavailable, consume
+nothing and service/dispatch other work. Bytes survive until handler return.
+An endpoint-retained frame above the core ceiling closes only that peer with
+reported LIMIT, rather than an endless OVERFLOW loop. Accepted endpoint
+constructors remain explicit and peer-count-bounded; private intrusive listener
+links need no additional public allocation surface. Test just-below/exact/above
+frame limits, full arena/full event queue, and caller payload mutation after enqueue.
+
+## Pass-3 bounded configuration retrace (E07)
+
+`cog_config_tree_new_ex` reserves aggregate node/string, transaction-identity
+and validator limits through `cog_config_limits_t`
+([config.h](../../libraries/cog-config/include/cog/config.h)). begin/set/register
+never grow storage. Finalized transaction handles retain identity only up to the
+configured ceiling; begin then returns LIMIT with no candidate. A rejected commit
+may return LIMIT and finalize only its candidate if reset cannot fit; running
+configuration and the already published provider generation stay unchanged.
+Every config operation, including reads, stays on its owner thread. Delivery J
+must test exact pool/identity limits and retain the old generation on each failure.

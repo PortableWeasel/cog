@@ -50,3 +50,33 @@ https-lifecycle DNS controlled tests prove empirical c-ares cleanup only; origin
 **Required future executable evidence:** F/Q/K/L: shipped dependency DNS cancel suite plus saturated queue/ring and terminal-queued race tests.
 
 **Amendment references:** D02,D03,D10 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+
+## Pass-3 explicit continuation and queued text (E05)
+
+An explicitly authorized continuation forks from the failed model turn's last
+replay-safe ancestor, preserves the incomplete aggregate on its original branch,
+and appends the new user input. It never relabels a failed wire turn COMPLETE or
+replays partial tools/opaque data; unresolved effects use E01 recovery instead.
+Automatic queued prompts cannot make that decision. FIFO auto-injection leases
+the original backing text until its handler returns (or copies into another
+reserved owner); successful enqueue alone is not permission to overwrite it.
+Future tests enqueue a second prompt before dispatching the first and verify
+unchanged text, plus explicit continuation/cancel branch isolation.
+
+## Independent final-review revision: active path and unstarted work (E09/E11)
+
+While any call/result is unresolved, `cog_session_fork` and arbitrary-parent
+`cog_session_add_message` cannot switch to a safe sibling or ancestor. Only a
+matching TOOL result at the active leaf, or atomic reconcile_tool, may extend
+that path. REPLAY load rejects off-active unresolved state; no recovery target
+can be stranded. An incomplete text-only turn without tool ledger still permits
+an explicit fork from its safe ancestor. Crash oracle: create a safe sibling,
+then save active STARTED; attempted sibling switch must fail before the crash,
+and restored INDETERMINATE remains reachable for reconciliation.
+
+PROPOSED is unresolved lifecycle state but proves no STARTED admission happened:
+normal guard acquisition may resume that current policy/denial phase. It cannot
+start unrelated model/user/branch work. Crashed STARTED becomes INDETERMINATE and
+requires recovery. Cancelled unstarted proposals receive identified no-effect
+DENIED results; they are never mistaken for uncertain executed effects. Test the
+crash before STARTED save and cancel-after-proposal boundaries with zero effects.

@@ -70,3 +70,15 @@ Future conformance requirements: Reload during active request, invalid secret/ca
 Header tracing is complete only where the gap analysis says so. Production
 implementation and executable scenario migration remain gated by pass 3 and the
 independent final review; no passing runtime result is inferred from these tables.
+
+## Pass-3 bounded configuration retrace (E07)
+
+`cog_config_tree_new_ex` reserves aggregate node/string, transaction-identity
+and validator limits through `cog_config_limits_t`
+([config.h](../../libraries/cog-config/include/cog/config.h)). begin/set/register
+never grow storage. Finalized transaction handles retain identity only up to the
+configured ceiling; begin then returns LIMIT with no candidate. A rejected commit
+may return LIMIT and finalize only its candidate if reset cannot fit; running
+configuration and the already published provider generation stay unchanged.
+Every config operation, including reads, stays on its owner thread. Delivery J
+must test exact pool/identity limits and retain the old generation on each failure.

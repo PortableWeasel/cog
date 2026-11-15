@@ -51,6 +51,18 @@ typedef struct cog_session cog_session_t;
  */
 typedef struct cog_session_node cog_session_node_t;
 
+/** @brief Persisted at-most-once execution ledger, keyed by assistant/call ID. */
+typedef enum cog_tool_execution_state {
+    COG_TOOL_EXECUTION_PROPOSED = 0,
+    COG_TOOL_EXECUTION_STARTED,
+    COG_TOOL_EXECUTION_SUCCEEDED,
+    COG_TOOL_EXECUTION_FAILED,
+    COG_TOOL_EXECUTION_DENIED,
+    COG_TOOL_EXECUTION_CANCELLED,
+    COG_TOOL_EXECUTION_INDETERMINATE,
+    COG_TOOL_EXECUTION_ACKNOWLEDGED /**< Explicitly closed unknown outcome; never rerun. */
+} cog_tool_execution_state_t;
+
 /* ------------------------------------------------------------------ */
 /* Configuration                                                       */
 /* ------------------------------------------------------------------ */
@@ -78,7 +90,9 @@ typedef struct cog_session_config {
      * nested message/tool/opaque/raw/ledger data; no allocation during append,
      * fork, ledger update or history building. Exhaustion fails LIMIT atomically. */
     size_t max_payload_bytes;
-    size_t max_tool_calls_per_message; /**< Zero selects 16; fixed ledger slots. */
+    size_t max_tool_calls_per_message; /**< Zero selects 16; fixed ledger slots.
+       Constructor also reserves ledger/snapshot descriptors and four audit
+       records per call slot with checked arithmetic; evidence uses payload arena. */
 } cog_session_config_t;
 
 /* ------------------------------------------------------------------ */
@@ -178,7 +192,10 @@ typedef enum cog_node_role {
  */
 typedef struct cog_node_data_view {
     /**
-     * @brief Unique node identifier (for persistence).
+     * @brief Node ID never reused in this object or for another committed node.
+     * Live allocation high-water survives discard/reset and cannot wrap;
+     * exhaustion returns LIMIT. Recreating an object with the same session ID
+     * cannot reset its committed identity high-water or rebind an existing ID.
      */
     uint64_t node_id;
 
@@ -257,6 +274,53 @@ typedef struct cog_node_data_view {
     const cog_message_t *message;
 } cog_node_data_t;
 
+/** @brief One immutable audit transition; evidence is borrowed UTF-8 text. */
+typedef struct cog_tool_audit_record {
+    uint64_t sequence; /**< Nonzero session-wide unique, increasing audit identity. */
+    cog_tool_execution_state_t previous;
+    cog_tool_execution_state_t next;
+    bool explicit_reconciliation; /**< True only for authorized INDETERMINATE closure. */
+    const char *evidence; /**< NULL iff evidence_len=0; no credential/raw secrets. */
+    size_t evidence_len;
+} cog_tool_audit_record_t;
+/** @brief Complete identified ledger entry for public persistence/restore. */
+typedef struct cog_tool_ledger_record {
+    uint64_t assistant_node_id;
+    const char *call_id;
+    cog_tool_execution_state_t state;
+    const cog_tool_audit_record_t *audit; /**< Ordered immutable transition history. */
+    size_t audit_count;
+} cog_tool_ledger_record_t;
+/**
+ * @brief Version-neutral bounded session snapshot, never a native wire format.
+ *
+ * Every pointer is a borrowed immutable view; restore deep-copies it. Nodes
+ * appear parent-before-child with exactly one root; siblings retain the order
+ * in which their records appear in nodes (including stable order after restore),
+ * with unique nonzero IDs.
+ * node_id_high_water covers every committed ID plus any live issued/discarded
+ * draft ID; audit_high_water covers audit identities. Neither may decrease.
+ * active_node_id is an existing leaf, or zero iff node_count=0. Ledger keys are
+ * unique (assistant_node_id,call_id), associated with exact structured messages.
+ * All unresolved calls/results remain on that active path. inspection_only can
+ * restrict access, never assert safety: validation always derives replay safety.
+ * Each pointer/count pair permits NULL only for a zero count; strings are
+ * NUL-terminated except explicit byte-length evidence/content. No use of these
+ * in-memory pointer structs as a serialized representation.
+ */
+typedef struct cog_session_snapshot {
+    const char *session_id;
+    const char *parent_session_id;
+    uint64_t active_node_id;
+    uint64_t node_id_high_water;
+    uint64_t audit_high_water;
+    const cog_node_data_t *nodes;
+    size_t node_count;
+    const cog_tool_ledger_record_t *ledger;
+    size_t ledger_count;
+    bool inspection_only;
+} cog_session_snapshot_t;
+
 /* ------------------------------------------------------------------ */
 /* Lifecycle                                                           */
 /* ------------------------------------------------------------------ */
@@ -277,6 +341,45 @@ typedef struct cog_node_data_view {
  */
 cog_result_t cog_session_new(cog_session_t **out,
                               const cog_session_config_t *config);
+
+/**
+ * @brief Explicit constructor restoring validated public snapshot records exactly.
+ * @param[out] out Owned session on OK, NULL on any failure; match session_free.
+ * @param[in] config Constructor capacities; NULL selects defaults. Non-NULL id
+ * must equal snapshot.session_id, not silently rebind a persisted identity.
+ * Explicit larger reservations are allowed without changing restored identity,
+ * messages, ledger/audit or high-water; persisted old capacity is not a ceiling.
+ * A recovery LIMIT may be retried by snapshot_view then a larger restore,
+ * retaining the old session until construction succeeds; no in-place growth.
+ * @param[in] snapshot Complete borrowed records/ledger/audit/active/high-water;
+ * all transitive bytes are copied before return into constructor reservations.
+ * @return OK; NULL_PTR; INVALID_ARG invalid capacity/ID agreement; LIMIT capacity
+ * or checked identity/audit exhaustion; NOMEM reservation; PROTOCOL malformed
+ * IDs/parent order/cycles/duplicate keys/associations/audit chain/high-water or
+ * off-active unresolved state; UNSUPPORTED unsafe legacy tools outside inspection.
+ * @post Preserves sparse explicit node IDs, branch/sibling order, selected leaf,
+ * every existing audit/evidence byte and allocator high-water. STARTED restores
+ * conservatively as INDETERMINATE with an appended recovery audit transition;
+ * it never authorizes a rerun. inspection_only permits forensic observation,
+ * never provider history or effect admission. No private layout or dummy nodes.
+ * @note Owner thread; no disk/wire/tool effects. Failure holds no resources.
+ */
+cog_result_t cog_session_restore(cog_session_t **out,
+                                 const cog_session_config_t *config,
+                                 const cog_session_snapshot_t *snapshot);
+/**
+ * @brief View complete public persistence records without allocation or mutation.
+ * @param[in] session Session owner; one thread, outside callbacks/mutation.
+ * @param[out] snapshot Borrowed view, unchanged on failure.
+ * @return OK; NULL_PTR; LIMIT if constructor-reserved snapshot scratch cannot
+ * represent the session (constructor must reserve for its configured maxima).
+ * @note Includes exact nodes, ledger/audit, active leaf and high-water; not just
+ * provider replay history. Arrays and all nested pointers remain session-owned
+ * until next snapshot_view, mutation/reset/free. Custom backends encode/copy
+ * before returning to service; no private header/global state or wire codec.
+ */
+cog_result_t cog_session_snapshot_view(const cog_session_t *session,
+                                       cog_session_snapshot_t *snapshot);
 
 /**
  * @brief Destroy a session and all its nodes.
@@ -303,12 +406,18 @@ const char *cog_session_id(const cog_session_t *session);
 /**
  * @brief Reset a session to its initial empty state.
  *
- * All nodes are freed. The session retains its id.
+ * Only a purely uncommitted text/draft tree with no identified tool call,
+ * result, ledger/audit evidence or fork-shared node may be reset. Refuse any
+ * such retained state with INVALID_STATE, regardless of core running status.
+ * The session retains its ID and node-ID high-water counter: reset never makes
+ * an old identity available for reuse. Store save independently compares the
+ * committed generation, so a replacement empty session cannot erase effects.
  *
  * @param[in,out] session Session to reset.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p session is NULL.
- * @return COG_ERROR_INVALID_STATE if the session is active in a running core.
+ * @return COG_ERROR_INVALID_STATE if active in a running core, non-draft,
+ * identified/effect-bearing, or fork-shared; failure changes nothing.
  *
  * Threading: not thread-safe.
  */
@@ -415,6 +524,13 @@ const cog_node_data_t *cog_node_data(const cog_session_node_t *node);
  * opaque bytes and usage into constructor-reserved storage. Validates message
  * structure and branch-local result associations before changing the tree.
  * Each identified assistant call starts a PROPOSED execution ledger entry.
+ * While any identified call has PROPOSED/STARTED/INDETERMINATE state or lacks
+ * exactly one matching final TOOL result, all unresolved calls must remain on
+ * the current active path. Only an associated TOOL result extending the active
+ * leaf may be inserted; any ancestor/sibling/other parent, new user/assistant
+ * work or implicit branch switch returns INVALID_STATE. INDETERMINATE requires
+ * atomic reconcile_tool instead of ordinary insertion. This also binds append.
+ * Once all calls/results are final, ordinary safe branching is available.
  * Returns INVALID_ARG for invalid association/duplicate result, LIMIT if
  * reserved node/payload/ledger capacity is exhausted; failure is atomic.
  * Creates a new node and appends it to the parent's children. If @p parent
@@ -507,8 +623,12 @@ cog_result_t cog_session_add_tool_result(cog_session_t *session,
 /**
  * @brief Fork the conversation from a given node.
  *
- * Refuses INVALID_STATE if the selected path has incomplete messages or any
- * unresolved tool ledger; forking never authorizes repeating ancestor effects.
+ * Refuses INVALID_STATE while ANY session call/result is unresolved, even if
+ * the selected target is an older safe sibling/ancestor. Unresolved calls stay
+ * on one active path until their results/reconciliation finish; branching away
+ * cannot strand recovery. Also refuses an incomplete selected path. Text-only
+ * incomplete turns without identified ledger may explicitly fork from their
+ * last safe ancestor. Forking never authorizes repeating ancestor effects.
  * Creates a new branch starting from @p node. The forked branch shares
  * all ancestor nodes but has its own children. This is cheap (shared
  * immutable nodes).
@@ -571,16 +691,7 @@ cog_result_t cog_session_copy_history(const cog_session_t *session,
                                       cog_message_t *messages, size_t capacity,
                                       size_t *out_count);
 
-/** @brief Persisted at-most-once execution ledger, keyed by assistant/call ID. */
-typedef enum cog_tool_execution_state {
-    COG_TOOL_EXECUTION_PROPOSED = 0,
-    COG_TOOL_EXECUTION_STARTED,
-    COG_TOOL_EXECUTION_SUCCEEDED,
-    COG_TOOL_EXECUTION_FAILED,
-    COG_TOOL_EXECUTION_DENIED,
-    COG_TOOL_EXECUTION_CANCELLED,
-    COG_TOOL_EXECUTION_INDETERMINATE
-} cog_tool_execution_state_t;
+
 
 /**
  * @brief Compare-and-transition one identified tool's durable intent state.
@@ -589,10 +700,14 @@ typedef enum cog_tool_execution_state {
  * @param[in] call_id Nonempty ID belonging to that assistant node.
  * @param[in] expected Required previous state.
  * @param[in] next New state: PROPOSED->STARTED/DENIED, STARTED->SUCCEEDED/
- * FAILED/CANCELLED/INDETERMINATE; all final states immutable.
+ * FAILED/CANCELLED/INDETERMINATE; final states immutable through this API.
+ * Only explicit reconcile_tool may close INDETERMINATE without execution.
  * @return COG_OK; NULL_PTR; NOT_FOUND for unknown ID; INVALID_STATE on stale
  * expected, illegal transition or mutation of a fork-shared ancestor.
- * @note Owner thread; no allocation/execution/save. Application MUST durably
+ * @note Each successful transition appends one immutable ordered audit record
+ * and advances audit high-water atomically; LIMIT leaves both unchanged. Audit
+ * slots are constructor-reserved. Owner thread; no allocation/execution/save.
+ * Application MUST durably
  * save STARTED before executing; save failure means do not execute. It saves
  * result+terminal state together before sending the next model request. This
  * is at-most-once admission, not an impossible exactly-once filesystem/process
@@ -603,6 +718,36 @@ cog_result_t cog_session_tool_transition(cog_session_t *session,
                                          const char *call_id,
                                          cog_tool_execution_state_t expected,
                                          cog_tool_execution_state_t next);
+/**
+ * @brief Explicitly reconcile an indeterminate call and append its result atomically.
+ * @param[in,out] session Session containing a private, unshared assistant node.
+ * @param[in] assistant Private assistant node on the active branch whose
+ * identified call is INDETERMINATE. Result appends at that branch's active leaf,
+ * preserving earlier results for other calls in the same assistant turn.
+ * @param[in] call_id Exact nonempty call ID.
+ * @param[in] resolution SUCCEEDED/FAILED/CANCELLED only with externally verified
+ * outcome, or ACKNOWLEDGED when an operator explicitly accepts unknown effects.
+ * @param[in] result COMPLETE TOOL message with matching tool_call_id. Its text
+ * must explain observed evidence or unresolved outcome; ACKNOWLEDGED must not
+ * claim the effect did not occur. No tool execution or implicit retry occurs.
+ * @param[out] out_node Appended result; NULL allowed, unchanged on failure.
+ * @return OK; NULL_PTR; INVALID_ARG mismatched result/resolution; NOT_FOUND;
+ * INVALID_STATE non-indeterminate/shared node or an existing result; LIMIT.
+ * @pre Application has explicitly authorized reconciliation and fenced/reaped
+ * every old execution/process group. Absence of output is never proof of failure.
+ * @post State+identified result change together in constructor-reserved storage;
+ * failure changes neither. Caller must durably save under its recovery guard
+ * before continuation. INDETERMINATE evidence remains in the persisted audit
+ * record; ACKNOWLEDGED is replay-safe only as an explicitly uncertain tool result.
+ * @note Owner thread; does not save, allocate, clear other calls or alter opaque data.
+ */
+cog_result_t cog_session_reconcile_tool(cog_session_t *session,
+                                        cog_session_node_t *assistant,
+                                        const char *call_id,
+                                        cog_tool_execution_state_t resolution,
+                                        const cog_message_t *result,
+                                        cog_session_node_t **out_node);
+
 /**
  * @brief Query the ledger for one assistant tool.
  * @param[in] session Session owner.
@@ -716,23 +861,28 @@ cog_result_t cog_session_set_parent(cog_session_t *session,
 /* ------------------------------------------------------------------ */
 
 /**
- * @brief Discard a leaf node from the session tree.
+ * @brief Discard only a purely uncommitted text/draft leaf.
  *
- * Removes the node from its parent's child list and frees its resources.
- * Used when the user cancels an in-flight request: the partial assistant
- * response node is discarded, preserving the rest of the tree.
+ * Removes a transient no-effect text node and reclaims its reserved storage.
+ * It is not an undo API for durable history or admitted effects. Real-client
+ * cancellation preserves an explicit incomplete aggregate; this helper remains
+ * available for safely abandoned text drafts before publication.
  *
  * @param[in,out] session Session containing the node.
  * @param[in]     node    Leaf node to discard.  Must have no children.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p session or @p node is NULL.
- * @return COG_ERROR_INVALID_STATE if @p node has children (not a leaf).
+ * @return COG_ERROR_INVALID_STATE if non-leaf, fork-shared, identified-call/
+ * result/ledger/audit-bearing, or otherwise not an uncommitted text draft.
+ * An assistant with a saved STARTED call cannot be discarded even if no result
+ * child exists. Reset/discard must never erase execution identity or evidence.
  * @return COG_ERROR_NOT_FOUND if @p node is not in this session.
  *
  * @pre @p node is a leaf (no children).
  * @pre @p node was created by @c cog_session_add_message on this session.
  *
- * @post On success, the node is removed from the tree and its memory freed.
+ * @post On success, the draft is removed and its reserved storage reclaimed;
+ * the node-ID high-water is never decreased or reused. Failure changes nothing.
  * @post The active node is updated to the discarded node's parent if the
  *       discarded node was active.
  *
