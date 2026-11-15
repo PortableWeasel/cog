@@ -146,3 +146,68 @@ All calls/types above are declared in provider_vtable.h, provider_request.h,
 message.h, session.h, session_store.h or toolkit_exec.h. This retrace adds no
 implementation or passing runtime inference. R04/R10 and L's session amendment
 carry the exact new call boundary.
+
+
+## Pass 3: consistency and edge-case self-review
+
+The final targeted pass checked each declaration against the 16 traces and
+existing G/H/K contracts. Amendments from this pass are narrow:
+
+- All nine callbacks are required, including for custom static providers; missing
+  preflight is INVALID_ARG rather than a weaker structural-only fallback.
+- The stages are arguments to preflight alone. request_validate remains explicitly
+  structural; COMPLETE eligibility and the special final pending group are never
+  inferred from successful structural validation or carried into send.
+- Non-COMPLETE messages and invalid stage/history association fail INVALID_STATE.
+  Matching uses call ID within its assistant group, not TOOL name or a global
+  textual-ID uniqueness restriction. Result ordering remains flexible as in G.
+- Active includes queued FINISH until consumed. preflight cannot cancel, poll,
+  service or drain to become idle. Both rejection and success preserve existing
+  cancellation, deltas, request acceptance counters and monotonic clock.
+- get_error remains terminal-turn-only, including NOT_FOUND before any turn.
+  A rejected preflight cannot manufacture a terminal outcome; a valid preflight
+  cannot erase earlier error/message bytes. Allocation exhaustion in existing
+  fixed pools is LIMIT, with no scratch growth or transient secret logging.
+- L preflights the entire known restored prefix before its first PROPOSED effect,
+  including opaque metadata on every selected ancestor and the final group.
+  No inactive sibling is inspected as candidate wire history. Later ordinary
+  send independently revalidates the completed request; future output may still
+  fail capacity. This does not expand unrelated K tool-loop policy or ledger APIs.
+- Mock acceptance is explicitly fixture compatibility. It is not evidence that
+  real opaque syntax is supported. Supported/unsupported json-v1 tests must use
+  a real constructed adapter without invoking send/network work.
+
+The include graph remains acyclic: preflight types use the existing provider
+request/message/result headers. The stage enum adds no field to request/session
+storage and no codec/persistence version. The only static ABI addition is the
+required callback at the end of cog_provider_vtable; all initializers migrate
+under the subsequent implementation ticket. The app remains backend-generic.
+
+### Required executable oracles after header approval
+
+1. Callback presence, NULL/stage errors and zero implementation-connect calls on
+   incomplete tables; custom/mock/real required-nine tables all covered.
+2. Complete and pending shape matrix: final open group, some results, all results,
+   none, orphan/duplicate/wrong group, earlier open group followed by unrelated
+   input, reusable textual call ID in a distinct completed group.
+3. Real OpenRouter supported exact opaque and unknown format/type/extra members,
+   malformed JSON/UTF-8/duplicates, immutable generation/model/capability and
+   exact constructor limit boundaries. Valid opaque must remain supported.
+4. Observe zero request acceptance/net calls/active-count changes on every
+   preflight return, including shared-net contexts with unrelated active IDs.
+5. Retained delta/terminal/error/cancellation/time/request-state snapshots survive
+   rejection; failed then successful preflight leaves old get_error unchanged.
+6. Mock last_request content/pointers and fixture cursor/counters stay stable;
+   preflight never consumes a scripted send_error or reuses its request arena.
+7. Inject each relevant constructor allocation failure, then instrument preflight
+   for no runtime allocation under GCC/Clang and ASan/UBSan/appropriate TSan.
+8. Restore actual PROPOSED with supported opaque: preflight then one effect,
+   durable result and ordinary continuation. Unsupported/malformed opaque must
+   return before any STARTED/save/tool constructor start, with zero effect count.
+   Mixed already-final/PROPOSED groups must not repeat completed effects.
+
+No implementation, paid call or network probe was performed by these passes.
+Strict standalone C11/C++11 checks cover the changed public/private header graph;
+they are syntax/contract checks, not runtime conformance. The independent final
+review is mandatory and must be performed by a different reviewer before any
+source implementation of this amendment.

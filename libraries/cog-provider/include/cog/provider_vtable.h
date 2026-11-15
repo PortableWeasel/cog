@@ -65,8 +65,8 @@ typedef enum cog_provider_preflight_stage {
  * @param[in] stage COMPLETE for ordinary send eligibility; PENDING_TOOLS for
  * the selected final assistant call group awaiting tool execution/results.
  * Every message must be COMPLETE and structurally valid. A TOOL result must
- * uniquely match a call in its immediately preceding assistant call group;
- * result order within that group may differ from call order. A later non-TOOL
+ * uniquely match by tool_call_id a call in its immediately preceding assistant call group;
+ * TOOL name is descriptive only. Result order may differ from call order. A later non-TOOL
  * message requires that prior group to be fully resolved. COMPLETE requires
  * every group closed. PENDING_TOOLS requires exactly one open group belonging
  * to the last assistant in the prefix, with one or more missing results; only
@@ -75,7 +75,8 @@ typedef enum cog_provider_preflight_stage {
  * Reusing a textual call ID in a distinct, earlier closed group is valid.
  * @return OK when the known input fits this implementation's protocol/profile;
  * NULL_PTR; INVALID_ARG for unknown stage/structural values; INVALID_STATE for
- * an active turn or invalid call/result sequence; NOT_FOUND for unknown model;
+ * an active turn, non-COMPLETE message or invalid stage/history association;
+ * NOT_FOUND for unknown configured model;
  * UNSUPPORTED for model capability or continuation namespace/format/semantics;
  * PROTOCOL for malformed strict protocol data; LIMIT for constructor ceilings.
  * @post On every return no turn is accepted, no request/sequence/time advances,
@@ -88,7 +89,10 @@ typedef enum cog_provider_preflight_stage {
  * Success validates only currently supplied bytes: future tool output can
  * still exhaust limits. It grants no policy, guard, ledger or effect admission.
  * Caller still validates replay safety; recheck the completed request at send.
- * Owner thread, outside callbacks; no recursive call on this instance.
+ * Owner thread, outside callbacks; no recursive call on this instance. Active
+ * rejection includes a queued terminal until FINISH is consumed; preflight must
+ * not poll/cancel/drain to manufacture an idle instance. Required callback and
+ * unknown-stage failures are INVALID_ARG, never a structural-only fallback.
  */
 typedef cog_result_t (*cog_provider_preflight_fn)(cog_provider_t *provider,
     const cog_provider_request_t *request, cog_provider_preflight_stage_t stage);
@@ -98,7 +102,7 @@ typedef cog_result_t (*cog_provider_preflight_fn)(cog_provider_t *provider,
  * @param[in,out] provider Idle instance (prior FINISH consumed).
  * @param[in] request Borrowed only until return, including nested messages,
  * tools, opaque bytes, model and strings. Caller may free/change after return.
- * @return COG_OK; NULL_PTR; INVALID_ARG/UNSUPPORTED before network effects;
+ * @return COG_OK; NULL_PTR; INVALID_ARG/UNSUPPORTED/PROTOCOL/NOT_FOUND before network effects;
  * LIMIT if request/workspace cannot fit; INVALID_STATE if a turn is active.
  * @post Failure leaves instance idle and sends nothing. No runtime Cog allocation.
  * Send requires COMPLETE history and rejects an open group with INVALID_STATE
@@ -167,6 +171,8 @@ typedef cog_result_t (*cog_provider_next_fn)(cog_provider_t *provider,
  * @param[out] out_error Shallow snapshot; message valid until next send/free.
  * @return COG_OK; NOT_FOUND if no error; NULL_PTR on NULL. No mutation/wait.
  * @note Owner thread; caller copies strings before persisting or sharing.
+ * Preflight validation returns its own result directly and neither creates nor
+ * clears this terminal-turn error snapshot or shortens its message lifetime.
  */
 typedef cog_result_t (*cog_provider_error_fn)(const cog_provider_t *provider,
                                              cog_provider_error_t *out_error);
