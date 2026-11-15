@@ -16,6 +16,7 @@
 #define COG_EVENT_H
 
 #include <cog/result.h>
+#include <cog/ipc.h>
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -48,13 +49,23 @@ typedef uint16_t cog_event_id_t;
  * @brief Kinds of events that can advance the core state machine.
  */
 typedef enum cog_event_kind {
-    COG_EVENT_INVALID = 0,      /**< Uninitialised or sentinel value. */
-    COG_EVENT_USER_INPUT,       /**< Free-form user message. */
-    COG_EVENT_TOOL_RESULT,      /**< Result returned from a tool invocation. */
-    COG_EVENT_SYSTEM_SIGNAL,    /**< Signal or notification from the runtime. */
-    COG_EVENT_UI_MESSAGE,       /**< Message received from an attached UI process. */
-    COG_EVENT_SUBAGENT_RESULT,  /**< Result returned from a subagent handler. */
-    COG_EVENT_SHUTDOWN,         /**< Request for graceful shutdown. */
+    COG_EVENT_INVALID = 0,        /**< Uninitialised or sentinel value. */
+    COG_EVENT_USER_INPUT,         /**< Free-form user message. */
+    COG_EVENT_TOOL_RESULT,        /**< Result returned from a tool invocation. */
+    COG_EVENT_SYSTEM_SIGNAL,      /**< Signal or notification from the runtime. */
+    COG_EVENT_UI_MESSAGE,         /**< Message received from an attached UI process. */
+    COG_EVENT_SUBAGENT_RESULT,    /**< Result returned from a subagent handler. */
+    COG_EVENT_SUBAGENT_STATUS,    /**< Subagent progress/status notification. */
+    COG_EVENT_LLM_CHUNK,          /**< Streaming chunk from LLM provider. */
+    COG_EVENT_LLM_COMPLETE,       /**< LLM response finished. */
+    COG_EVENT_PROVIDER_ERROR,     /**< Provider call failed (network, auth, etc). */
+    COG_EVENT_NETWORK_STALL,      /**< Network connection stalled. */
+    COG_EVENT_NETWORK_RECOVERED,  /**< Network connection recovered. */
+    COG_EVENT_STATUS_UPDATE,      /**< Status update for UI display. */
+    COG_EVENT_IPC_MESSAGE,        /**< Framed message received from a peer. */
+    COG_EVENT_IPC_CONNECTED,      /**< New peer connected to the IPC fabric. */
+    COG_EVENT_IPC_DISCONNECTED,   /**< Peer disconnected from the IPC fabric. */
+    COG_EVENT_SHUTDOWN,           /**< Request for graceful shutdown. */
 } cog_event_kind_t;
 
 /**
@@ -70,6 +81,20 @@ typedef struct cog_event {
     size_t payload_len;      /**< Payload size in bytes; zero when payload is NULL. */
     uint64_t source_id;      /**< Diagnostic source identifier; zero when unknown. */
 } cog_event_t;
+
+/**
+ * @brief Payload for COG_EVENT_IPC_* events.
+ *
+ * Embedded in cog_event_t.payload.  The event queue copies this struct;
+ * the message payload pointer refers to memory owned by the IPC layer
+ * and is valid only during handler execution.
+ */
+typedef struct cog_event_ipc {
+    cog_peer_id_t peer;       /**< Source or destination peer. */
+    uint16_t msg_type;        /**< Application message type tag. */
+    const void *msg_payload;  /**< Message payload (borrowed). */
+    size_t msg_payload_len;   /**< Payload length in bytes. */
+} cog_event_ipc_t;
 
 /**
  * @brief Opaque event queue.

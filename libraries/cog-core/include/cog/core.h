@@ -23,8 +23,10 @@
 #ifndef COG_CORE_H
 #define COG_CORE_H
 
+#include <cog/agent.h>
 #include <cog/event.h>
 #include <cog/handler.h>
+#include <cog/ipc.h>
 #include <cog/result.h>
 #include <cog/session.h>
 #include <cog/state.h>
@@ -113,6 +115,25 @@ typedef struct cog_core_config {
      * @brief Caller argument passed to @p wait_fn.
      */
     void *wait_arg;
+
+    /**
+     * @brief Optional IPC endpoint for multi-process operation.
+     *
+     * If non-NULL, the core takes ownership of the endpoint and drains
+     * incoming messages during the event loop.  IPC events are enqueued
+     * as COG_EVENT_IPC_* events into the local queue.
+     *
+     * Set to NULL for single-process operation (the default).
+     */
+    cog_ipc_endpoint_t *ipc_endpoint;
+
+    /**
+     * @brief Local peer identity within the IPC fabric.
+     *
+     * Zero means "unidentified" — the IPC layer assigns an id on
+     * connection.  Non-zero values must be unique across the fabric.
+     */
+    cog_peer_id_t local_peer_id;
 } cog_core_config_t;
 
 /**
@@ -241,6 +262,16 @@ cog_state_t cog_core_state(const cog_core_t *core);
  * and may change immediately after the call returns.
  */
 bool cog_core_is_running(const cog_core_t *core);
+
+/**
+ * @brief Return the IPC endpoint associated with the core.
+ *
+ * @param[in] core Core to query; may be NULL.
+ * @return The IPC endpoint, or NULL if single-process or @p core is NULL.
+ *
+ * Threading: not thread-safe.
+ */
+cog_ipc_endpoint_t *cog_core_ipc(cog_core_t *core);
 
 #ifdef __cplusplus
 }

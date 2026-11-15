@@ -15,6 +15,7 @@
 #define COG_SESSION_H
 
 #include <cog/event.h>
+#include <cog/message.h>
 #include <cog/result.h>
 
 #include <stdbool.h>
@@ -121,6 +122,67 @@ cog_result_t cog_session_reset(cog_session_t *session);
  * Threading: not thread-safe.
  */
 bool cog_session_is_empty(const cog_session_t *session);
+
+/**
+ * @brief Append a message to the session's conversation history.
+ *
+ * The message is copied into the session's internal storage.
+ *
+ * @param[in,out] session Session to modify.
+ * @param[in]     msg     Message to append; must be non-NULL.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if @p session or @p msg is NULL.
+ * @return COG_ERROR_NOMEM if allocation fails.
+ * @return COG_ERROR_OVERFLOW if the session's history is full.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_session_add_message(cog_session_t *session,
+                                      const cog_message_t *msg);
+
+/**
+ * @brief Get the conversation history for building a provider request.
+ *
+ * The returned array is owned by the session and remains valid until
+ * the next call that modifies the session.
+ *
+ * @param[in]  session   Session to query.
+ * @param[out] out_msgs  Receives pointer to the message array.
+ * @param[out] out_count Receives the number of messages.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if any argument is NULL.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_session_get_history(const cog_session_t *session,
+                                      const cog_message_t **out_msgs,
+                                      size_t *out_count);
+
+/**
+ * @brief Return the parent session identifier.
+ *
+ * @param[in] session Session to query; may be NULL.
+ * @return Parent session id, or NULL if this is a root session or
+ *         @p session is NULL.
+ *
+ * Threading: not thread-safe.
+ */
+const char *cog_session_parent_id(const cog_session_t *session);
+
+/**
+ * @brief Set the parent session identifier.
+ *
+ * @param[in,out] session   Session to modify.
+ * @param[in]     parent_id Parent session id; copied.  May be NULL to
+ *                          clear the parent.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if @p session is NULL.
+ * @return COG_ERROR_NOMEM if allocation fails.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_session_set_parent(cog_session_t *session,
+                                     const char *parent_id);
 
 #ifdef __cplusplus
 }

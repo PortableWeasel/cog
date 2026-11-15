@@ -331,6 +331,75 @@ cog_result_t cog_ipc_endpoint_disconnect(cog_ipc_endpoint_t *endpoint);
 cog_result_t cog_ipc_endpoint_get_peer_id(const cog_ipc_endpoint_t *endpoint,
                                           cog_peer_id_t *peer_id);
 
+/* ── Broadcast ──────────────────────────────────────────────────── */
+
+/**
+ * @brief Send a message to all connected peers.
+ *
+ * @param[in,out] endpoint Endpoint to send from (must be a listener).
+ * @param[in]     msg      Message to broadcast.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if @p endpoint or @p msg is NULL.
+ * @return COG_ERROR_INVALID_STATE if @p endpoint is not a listener.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_ipc_broadcast(cog_ipc_endpoint_t *endpoint,
+                                const cog_ipc_message_t *msg);
+
+/* ── Session routing ────────────────────────────────────────────── */
+
+/**
+ * @brief Register a session-to-peer mapping.
+ *
+ * Allows messages to be routed by session id rather than peer id.
+ * Used for subagent-to-subagent and subagent-to-parent messaging.
+ *
+ * @param[in,out] endpoint   Endpoint (must be a listener).
+ * @param[in]     session_id Session identifier; copied.
+ * @param[in]     peer_id    Peer that hosts this session.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if @p endpoint or @p session_id is NULL.
+ * @return COG_ERROR_INVALID_STATE if @p endpoint is not a listener.
+ * @return COG_ERROR_OVERFLOW if the session table is full.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_ipc_register_session(cog_ipc_endpoint_t *endpoint,
+                                       const char *session_id,
+                                       cog_peer_id_t peer_id);
+
+/**
+ * @brief Send a message to the peer hosting a specific session.
+ *
+ * @param[in,out] endpoint   Endpoint to send from.
+ * @param[in]     session_id Target session identifier.
+ * @param[in]     msg        Message to send.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if @p endpoint, @p session_id, or @p msg
+ *         is NULL.
+ * @return COG_ERROR_NOT_FOUND if no peer hosts the given session.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_ipc_send_to_session(cog_ipc_endpoint_t *endpoint,
+                                      const char *session_id,
+                                      const cog_ipc_message_t *msg);
+
+/**
+ * @brief Remove a session-to-peer mapping.
+ *
+ * @param[in,out] endpoint   Endpoint.
+ * @param[in]     session_id Session to unregister.
+ * @return COG_OK on success.
+ * @return COG_ERROR_NULL_PTR if @p endpoint or @p session_id is NULL.
+ * @return COG_ERROR_NOT_FOUND if the session is not registered.
+ *
+ * Threading: not thread-safe.
+ */
+cog_result_t cog_ipc_unregister_session(cog_ipc_endpoint_t *endpoint,
+                                         const char *session_id);
+
 #ifdef __cplusplus
 }
 #endif
