@@ -266,13 +266,14 @@ orchestrator) hosted on the peer and reports the total count.
   `WNOHANG`) and leave a still-running child for `reap_children` / normal
   cleanup. Blocking `waitpid(..., 0)` is used only after `SIGKILL`, which
   is bounded.
-- Auto-replace never orphans a still-running child: a spawned core's slot
-  is only reused after its process has been reaped.  A crashed child is
-  already reaped by `reap_children`; an acked-but-alive child (disconnected,
-  still running) is terminated and reaped (bounded `SIGKILL` + `waitpid`)
-  before the slot is reused, so its pid/binary/connection records are never
-  freed while the process is live.  Non-spawned/self-connected cores are
-  never signalled.
+- Auto-replace is recovery after actual process exit, never termination of
+  a draining core.  A spawned core's slot is only reused after its process
+  has actually exited and been reaped (`reap_children`).  An acked-but-alive
+  child (disconnected, still running) is skipped while it is alive: its
+  pid/binary/connection records stay owned for `reap_children` / normal
+  cleanup, and its slot is never reused (which would memset the record and
+  orphan the live pid).  Non-spawned/self-connected cores are never
+  signalled.
 - Every spawned child is reaped before the orchestrator is freed.
 - A core is never chosen for placement while `UNKNOWN` or `DEAD`.
 - `cog_orchestrator_sessions` on a dead core still returns its sessions

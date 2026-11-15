@@ -476,10 +476,11 @@ test_auto_replace_ackhang(void)
     cog_orchestrator_config_t cfg;
     cog_orchestrator_t *orch = NULL;
     cog_peer_id_t peer = COG_PEER_ID_INVALID;
-    cog_peer_id_t replacement = COG_PEER_ID_INVALID;
     cog_core_info_t infos[4];
     size_t count = 0U;
     pid_t old_pid = -1;
+    struct timespec ts;
+    int waited = 0;
 
     if (make_socket_path(path, sizeof(path)) != 0) {
         CHECK("arah path", 0);
@@ -514,22 +515,27 @@ test_auto_replace_ackhang(void)
     /* stop returns OK (bounded) but the child is still alive */
     CHECK_RESULT("arah stop", COG_OK, cog_orchestrator_stop(orch, peer));
 
-    /* drive auto-replace: a replacement must connect and reuse the slot */
-    CHECK("arah one core", poll_until(orch, pred_one_core, 3000) == 0);
+    /* Drive auto-replace for a while: the acked-but-alive child must NOT
+     * be replaced or orphaned.  auto_replace is recovery after actual
+     * process death, not termination of a draining core, so it must skip
+     * the still-running child (same slot, same peer id) and leave it
+     * alive and owned. */
+    ts.tv_sec = 0;
+    ts.tv_nsec = 10000000L; /* 10 ms */
+    while (waited < 500) {
+        (void)cog_orchestrator_poll(orch, 0);
+        (void)nanosleep(&ts, NULL);
+        waited += 10;
+    }
     CHECK_RESULT("arah list2", COG_OK,
                  cog_orchestrator_list(orch, infos, 4U, &count));
     CHECK("arah count2", count == 1U);
-    replacement = infos[0].peer_id;
-    CHECK("arah replaced", replacement != peer);
-    g_healthy_peer = replacement;
-    CHECK("arah replacement healthy",
-          poll_until(orch, pred_healthy, 3000) == 0);
+    CHECK("arah not replaced", infos[0].peer_id == peer);
+    CHECK("arah old alive", kill(old_pid, 0) == 0);
 
-    /* the original acked-but-alive child must NOT be orphaned: it must be
-     * reaped (no longer a live process) once the slot is reused. */
-    CHECK("arah old reaped", kill(old_pid, 0) == -1);
-
+    /* free() reaps the still-running child (no leak, no orphan). */
     cog_orchestrator_free(orch);
+    CHECK("arah reaped after free", kill(old_pid, 0) == -1);
 }
 
 /* ------------------------------------------------------------------ */
