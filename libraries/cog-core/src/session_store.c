@@ -1,2922 +1,993 @@
-/**
- * @file session_store.c
- * @brief Implementation of the pluggable session-persistence backend declared
- *        in cog/session_store.h.
- *
- * Ticket: 0efef06 (Stage 12.2d — Implement session_store.c)
- *
- * Design notes (the full executable contract is recorded in
- * libraries/cog-core/contracts/session_store/CONTRACT.md):
- *
- * - Two built-in backends, both plain `static const` vtable instances:
- *   `cog_store_file_backend` (default) and `cog_store_null_backend`.
- *   There is no backend registry and no global mutable state; the store
- *   struct is heap-allocated by cog_store_new and passed by pointer, and
- *   every operation dispatches through caller-supplied or built-in
- *   vtables.
- * - The file backend persists one directory per session:
- *     <base_dir>/<session_id>/meta.json
- *     <base_dir>/<session_id>/nodes.jsonl
- *     <base_dir>/<session_id>/index.bin
- *   meta.json holds session metadata (id, parent id, max_nodes,
- *   node_count, next_node_id, active node id).  nodes.jsonl is an
- *   append-only log of one JSON object per node, written in DFS
- *   pre-order so every parent precedes its children.  index.bin is an
- *   advisory node_id -> byte-offset cache (native byte order) maintained
- *   by save/append; load treats nodes.jsonl as the source of truth and a
- *   missing or corrupt index.bin is non-fatal (it is regenerated on the
- *   next full save).
- * - Message content is length-prefixed and may contain embedded NUL
- *   bytes; every string payload is base64-encoded inside the JSON
- *   objects so byte lengths survive round-trips exactly.  tool_args /
- *   tool_result / tool_name are NUL-terminated by construction in
- *   session.c.  tool_args / tool_result byte lengths are read from the
- *   private node struct (not strlen), so payloads containing embedded
- *   NUL bytes survive the round-trip exactly.
- * - The store includes the private session layout (session_internal.h)
- *   so a load can restore node ids, raw provider fields, chunk counts,
- *   the active node, next_node_id and max_nodes exactly.  This serves
- *   the same single-definition purpose the header was created for; no
- *   public API is expanded.
- * - Null backend: every operation returns COG_OK and does nothing; load
- *   sets *out to NULL so the caller never receives uninitialised output.
- * - `compress` and `auto_save` are accepted and retained by the store.
- *   The file backend does not compress (the documented on-disk layout is
- *   plain JSONL + index; no compression is pretended).  `auto_save` has
- *   no trigger in this module: per cog/core.h the *core* auto-saves
- *   after each exchange when a store is configured, and that trigger
- *   lives in the core integration layer, so this module records the flag
- *   and documents the boundary honestly.
- * - Every session id is validated for path safety (no '/', '\', "." ,
- *   "..", control bytes; length capped at 128) before it is used as a
- *   directory name; hostile ids return COG_ERROR_INVALID_ARG /
- *   COG_ERROR_OVERFLOW.
+/** @file session_store.c
+ * @brief Constructor-bounded immutable transactions and same-host fencing.
  */
 #define _POSIX_C_SOURCE 200809L
-
 #include "cog/session_store.h"
-
+#include "session_store_codec.h"
 #include "session_internal.h"
-
-#include <ctype.h>
+#include <assert.h>
 #include <dirent.h>
 #include <errno.h>
-#include <stdint.h>
+#include <fcntl.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <unistd.h>
 
-/* ------------------------------------------------------------------ */
-/* Constants                                                           */
-/* ------------------------------------------------------------------ */
+#define STORE_CAP ((size_t)16 * 1024U * 1024U)
+#define ID_CAP 128U
+#define MAN_SIZE 64U
+#define GEN_SIZE 40U
+#define DOMAIN ".cog-domain.lock"
+#define ANCHOR ".owner.lock"
+#define MANIFEST "manifest.bin"
 
-/** Longest session id accepted by the store (path-safety bound). */
-#define COG_STORE_ID_MAX_LEN ((size_t)128)
-
-/** On-disk format version stored in meta.json. */
-#define COG_STORE_FORMAT_VERSION ((uint64_t)1)
-
-/** index.bin magic (8 bytes; data thereafter is native byte order). */
-static const unsigned char kIndexMagic[8] = {'C', 'O', 'G', 'I',
-                                            'D', 'X', '0', '1'};
-
-#define COG_STORE_FILE_META "meta.json"
-#define COG_STORE_FILE_NODES "nodes.jsonl"
-#define COG_STORE_FILE_INDEX "index.bin"
-
-/* ------------------------------------------------------------------ */
-/* Internal layout of the opaque cog_store_t                           */
-/* ------------------------------------------------------------------ */
-
+typedef struct manifest {
+    uint64_t generation, size, checksum;
+    cog_store_owner_t owner;
+    bool present;
+} manifest_t;
+struct cog_store_owner_guard {
+    cog_store_t *store;
+    struct cog_store_owner_guard *next;
+    char id[ID_CAP + 1U];
+    cog_store_owner_t owner;
+    void *backend_guard;
+    int fd;
+    size_t borrowers;
+    bool recovery, blocked;
+};
 struct cog_store {
     const cog_store_vtable_t *backend;
-    char *base_dir;      /* owned copy; never NULL */
-    size_t max_sessions; /* 0 = unlimited */
-    bool auto_save;      /* retained; the trigger point is the core */
-    bool compress;       /* retained; the file backend does not compress */
+    void *context;
+    char *base;
+    size_t capacity, max_sessions;
+    unsigned char *write_buffer, *read_buffer, *scratch, *compare_buffer;
+    bool auto_save, require_owner, recover_tail;
+    cog_store_owner_guard_t *guards;
 };
 
-/* ------------------------------------------------------------------ */
-/* Growable byte buffer                                                */
-/* ------------------------------------------------------------------ */
-
-struct cbuf {
-    char *data;
-    size_t len;
-    size_t cap;
-};
-
-static cog_result_t cbuf_reserve(struct cbuf *b, size_t extra)
+static cog_result_t valid_id(const char *id)
 {
-    size_t need;
-    size_t ncap;
-    char *nd;
-
-    if (extra > SIZE_MAX - b->len) {
-        return COG_ERROR_OVERFLOW;
-    }
-    need = b->len + extra;
-    if (need <= b->cap) {
-        return COG_OK;
-    }
-    ncap = (b->cap == 0U) ? 256U : b->cap;
-    while (ncap < need) {
-        if (ncap > SIZE_MAX / 2U) {
-            ncap = need;
-            break;
-        }
-        ncap *= 2U;
-    }
-    nd = realloc(b->data, ncap);
-    if (nd == NULL) {
-        return COG_ERROR_NOMEM;
-    }
-    b->data = nd;
-    b->cap = ncap;
+    if (id == NULL) return COG_ERROR_NULL_PTR;
+    size_t n = strlen(id);
+    if (n > ID_CAP) return COG_ERROR_OVERFLOW;
+    if (n == 0U || strcmp(id, ".") == 0 || strcmp(id, "..") == 0 || strcmp(id, DOMAIN) == 0)
+        return COG_ERROR_INVALID_ARG;
+    for (size_t i = 0U; i < n; ++i)
+        if ((unsigned char)id[i] < 32U || (unsigned char)id[i] == 127U || id[i] == '/' || id[i] == '\\')
+            return COG_ERROR_INVALID_ARG;
     return COG_OK;
 }
-
-static cog_result_t cbuf_puts(struct cbuf *b, const char *s)
+static uint64_t checksum(const unsigned char *p, size_t n)
 {
-    size_t n = strlen(s);
-    cog_result_t rc = cbuf_reserve(b, n);
-
-    if (rc != COG_OK) {
-        return rc;
-    }
-    if (n > 0U) {
-        (void)memcpy(b->data + b->len, s, n);
-    }
-    b->len += n;
-    return COG_OK;
+    uint64_t h = UINT64_C(14695981039346656037);
+    for (size_t i = 0U; i < n; ++i) { h ^= p[i]; h *= UINT64_C(1099511628211); }
+    return h;
 }
-
-/* ------------------------------------------------------------------ */
-/* Base64 (payload strings may contain embedded NUL bytes)            */
-/* ------------------------------------------------------------------ */
-
-static const char kB64Alphabet[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static char *b64_encode(const void *data, size_t len, size_t *out_len)
+static void put64(unsigned char *p, uint64_t n)
+{ for (unsigned i = 0U; i < 8U; ++i) p[i] = (unsigned char)(n >> (i * 8U)); }
+static uint64_t get64(const unsigned char *p)
 {
-    const unsigned char *in = (const unsigned char *)data;
-    size_t olen;
-    size_t o;
-    size_t i;
-    char *out;
-
-    if (len > SIZE_MAX - 2U) {
-        return NULL; /* cannot be reached on hosted platforms; fail closed */
-    }
-    olen = ((len + 2U) / 3U) * 4U;
-    out = malloc(olen + 1U);
-    if (out == NULL) {
-        return NULL;
-    }
-    o = 0U;
-    for (i = 0U; i < len; i += 3U) {
-        uint32_t v = (uint32_t)in[i] << 16U;
-        size_t rem = len - i;
-
-        if (rem > 1U) {
-            v |= (uint32_t)in[i + 1U] << 8U;
-        }
-        if (rem > 2U) {
-            v |= (uint32_t)in[i + 2U];
-        }
-        out[o++] = kB64Alphabet[(v >> 18U) & 0x3fU];
-        out[o++] = kB64Alphabet[(v >> 12U) & 0x3fU];
-        out[o++] = (rem > 1U) ? kB64Alphabet[(v >> 6U) & 0x3fU] : '=';
-        out[o++] = (rem > 2U) ? kB64Alphabet[v & 0x3fU] : '=';
-    }
-    out[o] = '\0';
-    if (out_len != NULL) {
-        *out_len = olen;
-    }
-    return out;
+    uint64_t n = 0U;
+    for (unsigned i = 0U; i < 8U; ++i) n |= (uint64_t)p[i] << (i * 8U);
+    return n;
 }
-
-static int b64_val(unsigned char c)
+static bool same_owner(cog_store_owner_t a, cog_store_owner_t b)
+{ return a.epoch == b.epoch && a.instance_id == b.instance_id; }
+static cog_result_t io_write(int fd, const unsigned char *p, size_t n)
 {
-    if (c >= (unsigned char)'A' && c <= (unsigned char)'Z') {
-        return (int)c - (int)'A';
-    }
-    if (c >= (unsigned char)'a' && c <= (unsigned char)'z') {
-        return (int)c - (int)'a' + 26;
-    }
-    if (c >= (unsigned char)'0' && c <= (unsigned char)'9') {
-        return (int)c - (int)'0' + 52;
-    }
-    if (c == (unsigned char)'+') {
-        return 62;
-    }
-    if (c == (unsigned char)'/') {
-        return 63;
-    }
-    return -1;
-}
-
-static cog_result_t b64_decode(const char *s, size_t slen,
-                               unsigned char **out, size_t *out_len)
-{
-    size_t pad = 0U;
-    size_t olen;
-    size_t o;
-    size_t i;
-    unsigned char *buf;
-    uint32_t acc = 0U;
-    unsigned bits = 0U;
-
-    *out = NULL;
-    if (out_len != NULL) {
-        *out_len = 0U;
-    }
-    if (slen % 4U != 0U) {
-        return COG_ERROR_IO; /* the writer always emits padded base64 */
-    }
-    while (pad < slen && s[slen - 1U - pad] == '=') {
-        pad++;
-    }
-    if (pad > 2U) {
-        return COG_ERROR_IO;
-    }
-    /* Content bytes = 3 per 4-char group minus the trailing padding;
-     * standard base64 allows a final group with 2 or 3 content chars
-     * followed by 2 or 1 padding chars respectively. */
-    olen = (slen / 4U) * 3U - pad;
-    buf = malloc(olen + 1U);
-    if (buf == NULL) {
-        return COG_ERROR_NOMEM;
-    }
-    o = 0U;
-    for (i = 0U; i < slen - pad; i++) {
-        int v = b64_val((unsigned char)s[i]);
-
-        if (v < 0) {
-            free(buf);
-            return COG_ERROR_IO;
-        }
-        acc = (acc << 6U) | (uint32_t)v;
-        bits += 6U;
-        if (bits >= 8U) {
-            bits -= 8U;
-            buf[o++] = (unsigned char)((acc >> bits) & 0xffU);
-        }
-    }
-    if (o != olen) {
-        free(buf);
-        return COG_ERROR_IO;
-    }
-    buf[o] = '\0';
-    *out = buf;
-    if (out_len != NULL) {
-        *out_len = olen;
+    while (n != 0U) {
+        ssize_t k = write(fd, p, n);
+        if (k < 0 && errno == EINTR) continue;
+        if (k <= 0) return COG_ERROR_IO;
+        p += (size_t)k; n -= (size_t)k;
     }
     return COG_OK;
 }
-
-/* ------------------------------------------------------------------ */
-/* JSON subset scanner                                                */
-/*                                                                     */
-/* Strict by design: double-quoted strings (no escape sequences),       */
-/* numbers, the literal null, and one level of object nesting.  Any     */
-/* deviation fails the parse — load never guesses at malformed data.   */
-/* ------------------------------------------------------------------ */
-
-typedef struct json_scan {
-    const char *p;
-    const char *end;
-} json_scan_t;
-
-static void js_skip_ws(json_scan_t *j)
+static cog_result_t read_at(int dir, const char *name, unsigned char *p, size_t cap, size_t *size)
 {
-    while (j->p < j->end && isspace((unsigned char)*j->p) != 0) {
-        j->p++;
-    }
-}
-
-static bool js_char(json_scan_t *j, char c)
-{
-    js_skip_ws(j);
-    if (j->p < j->end && *j->p == c) {
-        j->p++;
-        return true;
-    }
-    return false;
-}
-
-static bool js_null(json_scan_t *j)
-{
-    js_skip_ws(j);
-    if ((size_t)(j->end - j->p) >= 4U &&
-        memcmp(j->p, "null", 4U) == 0) {
-        j->p += 4;
-        return true;
-    }
-    return false;
-}
-
-/** Read a double-quoted string (any bytes except '"'; no escapes). */
-static bool js_string(json_scan_t *j, const char **out, size_t *out_len)
-{
-    const char *start;
-    const char *q;
-
-    js_skip_ws(j);
-    if (j->p >= j->end || *j->p != '"') {
-        return false;
-    }
-    j->p++;
-    start = j->p;
-    q = memchr(j->p, '"', (size_t)(j->end - j->p));
-    if (q == NULL) {
-        return false;
-    }
-    j->p = q + 1;
-    *out = start;
-    *out_len = (size_t)(q - start);
-    return true;
-}
-
-/** Read a number token ([0-9.eE+-]*); ','/ws terminate it. */
-static bool js_number(json_scan_t *j, const char **out, size_t *out_len)
-{
-    const char *start = j->p;
-
-    while (j->p < j->end &&
-           (isdigit((unsigned char)*j->p) != 0 || *j->p == '.' ||
-            *j->p == 'e' || *j->p == 'E' || *j->p == '+' || *j->p == '-')) {
-        j->p++;
-    }
-    if (j->p == start) {
-        return false;
-    }
-    *out = start;
-    *out_len = (size_t)(j->p - start);
-    return true;
-}
-
-static bool js_value_u64(json_scan_t *j, uint64_t *out)
-{
-    const char *tok = NULL;
-    size_t toklen = 0U;
-    size_t k;
-    char tmp[32];
-    char *endp = NULL;
-
-    if (!js_number(j, &tok, &toklen)) {
-        return false;
-    }
-    if (toklen == 0U || toklen >= sizeof(tmp)) {
-        return false;
-    }
-    for (k = 0U; k < toklen; k++) {
-        if (isdigit((unsigned char)tok[k]) == 0) {
-            return false; /* uint64 fields must be plain digits */
+    int fd = openat(dir, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return errno == ENOENT ? COG_ERROR_NOT_FOUND : COG_ERROR_IO;
+    struct stat st;
+    cog_result_t rc = COG_OK;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0) rc = COG_ERROR_IO;
+    else if ((uintmax_t)st.st_size > (uintmax_t)cap) rc = COG_ERROR_LIMIT;
+    else {
+        size_t n = (size_t)st.st_size, at = 0U;
+        while (at < n) {
+            ssize_t k = read(fd, p + at, n - at);
+            if (k < 0 && errno == EINTR) continue;
+            if (k <= 0) { rc = COG_ERROR_IO; break; }
+            at += (size_t)k;
         }
+        unsigned char extra;
+        if (rc == COG_OK && read(fd, &extra, 1U) != 0) rc = COG_ERROR_IO;
+        if (rc == COG_OK) *size = n;
     }
-    (void)memcpy(tmp, tok, toklen);
-    tmp[toklen] = '\0';
-    errno = 0;
-    *out = (uint64_t)strtoull(tmp, &endp, 10);
-    if (errno != 0 || endp != tmp + toklen) {
-        return false;
-    }
-    return true;
-}
-
-static bool js_value_double(json_scan_t *j, double *out)
-{
-    const char *tok = NULL;
-    size_t toklen = 0U;
-    char tmp[64];
-    char *endp = NULL;
-
-    if (!js_number(j, &tok, &toklen)) {
-        return false;
-    }
-    if (toklen == 0U || toklen >= sizeof(tmp)) {
-        return false;
-    }
-    (void)memcpy(tmp, tok, toklen);
-    tmp[toklen] = '\0';
-    errno = 0;
-    *out = strtod(tmp, &endp);
-    if (errno != 0 || endp != tmp + toklen) {
-        return false;
-    }
-    return true;
-}
-
-/** After '{', read one `"key":value` pair; false at the closing '}'. */
-static bool js_obj_field(json_scan_t *j, char *key, size_t keycap)
-{
-    const char *ks = NULL;
-    size_t klen = 0U;
-
-    if (js_char(j, '}')) {
-        return false;
-    }
-    if (!js_string(j, &ks, &klen) || klen == 0U || klen >= keycap) {
-        return false;
-    }
-    (void)memcpy(key, ks, klen);
-    key[klen] = '\0';
-    return js_char(j, ':');
-}
-
-/* ------------------------------------------------------------------ */
-/* Node record (one JSONL line in nodes.jsonl)                         */
-/* ------------------------------------------------------------------ */
-
-typedef struct cog_node_record {
-    uint64_t node_id;
-    uint64_t parent_id;
-    int role; /* -1 while unset */
-    char *content;
-    size_t content_len;
-    char *tool_name;
-    size_t tool_name_len;
-    char *tool_args;
-    size_t tool_args_len;
-    char *tool_result;
-    size_t tool_result_len;
-    char *raw_request;
-    size_t raw_request_len;
-    char *raw_response;
-    size_t raw_response_len;
-    char *model;
-    size_t model_len;
-    char *provider;
-    size_t provider_len;
-    size_t chunk_count;
-    cog_timing_t timing;
-    cog_cost_t cost;
-} cog_node_record_t;
-
-static void node_record_free(cog_node_record_t *r)
-{
-    free(r->content);
-    free(r->tool_name);
-    free(r->tool_args);
-    free(r->tool_result);
-    free(r->raw_request);
-    free(r->raw_response);
-    free(r->model);
-    free(r->provider);
-    memset(r, 0, sizeof(*r));
-    r->role = -1;
-}
-
-/** Decode a "key":"<b64>" / "key":null field into the record. */
-static cog_result_t node_record_field_str(json_scan_t *j,
-                                          char **field, size_t *field_len)
-{
-    const char *val = NULL;
-    size_t vlen = 0U;
-    unsigned char *dec = NULL;
-    size_t declen = 0U;
-    cog_result_t rc;
-
-    if (js_null(j)) {
-        return COG_OK; /* field stays NULL */
-    }
-    if (!js_string(j, &val, &vlen)) {
-        return COG_ERROR_IO;
-    }
-    rc = b64_decode(val, vlen, &dec, &declen);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    *field = (char *)dec;
-    *field_len = declen;
-    return COG_OK;
-}
-
-static cog_result_t node_record_field_u64(json_scan_t *j, uint64_t *out)
-{
-    if (js_null(j)) {
-        return COG_ERROR_IO; /* numeric fields must be present */
-    }
-    if (!js_value_u64(j, out)) {
-        return COG_ERROR_IO;
-    }
-    return COG_OK;
-}
-
-static cog_result_t timing_parse(json_scan_t *j, cog_timing_t *t)
-{
-    char key[32];
-
-    if (!js_char(j, '{')) {
-        return COG_ERROR_IO;
-    }
-    while (true) {
-        if (!js_obj_field(j, key, sizeof(key))) {
-            return COG_ERROR_IO;
-        }
-        if (strcmp(key, "request_sent_ms") == 0) {
-            if (!js_value_u64(j, &t->request_sent_ms)) {
-                return COG_ERROR_IO;
-            }
-        } else if (strcmp(key, "first_token_ms") == 0) {
-            if (!js_value_u64(j, &t->first_token_ms)) {
-                return COG_ERROR_IO;
-            }
-        } else if (strcmp(key, "last_token_ms") == 0) {
-            if (!js_value_u64(j, &t->last_token_ms)) {
-                return COG_ERROR_IO;
-            }
-        } else if (strcmp(key, "duration_ms") == 0) {
-            if (!js_value_u64(j, &t->duration_ms)) {
-                return COG_ERROR_IO;
-            }
-        } else if (strcmp(key, "ttft_ms") == 0) {
-            if (!js_value_u64(j, &t->ttft_ms)) {
-                return COG_ERROR_IO;
-            }
-        } else if (strcmp(key, "tokens_per_second") == 0) {
-            if (!js_value_double(j, &t->tokens_per_second)) {
-                return COG_ERROR_IO;
-            }
-        } else {
-            return COG_ERROR_IO; /* unknown key: strict schema */
-        }
-        if (js_char(j, '}')) {
-            return COG_OK;
-        }
-        if (!js_char(j, ',')) {
-            return COG_ERROR_IO;
-        }
-    }
-}
-
-static cog_result_t cost_parse(json_scan_t *j, cog_cost_t *c)
-{
-    char key[32];
-
-    if (!js_char(j, '{')) {
-        return COG_ERROR_IO;
-    }
-    while (true) {
-        if (!js_obj_field(j, key, sizeof(key))) {
-            return COG_ERROR_IO;
-        }
-        if (strcmp(key, "input_tokens") == 0) {
-            if (!js_value_u64(j, &c->input_tokens)) {
-                return COG_ERROR_IO;
-            }
-        } else if (strcmp(key, "output_tokens") == 0) {
-            if (!js_value_u64(j, &c->output_tokens)) {
-                return COG_ERROR_IO;
-            }
-        } else if (strcmp(key, "cost_per_input_token") == 0) {
-            if (!js_value_double(j, &c->cost_per_input_token)) {
-                return COG_ERROR_IO;
-            }
-        } else if (strcmp(key, "cost_per_output_token") == 0) {
-            if (!js_value_double(j, &c->cost_per_output_token)) {
-                return COG_ERROR_IO;
-            }
-        } else if (strcmp(key, "total_cost") == 0) {
-            if (!js_value_double(j, &c->total_cost)) {
-                return COG_ERROR_IO;
-            }
-        } else {
-            return COG_ERROR_IO;
-        }
-        if (js_char(j, '}')) {
-            return COG_OK;
-        }
-        if (!js_char(j, ',')) {
-            return COG_ERROR_IO;
-        }
-    }
-}
-
-/** Parse one nodes.jsonl line into @p r.  On failure @p r is freed. */
-static cog_result_t node_record_parse(const char *line, size_t len,
-                                      cog_node_record_t *r)
-{
-    json_scan_t j;
-    char key[16];
-    cog_result_t rc;
-
-    memset(r, 0, sizeof(*r));
-    r->role = -1;
-    j.p = line;
-    j.end = line + len;
-    if (!js_char(&j, '{')) {
-        return COG_ERROR_IO;
-    }
-    while (true) {
-        rc = COG_OK;
-        if (!js_obj_field(&j, key, sizeof(key))) {
-            rc = COG_ERROR_IO;
-        } else if (strcmp(key, "node_id") == 0) {
-            rc = node_record_field_u64(&j, &r->node_id);
-        } else if (strcmp(key, "parent_id") == 0) {
-            rc = node_record_field_u64(&j, &r->parent_id);
-        } else if (strcmp(key, "role") == 0) {
-            uint64_t v = 0U;
-
-            rc = node_record_field_u64(&j, &v);
-            if (rc == COG_OK) {
-                if (v > 4U) {
-                    rc = COG_ERROR_IO;
-                } else {
-                    r->role = (int)v;
-                }
-            }
-        } else if (strcmp(key, "content") == 0) {
-            rc = node_record_field_str(&j, &r->content, &r->content_len);
-        } else if (strcmp(key, "tool_name") == 0) {
-            rc = node_record_field_str(&j, &r->tool_name, &r->tool_name_len);
-        } else if (strcmp(key, "tool_args") == 0) {
-            rc = node_record_field_str(&j, &r->tool_args, &r->tool_args_len);
-        } else if (strcmp(key, "tool_result") == 0) {
-            rc = node_record_field_str(&j, &r->tool_result,
-                                       &r->tool_result_len);
-        } else if (strcmp(key, "raw_request") == 0) {
-            rc = node_record_field_str(&j, &r->raw_request,
-                                       &r->raw_request_len);
-        } else if (strcmp(key, "raw_response") == 0) {
-            rc = node_record_field_str(&j, &r->raw_response,
-                                       &r->raw_response_len);
-        } else if (strcmp(key, "chunk_count") == 0) {
-            uint64_t v = 0U;
-
-            rc = node_record_field_u64(&j, &v);
-            if (rc == COG_OK) {
-                if (v > (uint64_t)SIZE_MAX) {
-                    rc = COG_ERROR_IO;
-                } else {
-                    r->chunk_count = (size_t)v;
-                }
-            }
-        } else if (strcmp(key, "timing") == 0) {
-            rc = timing_parse(&j, &r->timing);
-        } else if (strcmp(key, "cost") == 0) {
-            rc = cost_parse(&j, &r->cost);
-        } else if (strcmp(key, "model") == 0) {
-            rc = node_record_field_str(&j, &r->model, &r->model_len);
-        } else if (strcmp(key, "provider") == 0) {
-            rc = node_record_field_str(&j, &r->provider, &r->provider_len);
-        } else {
-            rc = COG_ERROR_IO; /* unknown key: strict schema */
-        }
-        if (rc != COG_OK) {
-            node_record_free(r);
-            return rc;
-        }
-        if (js_char(&j, '}')) {
-            break;
-        }
-        if (!js_char(&j, ',')) {
-            node_record_free(r);
-            return COG_ERROR_IO;
-        }
-    }
-    js_skip_ws(&j);
-    if (j.p != j.end || r->role < 0) {
-        node_record_free(r);
-        return COG_ERROR_IO;
-    }
-    return COG_OK;
-}
-
-/* ------------------------------------------------------------------ */
-/* JSON writers                                                        */
-/* ------------------------------------------------------------------ */
-
-static cog_result_t field_b64(struct cbuf *b, const char *key,
-                              const void *data, size_t len)
-{
-    cog_result_t rc;
-    char *enc = NULL;
-    size_t enclen = 0U;
-
-    rc = cbuf_puts(b, "\"");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, key);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, "\":");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    if (data == NULL) {
-        return cbuf_puts(b, "null");
-    }
-    enc = b64_encode(data, len, &enclen);
-    if (enc == NULL) {
-        return COG_ERROR_NOMEM;
-    }
-    rc = cbuf_puts(b, "\"");
-    if (rc == COG_OK) {
-        rc = cbuf_puts(b, enc);
-    }
-    if (rc == COG_OK) {
-        rc = cbuf_puts(b, "\"");
-    }
-    free(enc);
+    if (close(fd) != 0 && rc == COG_OK) rc = COG_ERROR_IO;
     return rc;
 }
-
-static cog_result_t field_cb64(struct cbuf *b, const char *key,
-                               const char *s, size_t len)
+static int open_base(cog_store_t *s, bool create)
 {
-    return field_b64(b, key, (const void *)s, len);
+    if (create && mkdir(s->base, 0700) != 0 && errno != EEXIST) return -1;
+    return open(s->base, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
 }
-
-static cog_result_t field_u64(struct cbuf *b, const char *key, uint64_t v)
+static cog_result_t domain_lock(cog_store_t *s, int *base, int *lock)
 {
-    char num[32];
-    int n = snprintf(num, sizeof(num), "%llu", (unsigned long long)v);
-    cog_result_t rc;
-
-    if (n < 0 || (size_t)n >= sizeof(num)) {
-        return COG_ERROR_IO;
-    }
-    rc = cbuf_puts(b, "\"");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, key);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, "\":");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    return cbuf_puts(b, num);
-}
-
-static cog_result_t field_dbl(struct cbuf *b, const char *key, double v)
-{
-    char num[64];
-    int n = snprintf(num, sizeof(num), "%.17g", v);
-    cog_result_t rc;
-
-    if (n < 0 || (size_t)n >= sizeof(num)) {
-        return COG_ERROR_IO;
-    }
-    rc = cbuf_puts(b, "\"");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, key);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, "\":");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    return cbuf_puts(b, num);
-}
-
-/** Serialize one node as a single JSONL record (no trailing newline).
- *  The tool_args / tool_result byte lengths are passed explicitly so
- *  payloads containing embedded NUL bytes survive the round-trip (their
- *  lengths live on the private node struct, not in cog_node_data_t). */
-static cog_result_t node_record_write(struct cbuf *b,
-                                      const cog_node_data_t *d,
-                                      size_t tool_args_len,
-                                      size_t tool_result_len)
-{
-    cog_result_t rc;
-
-    rc = cbuf_puts(b, "{");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_u64(b, "node_id", d->node_id);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_u64(b, "parent_id", d->parent_id);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_u64(b, "role", (uint64_t)d->role);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_cb64(b, "content", d->content, d->content_len);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_cb64(b, "tool_name", d->tool_name,
-                    (d->tool_name != NULL) ? strlen(d->tool_name) : 0U);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_cb64(b, "tool_args", d->tool_args,
-                    (d->tool_args != NULL) ? tool_args_len : 0U);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_cb64(b, "tool_result", d->tool_result,
-                    (d->tool_result != NULL) ? tool_result_len : 0U);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_cb64(b, "raw_request", d->raw_request,
-                    (d->raw_request != NULL) ? strlen(d->raw_request) : 0U);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_cb64(b, "raw_response", d->raw_response,
-                    (d->raw_response != NULL) ? strlen(d->raw_response)
-                                               : 0U);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_u64(b, "chunk_count", (uint64_t)d->chunk_count);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, "\"timing\":{");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_u64(b, "request_sent_ms", d->timing.request_sent_ms);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_u64(b, "first_token_ms", d->timing.first_token_ms);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_u64(b, "last_token_ms", d->timing.last_token_ms);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_u64(b, "duration_ms", d->timing.duration_ms);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_u64(b, "ttft_ms", d->timing.ttft_ms);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_dbl(b, "tokens_per_second", d->timing.tokens_per_second);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, "},\"cost\":{");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_u64(b, "input_tokens", d->cost.input_tokens);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_u64(b, "output_tokens", d->cost.output_tokens);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_dbl(b, "cost_per_input_token", d->cost.cost_per_input_token);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_dbl(b, "cost_per_output_token", d->cost.cost_per_output_token);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_dbl(b, "total_cost", d->cost.total_cost);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, "},");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_cb64(b, "model", d->model,
-                    (d->model != NULL) ? strlen(d->model) : 0U);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_cb64(b, "provider", d->provider,
-                    (d->provider != NULL) ? strlen(d->provider) : 0U);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    return cbuf_puts(b, "}");
-}
-
-static cog_result_t meta_write(struct cbuf *b, const char *id,
-                               const char *parent_id, size_t max_nodes,
-                               size_t node_count, uint64_t next_node_id,
-                               uint64_t active_node_id)
-{
-    cog_result_t rc;
-
-    rc = cbuf_puts(b, "{");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_u64(b, "version", COG_STORE_FORMAT_VERSION);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_cb64(b, "id", id, strlen(id));
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_b64(b, "parent_id", (const void *)parent_id,
-                   (parent_id != NULL) ? strlen(parent_id) : 0U);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_u64(b, "max_nodes", (uint64_t)max_nodes);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_u64(b, "node_count", (uint64_t)node_count);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_u64(b, "next_node_id", next_node_id);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cbuf_puts(b, ",");
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = field_u64(b, "active_node_id", active_node_id);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    return cbuf_puts(b, "}");
-}
-
-/* ------------------------------------------------------------------ */
-/* Filesystem helpers                                                  */
-/* ------------------------------------------------------------------ */
-
-static char *path_join2(const char *a, const char *b)
-{
-    size_t la = strlen(a);
-    size_t lb = strlen(b);
-    char *p;
-
-    if (la > SIZE_MAX - lb - 2U) {
-        return NULL;
-    }
-    p = malloc(la + 1U + lb + 1U);
-    if (p == NULL) {
-        return NULL;
-    }
-    (void)memcpy(p, a, la);
-    p[la] = '/';
-    (void)memcpy(p + la + 1U, b, lb + 1U); /* includes the NUL */
-    return p;
-}
-
-static cog_result_t ensure_dir(const char *path)
-{
-    if (mkdir(path, 0700) == 0) {
-        return COG_OK;
-    }
-    if (errno == EEXIST) {
-        return COG_OK;
-    }
-    return COG_ERROR_IO;
-}
-
-static cog_result_t read_file(const char *path, char **out, size_t *out_len)
-{
-    FILE *f;
-    long size;
-    char *buf;
-    size_t got;
-
-    *out = NULL;
-    *out_len = 0U;
-    f = fopen(path, "rb");
-    if (f == NULL) {
-        return COG_ERROR_IO;
-    }
-    if (fseek(f, 0L, SEEK_END) != 0) {
-        (void)fclose(f);
-        return COG_ERROR_IO;
-    }
-    size = ftell(f);
-    if (size < 0L) {
-        (void)fclose(f);
-        return COG_ERROR_IO;
-    }
-    if (fseek(f, 0L, SEEK_SET) != 0) {
-        (void)fclose(f);
-        return COG_ERROR_IO;
-    }
-    buf = malloc((size_t)size + 1U);
-    if (buf == NULL) {
-        (void)fclose(f);
-        return COG_ERROR_NOMEM;
-    }
-    got = fread(buf, 1U, (size_t)size, f);
-    if (got != (size_t)size) {
-        free(buf);
-        (void)fclose(f);
-        return COG_ERROR_IO;
-    }
-    if (fclose(f) != 0) {
-        free(buf);
-        return COG_ERROR_IO;
-    }
-    buf[(size_t)size] = '\0';
-    *out = buf;
-    *out_len = (size_t)size;
-    return COG_OK;
-}
-
-/** Write @p data then atomically rename @p tmp_path over @p final_path. */
-static cog_result_t write_file_atomic(const char *final_path,
-                                      const char *tmp_path,
-                                      const char *data, size_t len)
-{
-    FILE *f = fopen(tmp_path, "wb");
-
-    if (f == NULL) {
-        return COG_ERROR_IO;
-    }
-    if (len > 0U && fwrite(data, 1U, len, f) != len) {
-        (void)fclose(f);
-        (void)remove(tmp_path);
-        return COG_ERROR_IO;
-    }
-    if (fclose(f) != 0) {
-        (void)remove(tmp_path);
-        return COG_ERROR_IO;
-    }
-    if (rename(tmp_path, final_path) != 0) {
-        (void)remove(tmp_path);
-        return COG_ERROR_IO;
+    *base = open_base(s, true);
+    *lock = -1;
+    if (*base < 0) return COG_ERROR_IO;
+    *lock = openat(*base, DOMAIN, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (*lock < 0 || flock(*lock, LOCK_EX | LOCK_NB) != 0) {
+        cog_result_t rc = errno == EWOULDBLOCK ? COG_ERROR_AGAIN : COG_ERROR_IO;
+        if (*lock >= 0) (void)close(*lock);
+        (void)close(*base); *base = -1; *lock = -1; return rc;
+    }
+    if (fsync(*lock) != 0 || fsync(*base) != 0) {
+        (void)close(*lock); (void)close(*base); *base = -1; *lock = -1; return COG_ERROR_IO;
     }
     return COG_OK;
 }
-
-/**
- * Delete one session directory after preflighting its complete contents.
- *
- * Unknown entries and known names that are directories are rejected before
- * anything is unlinked, so an expected rmdir obstruction (for example a
- * stray file) cannot leave a ghost session with its metadata removed.
- * Known entries are then unlinked and the directory is removed.
- *
- * The store's single-threaded contract covers callers of this API; it does
- * not make directory enumeration plus unlinking atomic against unrelated
- * external filesystem mutation.  Such concurrent mutation is unsupported
- * and can still produce COG_ERROR_IO after a partial unlink.  Within the
- * documented threading model, all expected content-related failures are
- * detected by this preflight and leave the session intact.
- */
-static cog_result_t delete_session_dir(const char *dir)
+/* All writers create/open the anchor under the stable ownership-domain lock.
+ * No path in this implementation replaces or unlinks either lock inode. */
+static cog_result_t session_lock(cog_store_t *s, const char *id, int *dir, int *lock)
 {
-    static const char *const kFiles[] = {
-        COG_STORE_FILE_META,
-        COG_STORE_FILE_NODES,
-        COG_STORE_FILE_INDEX,
-        COG_STORE_FILE_META ".tmp",
-        COG_STORE_FILE_NODES ".tmp",
-        COG_STORE_FILE_INDEX ".tmp",
-    };
-    const size_t file_count = sizeof(kFiles) / sizeof(kFiles[0]);
-    DIR *dp;
-    struct dirent *de;
-    size_t i;
-
-    dp = opendir(dir);
-    if (dp == NULL) {
-        return COG_ERROR_IO;
+    int base, domain;
+    *dir = -1; *lock = -1;
+    cog_result_t rc = domain_lock(s, &base, &domain);
+    if (rc != COG_OK) return rc;
+    if (mkdirat(base, id, 0700) != 0 && errno != EEXIST) rc = COG_ERROR_IO;
+    if (rc == COG_OK) {
+        *dir = openat(base, id, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        if (*dir < 0) rc = COG_ERROR_IO;
     }
-    while (true) {
-        errno = 0;
-        de = readdir(dp);
-        if (de == NULL) {
-            if (errno != 0) {
-                (void)closedir(dp);
-                return COG_ERROR_IO; /* incomplete preflight: do nothing */
-            }
-            break;
-        }
-        if (strcmp(de->d_name, ".") == 0 ||
-            strcmp(de->d_name, "..") == 0) {
-            continue;
-        }
-        for (i = 0U; i < file_count; i++) {
-            if (strcmp(de->d_name, kFiles[i]) == 0) {
-                break;
-            }
-        }
-        if (i == file_count) {
-            (void)closedir(dp);
-            return COG_ERROR_IO; /* unknown entry: nothing was removed */
-        }
+    if (rc == COG_OK) {
+        *lock = openat(*dir, ANCHOR, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (*lock < 0) rc = COG_ERROR_IO;
+        else if (flock(*lock, LOCK_EX | LOCK_NB) != 0)
+            rc = errno == EWOULDBLOCK ? COG_ERROR_AGAIN : COG_ERROR_IO;
+        else if (fsync(*lock) != 0 || fsync(*dir) != 0 || fsync(base) != 0) rc = COG_ERROR_IO;
     }
-    if (closedir(dp) != 0) {
-        return COG_ERROR_IO;
+    (void)close(domain); (void)close(base);
+    if (rc != COG_OK) {
+        if (*lock >= 0) (void)close(*lock);
+        if (*dir >= 0) (void)close(*dir);
+        *lock = -1; *dir = -1;
     }
-
-    /* A directory masquerading as a known file would make unlink fail
-     * after earlier files had been removed; reject it during preflight. */
-    for (i = 0U; i < file_count; i++) {
-        char *p = path_join2(dir, kFiles[i]);
-        struct stat sb;
-
-        if (p == NULL) {
-            return COG_ERROR_NOMEM;
-        }
-        if (lstat(p, &sb) == 0) {
-            if (S_ISDIR(sb.st_mode)) {
-                free(p);
-                return COG_ERROR_IO;
-            }
-        } else if (errno != ENOENT) {
-            free(p);
-            return COG_ERROR_IO;
-        }
-        free(p);
-    }
-
-    for (i = 0U; i < file_count; i++) {
-        char *p = path_join2(dir, kFiles[i]);
-        int e;
-
-        if (p == NULL) {
-            return COG_ERROR_NOMEM;
-        }
-        e = unlink(p);
-        free(p);
-        if (e != 0 && errno != ENOENT) {
-            return COG_ERROR_IO;
-        }
-    }
-    if (rmdir(dir) != 0) {
-        return COG_ERROR_IO;
-    }
-    return COG_OK;
+    return rc;
 }
-
-/* ------------------------------------------------------------------ */
-/* Id validation / path safety                                         */
-/* ------------------------------------------------------------------ */
-
-static cog_result_t store_validate_id(const char *id)
+static int session_dir(cog_store_t *s, const char *id)
 {
-    size_t i;
-    size_t n;
-
-    if (id == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    n = strlen(id);
-    if (n == 0U) {
-        return COG_ERROR_INVALID_ARG;
-    }
-    if (n > COG_STORE_ID_MAX_LEN) {
-        return COG_ERROR_OVERFLOW;
-    }
-    if (strcmp(id, ".") == 0 || strcmp(id, "..") == 0) {
-        return COG_ERROR_INVALID_ARG;
-    }
-    for (i = 0U; i < n; i++) {
-        unsigned char c = (unsigned char)id[i];
-
-        if (c == '/' || c == '\\') {
-            return COG_ERROR_INVALID_ARG;
-        }
-        if (c < 0x20U || c == 0x7fU) {
-            return COG_ERROR_INVALID_ARG;
-        }
-    }
-    return COG_OK;
+    int base = open_base(s, false);
+    if (base < 0) return -1;
+    int dir = openat(base, id, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    int saved = errno; (void)close(base); errno = saved;
+    return dir;
 }
-
-/* ------------------------------------------------------------------ */
-/* index.bin (advisory node_id -> offset cache)                       */
-/* ------------------------------------------------------------------ */
-
-/** True if the index is consistent and @p new_id can append in order. */
-static bool index_can_extend(const char *path, uint64_t new_id)
+static cog_result_t manifest_read(int dir, manifest_t *m)
 {
-    FILE *f;
-    unsigned char magic[8];
-    uint64_t count = 0U;
-    uint64_t last_id = 0U;
-
-    f = fopen(path, "rb");
-    if (f == NULL) {
-        return false;
-    }
-    if (fread(magic, 1U, sizeof(magic), f) != sizeof(magic) ||
-        memcmp(magic, kIndexMagic, sizeof(kIndexMagic)) != 0) {
-        (void)fclose(f);
-        return false;
-    }
-    if (fread(&count, 1U, sizeof(count), f) != sizeof(count)) {
-        (void)fclose(f);
-        return false;
-    }
-    if (count == 0U) {
-        (void)fclose(f);
-        return true;
-    }
-    if (count > (uint64_t)(SIZE_MAX / 16U)) {
-        (void)fclose(f);
-        return false;
-    }
-    if (fseek(f, (long)(16U + (count - 1U) * 16U), SEEK_SET) != 0) {
-        (void)fclose(f);
-        return false;
-    }
-    if (fread(&last_id, 1U, sizeof(last_id), f) != sizeof(last_id)) {
-        (void)fclose(f);
-        return false;
-    }
-    (void)fclose(f);
-    return new_id > last_id;
+    unsigned char p[MAN_SIZE]; size_t n = 0U;
+    cog_result_t rc = read_at(dir, MANIFEST, p, sizeof(p), &n);
+    if (rc == COG_ERROR_NOT_FOUND) { *m = (manifest_t){0}; return COG_OK; }
+    if (rc == COG_ERROR_LIMIT) return COG_ERROR_IO;
+    if (rc != COG_OK) return rc;
+    if (n != MAN_SIZE || memcmp(p, "COGMAN2\0", 8U) != 0 || get64(p + 8U) != 2U ||
+        get64(p + 56U) != checksum(p, 56U)) return COG_ERROR_IO;
+    manifest_t v = {get64(p + 16U), get64(p + 24U), get64(p + 32U),
+        {get64(p + 40U), get64(p + 48U)}, true};
+    if ((v.owner.epoch == 0U) != (v.owner.instance_id == 0U) ||
+        (v.generation == 0U && (v.size != 0U || v.checksum != 0U)) ||
+        (v.generation == 0U && v.owner.epoch == 0U)) return COG_ERROR_PROTOCOL;
+    *m = v; return COG_OK;
 }
-
-/**
- * Append one (node_id, offset) entry to index.bin when that can be done
- * cheaply and consistently; otherwise leave the cache stale (the next
- * full save regenerates it).  Returns COG_OK either way; *did reports
- * whether the cache was updated.
- */
-static cog_result_t index_append(const char *path, uint64_t node_id,
-                                 uint64_t offset, bool *did)
+static void generation_name(char *p, size_t cap, uint64_t g)
+{ (void)snprintf(p, cap, "generation-%020" PRIu64 ".bin", g); }
+/* Fixed temporary names are safe under the exclusive session lock. Immutable
+ * generation installation uses linkat (never rename-overwrite an old token). */
+static cog_result_t publish_file(int dir, const char *tmp, const char *name,
+    const unsigned char *head, size_t hsize, const unsigned char *body, size_t bsize,
+    bool immutable, bool *published)
 {
-    FILE *f;
-
-    *did = false;
-    if (!index_can_extend(path, node_id)) {
-        return COG_OK;
+    *published = false;
+    int fd = openat(dir, tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd < 0) return COG_ERROR_IO;
+    cog_result_t rc = io_write(fd, head, hsize);
+    if (rc == COG_OK) rc = io_write(fd, body, bsize);
+    if (rc == COG_OK && fsync(fd) != 0) rc = COG_ERROR_IO;
+    if (close(fd) != 0 && rc == COG_OK) rc = COG_ERROR_IO;
+    if (rc == COG_OK) {
+        int status = immutable ? linkat(dir, tmp, dir, name, 0) : renameat(dir, tmp, dir, name);
+        if (status != 0) rc = COG_ERROR_IO;
+        else *published = true;
     }
-    f = fopen(path, "r+b");
-    if (f == NULL) {
-        return COG_OK; /* cache is advisory; non-fatal */
+    if (immutable || rc != COG_OK) (void)unlinkat(dir, tmp, 0);
+    return rc;
+}
+static cog_result_t manifest_publish(int dir, const manifest_t *m, bool *published)
+{
+    unsigned char p[MAN_SIZE] = {0};
+    (void)memcpy(p, "COGMAN2\0", 8U); put64(p + 8U, 2U);
+    put64(p + 16U, m->generation); put64(p + 24U, m->size); put64(p + 32U, m->checksum);
+    put64(p + 40U, m->owner.epoch); put64(p + 48U, m->owner.instance_id);
+    put64(p + 56U, checksum(p, 56U));
+    cog_result_t rc = publish_file(dir, ".manifest.tmp", MANIFEST, p, sizeof(p), NULL, 0U, false, published);
+    if (rc == COG_OK && fsync(dir) != 0) rc = COG_ERROR_IO;
+    return rc;
+}
+static cog_result_t durable_confirm(int dir, const manifest_t *m)
+{
+    char name[64];
+    if (m->generation != 0U) {
+        generation_name(name, sizeof(name), m->generation);
+        int fd = openat(dir, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (fd < 0) return COG_ERROR_IO;
+        int status = fsync(fd); (void)close(fd);
+        if (status != 0) return COG_ERROR_IO;
     }
-    if (fseek(f, 0L, SEEK_END) != 0) {
-        (void)fclose(f);
-        return COG_OK;
-    }
-    if (fwrite(&node_id, 1U, sizeof(node_id), f) != sizeof(node_id) ||
-        fwrite(&offset, 1U, sizeof(offset), f) != sizeof(offset)) {
-        (void)fclose(f);
-        return COG_OK;
-    }
-    if (fclose(f) != 0) {
-        return COG_OK;
-    }
-    *did = true;
-    return COG_OK;
+    int fd = openat(dir, MANIFEST, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return COG_ERROR_IO;
+    int status = fsync(fd); (void)close(fd);
+    return status == 0 && fsync(dir) == 0 ? COG_OK : COG_ERROR_IO;
 }
-
-/* ------------------------------------------------------------------ */
-/* Null backend                                                        */
-/* ------------------------------------------------------------------ */
-
-static cog_result_t null_save(void *store, const cog_session_t *session)
+static cog_result_t generation_read(cog_store_t *s, int dir, uint64_t g,
+    const manifest_t *authoritative, cog_session_snapshot_t *snapshot)
 {
-    (void)store;
-    (void)session;
-    return COG_OK;
+    char name[64]; size_t n = 0U;
+    generation_name(name, sizeof(name), g);
+    cog_result_t rc = read_at(dir, name, s->read_buffer, s->capacity, &n);
+    if (rc == COG_ERROR_NOT_FOUND && authoritative != NULL) return COG_ERROR_IO;
+    if (rc != COG_OK) return rc;
+    const unsigned char *p = s->read_buffer;
+    if (n < GEN_SIZE || memcmp(p, "COGGEN2\0", 8U) != 0 || get64(p + 8U) != g ||
+        get64(p + 16U) != (uint64_t)(n - GEN_SIZE) || get64(p + 32U) != checksum(p, 32U) ||
+        get64(p + 24U) != checksum(p + GEN_SIZE, n - GEN_SIZE)) return COG_ERROR_IO;
+    if (authoritative != NULL && (authoritative->size != (uint64_t)n ||
+        authoritative->checksum != checksum(p, n))) return COG_ERROR_IO;
+    cog_store_codec_workspace_t w = {s->scratch, s->capacity, 0U};
+    return cog_store_codec_decode(p + GEN_SIZE, n - GEN_SIZE, &w, snapshot);
 }
-
-static cog_result_t null_load(void *store, const char *id,
-                              cog_session_t **out)
+static cog_result_t legacy_read(cog_store_t *s, int dir, const char *id,
+    cog_store_load_mode_t mode, cog_session_snapshot_t *v, cog_store_load_report_t *report)
 {
-    (void)store;
-    (void)id;
-    *out = NULL;
-    return COG_OK;
+    size_t mn = 0U, nn = 0U;
+    cog_result_t rc = read_at(dir, "meta.json", s->write_buffer, s->capacity, &mn);
+    if (rc != COG_OK) return rc;
+    rc = read_at(dir, "nodes.jsonl", s->read_buffer, s->capacity, &nn);
+    if (rc != COG_OK) return rc == COG_ERROR_NOT_FOUND ? COG_ERROR_IO : rc;
+    cog_store_codec_workspace_t w = {s->scratch, s->capacity, 0U};
+    return cog_store_codec_decode_v1(id, s->write_buffer, mn, s->read_buffer, nn,
+        mode, s->recover_tail, &w, v, report);
 }
-
-static cog_result_t null_append(void *store, const cog_session_t *session,
-                                const cog_session_node_t *node)
+static bool uncertainty(const cog_session_snapshot_t *v)
 {
-    (void)store;
-    (void)session;
-    (void)node;
-    return COG_OK;
-}
-
-static cog_result_t null_delete(void *store, const char *id)
-{
-    (void)store;
-    (void)id;
-    return COG_OK;
-}
-
-static cog_result_t null_list(void *store, char ***out_ids,
-                              size_t *out_count)
-{
-    (void)store;
-    *out_ids = NULL;
-    *out_count = 0U;
-    return COG_OK;
-}
-
-static bool null_exists(void *store, const char *id)
-{
-    (void)store;
-    (void)id;
+    for (size_t i = 0U; i < v->ledger_count; ++i)
+        if (v->ledger[i].state == COG_TOOL_EXECUTION_STARTED ||
+            v->ledger[i].state == COG_TOOL_EXECUTION_INDETERMINATE) return true;
     return false;
 }
-
-const cog_store_vtable_t cog_store_null_backend = {
-    "null",
-    null_save,
-    null_load,
-    null_append,
-    null_delete,
-    null_list,
-    null_exists,
-};
-
-/* ------------------------------------------------------------------ */
-/* File backend: shared helpers                                        */
-/* ------------------------------------------------------------------ */
-
-/** Collect session ids (base_dir subdirectories that contain meta.json)
- * into a heap array; *out is NULL with count 0 when the store is empty. */
-static cog_result_t collect_sessions(const char *base_dir, char ***out,
-                                     size_t *out_count)
+static bool unresolved(const cog_session_snapshot_t *v)
 {
-    DIR *dp;
-    struct dirent *de;
-    char **names = NULL;
-    size_t count = 0U;
-    size_t cap = 0U;
-    char *full = NULL;
-    char *meta = NULL;
-
-    *out = NULL;
-    *out_count = 0U;
-    dp = opendir(base_dir);
-    if (dp == NULL) {
-        if (errno == ENOENT) {
-            return COG_OK; /* missing base_dir == empty store */
-        }
-        return COG_ERROR_IO;
+    for (size_t i = 0U; i < v->ledger_count; ++i)
+        if (v->ledger[i].state == COG_TOOL_EXECUTION_PROPOSED ||
+            v->ledger[i].state == COG_TOOL_EXECUTION_STARTED ||
+            v->ledger[i].state == COG_TOOL_EXECUTION_INDETERMINATE) return true;
+    return false;
+}
+static bool str_eq(const char *a, const char *b)
+{ return a == NULL || b == NULL ? a == b : strcmp(a, b) == 0; }
+static bool bytes_eq(const void *a, size_t an, const void *b, size_t bn)
+{ return an == bn && (an == 0U || (a != NULL && b != NULL && memcmp(a, b, an) == 0)); }
+/* Compare a complete immutable node using the canonical codec, avoiding native
+ * padding, pointer identity and accidentally omitted structured fields. */
+static bool node_equal(cog_store_t *s, const cog_node_data_t *a, const cog_node_data_t *b)
+{
+    cog_node_data_t av = *a, bv = *b;
+    cog_message_t am = {0}, bm = {0};
+    if (av.message == NULL && av.role <= COG_NODE_ASSISTANT) {
+        am.role = (cog_message_role_t)av.role; am.content = av.content; am.content_len = av.content_len; av.message = &am;
     }
+    if (bv.message == NULL && bv.role <= COG_NODE_ASSISTANT) {
+        bm.role = (cog_message_role_t)bv.role; bm.content = bv.content; bm.content_len = bv.content_len; bv.message = &bm;
+    }
+    cog_session_snapshot_t v = {.session_id = "node", .nodes = &av, .node_count = 1U};
+    size_t an = 0U, bn = 0U;
+    if (cog_store_codec_encode(&v, s->write_buffer, s->capacity, &an) != COG_OK) return false;
+    /* read_buffer holds the committed decoded data, so never overwrite it. The
+     * unused tail of write_buffer is the second comparison destination. */
+    v.nodes = &bv;
+    if (cog_store_codec_encode(&v, s->compare_buffer, s->capacity, &bn) != COG_OK) return false;
+    return an == bn && memcmp(s->write_buffer, s->compare_buffer, an) == 0;
+}
+static const cog_node_data_t *node_find(const cog_session_snapshot_t *v, uint64_t id)
+{
+    for (size_t i = 0U; i < v->node_count; ++i) if (v->nodes[i].node_id == id) return &v->nodes[i];
+    return NULL;
+}
+static const cog_tool_ledger_record_t *ledger_find(const cog_session_snapshot_t *v,
+    uint64_t assistant, const char *id)
+{
+    for (size_t i = 0U; i < v->ledger_count; ++i)
+        if (v->ledger[i].assistant_node_id == assistant && str_eq(v->ledger[i].call_id, id)) return &v->ledger[i];
+    return NULL;
+}
+static bool audit_equal(const cog_tool_audit_record_t *a, const cog_tool_audit_record_t *b)
+{
+    return a->sequence == b->sequence && a->previous == b->previous && a->next == b->next &&
+        a->explicit_reconciliation == b->explicit_reconciliation &&
+        bytes_eq(a->evidence, a->evidence_len, b->evidence, b->evidence_len);
+}
+static bool recovery_result(const cog_session_snapshot_t *old, const cog_session_snapshot_t *now,
+    const cog_node_data_t *n)
+{
+    if (n->message == NULL || n->message->role != COG_MESSAGE_ROLE_TOOL) return false;
+    const cog_node_data_t *a = node_find(now, n->parent_id);
+    while (a != NULL && a->role != COG_NODE_ASSISTANT) a = node_find(now, a->parent_id);
+    if (a == NULL) return false;
+    const cog_tool_ledger_record_t *l = ledger_find(old, a->node_id, n->message->tool_call_id);
+    return l != NULL && (l->state == COG_TOOL_EXECUTION_STARTED || l->state == COG_TOOL_EXECUTION_INDETERMINATE);
+}
+static bool indeterminate(const cog_session_snapshot_t *v);
+static cog_result_t monotonic(cog_store_t *s, const cog_session_snapshot_t *old,
+    const cog_session_snapshot_t *now, bool recovery)
+{
+    if (!str_eq(old->session_id, now->session_id) || !str_eq(old->parent_session_id, now->parent_session_id) ||
+        old->inspection_only != now->inspection_only || now->node_id_high_water < old->node_id_high_water ||
+        now->audit_high_water < old->audit_high_water) return COG_ERROR_INVALID_STATE;
+    for (size_t i = 0U; i < old->node_count; ++i) {
+        const cog_node_data_t *n = node_find(now, old->nodes[i].node_id);
+        if (n == NULL || !node_equal(s, &old->nodes[i], n)) return COG_ERROR_INVALID_STATE;
+    }
+    for (size_t i = 0U; i < now->node_count; ++i) {
+        const cog_node_data_t *n = &now->nodes[i];
+        if (node_find(old, n->node_id) == NULL &&
+            (n->node_id <= old->node_id_high_water ||
+            ((recovery || unresolved(old) || indeterminate(now)) && !recovery_result(old, now, n)))) return COG_ERROR_INVALID_STATE;
+    }
+    if (recovery && old->ledger_count != now->ledger_count) return COG_ERROR_INVALID_STATE;
+    for (size_t i = 0U; i < old->ledger_count; ++i) {
+        const cog_tool_ledger_record_t *a = &old->ledger[i];
+        const cog_tool_ledger_record_t *b = ledger_find(now, a->assistant_node_id, a->call_id);
+        if (b == NULL || b->audit_count < a->audit_count) return COG_ERROR_INVALID_STATE;
+        for (size_t k = 0U; k < a->audit_count; ++k)
+            if (!audit_equal(&a->audit[k], &b->audit[k])) return COG_ERROR_INVALID_STATE;
+        cog_tool_execution_state_t state = a->state;
+        for (size_t k = a->audit_count; k < b->audit_count; ++k) {
+            const cog_tool_audit_record_t *q = &b->audit[k];
+            if (q->sequence <= old->audit_high_water || q->previous != state) return COG_ERROR_INVALID_STATE;
+            bool normal = (state == COG_TOOL_EXECUTION_PROPOSED &&
+                (q->next == COG_TOOL_EXECUTION_STARTED || q->next == COG_TOOL_EXECUTION_DENIED)) ||
+                (state == COG_TOOL_EXECUTION_STARTED && (q->next == COG_TOOL_EXECUTION_SUCCEEDED ||
+                 q->next == COG_TOOL_EXECUTION_FAILED || q->next == COG_TOOL_EXECUTION_CANCELLED ||
+                 q->next == COG_TOOL_EXECUTION_INDETERMINATE));
+            bool reconcile = recovery && state == COG_TOOL_EXECUTION_INDETERMINATE &&
+                q->explicit_reconciliation && q->evidence_len != 0U &&
+                (q->next == COG_TOOL_EXECUTION_SUCCEEDED || q->next == COG_TOOL_EXECUTION_FAILED ||
+                 q->next == COG_TOOL_EXECUTION_CANCELLED || q->next == COG_TOOL_EXECUTION_ACKNOWLEDGED);
+            if ((!normal || q->explicit_reconciliation) && !reconcile) return COG_ERROR_INVALID_STATE;
+            if (recovery && !reconcile && !(state == COG_TOOL_EXECUTION_STARTED &&
+                q->next == COG_TOOL_EXECUTION_INDETERMINATE)) return COG_ERROR_INVALID_STATE;
+            state = q->next;
+        }
+        if (state != b->state) return COG_ERROR_INVALID_STATE;
+    }
+    return COG_OK;
+}
+static cog_store_owner_guard_t *find_guard(cog_store_t *s, const char *id)
+{
+    for (cog_store_owner_guard_t *g = s->guards; g != NULL; g = g->next)
+        if (strcmp(g->id, id) == 0) return g;
+    return NULL;
+}
+/* The allocation-free semantic validator is shared with the restore constructor. */
+static cog_result_t validate(const cog_session_snapshot_t *v, const char *id)
+{
+    if (!str_eq(v->session_id, id)) return COG_ERROR_PROTOCOL;
+    return cog_session_snapshot_validate(v);
+}
+static cog_result_t next_generation(int dir, uint64_t current, uint64_t *next)
+{
+    int copy = openat(dir, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (copy < 0) return COG_ERROR_IO;
+    DIR *dp = fdopendir(copy);
+    if (dp == NULL) { (void)close(copy); return COG_ERROR_IO; }
+    struct dirent *de;
     while ((de = readdir(dp)) != NULL) {
-        struct stat sb;
-        const char *name = de->d_name;
-
-        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
-            continue;
+        if (strlen(de->d_name) != 35U || strncmp(de->d_name, "generation-", 11U) != 0 ||
+            strcmp(de->d_name + 31U, ".bin") != 0) continue;
+        uint64_t n = 0U; bool good = true;
+        for (size_t i = 11U; i < 31U; ++i) {
+            unsigned char c = (unsigned char)de->d_name[i];
+            if (c < '0' || c > '9' || n > (UINT64_MAX - (uint64_t)(c - '0')) / 10U) { good = false; break; }
+            n = n * 10U + (uint64_t)(c - '0');
         }
-        full = path_join2(base_dir, name);
-        if (full == NULL) {
+        if (good && n > current) current = n;
+    }
+    (void)closedir(dp);
+    if (current == UINT64_MAX) return COG_ERROR_LIMIT;
+    *next = current + 1U; return COG_OK;
+}
+static bool file_exists(void *ctx, const char *id)
+{
+    cog_store_t *s = ctx;
+    if (s == NULL || valid_id(id) != COG_OK) return false;
+    int dir = session_dir(s, id);
+    if (dir < 0) return false;
+    struct stat st;
+    bool found = fstatat(dir, MANIFEST, &st, AT_SYMLINK_NOFOLLOW) == 0 ||
+        fstatat(dir, "meta.json", &st, AT_SYMLINK_NOFOLLOW) == 0;
+    (void)close(dir); return found;
+}
+static cog_result_t file_list(void *ctx, char ***out, size_t *count);
+static bool session_contains(const cog_session_t *s, const cog_session_node_t *wanted)
+{
+    const cog_session_node_t *n = cog_session_root(s);
+    while (n != NULL) {
+        if (n == wanted) return true;
+        if (cog_node_first_child(n) != NULL) n = cog_node_first_child(n);
+        else {
+            while (n != NULL && cog_node_next_sibling(n) == NULL) n = cog_node_parent(n);
+            if (n != NULL) n = cog_node_next_sibling(n);
+        }
+    }
+    return false;
+}
+static bool indeterminate(const cog_session_snapshot_t *v)
+{
+    for (size_t i = 0U; i < v->ledger_count; ++i)
+        if (v->ledger[i].state == COG_TOOL_EXECUTION_INDETERMINATE) return true;
+    return false;
+}
+static cog_result_t file_commit(cog_store_t *s, const cog_session_t *session,
+    cog_store_owner_guard_t *guard, bool checkpoint, bool append, const cog_session_node_t *node,
+    cog_store_checkpoint_t *out)
+{
+    cog_session_snapshot_t v, old;
+    cog_result_t rc = cog_session_snapshot_view(session, &v);
+    if (rc != COG_OK) return rc;
+    rc = valid_id(v.session_id);
+    if (rc != COG_OK) return rc;
+    rc = validate(&v, v.session_id);
+    if (rc != COG_OK) return rc;
+    if (s->require_owner && (guard == NULL || guard->store != s || strcmp(guard->id, v.session_id) != 0))
+        return COG_ERROR_INVALID_STATE;
+    if (guard != NULL && (append || checkpoint) && guard->recovery) return COG_ERROR_INVALID_STATE;
+    if (checkpoint && (unresolved(&v) || v.inspection_only)) return COG_ERROR_INDETERMINATE;
+    int dir = -1, lock = -1;
+    if (guard != NULL) {
+        if (guard->store != s || find_guard(s, v.session_id) != guard) return COG_ERROR_INVALID_STATE;
+        dir = session_dir(s, v.session_id);
+        if (dir < 0) return COG_ERROR_IO;
+    } else {
+        rc = session_lock(s, v.session_id, &dir, &lock);
+        if (rc != COG_OK) return rc;
+    }
+    manifest_t m;
+    rc = manifest_read(dir, &m);
+    if (rc != COG_OK) goto done;
+    if (m.owner.epoch != 0U && (guard == NULL || !same_owner(m.owner, guard->owner))) {
+        rc = COG_ERROR_INVALID_STATE; goto done;
+    }
+    if (guard != NULL && !same_owner(m.owner, guard->owner)) { rc = COG_ERROR_INVALID_STATE; goto done; }
+    if (m.generation != 0U) {
+        rc = generation_read(s, dir, m.generation, &m, &old);
+        if (rc == COG_OK) rc = validate(&old, v.session_id);
+        if (rc != COG_OK) goto done;
+        if (append && (node == NULL || node_find(&old, cog_node_data(node)->node_id) != NULL)) {
+            rc = COG_ERROR_INVALID_STATE; goto done;
+        }
+        rc = monotonic(s, &old, &v, guard != NULL && guard->recovery);
+        if (rc != COG_OK) goto done;
+        if (append && v.node_count != old.node_count + 1U) { rc = COG_ERROR_INVALID_STATE; goto done; }
+    } else {
+        struct stat st;
+        if (fstatat(dir, "meta.json", &st, AT_SYMLINK_NOFOLLOW) == 0) {
+            if (append) { rc = COG_ERROR_UNSUPPORTED; goto done; }
+            cog_store_load_report_t report;
+            rc = legacy_read(s, dir, v.session_id, COG_STORE_LOAD_REPLAY, &old, &report);
+            if (rc == COG_ERROR_UNSUPPORTED && v.inspection_only)
+                rc = legacy_read(s, dir, v.session_id, COG_STORE_LOAD_INSPECT, &old, &report);
+            if (rc == COG_OK) rc = validate(&old, v.session_id);
+            if (rc == COG_OK) rc = monotonic(s, &old, &v, false);
+            if (rc != COG_OK) goto done;
+        }
+        if (s->max_sessions != 0U && !file_exists(s, v.session_id)) {
+            /* Count without an allocating list operation. */
+            int base = open_base(s, false);
+            DIR *dp = base < 0 ? NULL : fdopendir(base);
+            if (dp == NULL) { if (base >= 0) (void)close(base); rc = COG_ERROR_IO; goto done; }
+            size_t n = 0U; struct dirent *de;
+            while ((de = readdir(dp)) != NULL) if (file_exists(s, de->d_name)) ++n;
             (void)closedir(dp);
-            goto nomem;
-        }
-        if (stat(full, &sb) != 0 || !S_ISDIR(sb.st_mode)) {
-            free(full);
-            full = NULL;
-            continue;
-        }
-        meta = path_join2(full, COG_STORE_FILE_META);
-        free(full);
-        full = NULL;
-        if (meta == NULL) {
-            (void)closedir(dp);
-            goto nomem;
-        }
-        if (access(meta, F_OK) != 0) {
-            free(meta);
-            meta = NULL;
-            continue; /* directory without meta.json is not a session */
-        }
-        free(meta);
-        meta = NULL;
-        if (count == cap) {
-            size_t ncap = (cap == 0U) ? 8U : cap * 2U;
-            char **nn;
-
-            if (cap > SIZE_MAX / 2U) {
-                (void)closedir(dp);
-                goto nomem;
-            }
-            nn = realloc(names, ncap * sizeof(*nn));
-            if (nn == NULL) {
-                (void)closedir(dp);
-                goto nomem;
-            }
-            names = nn;
-            cap = ncap;
-        }
-        names[count] = strdup(name);
-        if (names[count] == NULL) {
-            (void)closedir(dp);
-            goto nomem;
-        }
-        count++;
-    }
-    if (closedir(dp) != 0) {
-        goto io;
-    }
-    *out = names;
-    *out_count = count;
-    return COG_OK;
-
-nomem:
-    {
-        size_t i;
-
-        for (i = 0U; i < count; i++) {
-            free(names[i]);
-        }
-        free(names);
-    }
-    return COG_ERROR_NOMEM;
-
-io:
-    {
-        size_t i;
-
-        for (i = 0U; i < count; i++) {
-            free(names[i]);
-        }
-        free(names);
-    }
-    return COG_ERROR_IO;
-}
-
-static int cmp_str(const void *a, const void *b)
-{
-    return strcmp(*(const char *const *)a, *(const char *const *)b);
-}
-
-struct prune_item {
-    char *name;
-    int64_t mtime_sec;
-    int64_t mtime_nsec;
-};
-
-static int cmp_prune_item(const void *a, const void *b)
-{
-    const struct prune_item *pa = (const struct prune_item *)a;
-    const struct prune_item *pb = (const struct prune_item *)b;
-
-    if (pa->mtime_sec != pb->mtime_sec) {
-        return (pa->mtime_sec < pb->mtime_sec) ? -1 : 1;
-    }
-    if (pa->mtime_nsec != pb->mtime_nsec) {
-        return (pa->mtime_nsec < pb->mtime_nsec) ? -1 : 1;
-    }
-    return strcmp(pa->name, pb->name);
-}
-
-/**
- * Enforce max_sessions after a successful save: delete the oldest
- * session directories (by mtime) beyond the cap, never the session that
- * was just saved.
- */
-static cog_result_t prune_oldest(struct cog_store *st, const char *keep_id)
-{
-    char **names = NULL;
-    size_t count = 0U;
-    struct prune_item *items = NULL;
-    size_t i;
-    size_t j;
-    size_t excess;
-    size_t deleted = 0U;
-    cog_result_t rc;
-
-    rc = collect_sessions(st->base_dir, &names, &count);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    if (count <= st->max_sessions) {
-        for (i = 0U; i < count; i++) {
-            free(names[i]);
-        }
-        free(names);
-        return COG_OK;
-    }
-    items = malloc(count * sizeof(*items));
-    if (items == NULL) {
-        for (i = 0U; i < count; i++) {
-            free(names[i]);
-        }
-        free(names);
-        return COG_ERROR_NOMEM;
-    }
-    for (i = 0U; i < count; i++) {
-        struct stat sb;
-        char *full = path_join2(st->base_dir, names[i]);
-
-        /* Ownership of the name string transfers to the item. */
-        items[i].name = names[i];
-        items[i].mtime_sec = 0;
-        items[i].mtime_nsec = 0;
-        if (full == NULL) {
-            for (j = 0U; j < count; j++) {
-                free(items[j].name);
-            }
-            free(items);
-            free(names); /* array only; strings are owned by items */
-            return COG_ERROR_NOMEM;
-        }
-        if (stat(full, &sb) == 0) {
-            items[i].mtime_sec = (int64_t)sb.st_mtim.tv_sec;
-            items[i].mtime_nsec = (int64_t)sb.st_mtim.tv_nsec;
-        }
-        free(full);
-    }
-    free(names); /* array only; strings are owned by items */
-    qsort(items, count, sizeof(*items), cmp_prune_item);
-
-    excess = count - st->max_sessions;
-    for (i = 0U; i < count && deleted < excess; i++) {
-        char *dir;
-
-        if (strcmp(items[i].name, keep_id) == 0) {
-            continue;
-        }
-        dir = path_join2(st->base_dir, items[i].name);
-        if (dir == NULL) {
-            for (j = 0U; j < count; j++) {
-                free(items[j].name);
-            }
-            free(items);
-            return COG_ERROR_NOMEM;
-        }
-        rc = delete_session_dir(dir);
-        free(dir);
-        if (rc != COG_OK) {
-            for (j = 0U; j < count; j++) {
-                free(items[j].name);
-            }
-            free(items);
-            return rc;
-        }
-        deleted++;
-    }
-    for (i = 0U; i < count; i++) {
-        free(items[i].name);
-    }
-    free(items);
-    return COG_OK;
-}
-
-/* ------------------------------------------------------------------ */
-/* File backend: meta load                                             */
-/* ------------------------------------------------------------------ */
-
-/**
- * Parse meta.json.  Requires format version 1, an id that matches
- * @p expect_id (the directory name used to reach this meta), and the
- * max_nodes / node_count / next_node_id / active_node_id fields.
- * parent_id may be null.  *out_parent_id, when non-NULL, receives a
- * malloc'd copy (NULL for absent).
- */
-static cog_result_t file_load_meta(const char *path, const char *expect_id,
-                                   size_t *max_nodes, size_t *node_count,
-                                   uint64_t *next_node_id,
-                                   uint64_t *active_node_id,
-                                   char **out_parent_id)
-{
-    char *buf = NULL;
-    size_t len = 0U;
-    json_scan_t j;
-    char key[16];
-    unsigned char *id_dec = NULL;
-    unsigned char *parent_dec = NULL;
-    size_t id_len = 0U;
-    size_t parent_len = 0U;
-    bool have_version = false;
-    bool have_id = false;
-    bool have_max = false;
-    bool have_count = false;
-    bool have_next = false;
-    bool have_active = false;
-    uint64_t version = 0U;
-    uint64_t mn = 0U;
-    uint64_t nc = 0U;
-    uint64_t nn = 0U;
-    uint64_t an = 0U;
-    cog_result_t rc;
-
-    if (out_parent_id != NULL) {
-        *out_parent_id = NULL;
-    }
-    rc = read_file(path, &buf, &len);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    j.p = buf;
-    j.end = buf + len;
-    if (!js_char(&j, '{')) {
-        rc = COG_ERROR_IO;
-        goto out;
-    }
-    while (true) {
-        const char *span = NULL;
-        size_t span_len = 0U;
-
-        if (!js_obj_field(&j, key, sizeof(key))) {
-            rc = COG_ERROR_IO;
-            goto out;
-        }
-        if (strcmp(key, "version") == 0) {
-            if (!js_value_u64(&j, &version)) {
-                rc = COG_ERROR_IO;
-                goto out;
-            }
-            have_version = true;
-        } else if (strcmp(key, "id") == 0) {
-            if (js_null(&j)) {
-                rc = COG_ERROR_IO; /* id is required */
-                goto out;
-            }
-            if (!js_string(&j, &span, &span_len)) {
-                rc = COG_ERROR_IO;
-                goto out;
-            }
-            rc = b64_decode(span, span_len, &id_dec, &id_len);
-            if (rc != COG_OK) {
-                goto out;
-            }
-            have_id = true;
-        } else if (strcmp(key, "parent_id") == 0) {
-            if (!js_null(&j)) {
-                if (!js_string(&j, &span, &span_len)) {
-                    rc = COG_ERROR_IO;
-                    goto out;
-                }
-                rc = b64_decode(span, span_len, &parent_dec, &parent_len);
-                if (rc != COG_OK) {
-                    goto out;
-                }
-            }
-        } else if (strcmp(key, "max_nodes") == 0) {
-            if (!js_value_u64(&j, &mn)) {
-                rc = COG_ERROR_IO;
-                goto out;
-            }
-            have_max = true;
-        } else if (strcmp(key, "node_count") == 0) {
-            if (!js_value_u64(&j, &nc)) {
-                rc = COG_ERROR_IO;
-                goto out;
-            }
-            have_count = true;
-        } else if (strcmp(key, "next_node_id") == 0) {
-            if (!js_value_u64(&j, &nn)) {
-                rc = COG_ERROR_IO;
-                goto out;
-            }
-            have_next = true;
-        } else if (strcmp(key, "active_node_id") == 0) {
-            if (!js_value_u64(&j, &an)) {
-                rc = COG_ERROR_IO;
-                goto out;
-            }
-            have_active = true;
-        } else {
-            rc = COG_ERROR_IO; /* unknown key: strict schema */
-            goto out;
-        }
-        if (js_char(&j, '}')) {
-            break;
-        }
-        if (!js_char(&j, ',')) {
-            rc = COG_ERROR_IO;
-            goto out;
+            if (n >= s->max_sessions) { rc = COG_ERROR_LIMIT; goto done; }
         }
     }
-    js_skip_ws(&j);
-    if (j.p != j.end) {
-        rc = COG_ERROR_IO;
-        goto out;
+    if (append && (node == NULL || !session_contains(session, node))) {
+        rc = COG_ERROR_INVALID_STATE; goto done;
     }
-    if (!have_version || !have_id || !have_max || !have_count ||
-        !have_next || !have_active) {
-        rc = COG_ERROR_IO;
-        goto out;
-    }
-    if (version != COG_STORE_FORMAT_VERSION) {
-        rc = COG_ERROR_IO;
-        goto out;
-    }
-    if (id_len == 0U || strcmp((const char *)id_dec, expect_id) != 0) {
-        rc = COG_ERROR_IO; /* meta id must match the directory name */
-        goto out;
-    }
-    if (mn > (uint64_t)SIZE_MAX || nc > (uint64_t)SIZE_MAX) {
-        rc = COG_ERROR_IO;
-        goto out;
-    }
-    *max_nodes = (size_t)mn;
-    *node_count = (size_t)nc;
-    *next_node_id = nn;
-    *active_node_id = an;
-    if (out_parent_id != NULL && parent_dec != NULL) {
-        *out_parent_id = strdup((const char *)parent_dec);
-        if (*out_parent_id == NULL) {
-            rc = COG_ERROR_NOMEM;
-            goto out;
-        }
-    }
-    rc = COG_OK;
-
-out:
-    free(buf);
-    free(id_dec);
-    free(parent_dec);
+    size_t n = 0U;
+    rc = cog_store_codec_encode(&v, s->write_buffer + GEN_SIZE, s->capacity - GEN_SIZE, &n);
+    if (rc != COG_OK) goto done;
+    rc = next_generation(dir, m.generation, &m.generation);
+    if (rc != COG_OK) goto done;
+    unsigned char *p = s->write_buffer;
+    (void)memcpy(p, "COGGEN2\0", 8U); put64(p + 8U, m.generation); put64(p + 16U, (uint64_t)n);
+    put64(p + 24U, checksum(p + GEN_SIZE, n)); put64(p + 32U, checksum(p, 32U));
+    m.size = (uint64_t)(n + GEN_SIZE); m.checksum = checksum(p, n + GEN_SIZE);
+    char name[64]; generation_name(name, sizeof(name), m.generation);
+    bool published;
+    rc = publish_file(dir, ".generation.tmp", name, p, n + GEN_SIZE, NULL, 0U, true, &published);
+    if (rc != COG_OK) goto done;
+    rc = manifest_publish(dir, &m, &published);
+    if (guard != NULL && (published || rc == COG_OK)) guard->blocked = indeterminate(&v);
+    if (rc == COG_OK && out != NULL) out->generation = m.generation;
+ done:
+    if (lock >= 0) (void)close(lock);
+    (void)close(dir);
     return rc;
 }
-
-/* ------------------------------------------------------------------ */
-/* File backend: save                                                 */
-/* ------------------------------------------------------------------ */
-
-static cog_result_t file_save(void *vstore, const cog_session_t *session)
+static cog_result_t file_save(void *ctx, const cog_session_t *session)
 {
-    struct cog_store *st = (struct cog_store *)vstore;
-    const struct cog_session *s = (const struct cog_session *)session;
-    struct cog_session_node **stack = NULL;
-    size_t stack_cap = 0U;
-    size_t stack_len = 0U;
-    struct idx_pair {
-        uint64_t node_id;
-        uint64_t offset;
-    } *idx = NULL;
-    size_t idx_cap = 0U;
-    size_t idx_len = 0U;
-    char *dir = NULL;
-    char *meta_p = NULL;
-    char *meta_t = NULL;
-    char *nodes_p = NULL;
-    char *nodes_t = NULL;
-    char *index_p = NULL;
-    char *index_t = NULL;
-    FILE *nodesf = NULL;
-    FILE *indexf = NULL;
-    struct cbuf meta = {0};
-    struct cbuf line = {0};
-    cog_result_t rc;
-    uint64_t active_id = 0U;
-    size_t node_count = 0U;
-    size_t i;
-
-    rc = store_validate_id(s->id);
-    if (rc != COG_OK) {
-        return rc;
+    cog_store_t *s = ctx;
+    if (s == NULL || session == NULL) return COG_ERROR_NULL_PTR;
+    return file_commit(s, session, find_guard(s, cog_session_id(session)), false, false, NULL, NULL);
+}
+static cog_result_t file_append(void *ctx, const cog_session_t *session, const cog_session_node_t *node)
+{
+    cog_store_t *s = ctx;
+    if (s == NULL || session == NULL || node == NULL) return COG_ERROR_NULL_PTR;
+    if (!session_contains(session, node)) return COG_ERROR_INVALID_STATE;
+    return file_commit(s, session, find_guard(s, cog_session_id(session)), false, true, node, NULL);
+}
+static cog_result_t file_load_common(cog_store_t *s, const char *id, uint64_t exact,
+    cog_store_load_mode_t mode, cog_session_t **out, cog_store_load_report_t *report)
+{
+    if (out != NULL) *out = NULL;
+    if (s == NULL || out == NULL || report == NULL) return COG_ERROR_NULL_PTR;
+    cog_result_t arg_rc = valid_id(id);
+    if (arg_rc != COG_OK) return arg_rc;
+    if (mode != COG_STORE_LOAD_REPLAY && mode != COG_STORE_LOAD_INSPECT) return COG_ERROR_INVALID_ARG;
+    int dir = session_dir(s, id);
+    if (dir < 0) return errno == ENOENT ? COG_ERROR_NOT_FOUND : COG_ERROR_IO;
+    manifest_t m;
+    cog_session_snapshot_t v;
+    cog_store_load_report_t r = {0};
+    cog_result_t rc = manifest_read(dir, &m);
+    if (rc == COG_OK && (exact != 0U || m.generation != 0U)) {
+        uint64_t g = exact != 0U ? exact : m.generation;
+        rc = generation_read(s, dir, g, g == m.generation ? &m : NULL, &v);
+        r.source_version = 2U; r.checkpoint_generation = g;
+    } else if (rc == COG_OK) rc = legacy_read(s, dir, id, mode, &v, &r);
+    (void)close(dir);
+    if (rc != COG_OK) return rc;
+    if (!str_eq(v.session_id, id)) return COG_ERROR_PROTOCOL;
+    if (v.inspection_only && mode == COG_STORE_LOAD_REPLAY) return COG_ERROR_UNSUPPORTED;
+    cog_session_config_t cfg = {.id = id, .max_nodes = v.node_count > 4095U ? v.node_count + 1U : 4096U,
+        .max_payload_bytes = s->capacity, .max_tool_calls_per_message = 16U};
+    for (size_t i = 0U; i < v.node_count; ++i)
+        if (v.nodes[i].message != NULL && v.nodes[i].message->tool_call_count > cfg.max_tool_calls_per_message)
+            cfg.max_tool_calls_per_message = v.nodes[i].message->tool_call_count;
+    rc = cog_session_restore(out, &cfg, &v);
+    if (rc != COG_OK) return rc;
+    r.replay_safe = !v.inspection_only;
+    for (size_t i = 0U; i < v.ledger_count; ++i)
+        if (v.ledger[i].state == COG_TOOL_EXECUTION_STARTED || v.ledger[i].state == COG_TOOL_EXECUTION_INDETERMINATE)
+            ++r.indeterminate_tools;
+    *report = r; return COG_OK;
+}
+static cog_result_t file_load_ex(void *ctx, const char *id, cog_store_load_mode_t mode,
+    cog_session_t **out, cog_store_load_report_t *report)
+{ return file_load_common(ctx, id, 0U, mode, out, report); }
+static cog_result_t file_load(void *ctx, const char *id, cog_session_t **out)
+{ cog_store_load_report_t report; return file_load_ex(ctx, id, COG_STORE_LOAD_REPLAY, out, &report); }
+static cog_result_t file_checkpoint_load(void *ctx, const char *id, cog_store_checkpoint_t cp,
+    cog_store_load_mode_t mode, cog_session_t **out, cog_store_load_report_t *report)
+{ return cp.generation == 0U ? COG_ERROR_NOT_FOUND : file_load_common(ctx, id, cp.generation, mode, out, report); }
+static cog_result_t file_checkpoint_save(void *ctx, const cog_session_t *session, const void *guard,
+    cog_store_checkpoint_t *out)
+{ return file_commit(ctx, session, (cog_store_owner_guard_t *)guard, true, false, NULL, out); }
+static cog_result_t file_owner_read(void *ctx, const char *id, cog_store_owner_t *owner, cog_store_checkpoint_t *cp)
+{
+    cog_store_t *s = ctx;
+    if (s == NULL || owner == NULL || cp == NULL) return COG_ERROR_NULL_PTR;
+    cog_result_t arg_rc = valid_id(id); if (arg_rc != COG_OK) return arg_rc;
+    int dir = session_dir(s, id);
+    if (dir < 0 && errno == ENOENT) { *owner = (cog_store_owner_t){0}; *cp = (cog_store_checkpoint_t){0}; return COG_OK; }
+    if (dir < 0) return COG_ERROR_IO;
+    manifest_t m;
+    cog_result_t rc = manifest_read(dir, &m);
+    if (rc == COG_OK && m.generation != 0U) {
+        cog_session_snapshot_t v;
+        rc = generation_read(s, dir, m.generation, &m, &v);
+        if (rc == COG_OK) rc = validate(&v, id);
     }
-    rc = ensure_dir(st->base_dir);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    dir = path_join2(st->base_dir, s->id);
-    if (dir == NULL) {
-        return COG_ERROR_NOMEM;
-    }
-    rc = ensure_dir(dir);
-    if (rc != COG_OK) {
-        goto out;
-    }
-    meta_p = path_join2(dir, COG_STORE_FILE_META);
-    nodes_p = path_join2(dir, COG_STORE_FILE_NODES);
-    index_p = path_join2(dir, COG_STORE_FILE_INDEX);
-    meta_t = path_join2(dir, COG_STORE_FILE_META ".tmp");
-    nodes_t = path_join2(dir, COG_STORE_FILE_NODES ".tmp");
-    index_t = path_join2(dir, COG_STORE_FILE_INDEX ".tmp");
-    if (meta_p == NULL || nodes_p == NULL || index_p == NULL ||
-        meta_t == NULL || nodes_t == NULL || index_t == NULL) {
-        rc = COG_ERROR_NOMEM;
-        goto out;
-    }
-
-    nodesf = fopen(nodes_t, "wb");
-    if (nodesf == NULL) {
-        rc = COG_ERROR_IO;
-        goto out;
-    }
-
-    /* Iterative DFS pre-order (children pushed in reverse so sibling
-     * order is preserved in the file), writing records streaming. */
-    if (s->root != NULL) {
-        if (stack_len == stack_cap) {
-            size_t ncap = (stack_cap == 0U) ? 64U : stack_cap * 2U;
-            struct cog_session_node **tmp2;
-
-            if (stack_cap > SIZE_MAX / 2U) {
-                rc = COG_ERROR_NOMEM;
-                goto out;
-            }
-            tmp2 = realloc(stack, ncap * sizeof(*tmp2));
-            if (tmp2 == NULL) {
-                rc = COG_ERROR_NOMEM;
-                goto out;
-            }
-            stack = tmp2;
-            stack_cap = ncap;
-        }
-        stack[stack_len++] = s->root;
-    }
-    while (stack_len > 0U) {
-        struct cog_session_node *n = stack[--stack_len];
-        struct cog_session_node *child;
-        const cog_node_data_t *d = &n->data;
-        long off;
-
-        if (idx_len == idx_cap) {
-            size_t ncap = (idx_cap == 0U) ? 64U : idx_cap * 2U;
-            struct idx_pair *tmp2;
-
-            if (idx_cap > SIZE_MAX / 2U) {
-                rc = COG_ERROR_NOMEM;
-                goto out;
-            }
-            tmp2 = realloc(idx, ncap * sizeof(*tmp2));
-            if (tmp2 == NULL) {
-                rc = COG_ERROR_NOMEM;
-                goto out;
-            }
-            idx = tmp2;
-            idx_cap = ncap;
-        }
-
-        line.len = 0U;
-        if (line.data != NULL) {
-            line.data[0] = '\0';
-        }
-        rc = node_record_write(&line, d, n->tool_args_len,
-                               n->tool_result_len);
-        if (rc != COG_OK) {
-            goto out;
-        }
-        off = ftell(nodesf);
-        if (off < 0L) {
-            rc = COG_ERROR_IO;
-            goto out;
-        }
-        if (fwrite(line.data, 1U, line.len, nodesf) != line.len ||
-            fputc('\n', nodesf) == EOF) {
-            rc = COG_ERROR_IO;
-            goto out;
-        }
-        idx[idx_len].node_id = d->node_id;
-        idx[idx_len].offset = (uint64_t)off;
-        idx_len++;
-        node_count++;
-
-        if (n->first_child != NULL) {
-            size_t cnt = n->child_count;
-            struct cog_session_node **base;
-            size_t k;
-
-            if (cnt > SIZE_MAX - stack_len) {
-                rc = COG_ERROR_NOMEM;
-                goto out;
-            }
-            if (stack_len + cnt > stack_cap) {
-                size_t ncap = stack_len + cnt;
-                struct cog_session_node **tmp2;
-
-                tmp2 = realloc(stack, ncap * sizeof(*tmp2));
-                if (tmp2 == NULL) {
-                    rc = COG_ERROR_NOMEM;
-                    goto out;
-                }
-                stack = tmp2;
-                stack_cap = ncap;
-            }
-            base = stack + stack_len;
-            k = cnt;
-            for (child = n->first_child; child != NULL;
-                 child = child->next_sibling) {
-                base[--k] = child;
-            }
-            stack_len += cnt;
-        }
-    }
-    if (fclose(nodesf) != 0) {
-        nodesf = NULL;
-        rc = COG_ERROR_IO;
-        goto out;
-    }
-    nodesf = NULL;
-
-    /* meta.json — node_count and the active id are known after the walk. */
-    if (s->active != NULL) {
-        active_id = s->active->data.node_id;
-    }
-    rc = meta_write(&meta, s->id, s->parent_id, s->max_nodes, node_count,
-                    s->next_node_id, active_id);
-    if (rc != COG_OK) {
-        goto out;
-    }
-    rc = write_file_atomic(meta_p, meta_t, meta.data, meta.len);
-    if (rc != COG_OK) {
-        goto out;
-    }
-
-    /* index.bin — magic + count + (node_id, offset) pairs sorted by id. */
-    {
-        size_t a;
-        size_t b;
-
-        /* insertion sort: indices are small and nearly ordered */
-        for (a = 1U; a < idx_len; a++) {
-            struct idx_pair key = idx[a];
-
-            b = a;
-            while (b > 0U && idx[b - 1U].node_id > key.node_id) {
-                idx[b] = idx[b - 1U];
-                b--;
-            }
-            idx[b] = key;
-        }
-    }
-    indexf = fopen(index_t, "wb");
-    if (indexf == NULL) {
-        rc = COG_ERROR_IO;
-        goto out;
-    }
-    if (fwrite(kIndexMagic, 1U, sizeof(kIndexMagic), indexf) !=
-            sizeof(kIndexMagic) ||
-        fwrite(&idx_len, 1U, sizeof(idx_len), indexf) != sizeof(idx_len)) {
-        rc = COG_ERROR_IO;
-        goto out;
-    }
-    for (i = 0U; i < idx_len; i++) {
-        if (fwrite(&idx[i].node_id, 1U, sizeof(idx[i].node_id), indexf) !=
-                sizeof(idx[i].node_id) ||
-            fwrite(&idx[i].offset, 1U, sizeof(idx[i].offset), indexf) !=
-                sizeof(idx[i].offset)) {
-            rc = COG_ERROR_IO;
-            goto out;
-        }
-    }
-    if (fclose(indexf) != 0) {
-        indexf = NULL;
-        rc = COG_ERROR_IO;
-        goto out;
-    }
-    indexf = NULL;
-    /* The tmp files were already fully written above; a plain atomic
-     * rename publishes them without reopening (which would truncate). */
-    if (rename(index_t, index_p) != 0) {
-        rc = COG_ERROR_IO;
-        goto out;
-    }
-    if (rename(nodes_t, nodes_p) != 0) {
-        rc = COG_ERROR_IO;
-        goto out;
-    }
-
-    if (st->max_sessions > 0U) {
-        rc = prune_oldest(st, s->id);
-    }
-
-out:
-    if (nodesf != NULL) {
-        (void)fclose(nodesf);
-    }
-    if (indexf != NULL) {
-        (void)fclose(indexf);
-    }
-    if (rc != COG_OK) {
-        (void)remove(meta_t);
-        (void)remove(nodes_t);
-        (void)remove(index_t);
-    }
-    free(stack);
-    free(idx);
-    free(dir);
-    free(meta_p);
-    free(meta_t);
-    free(nodes_p);
-    free(nodes_t);
-    free(index_p);
-    free(index_t);
-    free(meta.data);
-    free(line.data);
+    (void)close(dir);
+    if (rc == COG_OK) { *owner = m.owner; cp->generation = m.generation; }
     return rc;
 }
-
-/* ------------------------------------------------------------------ */
-/* File backend: append                                               */
-/* ------------------------------------------------------------------ */
-
-static cog_result_t file_append(void *vstore, const cog_session_t *session,
-                                const cog_session_node_t *node)
+static cog_result_t file_owner_cas(void *ctx, const char *id, cog_store_owner_t expected,
+    cog_store_owner_t next, cog_store_checkpoint_t cp)
 {
-    struct cog_store *st = (struct cog_store *)vstore;
-    const struct cog_session *s = (const struct cog_session *)session;
-    const struct cog_session_node *n = (const struct cog_session_node *)node;
-    const cog_node_data_t *d = &n->data;
-    cog_result_t rc;
-    char *dir = NULL;
-    char *meta_p = NULL;
-    char *nodes_p = NULL;
-    char *index_p = NULL;
-    char *meta_t = NULL;
-    struct cbuf line = {0};
-    FILE *f = NULL;
-    bool bootstrapped = false;
-    size_t file_count = 0U;
-    uint64_t disk_next = 0U;
-    uint64_t disk_active = 0U;
-    size_t disk_max = 0U;
-
-    rc = store_validate_id(s->id);
-    if (rc != COG_OK) {
-        return rc;
+    cog_store_t *s = ctx;
+    if (s == NULL) return COG_ERROR_NULL_PTR;
+    cog_result_t arg_rc = valid_id(id); if (arg_rc != COG_OK) return arg_rc;
+    if ((expected.epoch == 0U) != (expected.instance_id == 0U) || expected.epoch == UINT64_MAX ||
+        next.epoch != expected.epoch + 1U || next.instance_id == 0U) return COG_ERROR_INVALID_ARG;
+    int dir, lock;
+    cog_result_t rc = session_lock(s, id, &dir, &lock);
+    if (rc != COG_OK) return rc;
+    manifest_t m;
+    rc = manifest_read(dir, &m);
+    if (rc != COG_OK) goto done;
+    if (m.generation != cp.generation || (!same_owner(m.owner, expected) && !same_owner(m.owner, next))) {
+        rc = COG_ERROR_INVALID_STATE; goto done;
     }
-    if (n->session != s) {
-        return COG_ERROR_INVALID_STATE; /* foreign node */
+    if (m.generation != 0U) {
+        cog_session_snapshot_t v;
+        rc = generation_read(s, dir, m.generation, &m, &v);
+        if (rc == COG_OK) rc = validate(&v, id);
+        if (rc != COG_OK) goto done;
+        if (v.inspection_only || (m.owner.epoch == 0U && uncertainty(&v))) { rc = COG_ERROR_INDETERMINATE; goto done; }
+    } else {
+        struct stat st;
+        if (fstatat(dir, "meta.json", &st, AT_SYMLINK_NOFOLLOW) == 0) { rc = COG_ERROR_UNSUPPORTED; goto done; }
     }
-    rc = ensure_dir(st->base_dir);
-    if (rc != COG_OK) {
-        return rc;
+    if (same_owner(m.owner, next)) {
+        rc = durable_confirm(dir, &m);
+        if (rc != COG_OK) rc = COG_ERROR_INDETERMINATE;
+    } else {
+        bool published; m.owner = next;
+        rc = manifest_publish(dir, &m, &published);
+        if (rc != COG_OK && published) rc = COG_ERROR_INDETERMINATE;
     }
-    dir = path_join2(st->base_dir, s->id);
-    if (dir == NULL) {
-        return COG_ERROR_NOMEM;
+ done:
+    (void)close(lock); (void)close(dir); return rc;
+}
+static cog_result_t file_acquire_common(cog_store_t *s, const char *id, cog_store_owner_t expected,
+    bool recovery, void **out)
+{
+    if (out != NULL) *out = NULL;
+    if (s == NULL || out == NULL) return COG_ERROR_NULL_PTR;
+    cog_result_t arg_rc = valid_id(id); if (arg_rc != COG_OK) return arg_rc;
+    if (!s->require_owner) return COG_ERROR_UNSUPPORTED;
+    int dir, lock;
+    cog_result_t rc = session_lock(s, id, &dir, &lock);
+    if (rc != COG_OK) return rc;
+    manifest_t m;
+    rc = manifest_read(dir, &m);
+    bool uncertain = false;
+    if (rc == COG_OK && (!same_owner(m.owner, expected) || expected.epoch == 0U)) rc = COG_ERROR_INVALID_STATE;
+    if (rc == COG_OK && m.generation != 0U) {
+        cog_session_snapshot_t v;
+        rc = generation_read(s, dir, m.generation, &m, &v);
+        if (rc == COG_OK) rc = validate(&v, id);
+        if (rc == COG_OK && v.inspection_only) rc = COG_ERROR_UNSUPPORTED;
+        if (rc == COG_OK) uncertain = uncertainty(&v);
     }
-    meta_p = path_join2(dir, COG_STORE_FILE_META);
-    nodes_p = path_join2(dir, COG_STORE_FILE_NODES);
-    index_p = path_join2(dir, COG_STORE_FILE_INDEX);
-    meta_t = path_join2(dir, COG_STORE_FILE_META ".tmp");
-    if (meta_p == NULL || nodes_p == NULL || index_p == NULL ||
-        meta_t == NULL) {
-        rc = COG_ERROR_NOMEM;
-        goto out;
-    }
-
-    {
-        struct stat sb;
-
-        if (stat(dir, &sb) != 0) {
-            if (errno != ENOENT) {
-                rc = COG_ERROR_IO;
-                goto out;
-            }
-            /* Bootstrap: the session was never saved; persist just this
-             * node so append stays a single-record incremental op. */
-            rc = ensure_dir(dir);
-            if (rc != COG_OK) {
-                goto out;
-            }
-            file_count = 1U;
-            disk_next = d->node_id + 1U;
-            disk_active = d->node_id;
-            disk_max = s->max_nodes;
-            bootstrapped = true;
-        } else {
-            if (!S_ISDIR(sb.st_mode)) {
-                rc = COG_ERROR_IO;
-                goto out;
-            }
-            if (access(meta_p, F_OK) != 0) {
-                rc = COG_ERROR_IO; /* dir without meta.json is corrupt */
-                goto out;
-            }
-            rc = file_load_meta(meta_p, s->id, &disk_max, &file_count,
-                                &disk_next, &disk_active, NULL);
-            if (rc != COG_OK) {
-                goto out;
-            }
-            file_count++;
-            if (disk_next < s->next_node_id) {
-                disk_next = s->next_node_id;
-            }
-            disk_active = d->node_id;
+    if (rc == COG_OK && uncertain != recovery) rc = recovery ? COG_ERROR_INVALID_STATE : COG_ERROR_INDETERMINATE;
+    if (rc == COG_OK && durable_confirm(dir, &m) != COG_OK) rc = COG_ERROR_INDETERMINATE;
+    if (rc == COG_OK) {
+        /* Explicit guard constructor is the sole runtime allocation here. */
+        cog_store_owner_guard_t *g = calloc(1U, sizeof(*g));
+        if (g == NULL) rc = COG_ERROR_NOMEM;
+        else {
+            g->store = s; g->fd = lock; g->owner = expected; g->recovery = recovery;
+            (void)memcpy(g->id, id, strlen(id) + 1U);
+            g->next = s->guards; s->guards = g; *out = g;
         }
     }
-
-    /* Rewrite meta.json with the updated record count and active id. */
-    {
-        struct cbuf meta = {0};
-
-        rc = meta_write(&meta, s->id, s->parent_id, disk_max, file_count,
-                        disk_next, disk_active);
-        if (rc == COG_OK) {
-            rc = write_file_atomic(meta_p, meta_t, meta.data, meta.len);
-        }
-        free(meta.data);
-        if (rc != COG_OK) {
-            goto out;
-        }
-    }
-
-    /* Append the node record to nodes.jsonl.  A bootstrap persists this
-     * node alone, so a non-root node is snapshotted as a standalone root
-     * (its in-memory parent is not part of the persisted store yet). */
-    {
-        cog_node_data_t snap = *d;
-
-        if (bootstrapped && snap.parent_id != 0U) {
-            snap.parent_id = 0U;
-        }
-        rc = node_record_write(&line, &snap, n->tool_args_len,
-                               n->tool_result_len);
-    }
-    if (rc != COG_OK) {
-        goto out;
-    }
-    f = fopen(nodes_p, (bootstrapped) ? "wb" : "ab");
-    if (f == NULL) {
-        rc = COG_ERROR_IO;
-        goto out;
-    }
-    {
-        long off = ftell(f);
-        size_t wrote;
-
-        if (off < 0L) {
-            rc = COG_ERROR_IO;
-            goto out;
-        }
-        wrote = fwrite(line.data, 1U, line.len, f);
-        if (wrote != line.len || fputc('\n', f) == EOF) {
-            rc = COG_ERROR_IO;
-            goto out;
-        }
-        if (fclose(f) != 0) {
-            f = NULL;
-            rc = COG_ERROR_IO;
-            goto out;
-        }
-        f = NULL;
-        if (bootstrapped) {
-            /* Create a fresh one-entry index.bin for layout fidelity. */
-            uint64_t one = 1U;
-            FILE *ix = fopen(index_p, "wb");
-
-            if (ix == NULL) {
-                rc = COG_ERROR_IO;
-                goto out;
-            }
-            if (fwrite(kIndexMagic, 1U, sizeof(kIndexMagic), ix) !=
-                    sizeof(kIndexMagic) ||
-                fwrite(&one, 1U, sizeof(one), ix) != sizeof(one) ||
-                fwrite(&d->node_id, 1U, sizeof(d->node_id), ix) !=
-                    sizeof(d->node_id) ||
-                fwrite(&off, 1U, sizeof(off), ix) != sizeof(off)) {
-                (void)fclose(ix);
-                rc = COG_ERROR_IO;
-                goto out;
-            }
-            if (fclose(ix) != 0) {
-                rc = COG_ERROR_IO;
-                goto out;
-            }
-        } else {
-            bool did = false;
-
-            /* Index update failure is non-fatal (advisory cache); the
-             * next full save regenerates a fresh index. */
-            rc = index_append(index_p, d->node_id, (uint64_t)off, &did);
-            if (rc != COG_OK) {
-                goto out;
-            }
-        }
-    }
-
-out:
-    if (f != NULL) {
-        (void)fclose(f);
-    }
-    free(dir);
-    free(meta_p);
-    free(nodes_p);
-    free(index_p);
-    free(meta_t);
-    free(line.data);
+    (void)close(dir);
+    if (rc != COG_OK) (void)close(lock);
     return rc;
 }
-
-/* ------------------------------------------------------------------ */
-/* File backend: load                                                 */
-/* ------------------------------------------------------------------ */
-
-static void recount_prunable_node(struct cog_session *s,
-                                  struct cog_session_node *n)
+static cog_result_t file_acquire(void *ctx, const char *id, cog_store_owner_t owner, void **out)
+{ return file_acquire_common(ctx, id, owner, false, out); }
+static cog_result_t file_acquire_recovery(void *ctx, const char *id, cog_store_owner_t owner, void **out)
+{ return file_acquire_common(ctx, id, owner, true, out); }
+static cog_result_t file_release(void *ctx, void *guard)
 {
-    struct cog_session_node *c;
-    bool prunable;
-
-    for (c = n->first_child; c != NULL; c = c->next_sibling) {
-        recount_prunable_node(s, c);
-    }
-    prunable = (n != s->root && n != s->active && n->child_count == 0U);
-    n->prunable_counted = prunable;
-    if (prunable) {
-        s->prunable_leaf_count++;
-    }
+    cog_store_t *s = ctx; cog_store_owner_guard_t *g = guard;
+    if (g == NULL) return COG_OK;
+    if (s == NULL) return COG_ERROR_NULL_PTR;
+    if (g->store != s || g->borrowers != 0U) return COG_ERROR_INVALID_STATE;
+    cog_store_owner_guard_t **p = &s->guards;
+    while (*p != NULL && *p != g) p = &(*p)->next;
+    if (*p == NULL) return COG_ERROR_INVALID_STATE;
+    *p = g->next;
+    cog_result_t rc = close(g->fd) == 0 ? COG_OK : COG_ERROR_IO;
+    free(g); return rc;
 }
 
-/** Recompute the prunable-leaf bookkeeping after changing the active
- * node (load restores the stored active node, which may not be the last
- * node inserted while rebuilding). */
-static void recount_prunable(struct cog_session *s)
+static bool legacy_file(const char *name)
 {
-    s->prunable_leaf_count = 0U;
-    if (s->root != NULL) {
-        recount_prunable_node(s, s->root);
-    }
+    static const char *const names[] = {"meta.json", "nodes.jsonl", "index.bin", "meta.json.tmp", "nodes.jsonl.tmp", "index.bin.tmp"};
+    for (size_t i = 0U; i < sizeof(names) / sizeof(names[0]); ++i) if (strcmp(name, names[i]) == 0) return true;
+    return false;
 }
-
-static cog_result_t file_load(void *vstore, const char *id,
-                              cog_session_t **out)
+static cog_result_t file_delete(void *ctx, const char *id)
 {
-    struct cog_store *st = (struct cog_store *)vstore;
-    struct id_map {
-        uint64_t id;
-        struct cog_session_node *node;
-    } *map = NULL;
-    size_t map_len = 0U;
-    size_t map_cap = 0U;
-    cog_node_record_t *recs = NULL;
-    size_t rec_count = 0U;
-    size_t rec_cap = 0U;
-    uint64_t max_id = 0U;
-    cog_session_t *s = NULL;
-    char *dir = NULL;
-    char *meta_p = NULL;
-    char *nodes_p = NULL;
-    char *nodes_buf = NULL;
-    size_t nodes_len = 0U;
-    char *m_parent = NULL;
-    size_t m_max = 0U;
-    size_t m_count = 0U;
-    uint64_t m_next = 0U;
-    uint64_t m_active = 0U;
-    struct stat sb;
-    cog_result_t rc;
-    size_t i;
-
-    rc = store_validate_id(id);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    dir = path_join2(st->base_dir, id);
-    if (dir == NULL) {
-        return COG_ERROR_NOMEM;
-    }
-    if (stat(dir, &sb) != 0) {
-        free(dir);
-        if (errno == ENOENT) {
-            return COG_ERROR_NOT_FOUND;
-        }
-        return COG_ERROR_IO;
-    }
-    if (!S_ISDIR(sb.st_mode)) {
-        free(dir);
-        return COG_ERROR_IO;
-    }
-    meta_p = path_join2(dir, COG_STORE_FILE_META);
-    nodes_p = path_join2(dir, COG_STORE_FILE_NODES);
-    if (meta_p == NULL || nodes_p == NULL) {
-        rc = COG_ERROR_NOMEM;
-        goto fail;
-    }
-    if (access(meta_p, F_OK) != 0) {
-        rc = COG_ERROR_NOT_FOUND;
-        goto fail;
-    }
-    rc = file_load_meta(meta_p, id, &m_max, &m_count, &m_next, &m_active,
-                        &m_parent);
-    if (rc != COG_OK) {
-        goto fail;
-    }
-    rc = read_file(nodes_p, &nodes_buf, &nodes_len);
-    if (rc != COG_OK) {
-        goto fail;
-    }
-
-    /* Parse nodes.jsonl records in file order.  Blank lines are
-     * tolerated; a final line without a trailing newline is accepted if
-     * it parses, so a truncated record fails the parse and yields IO. */
-    {
-        const char *p = nodes_buf;
-        size_t rem = nodes_len;
-
-        while (rem > 0U) {
-            const char *nl = memchr(p, '\n', rem);
-            size_t linelen = (nl != NULL) ? (size_t)(nl - p) : rem;
-            size_t k;
-            bool blank = true;
-
-            for (k = 0U; k < linelen; k++) {
-                if (isspace((unsigned char)p[k]) == 0) {
-                    blank = false;
-                    break;
-                }
-            }
-            if (!blank) {
-                if (rec_count == rec_cap) {
-                    size_t ncap = (rec_cap == 0U) ? 16U : rec_cap * 2U;
-                    cog_node_record_t *tmp2;
-
-                    if (rec_cap > SIZE_MAX / 2U) {
-                        rc = COG_ERROR_NOMEM;
-                        goto fail;
-                    }
-                    tmp2 = realloc(recs, ncap * sizeof(*tmp2));
-                    if (tmp2 == NULL) {
-                        rc = COG_ERROR_NOMEM;
-                        goto fail;
-                    }
-                    recs = tmp2;
-                    rec_cap = ncap;
-                }
-                rc = node_record_parse(p, linelen, &recs[rec_count]);
-                if (rc != COG_OK) {
-                    goto fail;
-                }
-                /* A successfully parsed record immediately joins the
-                 * cleanup-owned prefix.  Every later failure path frees
-                 * its decoded payload exactly once, including node_id 0. */
-                rec_count++;
-                if (recs[rec_count - 1U].node_id == 0U) {
-                    rc = COG_ERROR_IO;
-                    goto fail;
-                }
-                if (recs[rec_count - 1U].node_id > max_id) {
-                    max_id = recs[rec_count - 1U].node_id;
-                }
-            }
-            if (nl == NULL) {
-                break;
-            }
-            p = nl + 1;
-            rem -= linelen + 1U;
+    cog_store_t *s = ctx;
+    if (s == NULL) return COG_ERROR_NULL_PTR;
+    cog_result_t arg_rc = valid_id(id); if (arg_rc != COG_OK) return arg_rc;
+    int base, domain;
+    cog_result_t rc = domain_lock(s, &base, &domain);
+    if (rc != COG_OK) return rc;
+    int dir = openat(base, id, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (dir < 0) { rc = errno == ENOENT ? COG_ERROR_NOT_FOUND : COG_ERROR_IO; goto done; }
+    struct stat st;
+    if (fstatat(dir, ANCHOR, &st, AT_SYMLINK_NOFOLLOW) == 0 ||
+        fstatat(dir, MANIFEST, &st, AT_SYMLINK_NOFOLLOW) == 0) { rc = COG_ERROR_UNSUPPORTED; goto close_dir; }
+    if (fstatat(dir, "meta.json", &st, AT_SYMLINK_NOFOLLOW) != 0) { rc = COG_ERROR_NOT_FOUND; goto close_dir; }
+    int copy = openat(dir, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    DIR *dp = copy < 0 ? NULL : fdopendir(copy);
+    if (dp == NULL) { if (copy >= 0) (void)close(copy); rc = COG_ERROR_IO; goto close_dir; }
+    struct dirent *de;
+    while ((de = readdir(dp)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+        if (!legacy_file(de->d_name) || fstatat(dir, de->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(st.st_mode)) {
+            rc = COG_ERROR_IO; break;
         }
     }
-
-    /* Structural validation (fail closed on malformed data). */
-    if (rec_count != m_count) {
-        rc = COG_ERROR_IO;
-        goto fail;
-    }
-    if (rec_count > 0U) {
-        if (recs[0].parent_id != 0U) {
-            rc = COG_ERROR_IO; /* the root must be the first record */
-            goto fail;
-        }
-        for (i = 1U; i < rec_count; i++) {
-            if (recs[i].parent_id == 0U) {
-                rc = COG_ERROR_IO; /* exactly one root */
-                goto fail;
-            }
-        }
-    }
-    if (m_count > 0U && m_active == 0U) {
-        rc = COG_ERROR_IO;
-        goto fail;
-    }
-    if (m_count == 0U && m_active != 0U) {
-        rc = COG_ERROR_IO;
-        goto fail;
-    }
-    if (m_next == 0U || m_next <= max_id) {
-        rc = COG_ERROR_IO;
-        goto fail;
-    }
-
-    {
-        cog_session_config_t cfg;
-
-        memset(&cfg, 0, sizeof(cfg));
-        cfg.id = id;
-        cfg.max_nodes = 0U;
-        rc = cog_session_new(&s, &cfg);
-        if (rc != COG_OK) {
-            goto fail;
-        }
-        /* Headroom so a tree larger than its stored cap can be rebuilt
-         * without mid-build pruning; the cap is restored at the end. */
-        s->max_nodes = (m_count > m_max) ? m_count : m_max;
-        if (m_parent != NULL) {
-            rc = cog_session_set_parent(s, m_parent);
-            if (rc != COG_OK) {
-                goto fail;
-            }
-        }
-    }
-    for (i = 0U; i < rec_count; i++) {
-        cog_node_record_t *r = &recs[i];
-        struct cog_session_node *parent = NULL;
-        struct cog_session_node *node = NULL;
-        size_t k;
-
-        if (i > 0U) {
-            k = map_len;
-            while (k > 0U) {
-                k--;
-                if (map[k].id == r->parent_id) {
-                    parent = map[k].node;
-                    break;
-                }
-            }
-            if (parent == NULL) {
-                rc = COG_ERROR_IO; /* parent must precede the child */
-                goto fail;
-            }
-        }
-        /* Duplicate node ids are corrupt. */
-        k = map_len;
-        while (k > 0U) {
-            k--;
-            if (map[k].id == r->node_id) {
-                rc = COG_ERROR_IO;
-                goto fail;
-            }
-        }
-        switch (r->role) {
-        case COG_NODE_SYSTEM:
-        case COG_NODE_USER:
-        case COG_NODE_ASSISTANT: {
-            cog_message_t m;
-
-            memset(&m, 0, sizeof(m));
-            m.role = (cog_message_role_t)r->role;
-            m.content = r->content;
-            m.content_len = r->content_len;
-            rc = cog_session_add_message(s, parent, &m, &node);
-            if (rc != COG_OK) {
-                goto fail;
-            }
-            /* Transfer the parsed payload (it is byte-exact, including
-             * embedded NULs) into the freshly created node. */
-            free((void *)node->data.content);
-            node->data.content = r->content;
-            node->data.content_len = r->content_len;
-            r->content = NULL;
-            r->content_len = 0U;
-            break;
-        }
-        case COG_NODE_TOOL_CALL:
-            if (r->tool_name == NULL || r->tool_args == NULL) {
-                rc = COG_ERROR_IO;
-                goto fail;
-            }
-            rc = cog_session_add_tool_call(s, parent, r->tool_name,
-                                           r->tool_args, &node);
-            if (rc != COG_OK) {
-                goto fail;
-            }
-            free((void *)node->data.tool_name);
-            free((void *)node->data.tool_args);
-            node->data.tool_name = r->tool_name;
-            node->data.tool_args = r->tool_args;
-            node->tool_args_len = r->tool_args_len;
-            r->tool_name = NULL;
-            r->tool_args = NULL;
-            break;
-        case COG_NODE_TOOL_RESULT:
-            if (r->tool_result == NULL) {
-                rc = COG_ERROR_IO;
-                goto fail;
-            }
-            /* cog_session_add_tool_result inherits the parent tool call's
-             * tool name, so identity survives a round-trip even when the
-             * persisted record carries no direct tool_name field.  When a
-             * direct field is present (e.g. a result created via
-             * cog_session_add_message with COG_MESSAGE_ROLE_TOOL), it wins
-             * over the inherited value, symmetric with tool calls. */
-            rc = cog_session_add_tool_result(s, parent, r->tool_result,
-                                             &node);
-            if (rc != COG_OK) {
-                goto fail;
-            }
-            if (r->tool_name != NULL) {
-                free((void *)node->data.tool_name);
-                node->data.tool_name = r->tool_name;
-                r->tool_name = NULL;
-            }
-            free((void *)node->data.tool_result);
-            node->data.tool_result = r->tool_result;
-            node->tool_result_len = r->tool_result_len;
-            r->tool_result = NULL;
-            break;
-        default:
-            rc = COG_ERROR_IO; /* role validity is enforced at parse */
-            goto fail;
-        }
-        /* Restore the stored identity and the fields with no public
-         * setter (raw provider payloads, chunk count). */
-        node->data.node_id = r->node_id;
-        free((void *)node->data.raw_request);
-        node->data.raw_request = r->raw_request;
-        r->raw_request = NULL;
-        free((void *)node->data.raw_response);
-        node->data.raw_response = r->raw_response;
-        r->raw_response = NULL;
-        node->data.chunk_count = r->chunk_count;
-        free((void *)node->data.model);
-        node->data.model = r->model;
-        r->model = NULL;
-        free((void *)node->data.provider);
-        node->data.provider = r->provider;
-        r->provider = NULL;
-        rc = cog_session_set_timing(s, node, &r->timing);
-        if (rc != COG_OK) {
-            goto fail;
-        }
-        rc = cog_session_set_cost(s, node, &r->cost);
-        if (rc != COG_OK) {
-            goto fail;
-        }
-        if (map_len == map_cap) {
-            size_t ncap = (map_cap == 0U) ? 16U : map_cap * 2U;
-            struct id_map *tmp2;
-
-            if (map_cap > SIZE_MAX / 2U) {
-                rc = COG_ERROR_NOMEM;
-                goto fail;
-            }
-            tmp2 = realloc(map, ncap * sizeof(*tmp2));
-            if (tmp2 == NULL) {
-                rc = COG_ERROR_NOMEM;
-                goto fail;
-            }
-            map = tmp2;
-            map_cap = ncap;
-        }
-        map[map_len].id = r->node_id;
-        map[map_len].node = node;
-        map_len++;
-    }
-
-    /* Restore the stored active node, next id, and node cap. */
-    if (m_active != 0U) {
-        size_t k = map_len;
-        bool found = false;
-
-        while (k > 0U) {
-            k--;
-            if (map[k].id == m_active) {
-                s->active = map[k].node;
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            rc = COG_ERROR_IO;
-            goto fail;
-        }
-    }
-    s->next_node_id = m_next;
-    s->max_nodes = m_max;
-    recount_prunable(s);
-    *out = s;
-    s = NULL; /* ownership transferred to the caller */
-    rc = COG_OK;
-
-fail:
-    if (s != NULL) {
-        cog_session_free(s);
-    }
-    for (i = 0U; i < rec_count; i++) {
-        node_record_free(&recs[i]);
-    }
-    free(recs);
-    free(map);
-    free(m_parent);
-    free(nodes_buf);
-    free(dir);
-    free(meta_p);
-    free(nodes_p);
-    return rc;
+    rewinddir(dp);
+    if (rc == COG_OK) while ((de = readdir(dp)) != NULL)
+        if (legacy_file(de->d_name) && unlinkat(dir, de->d_name, 0) != 0) { rc = COG_ERROR_IO; break; }
+    (void)closedir(dp);
+    if (rc == COG_OK && (unlinkat(base, id, AT_REMOVEDIR) != 0 || fsync(base) != 0)) rc = COG_ERROR_IO;
+ close_dir:
+    (void)close(dir);
+ done:
+    (void)close(domain); (void)close(base); return rc;
 }
-
-/* ------------------------------------------------------------------ */
-/* File backend: delete / list / exists                               */
-/* ------------------------------------------------------------------ */
-
-static cog_result_t file_delete(void *vstore, const char *id)
+static int compare_ids(const void *a, const void *b)
+{ return strcmp(*(char *const *)a, *(char *const *)b); }
+static cog_result_t file_list(void *ctx, char ***out, size_t *count)
 {
-    struct cog_store *st = (struct cog_store *)vstore;
-    cog_result_t rc;
-    char *dir = NULL;
-    char *meta_p = NULL;
-    struct stat sb;
-
-    rc = store_validate_id(id);
-    if (rc != COG_OK) {
-        return rc;
+    cog_store_t *s = ctx;
+    if (s == NULL || out == NULL || count == NULL) return COG_ERROR_NULL_PTR;
+    *out = NULL; *count = 0U;
+    int base = open_base(s, false);
+    if (base < 0) return errno == ENOENT ? COG_OK : COG_ERROR_IO;
+    DIR *dp = fdopendir(base);
+    if (dp == NULL) { (void)close(base); return COG_ERROR_IO; }
+    /* list is explicitly an output constructor; allocation belongs to caller. */
+    size_t n = 0U; struct dirent *de;
+    while ((de = readdir(dp)) != NULL) if (file_exists(s, de->d_name)) ++n;
+    if (n > SIZE_MAX / sizeof(char *)) { (void)closedir(dp); return COG_ERROR_LIMIT; }
+    char **ids = n == 0U ? NULL : calloc(n, sizeof(*ids));
+    if (n != 0U && ids == NULL) { (void)closedir(dp); return COG_ERROR_NOMEM; }
+    rewinddir(dp); size_t at = 0U; cog_result_t rc = COG_OK;
+    while ((de = readdir(dp)) != NULL) if (file_exists(s, de->d_name)) {
+        if (at == n) { rc = COG_ERROR_AGAIN; break; }
+        ids[at] = strdup(de->d_name);
+        if (ids[at] == NULL) { rc = COG_ERROR_NOMEM; break; }
+        ++at;
     }
-    dir = path_join2(st->base_dir, id);
-    if (dir == NULL) {
-        return COG_ERROR_NOMEM;
-    }
-    if (stat(dir, &sb) != 0) {
-        free(dir);
-        if (errno == ENOENT) {
-            return COG_ERROR_NOT_FOUND;
-        }
-        return COG_ERROR_IO;
-    }
-    if (!S_ISDIR(sb.st_mode)) {
-        free(dir);
-        return COG_ERROR_IO;
-    }
-    meta_p = path_join2(dir, COG_STORE_FILE_META);
-    if (meta_p == NULL) {
-        free(dir);
-        return COG_ERROR_NOMEM;
-    }
-    if (access(meta_p, F_OK) != 0) {
-        free(meta_p);
-        free(dir);
-        return COG_ERROR_NOT_FOUND;
-    }
-    free(meta_p);
-    rc = delete_session_dir(dir);
-    free(dir);
-    return rc;
+    (void)closedir(dp);
+    if (rc != COG_OK) { for (size_t i = 0U; i < at; ++i) free(ids[i]); free(ids); return rc; }
+    if (at > 1U) qsort(ids, at, sizeof(*ids), compare_ids);
+    *out = ids; *count = at; return COG_OK;
 }
-
-static cog_result_t file_list(void *vstore, char ***out_ids,
-                              size_t *out_count)
-{
-    struct cog_store *st = (struct cog_store *)vstore;
-    cog_result_t rc = collect_sessions(st->base_dir, out_ids, out_count);
-
-    if (rc == COG_OK && *out_count > 1U) {
-        qsort(*out_ids, *out_count, sizeof(char *), cmp_str);
-    }
-    return rc;
-}
-
-static bool file_exists(void *vstore, const char *id)
-{
-    struct cog_store *st = (struct cog_store *)vstore;
-    char *dir = NULL;
-    char *meta_p = NULL;
-    struct stat sb;
-    bool ok;
-
-    if (store_validate_id(id) != COG_OK) {
-        return false;
-    }
-    dir = path_join2(st->base_dir, id);
-    if (dir == NULL) {
-        return false;
-    }
-    if (stat(dir, &sb) != 0 || !S_ISDIR(sb.st_mode)) {
-        free(dir);
-        return false;
-    }
-    meta_p = path_join2(dir, COG_STORE_FILE_META);
-    if (meta_p == NULL) {
-        free(dir);
-        return false;
-    }
-    ok = (access(meta_p, F_OK) == 0);
-    free(meta_p);
-    free(dir);
-    return ok;
-}
-
+static cog_result_t null_save(void *ctx, const cog_session_t *s)
+{ (void)ctx; (void)s; return COG_ERROR_UNSUPPORTED; }
+static cog_result_t null_append(void *ctx, const cog_session_t *s, const cog_session_node_t *n)
+{ (void)n; return null_save(ctx, s); }
+static cog_result_t null_load(void *ctx, const char *id, cog_session_t **out)
+{ (void)ctx; (void)id; *out = NULL; return COG_ERROR_NOT_FOUND; }
+static cog_result_t null_load_ex(void *ctx, const char *id, cog_store_load_mode_t mode,
+    cog_session_t **out, cog_store_load_report_t *report)
+{ (void)mode; (void)report; return null_load(ctx, id, out); }
+static cog_result_t null_delete(void *ctx, const char *id)
+{ (void)ctx; (void)id; return COG_ERROR_NOT_FOUND; }
+static cog_result_t null_list(void *ctx, char ***ids, size_t *count)
+{ (void)ctx; *ids = NULL; *count = 0U; return COG_OK; }
+static bool null_exists(void *ctx, const char *id)
+{ (void)ctx; (void)id; return false; }
 const cog_store_vtable_t cog_store_file_backend = {
-    "file",
-    file_save,
-    file_load,
-    file_append,
-    file_delete,
-    file_list,
-    file_exists,
+    .name = "file", .save = file_save, .load = file_load, .append = file_append,
+    .delete_ = file_delete, .list = file_list, .exists = file_exists, .load_ex = file_load_ex,
+    .checkpoint_save = file_checkpoint_save, .checkpoint_load = file_checkpoint_load,
+    .owner_read = file_owner_read, .owner_compare_exchange = file_owner_cas,
+    .owner_acquire = file_acquire, .owner_release = file_release, .owner_acquire_recovery = file_acquire_recovery
 };
-
-/* ------------------------------------------------------------------ */
-/* Public lifecycle                                                    */
-/* ------------------------------------------------------------------ */
-
-cog_result_t cog_store_new(cog_store_t **out,
-                           const cog_store_config_t *config)
+const cog_store_vtable_t cog_store_null_backend = {
+    .name = "null", .save = null_save, .load = null_load, .append = null_append,
+    .delete_ = null_delete, .list = null_list, .exists = null_exists, .load_ex = null_load_ex
+};
+static bool fenced(const cog_store_vtable_t *v)
 {
-    cog_store_t *st;
-    const cog_store_vtable_t *backend;
-    const char *base_dir;
-
-    if (out == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
+    return v->checkpoint_save != NULL && v->checkpoint_load != NULL && v->owner_read != NULL &&
+        v->owner_compare_exchange != NULL && v->owner_acquire != NULL && v->owner_release != NULL &&
+        v->owner_acquire_recovery != NULL;
+}
+/** @brief Explicit store/workspace constructor. */
+cog_result_t cog_store_new(cog_store_t **out, const cog_store_config_t *config)
+{
+    if (out == NULL) return COG_ERROR_NULL_PTR;
     *out = NULL;
-    backend = (config != NULL && config->backend != NULL)
-                  ? config->backend
-                  : &cog_store_file_backend;
-    if (backend->save == NULL || backend->load == NULL ||
-        backend->append == NULL || backend->delete_ == NULL ||
-        backend->list == NULL || backend->exists == NULL) {
-        return COG_ERROR_INVALID_ARG; /* malformed backend vtable */
+    cog_store_config_t c = config == NULL ? (cog_store_config_t){0} : *config;
+    const cog_store_vtable_t *v = c.backend == NULL ? &cog_store_file_backend : c.backend;
+    if (v->save == NULL || v->load == NULL || v->append == NULL || v->delete_ == NULL ||
+        v->list == NULL || v->exists == NULL) return COG_ERROR_INVALID_ARG;
+    bool any_fenced = v->checkpoint_save != NULL || v->checkpoint_load != NULL || v->owner_read != NULL ||
+        v->owner_compare_exchange != NULL || v->owner_acquire != NULL || v->owner_release != NULL ||
+        v->owner_acquire_recovery != NULL;
+    if (v->load_ex == NULL || ((c.require_owner || any_fenced) && !fenced(v)) || c.compress)
+        return COG_ERROR_UNSUPPORTED;
+    size_t capacity = c.max_record_bytes == 0U ? STORE_CAP : c.max_record_bytes;
+    if (capacity <= GEN_SIZE) return COG_ERROR_INVALID_ARG;
+    cog_store_t *s = calloc(1U, sizeof(*s));
+    if (s == NULL) return COG_ERROR_NOMEM;
+    s->backend = v; s->auto_save = c.auto_save; s->require_owner = c.require_owner;
+    s->recover_tail = c.recover_truncated_tail; s->max_sessions = c.max_sessions; s->capacity = capacity;
+    s->context = c.backend_context;
+    if (v == &cog_store_file_backend || v == &cog_store_null_backend) s->context = s;
+    if (v == &cog_store_file_backend) {
+        s->base = strdup(c.base_dir == NULL ? "." : c.base_dir);
+        s->write_buffer = malloc(capacity); s->read_buffer = malloc(capacity); s->scratch = malloc(capacity); s->compare_buffer = malloc(capacity);
+        if (s->base == NULL || s->write_buffer == NULL || s->read_buffer == NULL || s->scratch == NULL || s->compare_buffer == NULL) {
+            cog_store_free(s); return COG_ERROR_NOMEM;
+        }
     }
-    st = calloc(1, sizeof(*st));
-    if (st == NULL) {
-        return COG_ERROR_NOMEM;
-    }
-    st->backend = backend;
-    base_dir = (config != NULL && config->base_dir != NULL &&
-                config->base_dir[0] != '\0')
-                   ? config->base_dir
-                   : ".";
-    st->base_dir = strdup(base_dir);
-    if (st->base_dir == NULL) {
-        free(st);
-        return COG_ERROR_NOMEM;
-    }
-    st->max_sessions = (config != NULL) ? config->max_sessions : 0U;
-    st->auto_save = (config != NULL) && config->auto_save;
-    st->compress = (config != NULL) && config->compress;
-    *out = st;
-    return COG_OK;
+    *out = s; return COG_OK;
 }
-
-void cog_store_free(cog_store_t *store)
+/** @brief Destroy an explicitly quiesced store. */
+void cog_store_free(cog_store_t *s)
 {
-    if (store == NULL) {
-        return;
-    }
-    free(store->base_dir);
-    free(store);
+    if (s == NULL) return;
+    assert(s->guards == NULL);
+    if (s->guards != NULL) return;
+    free(s->compare_buffer); free(s->scratch); free(s->read_buffer); free(s->write_buffer); free(s->base); free(s);
 }
-
-/* ------------------------------------------------------------------ */
-/* Public dispatch (validates arguments, then delegates)               */
-/* ------------------------------------------------------------------ */
-
-cog_result_t cog_store_save(cog_store_t *store,
-                            const cog_session_t *session)
+/** @brief Dispatch a monotonic durable save. */
+cog_result_t cog_store_save(cog_store_t *s, const cog_session_t *session)
 {
-    if (store == NULL || session == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    return store->backend->save(store, session);
+    if (s == NULL || session == NULL) return COG_ERROR_NULL_PTR;
+    cog_result_t rc = valid_id(cog_session_id(session));
+    if (rc != COG_OK) return rc;
+    if (s->require_owner && find_guard(s, cog_session_id(session)) == NULL) return COG_ERROR_INVALID_STATE;
+    return s->backend->save(s->context, session);
 }
-
-cog_result_t cog_store_load(cog_store_t *store,
-                            const char *id,
-                            cog_session_t **out)
+/** @brief Dispatch version-aware constructor load. */
+cog_result_t cog_store_load_ex(cog_store_t *s, const char *id, cog_store_load_mode_t mode,
+    cog_session_t **out, cog_store_load_report_t *report)
 {
-    if (store == NULL || id == NULL || out == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    return store->backend->load(store, id, out);
+    if (out != NULL) *out = NULL;
+    if (s == NULL || id == NULL || out == NULL || report == NULL) return COG_ERROR_NULL_PTR;
+    cog_result_t rc = valid_id(id);
+    if (rc != COG_OK) return rc;
+    if (mode != COG_STORE_LOAD_REPLAY && mode != COG_STORE_LOAD_INSPECT) return COG_ERROR_INVALID_ARG;
+    return s->backend->load_ex(s->context, id, mode, out, report);
 }
-
-cog_result_t cog_store_append(cog_store_t *store,
-                              const cog_session_t *session,
-                              const cog_session_node_t *node)
+/** @brief Replay-mode constructor load. */
+cog_result_t cog_store_load(cog_store_t *s, const char *id, cog_session_t **out)
+{ cog_store_load_report_t r; return cog_store_load_ex(s, id, COG_STORE_LOAD_REPLAY, out, &r); }
+/** @brief Append through the same complete generation transaction. */
+cog_result_t cog_store_append(cog_store_t *s, const cog_session_t *session, const cog_session_node_t *node)
 {
-    if (store == NULL || session == NULL || node == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    return store->backend->append(store, session, node);
+    if (s == NULL || session == NULL || node == NULL) return COG_ERROR_NULL_PTR;
+    cog_result_t rc = valid_id(cog_session_id(session));
+    if (rc != COG_OK) return rc;
+    cog_store_owner_guard_t *g = find_guard(s, cog_session_id(session));
+    if (s->require_owner && (g == NULL || g->recovery)) return COG_ERROR_INVALID_STATE;
+    return s->backend->append(s->context, session, node);
 }
-
-cog_result_t cog_store_delete(cog_store_t *store, const char *id)
+/** @brief Delete only supported unowned legacy data. */
+cog_result_t cog_store_delete(cog_store_t *s, const char *id)
 {
-    if (store == NULL || id == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    return store->backend->delete_(store, id);
+    if (s == NULL) return COG_ERROR_NULL_PTR;
+    cog_result_t rc = valid_id(id);
+    return rc == COG_OK ? s->backend->delete_(s->context, id) : rc;
 }
-
-cog_result_t cog_store_list(cog_store_t *store,
-                            char ***out_ids,
-                            size_t *out_count)
+/** @brief Construct a caller-owned ID listing. */
+cog_result_t cog_store_list(cog_store_t *s, char ***ids, size_t *count)
 {
-    if (store == NULL || out_ids == NULL || out_count == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    return store->backend->list(store, out_ids, out_count);
+    if (s == NULL || ids == NULL || count == NULL) return COG_ERROR_NULL_PTR;
+    *ids = NULL; *count = 0U; return s->backend->list(s->context, ids, count);
 }
-
-bool cog_store_exists(cog_store_t *store, const char *id)
+/** @brief Query presence without granting replay or execution. */
+bool cog_store_exists(cog_store_t *s, const char *id)
+{ return s != NULL && valid_id(id) == COG_OK && s->backend->exists(s->context, id); }
+/** @brief Query configured automatic-save policy. */
+bool cog_store_auto_save(const cog_store_t *s) { return s != NULL && s->auto_save; }
+/** @brief Query fenced profile. */
+bool cog_store_requires_owner(const cog_store_t *s) { return s != NULL && s->require_owner; }
+/** @brief Save a quiescent exact checkpoint under a matching normal guard. */
+cog_result_t cog_store_checkpoint_save(cog_store_t *s, const cog_session_t *session,
+    const cog_store_owner_guard_t *g, cog_store_checkpoint_t *cp)
 {
-    if (store == NULL || id == NULL) {
-        return false;
-    }
-    return store->backend->exists(store, id);
+    if (s == NULL || session == NULL || g == NULL || cp == NULL) return COG_ERROR_NULL_PTR;
+    if (!s->require_owner || g->store != s || g->recovery || g->borrowers != 0U ||
+        find_guard(s, cog_session_id(session)) != g) return COG_ERROR_INVALID_STATE;
+    return s->backend->checkpoint_save(s->context, session,
+        s->backend == &cog_store_file_backend ? (const void *)g : g->backend_guard, cp);
 }
-
-bool cog_store_auto_save(const cog_store_t *store)
+/** @brief Load one exact immutable token. */
+cog_result_t cog_store_checkpoint_load(cog_store_t *s, const char *id, cog_store_checkpoint_t cp,
+    cog_store_load_mode_t mode, cog_session_t **out, cog_store_load_report_t *report)
 {
-    if (store == NULL) {
-        return false;
+    if (out != NULL) *out = NULL;
+    if (s == NULL || out == NULL || report == NULL) return COG_ERROR_NULL_PTR;
+    cog_result_t rc = valid_id(id); if (rc != COG_OK) return rc;
+    if (mode != COG_STORE_LOAD_REPLAY && mode != COG_STORE_LOAD_INSPECT) return COG_ERROR_INVALID_ARG;
+    if (!fenced(s->backend)) return COG_ERROR_UNSUPPORTED;
+    return s->backend->checkpoint_load(s->context, id, cp, mode, out, report);
+}
+/** @brief Read diagnostics from validated committed state. */
+cog_result_t cog_store_owner_read(cog_store_t *s, const char *id, cog_store_owner_t *owner, cog_store_checkpoint_t *cp)
+{
+    if (s == NULL || owner == NULL || cp == NULL) return COG_ERROR_NULL_PTR;
+    cog_result_t rc = valid_id(id); if (rc != COG_OK) return rc;
+    if (!fenced(s->backend)) return COG_ERROR_UNSUPPORTED;
+    return s->backend->owner_read(s->context, id, owner, cp);
+}
+/** @brief Durably compare/exchange an exact owner and latest checkpoint. */
+cog_result_t cog_store_owner_compare_exchange(cog_store_t *s, const char *id, cog_store_owner_t expected,
+    cog_store_owner_t next, cog_store_checkpoint_t cp)
+{
+    if (s == NULL) return COG_ERROR_NULL_PTR;
+    cog_result_t rc = valid_id(id); if (rc != COG_OK) return rc;
+    if (!fenced(s->backend)) return COG_ERROR_UNSUPPORTED;
+    if ((expected.epoch == 0U) != (expected.instance_id == 0U) || expected.epoch == UINT64_MAX ||
+        next.epoch != expected.epoch + 1U || next.instance_id == 0U) return COG_ERROR_INVALID_ARG;
+    return s->backend->owner_compare_exchange(s->context, id, expected, next, cp);
+}
+static cog_result_t acquire(cog_store_t *s, const char *id, cog_store_owner_t expected,
+    bool recovery, cog_store_owner_guard_t **out)
+{
+    if (out != NULL) *out = NULL;
+    if (s == NULL || out == NULL) return COG_ERROR_NULL_PTR;
+    cog_result_t rc = valid_id(id); if (rc != COG_OK) return rc;
+    if (!s->require_owner || !fenced(s->backend)) return COG_ERROR_UNSUPPORTED;
+    if (find_guard(s, id) != NULL) return COG_ERROR_AGAIN;
+    void *handle = NULL;
+    rc = recovery ? s->backend->owner_acquire_recovery(s->context, id, expected, &handle) :
+        s->backend->owner_acquire(s->context, id, expected, &handle);
+    if (rc != COG_OK) return rc;
+    cog_store_owner_guard_t *g;
+    if (s->backend == &cog_store_file_backend) g = handle;
+    else {
+        g = calloc(1U, sizeof(*g));
+        if (g == NULL) { (void)s->backend->owner_release(s->context, handle); return COG_ERROR_NOMEM; }
+        g->store = s; g->backend_guard = handle; g->owner = expected; g->recovery = recovery;
+        (void)memcpy(g->id, id, strlen(id) + 1U);
     }
-    return store->auto_save;
+    if (s->backend != &cog_store_file_backend) { g->next = s->guards; s->guards = g; }
+    *out = g; return COG_OK;
+}
+/** @brief Construct a normal exclusive execution guard. */
+cog_result_t cog_store_owner_acquire(cog_store_t *s, const char *id, cog_store_owner_t expected,
+    cog_store_owner_guard_t **out) { return acquire(s, id, expected, false, out); }
+/** @brief Construct a restricted recovery guard. */
+cog_result_t cog_store_owner_acquire_recovery(cog_store_t *s, const char *id, cog_store_owner_t expected,
+    cog_store_owner_guard_t **out) { return acquire(s, id, expected, true, out); }
+/** @brief Borrow one normal execution constructor admission. */
+cog_result_t cog_store_owner_guard_borrow(cog_store_owner_guard_t *g, const char *id)
+{
+    if (g == NULL || id == NULL) return COG_ERROR_NULL_PTR;
+    if (g->recovery || g->blocked || strcmp(g->id, id) != 0) return COG_ERROR_INVALID_STATE;
+    if (g->borrowers == SIZE_MAX) return COG_ERROR_LIMIT;
+    ++g->borrowers; return COG_OK;
+}
+/** @brief Return one completed execution borrow. */
+cog_result_t cog_store_owner_guard_return(cog_store_owner_guard_t *g)
+{
+    if (g == NULL) return COG_ERROR_NULL_PTR;
+    if (g->borrowers == 0U) return COG_ERROR_INVALID_STATE;
+    --g->borrowers; return COG_OK;
+}
+/** @brief Destroy a drained guard and release its independently opened lock. */
+cog_result_t cog_store_owner_release(cog_store_owner_guard_t *g)
+{
+    if (g == NULL) return COG_OK;
+    if (g->borrowers != 0U) return COG_ERROR_INVALID_STATE;
+    cog_store_t *s = g->store;
+    if (s->backend == &cog_store_file_backend) return file_release(s, g);
+    cog_result_t rc = s->backend->owner_release(s->context, g->backend_guard);
+    if (rc != COG_OK) return rc;
+    cog_store_owner_guard_t **p = &s->guards;
+    while (*p != NULL && *p != g) p = &(*p)->next;
+    assert(*p == g); *p = g->next; free(g); return rc;
 }
