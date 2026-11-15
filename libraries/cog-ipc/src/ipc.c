@@ -32,7 +32,11 @@
  * may be used by distinct threads without locking.
  */
 
-#define _POSIX_C_SOURCE 200809L
+/* MSG_NOSIGNAL is a GNU extension; _GNU_SOURCE is the minimal feature-test
+ * macro that exposes it.  It lets send(2) suppress SIGPIPE so a write to a
+ * peer whose remote end closed returns EPIPE instead of killing the process
+ * under the default signal disposition. */
+#define _GNU_SOURCE
 
 #include <cog/ipc.h>
 
@@ -181,7 +185,9 @@ ipc_read_exact(int fd, void *buf, size_t n)
  * @brief Write exactly @p n bytes to a file descriptor.
  *
  * Loops until all bytes are written or an unrecoverable error occurs.
- * Handles partial writes and EINTR.
+ * Handles partial writes and EINTR.  Uses send(2) with MSG_NOSIGNAL so a
+ * write to a peer whose remote end closed returns EPIPE (an error) rather
+ * than raising SIGPIPE and terminating the process.
  *
  * @param[in] fd  File descriptor to write to.
  * @param[in] buf Buffer to write from.
@@ -195,7 +201,7 @@ ipc_write_exact(int fd, const void *buf, size_t n)
     const uint8_t *cursor = buf;
 
     while (total < n) {
-        ssize_t rc = write(fd, cursor + total, n - total);
+        ssize_t rc = send(fd, cursor + total, n - total, MSG_NOSIGNAL);
 
         if (rc < 0) {
             if (errno == EINTR) {

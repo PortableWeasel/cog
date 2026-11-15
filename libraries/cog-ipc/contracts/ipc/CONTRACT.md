@@ -296,6 +296,17 @@ cog_result_t cog_ipc_unregister_session(cog_ipc_endpoint_t *endpoint,
 
 ## Behavioural notes
 
+- **Blocking mode.** Endpoints are blocking. `send` and `recv` block until
+  the operation completes or fails; the `COG_ERROR_AGAIN` returns they
+  document are unreachable through the current API because no endpoint can
+  be placed in non-blocking mode. A `recv` that has read a partial frame
+  blocks until the rest of that frame arrives, so a peer that stalls
+  mid-frame can block the caller indefinitely. `poll` remains non-blocking
+  and its timeout behaviour is exactly as documented.
+- **SIGPIPE safety.** Writes use `send(2)` with `MSG_NOSIGNAL`, so sending
+  to a peer whose remote end closed returns an error (EPIPE) instead of
+  raising SIGPIPE and terminating the process under the default signal
+  disposition. The library installs no signal handler.
 - **Direction of data flow.** A connected endpoint (`connect`) and the
   accepted endpoint (`accept`) are the two ends of one full-duplex socket.
   Data written to one end is read from the other. Broadcast and

@@ -7,9 +7,10 @@
 # C11 compile feature, the cog::ipc alias, and the strict-warning settings
 # that downstream consumers rely on.
 #
-# cog-ipc includes cog-core headers (e.g. <cog/result.h>).  The dependency
-# is header-only, so it is linked PRIVATE to avoid a link cycle with
-# cog-core (which links cog::ipc PUBLIC for its own include path).
+# cog-ipc headers include cog-core headers (e.g. <cog/result.h>), so
+# consumers of cog::ipc must inherit cog-core's include path.  This is a
+# header/include dependency, not a symbol dependency: it is linked PUBLIC
+# so that the result.h include path propagates to cog::ipc consumers.
 add_library(cog-ipc STATIC
     src/ipc.c
 )
@@ -23,7 +24,7 @@ target_include_directories(cog-ipc
 target_compile_features(cog-ipc PUBLIC c_std_11)
 
 # cog-ipc headers include cog-core headers (e.g. <cog/result.h>).
-target_link_libraries(cog-ipc PRIVATE cog::core)
+target_link_libraries(cog-ipc PUBLIC cog::core)
 
 # Apply the project-wide strict-warning policy (and ASan/UBSan when enabled)
 # to the production source.
