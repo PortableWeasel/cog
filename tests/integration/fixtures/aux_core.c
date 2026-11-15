@@ -23,6 +23,9 @@
  *   - crash:  send one heartbeat then exit(1) without acking (crash).
  *   - noack:  send heartbeats; on shutdown exit without acking (so the
  *             orchestrator must force-kill / time out).
+ *   - ackhang: send heartbeats; on shutdown ack but then sleep forever
+ *             without exiting (probes whether stop/shutdown hang waiting
+ *             for a process that acknowledged but never exits).
  *
  * This fixture is owned exclusively by the orchestrator integration test;
  * it never touches processes outside the test.
@@ -125,12 +128,21 @@ main(int argc, char **argv)
                         (void)send_str(ep, "ack\n");
                     }
                     (void)cog_ipc_message_free(&msg);
+                    if (strcmp(mode, "ackhang") == 0) {
+                        /* Acknowledge shutdown but never exit: the
+                         * orchestrator must not block forever waiting for
+                         * this process to terminate. */
+                        for (;;) {
+                            (void)sleep(3600);
+                        }
+                    }
                     break;
                 }
                 (void)cog_ipc_message_free(&msg);
             }
         }
-        if (strcmp(mode, "hb") == 0 || strcmp(mode, "noack") == 0) {
+        if (strcmp(mode, "hb") == 0 || strcmp(mode, "noack") == 0 ||
+            strcmp(mode, "ackhang") == 0) {
             (void)send_str(ep, "heartbeat 0\n");
         }
     }

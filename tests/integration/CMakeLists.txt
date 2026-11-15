@@ -95,6 +95,18 @@ target_include_directories(test_orchestrator_ipc PRIVATE
 target_compile_definitions(test_orchestrator_ipc PRIVATE
     COG_AUX_CORE_BIN="${CMAKE_CURRENT_BINARY_DIR}/aux_core")
 
+# test_orchestrator_stress drives real aux_core processes through repeated
+# spawn/kill, auto-replace slot reuse, self-connected kill safety, and the
+# ack-but-never-exit stop bound.  It shares the fixture and the private
+# drive hooks with test_orchestrator_ipc.
+add_executable(test_orchestrator_stress test_orchestrator_stress.c)
+target_link_libraries(test_orchestrator_stress PRIVATE cog::orchestrator Threads::Threads)
+target_enable_warnings(test_orchestrator_stress)
+target_include_directories(test_orchestrator_stress PRIVATE
+    ${PROJECT_SOURCE_DIR}/libraries/cog-orchestrator/src)
+target_compile_definitions(test_orchestrator_stress PRIVATE
+    COG_AUX_CORE_BIN="${CMAKE_CURRENT_BINARY_DIR}/aux_core")
+
 # -----------------------------------------------------------------------
 # CTest registration
 # -----------------------------------------------------------------------
@@ -128,4 +140,8 @@ add_test(NAME integration-core-toolkit
 
 add_test(NAME integration-orchestrator-ipc
     COMMAND test_orchestrator_ipc
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME integration-orchestrator-stress
+    COMMAND test_orchestrator_stress
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
