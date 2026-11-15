@@ -733,3 +733,14 @@ turn/error/clock/output mutation or allocation. An explicit preflight-only stage
 permits the final pending tool group; normal send remains COMPLETE-only.
 [Three-pass contract](REAL_CLIENT_PREFLIGHT_CONTRACTS.md) gates implementation
 and keeps CLI dispatch independent of OpenRouter protocol types.
+
+
+### Recognized opaque field kinds (profile clarification)
+
+Provider preflight validates recognized continuation fields before restored
+PROPOSED effects, not only the outer namespace/type. The pinned json-v1 profile
+now explicitly states the existing recognized member kinds and keeps unknown
+members lossless. Official nullable signatures remain outside this profile and
+return UNSUPPORTED; accepting them requires a separate merge/closure design.
+[Targeted profile passes](REAL_CLIENT_OPAQUE_FIELD_PROFILE.md) gate runtime
+correction and independent final review without adding an API or wire shape.
