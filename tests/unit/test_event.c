@@ -995,6 +995,389 @@ static int test_ipc_null_payload_no_snapshot(void)
     return 0;
 }
 
+static int test_ipc_snapshot_wrap_reuse(void)
+{
+    /* A slot that previously held an IPC snapshot must not leak stale
+     * snapshot data when it is reused by a later push.  capacity 2:
+     * push IPC (slot 0), push non-IPC (slot 1), pop both so head wraps
+     * back to 0, then push a non-IPC event that reuses slot 0. */
+    static const uint8_t msgbuf[] = {0xAAU, 0xBBU};
+    cog_event_queue_t *q = NULL;
+    cog_event_ipc_t ipc;
+    cog_event_t ev;
+    cog_event_t out;
+
+    if (cog_event_queue_new(&q, 2U) != COG_OK) {
+        return 1;
+    }
+
+    ipc.peer = 0x1111222233334444ULL;
+    ipc.msg_type = 0x1111U;
+    ipc.msg_payload = (const void *)msgbuf;
+    ipc.msg_payload_len = sizeof(msgbuf);
+
+    ev = make_event(1U, COG_EVENT_IPC_MESSAGE);
+    ev.payload = (const void *)&ipc;
+    ev.payload_len = sizeof(ipc);
+    if (cog_event_queue_push(q, &ev) != COG_OK) { /* slot 0 */
+        cog_event_queue_free(q);
+        return 1;
+    }
+
+    ev = make_event(2U, COG_EVENT_USER_INPUT);
+    if (cog_event_queue_push(q, &ev) != COG_OK) { /* slot 1, full */
+        cog_event_queue_free(q);
+        return 1;
+    }
+
+    /* Pop the IPC event; its snapshot must be readable immediately
+     * (valid until the slot is reused). */
+    if (cog_event_queue_pop(q, &out) != COG_OK) {
+        cog_event_queue_free(q);
+        return 1;
+    }
+    {
+        const cog_event_ipc_t *o = (const cog_event_ipc_t *)out.payload;
+        if (o == NULL || o->peer != 0x1111222233334444ULL ||
+            o->msg_type != 0x1111U ||
+            o->msg_payload != (const void *)msgbuf ||
+            o->msg_payload_len != sizeof(msgbuf)) {
+            cog_event_queue_free(q);
+            return 1;
+        }
+    }
+
+    if (cog_event_queue_pop(q, &out) != COG_OK || out.id != 2U) {
+        cog_event_queue_free(q);
+        return 1;
+    }
+
+    /* head has wrapped to 0; a fresh non-IPC push reuses slot 0.  The
+     * popped event must be a clean value copy with no stale IPC payload
+     * pointer from the earlier snapshot. */
+    ev = make_event(3U, COG_EVENT_USER_INPUT);
+    ev.payload = NULL;
+    ev.payload_len = 0U;
+    if (cog_event_queue_push(q, &ev) != COG_OK) {
+        cog_event_queue_free(q);
+        return 1;
+    }
+    if (cog_event_queue_pop(q, &out) != COG_OK) {
+        cog_event_queue_free(q);
+        return 1;
+    }
+    if (out.id != 3U || out.kind != COG_EVENT_USER_INPUT ||
+        out.payload != NULL || out.payload_len != 0U) {
+        cog_event_queue_free(q);
+        return 1;
+    }
+
+    cog_event_queue_free(q);
+    return 0;
+}
+
+static int test_ipc_interleaved_ring(void)
+{
+    /* Mix IPC and non-IPC events in a multi-slot ring; FIFO order must
+     * hold and each IPC snapshot must be correct and queue-owned. */
+    static const uint8_t msgbuf[] = {0x01U, 0x02U, 0x03U};
+    cog_event_queue_t *q = NULL;
+    cog_event_ipc_t ipc;
+    cog_event_t ev;
+    cog_event_t out;
+    size_t i;
+
+    if (cog_event_queue_new(&q, 3U) != COG_OK) {
+        return 1;
+    }
+
+    /* slot 0: IPC_CONNECTED */
+    ipc.peer = 0xAAAAULL;
+    ipc.msg_type = 0x0001U;
+    ipc.msg_payload = (const void *)msgbuf;
+    ipc.msg_payload_len = sizeof(msgbuf);
+    ev = make_event(1U, COG_EVENT_IPC_CONNECTED);
+    ev.payload = (const void *)&ipc;
+    ev.payload_len = sizeof(ipc);
+    if (cog_event_queue_push(q, &ev) != COG_OK) {
+        cog_event_queue_free(q);
+        return 1;
+    }
+
+    /* slot 1: non-IPC */
+    ev = make_event(2U, COG_EVENT_USER_INPUT);
+    if (cog_event_queue_push(q, &ev) != COG_OK) {
+        cog_event_queue_free(q);
+        return 1;
+    }
+
+    /* slot 2: IPC_DISCONNECTED */
+    ipc.peer = 0xBBBBULL;
+    ipc.msg_type = 0x0002U;
+    ipc.msg_payload = (const void *)msgbuf;
+    ipc.msg_payload_len = sizeof(msgbuf);
+    ev = make_event(3U, COG_EVENT_IPC_DISCONNECTED);
+    ev.payload = (const void *)&ipc;
+    ev.payload_len = sizeof(ipc);
+    if (cog_event_queue_push(q, &ev) != COG_OK) {
+        cog_event_queue_free(q);
+        return 1;
+    }
+
+    /* Pop 1: IPC_CONNECTED snapshot. */
+    if (cog_event_queue_pop(q, &out) != COG_OK || out.id != 1U) {
+        cog_event_queue_free(q);
+        return 1;
+    }
+    {
+        const cog_event_ipc_t *o = (const cog_event_ipc_t *)out.payload;
+        if (o == NULL || o->peer != 0xAAAAULL || o->msg_type != 0x0001U ||
+            o->msg_payload != (const void *)msgbuf ||
+            o->msg_payload_len != sizeof(msgbuf)) {
+            cog_event_queue_free(q);
+            return 1;
+        }
+    }
+
+    /* Pop 2: non-IPC, payload NULL. */
+    if (cog_event_queue_pop(q, &out) != COG_OK || out.id != 2U ||
+        out.kind != COG_EVENT_USER_INPUT || out.payload != NULL) {
+        cog_event_queue_free(q);
+        return 1;
+    }
+
+    /* Pop 3: IPC_DISCONNECTED snapshot. */
+    if (cog_event_queue_pop(q, &out) != COG_OK || out.id != 3U) {
+        cog_event_queue_free(q);
+        return 1;
+    }
+    {
+        const cog_event_ipc_t *o = (const cog_event_ipc_t *)out.payload;
+        if (o == NULL || o->peer != 0xBBBBULL || o->msg_type != 0x0002U ||
+            o->msg_payload != (const void *)msgbuf ||
+            o->msg_payload_len != sizeof(msgbuf)) {
+            cog_event_queue_free(q);
+            return 1;
+        }
+    }
+
+    /* Reuse the ring with a fresh IPC event after full drain. */
+    ipc.peer = 0xCCCCULL;
+    ipc.msg_type = 0x0003U;
+    ipc.msg_payload = (const void *)msgbuf;
+    ipc.msg_payload_len = sizeof(msgbuf);
+    ev = make_event(4U, COG_EVENT_IPC_MESSAGE);
+    ev.payload = (const void *)&ipc;
+    ev.payload_len = sizeof(ipc);
+    if (cog_event_queue_push(q, &ev) != COG_OK) {
+        cog_event_queue_free(q);
+        return 1;
+    }
+    if (cog_event_queue_pop(q, &out) != COG_OK || out.id != 4U) {
+        cog_event_queue_free(q);
+        return 1;
+    }
+    {
+        const cog_event_ipc_t *o = (const cog_event_ipc_t *)out.payload;
+        if (o == NULL || o->peer != 0xCCCCULL || o->msg_type != 0x0003U ||
+            o->msg_payload != (const void *)msgbuf ||
+            o->msg_payload_len != sizeof(msgbuf)) {
+            cog_event_queue_free(q);
+            return 1;
+        }
+    }
+
+    /* Sanity: the producer struct was never aliased by the queue. */
+    for (i = 0U; i < sizeof(msgbuf); ++i) {
+        if (msgbuf[i] != (uint8_t)(i + 1U)) {
+            cog_event_queue_free(q);
+            return 1;
+        }
+    }
+
+    cog_event_queue_free(q);
+    return 0;
+}
+
+static int test_ipc_payload_len_gt_sizeof(void)
+{
+    /* A producer may supply payload_len larger than sizeof(ipc); the
+     * queue copies the leading sizeof bytes into the snapshot and
+     * preserves payload_len verbatim on the popped event. */
+    static const uint8_t msgbuf[] = {0x10U, 0x20U};
+    cog_event_queue_t *q = NULL;
+    cog_event_ipc_t ipc;
+    cog_event_t ev;
+    cog_event_t out;
+
+    if (cog_event_queue_new(&q, 1U) != COG_OK) {
+        return 1;
+    }
+
+    ipc.peer = 0x1234567890ABCDEFULL;
+    ipc.msg_type = 0x00FFU;
+    ipc.msg_payload = (const void *)msgbuf;
+    ipc.msg_payload_len = sizeof(msgbuf);
+
+    ev = make_event(9U, COG_EVENT_IPC_MESSAGE);
+    ev.payload = (const void *)&ipc;
+    ev.payload_len = sizeof(ipc) + 16U; /* larger than the struct */
+    if (cog_event_queue_push(q, &ev) != COG_OK) {
+        cog_event_queue_free(q);
+        return 1;
+    }
+    if (cog_event_queue_pop(q, &out) != COG_OK) {
+        cog_event_queue_free(q);
+        return 1;
+    }
+    if (out.id != 9U || out.kind != COG_EVENT_IPC_MESSAGE ||
+        out.payload_len != sizeof(ipc) + 16U) {
+        cog_event_queue_free(q);
+        return 1;
+    }
+    {
+        const cog_event_ipc_t *o = (const cog_event_ipc_t *)out.payload;
+        if (o == NULL || o->peer != 0x1234567890ABCDEFULL ||
+            o->msg_type != 0x00FFU ||
+            o->msg_payload != (const void *)msgbuf ||
+            o->msg_payload_len != sizeof(msgbuf)) {
+            cog_event_queue_free(q);
+            return 1;
+        }
+    }
+
+    cog_event_queue_free(q);
+    return 0;
+}
+
+static int test_ipc_multi_wrap_cycles(void)
+{
+    /* Repeated IPC push/pop cycles across ring wrap: each popped IPC
+     * snapshot must be correct and queue-owned, and the producer struct
+     * must never be aliased. */
+    static const uint8_t msgbuf[] = {0x01U, 0x02U, 0x03U, 0x04U};
+    cog_event_queue_t *q = NULL;
+    cog_event_ipc_t ipc;
+    cog_event_t ev;
+    cog_event_t out;
+    unsigned cycle;
+
+    if (cog_event_queue_new(&q, 3U) != COG_OK) {
+        return 1;
+    }
+
+    for (cycle = 0U; cycle < 100U; ++cycle) {
+        unsigned j;
+        for (j = 0U; j < 3U; ++j) {
+            ipc.peer = (uint64_t)(cycle * 3U + j + 1U);
+            ipc.msg_type = (uint16_t)j;
+            ipc.msg_payload = (const void *)msgbuf;
+            ipc.msg_payload_len = sizeof(msgbuf);
+            ev = make_event((cog_event_id_t)(uint16_t)(cycle * 3U + j),
+                            COG_EVENT_IPC_MESSAGE);
+            ev.payload = (const void *)&ipc;
+            ev.payload_len = sizeof(ipc);
+            if (cog_event_queue_push(q, &ev) != COG_OK) {
+                cog_event_queue_free(q);
+                return 1;
+            }
+        }
+        for (j = 0U; j < 3U; ++j) {
+            const cog_event_ipc_t *o;
+            if (cog_event_queue_pop(q, &out) != COG_OK) {
+                cog_event_queue_free(q);
+                return 1;
+            }
+            if (out.id != (cog_event_id_t)(uint16_t)(cycle * 3U + j) ||
+                out.kind != COG_EVENT_IPC_MESSAGE ||
+                out.payload_len != sizeof(ipc)) {
+                cog_event_queue_free(q);
+                return 1;
+            }
+            o = (const cog_event_ipc_t *)out.payload;
+            if (o == NULL || o->peer != (uint64_t)(cycle * 3U + j + 1U) ||
+                o->msg_type != (uint16_t)j ||
+                o->msg_payload != (const void *)msgbuf ||
+                o->msg_payload_len != sizeof(msgbuf)) {
+                cog_event_queue_free(q);
+                return 1;
+            }
+        }
+    }
+
+    cog_event_queue_free(q);
+    return 0;
+}
+
+static int test_large_capacity_ring(void)
+{
+    /* A larger ring (capacity 100) exercising many ring offsets with a
+     * mix of kinds and IPC snapshots, verifying FIFO order throughout. */
+    static const uint8_t msgbuf[] = {0xDEU, 0xADU, 0xBEU, 0xEFU};
+    cog_event_queue_t *q = NULL;
+    cog_event_ipc_t ipc;
+    cog_event_t ev;
+    cog_event_t out;
+    size_t i;
+
+    if (cog_event_queue_new(&q, 100U) != COG_OK) {
+        return 1;
+    }
+
+    for (i = 0U; i < 100U; ++i) {
+        if (i % 4U == 0U) {
+            ipc.peer = (uint64_t)(i + 1U);
+            ipc.msg_type = (uint16_t)i;
+            ipc.msg_payload = (const void *)msgbuf;
+            ipc.msg_payload_len = sizeof(msgbuf);
+            ev = make_event((cog_event_id_t)(uint16_t)i,
+                            COG_EVENT_IPC_MESSAGE);
+            ev.payload = (const void *)&ipc;
+            ev.payload_len = sizeof(ipc);
+        } else {
+            ev = make_event((cog_event_id_t)(uint16_t)i, all_kinds[i % 26U]);
+            ev.payload = NULL;
+            ev.payload_len = 0U;
+        }
+        if (cog_event_queue_push(q, &ev) != COG_OK) {
+            cog_event_queue_free(q);
+            return 1;
+        }
+    }
+    if (cog_event_queue_count(q) != 100U || !cog_event_queue_is_full(q)) {
+        cog_event_queue_free(q);
+        return 1;
+    }
+
+    for (i = 0U; i < 100U; ++i) {
+        if (cog_event_queue_pop(q, &out) != COG_OK ||
+            out.id != (cog_event_id_t)(uint16_t)i) {
+            cog_event_queue_free(q);
+            return 1;
+        }
+        if (i % 4U == 0U) {
+            const cog_event_ipc_t *o = (const cog_event_ipc_t *)out.payload;
+            if (o == NULL || o->peer != (uint64_t)(i + 1U) ||
+                o->msg_type != (uint16_t)i ||
+                o->msg_payload != (const void *)msgbuf ||
+                o->msg_payload_len != sizeof(msgbuf)) {
+                cog_event_queue_free(q);
+                return 1;
+            }
+        } else if (out.payload != NULL || out.payload_len != 0U) {
+            cog_event_queue_free(q);
+            return 1;
+        }
+    }
+    if (cog_event_queue_count(q) != 0U || !cog_event_queue_is_empty(q)) {
+        cog_event_queue_free(q);
+        return 1;
+    }
+
+    cog_event_queue_free(q);
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Const-correct inspectors on a live queue.                           */
 /* ------------------------------------------------------------------ */
@@ -1072,6 +1455,11 @@ int main(void)
 
     CHECK("IPC snapshot all kinds", test_ipc_snapshot_all_kinds());
     CHECK("IPC NULL payload", test_ipc_null_payload_no_snapshot());
+    CHECK("IPC snapshot wrap/reuse", test_ipc_snapshot_wrap_reuse());
+    CHECK("IPC interleaved ring", test_ipc_interleaved_ring());
+    CHECK("IPC payload_len > sizeof", test_ipc_payload_len_gt_sizeof());
+    CHECK("IPC multi-wrap cycles", test_ipc_multi_wrap_cycles());
+    CHECK("large capacity ring", test_large_capacity_ring());
 
     CHECK("const accessors", test_const_accessors());
 
