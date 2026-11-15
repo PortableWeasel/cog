@@ -394,8 +394,67 @@ static int parsing(void)
     return 0;
 #undef S
 }
+/* Independent critic regression: protocol fields must be valid before a
+ * generation can be published. Filesystem strings remain arbitrary path bytes. */
+static int protocol_inputs(void)
+{
+    static const char *const bad_models[] = {
+        "synthetic/\xc0\xaf",        /* overlong UTF-8 */
+        "synthetic/\x80",            /* isolated continuation */
+        "synthetic/\xe2\x82",        /* incomplete scalar */
+        "synthetic/\xed\xa0\x80",    /* surrogate */
+        "synthetic/\xf4\x90\x80\x80" /* above U+10FFFF */
+    };
+    static const char *const bad_urls[] = {
+        "https://:443/v1", "https://[]/v1", "https://synthetic.invalid:bad/v1",
+        "https://synthetic.invalid:65536/v1", "https://[::1/v1"
+    };
+    static const char *const good_urls[] = {
+        "https://synthetic.invalid/v1", "https://synthetic.invalid:443/v1",
+        "https://[::1]:443/v1"
+    };
+    cog_cli_options_t o;
+    cog_cli_configuration_t *c = NULL;
+    size_t i;
+    CHECK(clean() == 0);
+    base(&o);
+    o.model_id = "synthetic/model";
+    o.store_mode = COG_CLI_STORE_DISABLED;
+    o.explicit_options |= COG_CLI_OPT_MODEL | COG_CLI_OPT_STORE_MODE |
+                          COG_CLI_OPT_BASE_URL;
+    for (i = 0U; i < sizeof(good_urls) / sizeof(good_urls[0]); ++i) {
+        o.base_url = good_urls[i];
+        CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_OK);
+        cog_cli_configuration_free(c);
+    }
+    for (i = 0U; i < sizeof(bad_urls) / sizeof(bad_urls[0]); ++i) {
+        cog_result_t rc;
+        bool empty;
+        o.base_url = bad_urls[i];
+        rc = cog_cli_configuration_new(&c, &o, 1U);
+        empty = c == NULL;
+        cog_cli_configuration_free(c);
+        CHECK(rc == COG_ERROR_INVALID_ARG && empty);
+    }
+    o.base_url = "https://synthetic.invalid/v1";
+    for (i = 0U; i < sizeof(bad_models) / sizeof(bad_models[0]); ++i) {
+        cog_result_t rc;
+        bool empty;
+        o.model_id = bad_models[i];
+        rc = cog_cli_configuration_new(&c, &o, 1U);
+        empty = c == NULL;
+        cog_cli_configuration_free(c);
+        CHECK(rc == COG_ERROR_INVALID_ARG && empty);
+    }
+    o.model_id = "synthetic/\xe2\x98\x83"; /* valid multibyte scalar */
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_OK);
+    cog_cli_configuration_free(c);
+    return 0;
+}
+
 int main(void)
 {
+    CHECK(protocol_inputs() == 0);
     CHECK(malformed_and_capacity() == 0);
     CHECK(error_redaction() == 0);
     CHECK(parsing() == 0);
