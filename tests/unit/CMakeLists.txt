@@ -94,9 +94,19 @@ target_include_directories(test_session_allocations PRIVATE
     ${PROJECT_SOURCE_DIR}/libraries/cog-core/src)
 target_link_options(test_session_allocations PRIVATE
     -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=strdup)
+# Allocator linker wrappers invalidate the corresponding builtin effects.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_session_allocations PRIVATE
+        -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-strdup)
+endif()
 target_link_options(test_store_fencing PRIVATE
     -Wl,--wrap=fsync,--wrap=renameat,--wrap=linkat,--wrap=write,--wrap=unlinkat
     -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=strdup)
+# Allocator linker wrappers invalidate the corresponding builtin effects.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_store_fencing PRIVATE
+        -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-strdup)
+endif()
 
 # -----------------------------------------------------------------------
 # CTest registration
@@ -210,6 +220,11 @@ add_executable(test_ipc_replay test_ipc_replay.c)
 target_link_libraries(test_ipc_replay PRIVATE cog::ipc)
 target_include_directories(test_ipc_replay PRIVATE ${PROJECT_SOURCE_DIR}/libraries/cog-ipc/src)
 target_link_options(test_ipc_replay PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc)
+# Allocator linker wrappers invalidate the corresponding builtin effects.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_ipc_replay PRIVATE
+        -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc)
+endif()
 target_enable_warnings(test_ipc_replay)
 add_test(NAME unit-ipc-replay COMMAND test_ipc_replay)
 
@@ -217,5 +232,10 @@ add_test(NAME unit-ipc-replay COMMAND test_ipc_replay)
 add_executable(test_ipc_replay_critic test_ipc_replay_critic.c)
 target_link_libraries(test_ipc_replay_critic PRIVATE cog::ipc)
 target_link_options(test_ipc_replay_critic PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=free)
+# Allocator linker wrappers invalidate the corresponding builtin effects.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_ipc_replay_critic PRIVATE
+        -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-free)
+endif()
 target_enable_warnings(test_ipc_replay_critic)
 add_test(NAME unit-ipc-replay-critic COMMAND test_ipc_replay_critic)

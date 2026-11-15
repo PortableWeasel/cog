@@ -10,6 +10,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <assert.h>
 #include <string.h>
 
 static int failures = 0;
@@ -36,7 +37,8 @@ static int failures = 0;
 
 #ifdef COG_MOCK_WRAP_ALLOC
 static bool forbid_alloc;
-static size_t allocations, fail_after;
+/* Observe linker-wrapper effects across builtin/libc leaf assumptions. */
+static volatile size_t allocations, fail_after;
 void *__real_malloc(size_t n);
 void *__real_calloc(size_t a, size_t b);
 void *__real_realloc(void *p, size_t n);
@@ -61,6 +63,37 @@ void *__wrap_realloc(void *p, size_t n)
     if (fail_after != 0U && --fail_after == 0U) return NULL;
     return __real_realloc(p, n);
 }
+/* Positive control: optimized direct allocator calls must reach wrappers,
+ * update the real oracle, and honor its fault injection before use. */
+static void allocation_oracle_control(void)
+{
+    size_t before = allocations;
+    unsigned char *bytes = malloc(8U);
+    assert(bytes != NULL && allocations == before + 1U);
+    bytes[0] = 0x5aU;
+    before = allocations;
+    unsigned char *grown = realloc(bytes, 16U);
+    assert(grown != NULL && allocations == before + 1U && grown[0] == 0x5aU);
+    bytes = grown;
+    free(bytes);
+    before = allocations;
+    bytes = calloc(8U, 1U);
+    assert(bytes != NULL && allocations == before + 1U);
+    assert(bytes[0] == 0U && bytes[7] == 0U);
+    free(bytes);
+    before = allocations;
+    bytes = malloc(8U);
+    free(bytes);
+    assert(allocations == before + 1U); /* Detect optimized-away allocator pairs. */
+    before = allocations;
+    fail_after = 1U;
+    bytes = malloc(8U);
+    assert(bytes == NULL && allocations == before + 1U);
+    assert(fail_after == 0U);
+    fail_after = 0U;
+    allocations = 0U;
+}
+
 static cog_result_t checked_preflight(cog_provider_t *p,
     const cog_provider_request_t *r, cog_provider_preflight_stage_t stage)
 {
@@ -694,6 +727,7 @@ static void test_preflight_fixture_state(void)
 int main(void)
 {
 #ifdef COG_MOCK_WRAP_ALLOC
+    allocation_oracle_control();
     test_constructor_failures();
 #endif
     test_preflight_history();

@@ -11,6 +11,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <assert.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -25,7 +26,8 @@ static bool watch_parent, fail_parent_sync;
 static struct stat parent_identity;
 static size_t parent_syncs, watched_publications;
 static bool reject_allocations;
-static size_t allocation_attempts, allocation_failure;
+/* Observe linker-wrapper effects across builtin/libc leaf assumptions. */
+static volatile size_t allocation_attempts, allocation_failure;
 void *__real_malloc(size_t n);
 void *__real_calloc(size_t n,size_t size);
 void *__real_realloc(void *p,size_t n);
@@ -332,9 +334,44 @@ static void bounded_allocations(void)
     CHECK(allocation_attempts==0U);reject_allocations=false;
     cog_session_free(c);cog_store_free(s);cleanup(base);
 }
+/* Positive control: optimized direct allocator calls must reach wrappers,
+ * update the real oracle, and honor its fault injection before use. */
+static void allocation_oracle_control(void)
+{
+    size_t before = allocation_attempts;
+    unsigned char *bytes = malloc(8U);
+    assert(bytes != NULL && allocation_attempts == before + 1U);
+    bytes[0] = 0x5aU;
+    before = allocation_attempts;
+    unsigned char *grown = realloc(bytes, 16U);
+    assert(grown != NULL && allocation_attempts == before + 1U && grown[0] == 0x5aU);
+    bytes = grown;
+    free(bytes);
+    before = allocation_attempts;
+    bytes = calloc(8U, 1U);
+    assert(bytes != NULL && allocation_attempts == before + 1U);
+    assert(bytes[0] == 0U && bytes[7] == 0U);
+    free(bytes);
+    before = allocation_attempts;
+    char *text = strdup("oracle");
+    assert(text != NULL && allocation_attempts == before + 1U && strcmp(text, "oracle") == 0);
+    free(text);
+    before = allocation_attempts;
+    bytes = malloc(8U);
+    free(bytes);
+    assert(allocation_attempts == before + 1U); /* Detect optimized-away allocator pairs. */
+    before = allocation_attempts;
+    allocation_failure = allocation_attempts + 1U;
+    bytes = malloc(8U);
+    assert(bytes == NULL && allocation_attempts == before + 1U);
+    allocation_failure = 0U;
+    allocation_attempts = 0U;
+}
+
 int main(int argc,char **argv)
 {
     if(argc==3)return child_probe(argv[2],strcmp(argv[1],"hold")==0);
+    allocation_oracle_control();
     char exe[1024];ssize_t n=readlink("/proc/self/exe",exe,sizeof(exe)-1U);CHECK(n>0);exe[(size_t)n]='\0';
     char base[]="/tmp/cog-store-process-XXXXXX";CHECK(mkdtemp(base)!=NULL);
     process_crash(exe,base);cleanup(base);bounded_allocations();session_limit_race();stale_temp_checkpoint();base_parent_durability();save_faults(false);save_faults(true);cas_faults(false);cas_faults(true);
