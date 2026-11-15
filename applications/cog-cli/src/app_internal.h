@@ -47,7 +47,9 @@ struct cog_cli_app {
     bool prompt_submitted, shutdown, cancelling, active, provider_active;
     bool delta_ready, event_queued, tool_done, effects, accepted, policy_prompt;
     bool recovery, stdin_eof, continuation_required;
-    bool terminal_result_pending, result_node_added;
+    bool terminal_result_pending, result_node_added, assistant_pending;
+    cog_message_status_t pending_assistant_status;
+    cog_result_t assistant_error;
     size_t pending_result_len;
     cog_result_t tool_result_error;
     int signal_fd;

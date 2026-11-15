@@ -23,9 +23,9 @@ cog_result_t cog_cli_app_display_snapshot(cog_cli_app_t *app, cog_cli_display_sn
             m->status, m->content, m->content_len};
         node = cog_node_parent(node);
     }
-    if (app->active && (app->provider_active || cog_core_state(app->core) == CLI_BACKOFF)) {
+    if (app->assistant_pending || (app->active && (app->provider_active || cog_core_state(app->core) == CLI_BACKOFF))) {
         app->display_items[count++] = (cog_cli_display_item_t){0U,
-            COG_MESSAGE_ROLE_ASSISTANT, COG_MESSAGE_INCOMPLETE, app->text, app->text_len};
+            COG_MESSAGE_ROLE_ASSISTANT, app->assistant_pending ? app->pending_assistant_status : COG_MESSAGE_INCOMPLETE, app->text, app->text_len};
     }
     if (app->terminal_result_pending && !app->result_node_added) {
         if (count == CLI_NODES + 1U) return COG_ERROR_LIMIT;

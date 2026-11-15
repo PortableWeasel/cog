@@ -360,6 +360,7 @@ void cog_cli_app_free(cog_cli_app_t *app)
 cog_result_t cog_cli_app_run(cog_cli_app_t *app)
 {
     if (app == NULL) return COG_ERROR_NULL_PTR;
+    if (app->assistant_pending) return app->assistant_error;
     if (app->recovery) return COG_ERROR_INDETERMINATE;
     app->shutdown = false;
     cog_result_t rc = COG_OK;
@@ -385,6 +386,7 @@ static cog_result_t input_add(cog_cli_app_t *app, const char *text, size_t lengt
     if (app == NULL || text == NULL) return COG_ERROR_NULL_PTR;
     if (length > app->opts.max_context_bytes) return COG_ERROR_LIMIT;
     if (!cog_cli_text_valid(text, length)) return COG_ERROR_INVALID_ARG;
+    if (app->assistant_pending) return app->assistant_error;
     if (app->recovery) return COG_ERROR_INDETERMINATE;
     if (app->input_order == UINT64_MAX) return COG_ERROR_LIMIT;
     for (size_t i = 0U; i < CLI_INPUTS; i++) if (!app->inputs[i].used) {

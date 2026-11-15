@@ -82,7 +82,14 @@ static cog_result_t append_turn(cog_cli_app_t *app, cog_message_status_t status,
         message.tool_calls = app->call_views; message.tool_call_count = app->call_count;
     }
     cog_result_t rc = cog_session_append(app->session, &message, &app->assistant);
-    if (rc != COG_OK) return rc;
+    if (rc != COG_OK) {
+        app->assistant_pending = true;
+        app->assistant_error = rc;
+        app->pending_assistant_status = status == COG_MESSAGE_CANCELLED ?
+            COG_MESSAGE_CANCELLED : COG_MESSAGE_INCOMPLETE;
+        return rc;
+    }
+    app->assistant_pending = false;
     app->display_sequence++;
     rc = cog_cli_save(app);
     if (rc == COG_ERROR_INDETERMINATE) app->recovery = true;
