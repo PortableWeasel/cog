@@ -371,6 +371,61 @@ be layered on top later with external locking.
 
 ---
 
+## IPC Fabric Transport Layer (cog-ipc)
+
+cog-ipc is the message transport layer that connects UI processes, the main
+core, and auxiliary cores over Unix domain sockets.  It is implemented by the
+@c cog-ipc library and follows the same design rules as the rest of Cog:
+caller-allocated contexts, no hidden allocations, static const tables where
+applicable, and every public function returns @c cog_result_t.
+
+### Public types
+
+- @c cog_ipc_endpoint_t — opaque endpoint wrapping a Unix domain socket.  An
+  endpoint may be a listener, an outgoing connection, or an accepted
+  connection.
+- @c cog_peer_id_t — opaque numeric identifier assigned to a connected peer
+  by @c cog_ipc_endpoint_accept or @c cog_ipc_endpoint_connect.  The value
+  @c COG_PEER_ID_INVALID denotes no peer.
+- @c cog_ipc_message_t — caller-owned message buffer carrying a payload and
+  its length/capacity.  The buffer is allocated with
+  @c cog_ipc_message_new and released with @c cog_ipc_message_free.
+
+### Lifecycle
+
+Endpoints are created with @c cog_ipc_endpoint_new and destroyed with
+@c cog_ipc_endpoint_free.  A single endpoint can be reused after
+@c cog_ipc_endpoint_disconnect returns it to the unbound state.  Messages are
+independent of endpoints: the caller supplies the payload buffer and the
+library only frames and transmits it.
+
+### Operations
+
+- @c cog_ipc_endpoint_listen binds and listens on a filesystem path.
+- @c cog_ipc_endpoint_accept creates a new connected endpoint from a
+  pending listener connection.
+- @c cog_ipc_endpoint_connect connects to a listening path.
+- @c cog_ipc_endpoint_send and @c cog_ipc_endpoint_recv exchange framed
+  messages on a connected endpoint.
+- @c cog_ipc_endpoint_poll waits for readability, writability, or errors.
+- @c cog_ipc_endpoint_disconnect closes the socket and returns the endpoint
+  to the unbound state.
+
+### Design constraints
+
+- **Connection-oriented transport.**  The header contract assumes reliable,
+  ordered, stream-oriented Unix domain sockets.  Message framing is the
+  responsibility of the implementation.
+- **No dynamic registration.**  Peer and endpoint tables are not exposed;
+  the API is intentionally minimal.
+- **Caller-allocated state.**  Every endpoint and every message buffer is
+  explicitly created and destroyed by the caller.
+- **Fail closed.**  Every public function returns @c cog_result_t.
+- **Single-threaded per endpoint.**  Each endpoint is owned by one thread at
+  a time.  Distinct endpoints may be used concurrently without locking.
+
+---
+
 ## Next steps
 
 Stage 5 — Research & PoCs. The main unknowns to test:
