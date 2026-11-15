@@ -379,6 +379,33 @@ reap_children(cog_orchestrator_t *o)
     }
 }
 
+/**
+ * @brief Reap a spawned child if it has already exited (non-blocking).
+ *
+ * @param[in,out] c Core record.
+ * @return true if the child was reaped (it had exited); false if the
+ *         child is still running or is not a spawned child.
+ *
+ * A still-running child is left alone for reap_children / normal cleanup;
+ * this never blocks on a non-exiting process.  Used after a graceful
+ * shutdown acknowledgement, where the peer may ack and then take a long
+ * time (or never) to terminate.
+ */
+static bool
+reap_if_exited(struct cog_core_record *c)
+{
+    int status = 0;
+
+    if (c->spawned && c->pid > 0 && !c->reaped) {
+        if (waitpid(c->pid, &status, WNOHANG) == c->pid) {
+            c->reaped = true;
+            c->health = COG_HEALTH_DEAD;
+            return true;
+        }
+    }
+    return false;
+}
+
 /* ------------------------------------------------------------------ */
 /* Core registration                                                   */
 /* ------------------------------------------------------------------ */
@@ -711,10 +738,12 @@ cog_orchestrator_stop(cog_orchestrator_t *o, cog_peer_id_t peer_id)
     }
     rc = wait_for_ack(o, c, (int)o->ack_timeout_ms);
     if (rc == COG_OK) {
-        if (c->spawned && c->pid > 0) {
-            (void)waitpid(c->pid, NULL, 0);
-        }
-        c->reaped = true;
+        /* The core acknowledged shutdown: it is logically stopped.  Mark
+         * it disconnected so health reports DEAD.  If it has already
+         * exited, reap it; if it is still alive (e.g. it acked but has not
+         * yet terminated), leave it for reap_children / normal cleanup so
+         * we never block on a non-exiting child. */
+        (void)reap_if_exited(c);
         c->disconnected = true;
         return COG_OK;
     }
@@ -950,14 +979,13 @@ cog_orchestrator_shutdown(cog_orchestrator_t *o, uint32_t timeout_ms)
 
         if (c->shutting_down) {
             if (c->acked) {
-                /* Graceful stop: the core acknowledged and exited.  Reap
-                 * it and mark it stopped so health reports DEAD. */
-                if (c->spawned && c->pid > 0) {
-                    (void)waitpid(c->pid, NULL, 0);
-                }
-                c->reaped = true;
+                /* Graceful stop: the core acknowledged.  Mark it
+                 * disconnected so health reports DEAD.  If it has exited,
+                 * reap it; if it is still alive (e.g. it acked but has not
+                 * yet terminated), leave it for reap_children / normal
+                 * cleanup so we never block on a non-exiting child. */
+                (void)reap_if_exited(c);
                 c->disconnected = true;
-                c->health = COG_HEALTH_DEAD;
             } else {
                 force_kill_core(o, c);
                 all_acked = false;

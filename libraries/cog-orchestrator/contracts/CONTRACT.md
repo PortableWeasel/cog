@@ -140,9 +140,11 @@ cog_result_t cog_orchestrator_kill(cog_orchestrator_t *orch, cog_peer_id_t peer_
 ```
 
 `stop` sends `shutdown` and waits for `ack` (up to the ack timeout). If the
-core acks it is marked stopped; otherwise it is force-killed. Either way the
-core ends up stopped and `COG_OK` is returned (the header documents no
-timeout error for `stop`).
+core acks it is marked disconnected (health DEAD); if it has already exited
+it is reaped, and if it is still alive it is left for `reap_children` /
+normal cleanup so `stop` never blocks on a non-exiting child. Otherwise it
+is force-killed. Either way the core ends up stopped and `COG_OK` is
+returned (the header documents no timeout error for `stop`).
 
 `kill` SIGKILLs a spawned core (or, for a non-spawned/self-connected core,
 just closes the connection and marks it dead) and returns `COG_OK`.
@@ -216,7 +218,10 @@ cog_result_t cog_orchestrator_shutdown(cog_orchestrator_t *orch, uint32_t timeou
 ```
 
 Sends `shutdown` to every live core and waits up to `timeout_ms` for
-acknowledgements. Cores that do not ack are force-killed.
+acknowledgements. Cores that do not ack are force-killed. A core that acks
+is marked disconnected (health DEAD); if it has already exited it is
+reaped, and if it is still alive it is left for `reap_children` / normal
+cleanup so `shutdown` never blocks on a non-exiting child.
 
 | Return | Condition |
 |--------|-----------|
@@ -255,6 +260,12 @@ orchestrator) hosted on the peer and reports the total count.
 
 ## Invariants
 
+- `cog_orchestrator_stop` and `cog_orchestrator_shutdown` never block on a
+  child that acknowledged shutdown but has not exited: after an ack they
+  reap only if the child has already exited (non-blocking `waitpid`
+  `WNOHANG`) and leave a still-running child for `reap_children` / normal
+  cleanup. Blocking `waitpid(..., 0)` is used only after `SIGKILL`, which
+  is bounded.
 - Every spawned child is reaped before the orchestrator is freed.
 - A core is never chosen for placement while `UNKNOWN` or `DEAD`.
 - `cog_orchestrator_sessions` on a dead core still returns its sessions
