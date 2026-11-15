@@ -22,3 +22,6 @@ install/
 # OS
 .DS_Store
 Thumbs.db
+
+# Doxygen generated output
+docs/output/

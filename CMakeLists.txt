@@ -34,6 +34,7 @@ include(CTest)
 # -----------------------------------------------------------------------
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(compiler_warnings)
+include(doxygen)
 if(BUILD_TESTING)
     include(test_assertions)
     add_subdirectory(cmake/tests/optin)
