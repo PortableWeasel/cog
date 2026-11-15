@@ -2,10 +2,10 @@
 #define _POSIX_C_SOURCE 200809L
 #include "configuration.h"
 #include "options_internal.h"
+#include <assert.h>
 #include <cog/config.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <assert.h>
 #include <string.h>
 #define CHECK(x)                                                                       \
     do {                                                                               \
@@ -83,6 +83,102 @@ static cog_result_t secret_fail(void *arg, const char *ref, char *out, size_t ca
     memset(out, 's', 15U);
     out[15] = '\0';
     return COG_ERROR_DENIED;
+}
+static cog_result_t reload_secret(void *arg, const char *reference, char *output,
+                                  size_t capacity, size_t *required)
+{
+    const unsigned *mode = arg;
+    static const char secret[] = "SYNTHETIC_RELOAD_MEMORY";
+    (void)reference;
+    *required = sizeof(secret);
+    if (capacity < sizeof(secret))
+        return COG_ERROR_OVERFLOW;
+    memcpy(output, secret, sizeof(secret));
+    if (*mode == 1U)
+        return COG_ERROR_DENIED;
+    if (*mode == 2U) {
+        memset(output, 'x', capacity);
+        *required = capacity;
+    }
+    if (*mode == 3U) {
+        *required = capacity + 1U;
+        return COG_ERROR_OVERFLOW;
+    }
+    return COG_OK;
+}
+static int reload_memory(void)
+{
+    cog_cli_options_t input;
+    cog_cli_configuration_t *current = NULL, *candidate = NULL;
+    cog_cli_reload_options_t replacement = {.model_id = "next/model"};
+    const cog_provider_limits_t limits = {1U, 1U, 1U, 1U, 1U, 1U, 1U,
+                                          1U, 1U, 1U, 1U, 1U, 1U};
+    static const cog_provider_vtable_t identity = {0}; /* Never dispatched. */
+    const cog_endpoint_t *old_endpoint;
+    size_t before;
+    unsigned mode = 0U;
+    static const cog_result_t errors[] = {COG_OK, COG_ERROR_DENIED, COG_ERROR_PROTOCOL,
+                                          COG_ERROR_LIMIT};
+    CHECK(live == 0U);
+    cog_cli_options_defaults(&input);
+    input.model_id = "current/model";
+    input.store_mode = COG_CLI_STORE_DISABLED;
+    input.credential_ref = "host:memory";
+    input.credential_read = reload_secret;
+    input.credential_arg = &mode;
+    input.net = (cog_net_ctx_t *)(void *)&input;
+    input.explicit_options =
+        COG_CLI_OPT_MODEL | COG_CLI_OPT_STORE_MODE | COG_CLI_OPT_CREDENTIAL;
+    CHECK(cog_cli_configuration_new(&current, &input, 1U) == COG_OK && live == 1U);
+    CHECK(cog_cli_configuration_bind(current, &identity, NULL, NULL, &limits) ==
+          COG_OK);
+    old_endpoint = cog_cli_configuration_endpoint(current);
+    before = calls;
+    fail_at = calls + 1U;
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+              COG_ERROR_NOMEM &&
+          candidate == NULL);
+    CHECK(calls == before + 1U && live == 1U);
+    CHECK(strcmp(old_endpoint->api_key, "SYNTHETIC_RELOAD_MEMORY") == 0);
+    fail_at = 0U;
+    watch_next = true;
+    before = calls;
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+          COG_OK);
+    CHECK(calls == before + 1U && live == 2U);
+    cog_cli_configuration_free(candidate);
+    CHECK(!uncleared && watched == NULL && live == 1U);
+    replacement = (cog_cli_reload_options_t){.credential_ref = "host:rotate",
+                                             .credential_read = reload_secret,
+                                             .credential_arg = &mode};
+    for (mode = 0U; mode < 4U; ++mode) {
+        watch_next = true;
+        before = calls;
+        CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement,
+                                               3U + mode) == errors[mode]);
+        CHECK(calls == before + 1U);
+        if (mode == 0U) {
+            CHECK(candidate != NULL && live == 2U);
+            cog_cli_configuration_free(candidate);
+        } else
+            CHECK(candidate == NULL);
+        CHECK(!uncleared && watched == NULL && live == 1U);
+        CHECK(strcmp(old_endpoint->api_key, "SYNTHETIC_RELOAD_MEMORY") == 0);
+        CHECK(strcmp(cog_cli_configuration_options(current)->model_id,
+                     "current/model") == 0);
+    }
+    replacement = (cog_cli_reload_options_t){.model_id = "bad/\xc0\xaf"};
+    watch_next = true;
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 7U) ==
+              COG_ERROR_INVALID_ARG &&
+          candidate == NULL);
+    CHECK(!uncleared && watched == NULL && live == 1U);
+    watched = current;
+    watch_next = false;
+    /* Candidate and current allocations use the same constructor layout. */
+    cog_cli_configuration_free(current);
+    CHECK(!uncleared && watched == NULL && live == 0U);
+    return 0;
 }
 /* Positive control: optimized direct allocator calls must reach wrappers,
  * update the real oracle, and honor its fault injection before use. */
@@ -171,6 +267,7 @@ int main(void)
     watch_next = true;
     CHECK(cog_cli_configuration_new(&c, &o, 2U) == COG_ERROR_DENIED && c == NULL);
     CHECK(!uncleared && watched == NULL && live == 0U);
+    CHECK(reload_memory() == 0);
     puts("configuration allocation and secret clearing: ok");
     return 0;
 }

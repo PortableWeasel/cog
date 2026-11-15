@@ -138,3 +138,73 @@ actual no-store execution denial, request-generation matching and installed full
 closure. The old REAL application entry remains UNSUPPORTED until K. The known
 legacy mock vtable strict-build failure belongs to H migration. No authenticated
 request or claim of a complete real conversation is part of J acceptance.
+
+## R12.2 resolved reload constructor: writer evidence
+
+Ticket `55779c4`, approved reload headers `4984d1b`. The isolated
+`codex/impl-reload-config` branch merges main `081e1f5` through `756aa1a` before
+implementation so its Release allocation oracles include the independently
+integrated volatile counter/fault state, symbol-specific builtin suppression,
+positive controls and active assertions. No test or production optimization level
+is reduced. This section is writer evidence pending independent review.
+
+`cog_cli_configuration_reload_new` now creates one fresh unbound configuration
+owner directly from current resolved options. It does not call startup defaults,
+overlay, file parsing, store-location derivation or full startup validation. The
+three explicit model/HTTPS URL/credential-reference fields replace only their
+selected effective values. Existing J per-field and aggregate string reservations
+apply through a shared private string-copy helper used by both constructors.
+All unrelated scalar options, explicit-presence bits, session selectors and copied
+strings stay value-equivalent; existing net/script/typed-fixture borrows stay
+identical. Endpoint/model/adapter pointers are rebuilt later by the existing bind
+step, never aliased to the previous generation by this constructor.
+
+A NULL credential reference deep-copies the old constructor-owned secret without
+consulting environment or any resolver. An explicit reference, even equal to the
+old reference, resolves once through that call's callback or the env-only default.
+The callback and context are removed before successful publication and never
+recovered from old effective options. Failure clears the entire candidate before
+release and leaves the current owner unchanged. This constructor creates no
+provider, tool, store, session, event or config transaction and performs no wire
+work. The app delivery still owns mode/admission checks, bounded attempt identities,
+provider preflight, commit/publication, notification and consuming disconnect order.
+Metadata current configurations are refused by the private fixed-profile check;
+the public app must reject metadata reload with INVALID_STATE before calling it.
+
+The existing `test_configuration` now proves:
+
+- Deleted source config files and poisoned unrelated environment cannot affect
+  a reload; every fixed effective field and owned string is compared.
+- Mutable replacement buffers can change after return; current values remain
+  intact, and copied fields/secrets survive destruction of all source owners.
+- Omitted references retain old secrets after their environment key disappears;
+  explicit equal env references rotate to the new synthetic value. Explicit equal
+  host references invoke their per-call resolver exactly once and rotate separately.
+  Clearing the callback context afterward cannot affect an omitted-reference copy.
+- Required NULLs, zero/reused identity, absent subset, resolver authority without
+  explicit reference, malformed UTF-8/model/HTTPS fields, empty/over-limit values,
+  missing/unsupported/denied credentials and fixed MOCK URL/key refusals leave
+  `*out=NULL`. A 4095-byte model and fresh UINT64_MAX generation remain supported.
+- Borrowed mock script and typed-delta cases are tested separately and retain
+  their exact pointers, source-session selectors, limits and other fixed options.
+
+The corrected linker-local `test_configuration_memory` now injects the reload
+constructor's allocation failure, verifies exactly one explicit allocation per
+successful/candidate-validation operation, and retains the old endpoint's secret
+and model after every failure. It checks every byte before freeing successful
+copied-secret and rotated-secret owners, failed resolver owners (including callbacks
+that wrote a secret before DENIED), malformed nonterminated full-capacity output,
+over-capacity required length and malformed model candidates. No allocation leaks
+or uncleared owned bytes remain; original constructor/runtime controls stay intact.
+
+Release/O3 WERROR builds `build-r12-config` (GCC), `build-r12-config-clang` and
+`build-r12-config-asan` (Clang + ASan/UBSan) each pass these five existing targets:
+`test_config`, `test_config_bounded`, `test_cli_options`, `test_configuration`,
+`test_configuration_memory` (15 executable passes). ASan enables leak detection
+and halt-on-error; UBSan enables halt-on-error and stack traces. The checked CTest
+selection is `^(unit-config|unit-config-bounded|cli-options|cli-configuration|cli-configuration-memory)$`.
+Only configuration.c, the two existing config tests and this J evidence change.
+No CMake/public/private header/app/core changes or live/paid requests are included.
+Configuration ownership tests use identity descriptors only for binding inspection;
+they do not claim the mandatory full two-provider application reload/preflight,
+rollback/disconnect, tool-round pinning or notification oracles passed.
