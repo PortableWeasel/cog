@@ -2,51 +2,7 @@
 
 ## Sequence Diagram
 
-```
-Provider         cog-net           Main Core           UI
-   │                │                  │                │
-   │ streaming...   │                  │                │
-   │───────────────>│                  │                │
-   │                │ cog_net_poll()   │                │
-   │                │─────────────────>│                │
-   │                │ chunk            │                │
-   │                │─────────────────>│                │
-   │                │                  │──>UI (stream)──>│
-   │                │                  │                │
-   │ NETWORK DROPS  │                  │                │
-   │                │                  │                │
-   │  ... silence ...                  │                │
-   │                │                  │                │
-   │                │ stall_timeout_ms │                │
-   │                │ fires            │                │
-   │                │                  │                │
-   │                │ COG_EVENT_NETWORK_STALL            │
-   │                │─────────────────>│                │
-   │                │                  │                │
-   │                │                  │ handler:       │
-   │                │                  │ - notify UI    │
-   │                │                  │ - start retry  │
-   │                │                  │ - → RETRYING   │
-   │                │                  │──>status──────>│
-   │                │                  │                │
-   │                │ retry 1 (fails)  │                │
-   │                │ retry 2 (fails)  │                │
-   │                │  ... 30s ...     │                │
-   │                │                  │                │
-   │ NETWORK BACK   │                  │                │
-   │                │                  │                │
-   │                │ COG_EVENT_NETWORK_RECOVERED        │
-   │                │─────────────────>│                │
-   │                │                  │                │
-   │                │                  │ handler:       │
-   │                │                  │ - reconnect    │
-   │                │                  │ - resend req   │
-   │                │                  │ - → AWAITING_LLM│
-   │                │                  │                │
-   │                │ streaming resumes│                │
-   │                │─────────────────>│                │
-   │                │                  │──>UI (stream)──>│
-```
+![Sequence Diagram](svg/02-network-recovery.svg)
 
 ## Header Coverage
 

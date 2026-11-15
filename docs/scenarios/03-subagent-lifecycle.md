@@ -2,47 +2,7 @@
 
 ## Sequence Diagram
 
-```
-Main Core         Orchestrator        Aux Core 1         Subagent
-   │                  │                  │                  │
-   │ handler decides  │                  │                  │
-   │ to spawn subagent│                  │                  │
-   │                  │                  │                  │
-   │ cog_agent_spawn()│                  │                  │
-   │─────────────────>│                  │                  │
-   │                  │ cog_orchestrator_place()            │
-   │                  │ → peer_id=aux1  │                  │
-   │                  │                  │                  │
-   │                  │ cog_ipc_send()  │                  │
-   │                  │ spawn command   │                  │
-   │                  │────────────────>│                  │
-   │                  │                  │                  │
-   │                  │                  │ create child     │
-   │                  │                  │ session with     │
-   │                  │                  │ parent_id        │
-   │                  │                  │                  │
-   │                  │                  │ run subagent     │
-   │                  │                  │ event loop       │
-   │                  │                  │─────────────────>│
-   │                  │                  │                  │
-   │                  │                  │                  │ executing...
-   │                  │                  │                  │
-   │                  │                  │                  │ cog_agent_notify_parent()
-   │                  │                  │<─────────────────│
-   │                  │                  │                  │
-   │ COG_EVENT_SUBAGENT_STATUS           │                  │
-   │<────────────────────────────────────│                  │
-   │ handler: update UI                  │                  │
-   │                  │                  │                  │
-   │                  │                  │                  │ task complete
-   │                  │                  │                  │
-   │                  │                  │                  │ cog_agent_notify_parent()
-   │                  │                  │<─────────────────│
-   │ COG_EVENT_SUBAGENT_RESULT           │                  │
-   │<────────────────────────────────────│                  │
-   │ handler: process result             │                  │
-   │ transition state  │                  │                  │
-```
+![Sequence Diagram](svg/03-subagent-lifecycle.svg)
 
 ## Header Coverage
 

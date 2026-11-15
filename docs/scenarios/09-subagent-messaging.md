@@ -2,48 +2,7 @@
 
 ## Sequence Diagram
 
-```
-Main Core         Aux Core 1         Aux Core 2        Subagent A    Subagent B
-   │                  │                  │                  │             │
-   │ spawn A on aux1  │                  │                  │             │
-   │ spawn B on aux2  │                  │                  │             │
-   │                  │                  │                  │             │
-   │ register sessions│                  │                  │             │
-   │ A→aux1, B→aux2   │                  │                  │             │
-   │                  │                  │                  │             │
-   │                  │                  │                  │ A needs data│
-   │                  │                  │                  │ from B      │
-   │                  │                  │                  │             │
-   │                  │                  │                  │ cog_ipc_send_to_session()
-   │                  │                  │                  │ (B_session_id, request)
-   │                  │                  │                  │────────────>│ (via IPC)
-   │                  │                  │                  │             │
-   │                  │                  │                  │             │
-   │                  │  IPC route:      │                  │             │
-   │                  │  A's message     │                  │             │
-   │                  │  to B's session  │                  │             │
-   │                  │─────────────────>│                  │             │
-   │                  │                  │                  │             │
-   │                  │                  │ COG_EVENT_IPC_MESSAGE          │
-   │                  │                  │ for session B    │             │
-   │                  │                  │                  │             │
-   │                  │                  │ dispatch to B    │             │
-   │                  │                  │─────────────────>│             │
-   │                  │                  │                  │             │
-   │                  │                  │                  │ B processes │
-   │                  │                  │                  │ request     │
-   │                  │                  │                  │             │
-   │                  │                  │                  │ B sends response
-   │                  │                  │                  │ cog_ipc_send_to_session()
-   │                  │                  │                  │ (A_session_id, response)
-   │                  │                  │<─────────────────│             │
-   │                  │<─────────────────│                  │             │
-   │                  │                  │                  │             │
-   │                  │ dispatch to A    │                  │             │
-   │                  │─────────────────>│                  │             │
-   │                  │                  │                  │ A receives  │
-   │                  │                  │                  │ response    │
-```
+![Sequence Diagram](svg/09-subagent-messaging.svg)
 
 ## Header Coverage
 

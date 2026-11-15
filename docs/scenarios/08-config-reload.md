@@ -2,45 +2,7 @@
 
 ## Sequence Diagram
 
-```
-Admin           Config Tree        Validators        Core            Provider
-  │                 │                 │               │                │
-  │ edit config     │                 │               │                │
-  │ file            │                 │               │                │
-  │                 │                 │               │                │
-  │ cog_config_begin()                │               │                │
-  │────────────────>│                 │               │                │
-  │                 │                 │               │                │
-  │ cog_config_set() for each change  │               │                │
-  │────────────────>│                 │               │                │
-  │                 │                 │               │                │
-  │ cog_config_commit()               │               │                │
-  │────────────────>│                 │               │                │
-  │                 │                 │               │                │
-  │                 │ run validators  │               │                │
-  │                 │────────────────>│               │                │
-  │                 │                 │               │                │
-  │                 │ validator: check provider URLs   │                │
-  │                 │ validator: check model ids       │                │
-  │                 │ validator: check credentials     │                │
-  │                 │                 │               │                │
-  │                 │ PASS            │               │                │
-  │                 │<────────────────│               │                │
-  │                 │                 │               │                │
-  │                 │ atomic swap     │               │                │
-  │                 │ candidate→running               │                │
-  │                 │                 │               │                │
-  │                 │ notify listeners│               │                │
-  │                 │──────────────────────────────>│                │
-  │                 │                 │               │                │
-  │                 │                 │               │ read new config│
-  │                 │                 │               │ rebuild endpoint│
-  │                 │                 │               │ table          │
-  │                 │                 │               │───────────────>│
-  │                 │                 │               │                │
-  │                 │                 │               │ in-flight reqs │
-  │                 │                 │               │ unaffected     │
-```
+![Sequence Diagram](svg/08-config-reload.svg)
 
 ## Header Coverage
 

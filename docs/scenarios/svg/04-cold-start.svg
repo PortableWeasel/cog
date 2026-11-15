@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#333"/>
+    </marker>
+  </defs>
+  
+  <text x="450" y="25" text-anchor="middle" font-size="16" font-weight="bold">Scenario 4: Cold Start → Init → First Event</text>
+  
+  <!-- Actors -->
+  <rect x="50" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="100" y="75" text-anchor="middle">main()</text>
+  
+  <rect x="200" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="250" y="75" text-anchor="middle">cog-core</text>
+  
+  <rect x="350" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="400" y="75" text-anchor="middle">cog-ipc</text>
+  
+  <rect x="500" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="550" y="75" text-anchor="middle">cog-obs</text>
+  
+  <rect x="650" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="700" y="75" text-anchor="middle">UI</text>
+  
+  <!-- Lifelines -->
+  <line x1="100" y1="90" x2="100" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="250" y1="90" x2="250" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="400" y1="90" x2="400" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="550" y1="90" x2="550" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="700" y1="90" x2="700" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  
+  <!-- 1. main starts -->
+  <rect x="50" y="110" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="100" y="130" text-anchor="middle" font-size="10">main() starts</text>
+  
+  <!-- 2. Create session -->
+  <line x1="100" y1="150" x2="250" y2="150" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="175" y="145" text-anchor="middle" font-size="10">cog_session_new()</text>
+  
+  <!-- 3. Create core -->
+  <line x1="100" y1="170" x2="250" y2="170" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="175" y="165" text-anchor="middle" font-size="10">cog_core_new()</text>
+  
+  <!-- 4. Create IPC fabric -->
+  <line x1="100" y1="190" x2="400" y2="190" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="250" y="185" text-anchor="middle" font-size="10">cog_ipc_fabric_new()</text>
+  
+  <!-- 5. Create IPC endpoint -->
+  <line x1="100" y1="210" x2="400" y2="210" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="250" y="205" text-anchor="middle" font-size="10">cog_ipc_endpoint_new()</text>
+  
+  <!-- 6. Create obs -->
+  <line x1="100" y1="230" x2="550" y2="230" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="325" y="225" text-anchor="middle" font-size="10">cog_obs_new()</text>
+  
+  <!-- 7. Set core config -->
+  <rect x="200" y="250" width="100" height="40" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="250" y="265" text-anchor="middle" font-size="10">cog_core_config_t</text>
+  <text x="250" y="278" text-anchor="middle" font-size="9">{session, ipc, obs, provider}</text>
+  
+  <!-- 8. Init core -->
+  <line x1="100" y1="300" x2="250" y2="300" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="175" y="295" text-anchor="middle" font-size="10">cog_core_init()</text>
+  
+  <!-- 9. Register session on IPC -->
+  <line x1="250" y1="320" x2="400" y2="320" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="325" y="315" text-anchor="middle" font-size="10">cog_ipc_endpoint_register()</text>
+  
+  <!-- 10. UI connects -->
+  <line x1="700" y1="340" x2="400" y2="340" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="550" y="335" text-anchor="middle" font-size="10">cog_ipc_endpoint_connect()</text>
+  
+  <!-- 11. First event -->
+  <line x1="700" y1="360" x2="250" y2="360" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="475" y="355" text-anchor="middle" font-size="10">COG_EVENT_USER_INPUT</text>
+  
+  <!-- 12. Core runs -->
+  <rect x="200" y="380" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="250" y="400" text-anchor="middle" font-size="10">cog_core_run()</text>
+  
+  <!-- 13. Dispatch -->
+  <rect x="200" y="415" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="250" y="435" text-anchor="middle" font-size="10">dispatch to handler</text>
+</svg>

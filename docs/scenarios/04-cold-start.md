@@ -2,62 +2,7 @@
 
 ## Sequence Diagram
 
-```
-main()           Config           IPC              Orchestrator      Core
-  │                │               │                  │               │
-  │ parse args     │               │                  │               │
-  │                │               │                  │               │
-  │ cog_config_tree_new()          │                  │               │
-  │───────────────>│               │                  │               │
-  │                │               │                  │               │
-  │ load config    │               │                  │               │
-  │ from file/CLI  │               │                  │               │
-  │ cog_config_begin()             │                  │               │
-  │ cog_config_set() for each      │                  │               │
-  │ cog_config_commit()            │                  │               │
-  │───────────────>│               │                  │               │
-  │                │               │                  │               │
-  │ cog_obs_new()  │               │                  │               │
-  │ (observability)│               │                  │               │
-  │                │               │                  │               │
-  │ cog_ipc_endpoint_new()         │                  │               │
-  │ cog_ipc_endpoint_listen()      │                  │               │
-  │───────────────>│               │                  │               │
-  │                │               │                  │               │
-  │ cog_orchestrator_new()         │                  │               │
-  │ cog_orchestrator_start()       │                  │               │
-  │────────────────────────────────>│                  │               │
-  │                │               │                  │               │
-  │ cog_net_new()  │               │                  │               │
-  │ (network)      │               │                  │               │
-  │                │               │                  │               │
-  │ cog_session_new()              │                  │               │
-  │ (root session) │               │                  │               │
-  │                │               │                  │               │
-  │ cog_core_new() │               │                  │               │
-  │ (config: session, dispatch,    │                  │               │
-  │  tools, ipc_endpoint)          │                  │               │
-  │───────────────────────────────────────────────────>│               │
-  │                │               │                  │               │
-  │ cog_core_run() │               │                  │               │
-  │───────────────────────────────────────────────────>│               │
-  │                │               │                  │               │
-  │                │               │                  │               │ event loop
-  │                │               │                  │               │ waiting...
-  │                │               │                  │               │
-  │ UI connects    │               │                  │               │
-  │───────────────────────────────>│                  │               │
-  │                │               │ accept           │               │
-  │                │               │─────────────────>│               │
-  │                │               │                  │               │ COG_EVENT_IPC_CONNECTED
-  │                │               │                  │               │
-  │ First user input               │                  │               │
-  │───────────────────────────────>│                  │               │
-  │                │               │ forward          │               │
-  │                │               │─────────────────>│               │
-  │                │               │                  │               │ COG_EVENT_USER_INPUT
-  │                │               │                  │               │ dispatch...
-```
+![Sequence Diagram](svg/04-cold-start.svg)
 
 ## Header Coverage
 

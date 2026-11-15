@@ -2,44 +2,7 @@
 
 ## Sequence Diagram
 
-```
-Core             Provider          cog-net           LLM API
-  │                 │                 │                 │
-  │ cog_provider_send()               │                 │
-  │────────────────>│                 │                 │
-  │                 │ cog_net_request()│                │
-  │                 │────────────────>│                 │
-  │                 │                 │ HTTP POST       │
-  │                 │                 │────────────────>│
-  │                 │                 │                 │
-  │                 │                 │ HTTP 429        │
-  │                 │                 │ Retry-After: 30 │
-  │                 │                 │<────────────────│
-  │                 │                 │                 │
-  │                 │ COG_EVENT_PROVIDER_ERROR           │
-  │                 │ (rate_limited)  │                 │
-  │<────────────────│                 │                 │
-  │                 │                 │                 │
-  │ handler:        │                 │                 │
-  │ - parse Retry-After               │                 │
-  │ - schedule retry after 30s        │                 │
-  │ - queue subsequent requests       │                 │
-  │ - notify UI of rate limit         │                 │
-  │                 │                 │                 │
-  │ ... 30s ...     │                 │                 │
-  │                 │                 │                 │
-  │ retry: cog_provider_send()        │                 │
-  │────────────────>│                 │                 │
-  │                 │ cog_net_request()│                │
-  │                 │────────────────>│                 │
-  │                 │                 │ HTTP POST       │
-  │                 │                 │────────────────>│
-  │                 │                 │                 │
-  │                 │                 │ HTTP 200        │
-  │                 │                 │<────────────────│
-  │                 │                 │                 │
-  │                 │ streaming...    │                 │
-```
+![Sequence Diagram](svg/12-rate-limit.svg)
 
 ## Header Coverage
 

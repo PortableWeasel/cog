@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 600" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#333"/>
+    </marker>
+  </defs>
+  
+  <!-- Title -->
+  <text x="450" y="25" text-anchor="middle" font-size="16" font-weight="bold">Scenario 1: User Prompt → LLM → Streaming → UI</text>
+  
+  <!-- Actors -->
+  <rect x="50" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="100" y="75" text-anchor="middle">User</text>
+  
+  <rect x="200" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="250" y="75" text-anchor="middle">UI Process</text>
+  
+  <rect x="350" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="400" y="75" text-anchor="middle">IPC Fabric</text>
+  
+  <rect x="500" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="550" y="75" text-anchor="middle">Main Core</text>
+  
+  <rect x="650" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="700" y="75" text-anchor="middle">Provider</text>
+  
+  <!-- Lifelines -->
+  <line x1="100" y1="90" x2="100" y2="550" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="250" y1="90" x2="250" y2="550" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="400" y1="90" x2="400" y2="550" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="550" y1="90" x2="550" y2="550" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="700" y1="90" x2="700" y2="550" stroke="#999" stroke-dasharray="5,5"/>
+  
+  <!-- Messages -->
+  <!-- 1. User types prompt -->
+  <line x1="100" y1="120" x2="250" y2="120" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="175" y="115" text-anchor="middle" font-size="10">types prompt</text>
+  
+  <!-- 2. UI creates event -->
+  <rect x="200" y="135" width="100" height="30" fill="#fff3cd" stroke="#333" rx="3"/>
+  <text x="250" y="155" text-anchor="middle" font-size="10">cog_event_t</text>
+  <text x="250" y="168" text-anchor="middle" font-size="9">{USER_INPUT, prompt}</text>
+  
+  <!-- 3. UI sends to IPC -->
+  <line x1="250" y1="180" x2="400" y2="180" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="325" y="175" text-anchor="middle" font-size="10">cog_ipc_endpoint_send()</text>
+  
+  <!-- 4. IPC polls main core -->
+  <line x1="400" y1="210" x2="550" y2="210" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="475" y="205" text-anchor="middle" font-size="10">cog_ipc_endpoint_poll()</text>
+  
+  <!-- 5. Core enqueues event -->
+  <rect x="500" y="225" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="550" y="245" text-anchor="middle" font-size="10">cog_core_enqueue()</text>
+  
+  <!-- 6. Core runs -->
+  <rect x="500" y="265" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="550" y="285" text-anchor="middle" font-size="10">cog_core_run()</text>
+  
+  <!-- 7. Dispatch to handler -->
+  <rect x="500" y="305" width="100" height="40" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="550" y="320" text-anchor="middle" font-size="10">dispatch:</text>
+  <text x="550" y="333" text-anchor="middle" font-size="9">(IDLE, USER_INPUT)</text>
+  
+  <!-- 8. Session operations -->
+  <rect x="500" y="355" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="550" y="375" text-anchor="middle" font-size="10">cog_session_add_message()</text>
+  
+  <!-- 9. Provider send -->
+  <line x1="550" y1="400" x2="700" y2="400" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="625" y="395" text-anchor="middle" font-size="10">cog_provider_send()</text>
+  
+  <!-- 10. Handler returns -->
+  <rect x="500" y="415" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="550" y="435" text-anchor="middle" font-size="10">return AWAITING_LLM</text>
+  
+  <!-- 11. Event loop -->
+  <rect x="500" y="455" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="550" y="475" text-anchor="middle" font-size="10">cog_net_poll()</text>
+  
+  <!-- 12. LLM chunk -->
+  <line x1="700" y1="490" x2="550" y2="490" stroke="#333" stroke-dasharray="5,5" marker-end="url(#arrow)"/>
+  <text x="625" y="485" text-anchor="middle" font-size="10">COG_EVENT_LLM_CHUNK</text>
+  
+  <!-- 13. Send chunk to UI -->
+  <line x1="550" y1="505" x2="400" y2="505" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="475" y="500" text-anchor="middle" font-size="10">cog_ipc_send(chunk)</text>
+  
+  <!-- 14. UI renders -->
+  <line x1="400" y1="520" x2="250" y2="520" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="325" y="515" text-anchor="middle" font-size="10">render chunk</text>
+  
+  <!-- 15. User sees text -->
+  <line x1="250" y1="535" x2="100" y2="535" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="175" y="530" text-anchor="middle" font-size="10">sees text</text>
+  
+  <!-- Legend -->
+  <text x="50" y="580" font-size="10" fill="#666">Note: ... repeat until is_complete ... then COG_EVENT_LLM_COMPLETE → AWAITING_LLM→IDLE</text>
+</svg>

@@ -2,51 +2,7 @@
 
 ## Sequence Diagram
 
-```
-LLM Response         Handler           Toolkit           Tool A    Tool B    Tool C
-   │                   │                 │                 │         │         │
-   │ 3 tool calls      │                 │                 │         │         │
-   │──────────────────>│                 │                 │         │         │
-   │                   │                 │                 │         │         │
-   │                   │ create 3 call   │                 │         │         │
-   │                   │ contexts        │                 │         │         │
-   │                   │                 │                 │         │         │
-   │                   │ cog_toolkit_execute_all()         │         │         │
-   │                   │ calls=[A,B,C]   │                 │         │         │
-   │                   │ opts={max_par=3, timeout=5000}    │         │         │
-   │                   │────────────────>│                 │         │         │
-   │                   │                 │                 │         │         │
-   │                   │                 │ dispatch A      │         │         │
-   │                   │                 │────────────────>│         │         │
-   │                   │                 │ dispatch B      │         │         │
-   │                   │                 │────────────────────────>│         │
-   │                   │                 │ dispatch C      │         │         │
-   │                   │                 │────────────────────────────────>│
-   │                   │                 │                 │         │         │
-   │                   │                 │ A completes     │         │         │
-   │                   │                 │<────────────────│         │         │
-   │                   │                 │ B completes     │         │         │
-   │                   │                 │<────────────────────────│         │
-   │                   │                 │                 │         │         │
-   │                   │                 │ C hangs...      │         │         │
-   │                   │                 │                 │         │         │
-   │                   │                 │ 5000ms timeout  │         │         │
-   │                   │                 │ fires           │         │         │
-   │                   │                 │                 │         │         │
-   │                   │                 │ cancel C        │         │         │
-   │                   │                 │────────────────────────────────>│
-   │                   │                 │                 │         │         │
-   │                   │                 │ collection:     │         │         │
-   │                   │                 │ [OK, OK, TIMEOUT]         │         │
-   │                   │<────────────────│                 │         │         │
-   │                   │                 │                 │         │         │
-   │                   │ iterate results:│                 │         │         │
-   │                   │ A=OK, B=OK,     │                 │         │         │
-   │                   │ C=TIMEOUT       │                 │         │         │
-   │                   │                 │                 │         │         │
-   │                   │ enqueue tool    │                 │         │         │
-   │                   │ result events   │                 │         │         │
-```
+![Sequence Diagram](svg/06-parallel-tools.svg)
 
 ## Header Coverage
 

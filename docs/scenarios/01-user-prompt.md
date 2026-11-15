@@ -2,58 +2,7 @@
 
 ## Sequence Diagram
 
-```
-User          UI Process         IPC Fabric         Main Core           Provider
- │                │                   │                 │                  │
- │ types prompt   │                   │                 │                  │
- │───────────────>│                   │                 │                  │
- │                │ cog_event_t       │                 │                  │
- │                │ { kind=USER_INPUT │                 │                  │
- │                │   payload=prompt }│                 │                  │
- │                │                   │                 │                  │
- │                │ cog_ipc_endpoint_send()              │                  │
- │                │──────────────────>│                 │                  │
- │                │                   │ cog_ipc_endpoint_poll()            │
- │                │                   │────────────────>│                  │
- │                │                   │                 │ deserialize      │
- │                │                   │                 │ cog_core_enqueue │
- │                │                   │                 │                  │
- │                │                   │                 │ cog_core_run()   │
- │                │                   │                 │ pops event       │
- │                │                   │                 │                  │
- │                │                   │                 │ dispatch:        │
- │                │                   │                 │ (IDLE,USER_INPUT)│
- │                │                   │                 │ → handler        │
- │                │                   │                 │                  │
- │                │                   │                 │ cog_session_add_message()
- │                │                   │                 │ cog_session_get_history()
- │                │                   │                 │ cog_provider_send()
- │                │                   │                 │─────────────────>│
- │                │                   │                 │                  │
- │                │                   │                 │ handler returns: │
- │                │                   │                 │ { AWAITING_LLM } │
- │                │                   │                 │                  │
- │                │                   │                 │ [event loop]     │
- │                │                   │                 │ cog_net_poll()   │
- │                │                   │                 │ cog_ipc_poll()   │
- │                │                   │                 │                  │
- │                │                   │                 │ COG_EVENT_LLM_CHUNK
- │                │                   │                 │ handler sends    │
- │                │                   │                 │ chunk to UI:     │
- │                │                   │                 │ cog_ipc_send()   │
- │                │<──────────────────│                 │                  │
- │                │ render chunk      │                 │                  │
- │ sees text      │                   │                 │                  │
- │<───────────────│                   │                 │                  │
- │                │                   │                 │                  │
- │                │  ... repeat until is_complete ...    │                  │
- │                │                   │                 │                  │
- │                │                   │                 │ COG_EVENT_LLM_COMPLETE
- │                │                   │                 │ handler adds     │
- │                │                   │                 │ assistant msg to │
- │                │                   │                 │ session history  │
- │                │                   │                 │ AWAITING_LLM→IDLE│
-```
+![Sequence Diagram](svg/01-user-prompt.svg)
 
 ## Header Coverage
 

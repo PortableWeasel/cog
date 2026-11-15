@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#333"/>
+    </marker>
+  </defs>
+  
+  <text x="450" y="25" text-anchor="middle" font-size="16" font-weight="bold">Scenario 9: Subagent-to-Subagent Messaging Across Cores</text>
+  
+  <!-- Actors -->
+  <rect x="50" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="100" y="75" text-anchor="middle">Agent A</text>
+  
+  <rect x="200" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="250" y="75" text-anchor="middle">Aux Core 1</text>
+  
+  <rect x="350" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="400" y="75" text-anchor="middle">Main Core</text>
+  
+  <rect x="500" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="550" y="75" text-anchor="middle">Aux Core 2</text>
+  
+  <rect x="650" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="700" y="75" text-anchor="middle">Agent B</text>
+  
+  <!-- Lifelines -->
+  <line x1="100" y1="90" x2="100" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="250" y1="90" x2="250" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="400" y1="90" x2="400" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="550" y1="90" x2="550" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="700" y1="90" x2="700" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  
+  <!-- 1. Agent A sends message -->
+  <line x1="100" y1="120" x2="250" y2="120" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="175" y="115" text-anchor="middle" font-size="10">send_message(B, data)</text>
+  
+  <!-- 2. Aux 1 routes to main -->
+  <line x1="250" y1="140" x2="400" y2="140" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="325" y="135" text-anchor="middle" font-size="10">cog_ipc_send(B, data)</text>
+  
+  <!-- 3. Main looks up B -->
+  <rect x="350" y="155" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="400" y="175" text-anchor="middle" font-size="10">cog_ipc_route(B)</text>
+  
+  <!-- 4. Main forwards to aux 2 -->
+  <line x1="400" y1="195" x2="550" y2="195" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="475" y="190" text-anchor="middle" font-size="10">forward to aux 2</text>
+  
+  <!-- 5. Aux 2 delivers to B -->
+  <line x1="550" y1="215" x2="700" y2="215" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="625" y="210" text-anchor="middle" font-size="10">deliver message</text>
+  
+  <!-- 6. B processes -->
+  <rect x="650" y="230" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="700" y="250" text-anchor="middle" font-size="10">process message</text>
+  
+  <!-- 7. B replies -->
+  <line x1="700" y1="270" x2="550" y2="270" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="625" y="265" text-anchor="middle" font-size="10">reply(A, result)</text>
+  
+  <!-- 8. Aux 2 routes reply -->
+  <line x1="550" y1="290" x2="400" y2="290" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="475" y="285" text-anchor="middle" font-size="10">route to A</text>
+  
+  <!-- 9. Main forwards to aux 1 -->
+  <line x1="400" y1="310" x2="250" y2="310" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="325" y="305" text-anchor="middle" font-size="10">forward to aux 1</text>
+  
+  <!-- 10. A receives -->
+  <line x1="250" y1="330" x2="100" y2="330" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="175" y="325" text-anchor="middle" font-size="10">receive reply</text>
+  
+  <!-- 11. A continues -->
+  <rect x="50" y="350" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="100" y="370" text-anchor="middle" font-size="10">continue task</text>
+</svg>

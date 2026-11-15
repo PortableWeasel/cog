@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#333"/>
+    </marker>
+  </defs>
+  
+  <text x="450" y="25" text-anchor="middle" font-size="16" font-weight="bold">Scenario 7: Aux Core Crash → Detection → Recovery</text>
+  
+  <!-- Actors -->
+  <rect x="50" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="100" y="75" text-anchor="middle">Main Core</text>
+  
+  <rect x="200" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="250" y="75" text-anchor="middle">Orchestrator</text>
+  
+  <rect x="350" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="400" y="75" text-anchor="middle">Aux Core 1</text>
+  
+  <rect x="500" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="550" y="75" text-anchor="middle">Aux Core 2</text>
+  
+  <rect x="650" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="700" y="75" text-anchor="middle">Subagents</text>
+  
+  <!-- Lifelines -->
+  <line x1="100" y1="90" x2="100" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="250" y1="90" x2="250" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="400" y1="90" x2="400" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="550" y1="90" x2="550" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="700" y1="90" x2="700" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  
+  <!-- 1. Normal operation -->
+  <rect x="350" y="110" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="400" y="130" text-anchor="middle" font-size="10">running agents</text>
+  
+  <!-- 2. Crash! -->
+  <rect x="350" y="150" width="100" height="30" fill="#f8d7da" stroke="#333" rx="3"/>
+  <text x="400" y="170" text-anchor="middle" font-size="10">SEGFAULT / crash</text>
+  
+  <!-- 3. IPC detects disconnect -->
+  <line x1="400" y1="190" x2="250" y2="190" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="325" y="185" text-anchor="middle" font-size="10">IPC disconnect</text>
+  
+  <!-- 4. Orchestrator detects -->
+  <rect x="200" y="205" width="100" height="30" fill="#fff3cd" stroke="#333" rx="3"/>
+  <text x="250" y="225" text-anchor="middle" font-size="10">detect crash</text>
+  
+  <!-- 5. Notify main -->
+  <line x1="250" y1="245" x2="100" y2="245" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="175" y="240" text-anchor="middle" font-size="10">COG_EVENT_PEER_DEAD</text>
+  
+  <!-- 6. Find affected agents -->
+  <rect x="200" y="260" width="100" height="30" fill="#fff3cd" stroke="#333" rx="3"/>
+  <text x="250" y="280" text-anchor="middle" font-size="10">find agents on core</text>
+  
+  <!-- 7. Migrate or restart -->
+  <line x1="250" y1="300" x2="550" y2="300" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="400" y="295" text-anchor="middle" font-size="10">migrate to aux core 2</text>
+  
+  <!-- 8. Restart agents -->
+  <line x1="550" y1="320" x2="700" y2="320" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="625" y="315" text-anchor="middle" font-size="10">restart subagents</text>
+  
+  <!-- 9. Resume -->
+  <rect x="500" y="340" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="550" y="360" text-anchor="middle" font-size="10">agents running</text>
+  
+  <!-- 10. Auto-replace aux 1 -->
+  <line x1="250" y1="380" x2="400" y2="380" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="325" y="375" text-anchor="middle" font-size="10">spawn new aux core</text>
+  
+  <!-- 11. New aux ready -->
+  <rect x="350" y="400" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="400" y="420" text-anchor="middle" font-size="10">new aux core ready</text>
+</svg>

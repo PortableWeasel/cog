@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#333"/>
+    </marker>
+  </defs>
+  
+  <text x="450" y="25" text-anchor="middle" font-size="16" font-weight="bold">Scenario 13: Session Persistence (Save/Load)</text>
+  
+  <!-- Actors -->
+  <rect x="50" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="100" y="75" text-anchor="middle">Main Core</text>
+  
+  <rect x="200" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="250" y="75" text-anchor="middle">Session</text>
+  
+  <rect x="350" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="400" y="75" text-anchor="middle">Store</text>
+  
+  <rect x="500" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="550" y="75" text-anchor="middle">File Backend</text>
+  
+  <rect x="650" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="700" y="75" text-anchor="middle">Disk</text>
+  
+  <!-- Lifelines -->
+  <line x1="100" y1="90" x2="100" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="250" y1="90" x2="250" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="400" y1="90" x2="400" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="550" y1="90" x2="550" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="700" y1="90" x2="700" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  
+  <!-- 1. Session active -->
+  <rect x="200" y="110" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="250" y="130" text-anchor="middle" font-size="10">session active</text>
+  
+  <!-- 2. Auto-save triggered -->
+  <rect x="50" y="150" width="100" height="30" fill="#fff3cd" stroke="#333" rx="3"/>
+  <text x="100" y="170" text-anchor="middle" font-size="10">auto_save=true</text>
+  
+  <!-- 3. Core calls save -->
+  <line x1="100" y1="190" x2="250" y2="190" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="175" y="185" text-anchor="middle" font-size="10">cog_session_save()</text>
+  
+  <!-- 4. Session to store -->
+  <line x1="250" y1="210" x2="400" y2="210" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="325" y="205" text-anchor="middle" font-size="10">store->save()</text>
+  
+  <!-- 5. Store to file -->
+  <line x1="400" y1="230" x2="550" y2="230" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="475" y="225" text-anchor="middle" font-size="10">file_save()</text>
+  
+  <!-- 6. Write to disk -->
+  <line x1="550" y1="250" x2="700" y2="250" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="625" y="245" text-anchor="middle" font-size="10">write meta.json</text>
+  <text x="625" y="258" text-anchor="middle" font-size="9">append nodes.jsonl</text>
+  
+  <!-- 7. Later: load -->
+  <rect x="50" y="290" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="100" y="310" text-anchor="middle" font-size="10">restart / resume</text>
+  
+  <!-- 8. Core loads -->
+  <line x1="100" y1="330" x2="250" y2="330" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="175" y="325" text-anchor="middle" font-size="10">cog_session_load()</text>
+  
+  <!-- 9. Store loads -->
+  <line x1="250" y1="350" x2="400" y2="350" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="325" y="345" text-anchor="middle" font-size="10">store->load()</text>
+  
+  <!-- 10. File reads -->
+  <line x1="400" y1="370" x2="550" y2="370" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="475" y="365" text-anchor="middle" font-size="10">file_load()</text>
+  
+  <!-- 11. Read from disk -->
+  <line x1="550" y1="390" x2="700" y2="390" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="625" y="385" text-anchor="middle" font-size="10">read meta.json</text>
+  <text x="625" y="398" text-anchor="middle" font-size="9">read nodes.jsonl</text>
+  
+  <!-- 12. Rebuild tree -->
+  <rect x="200" y="410" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="250" y="430" text-anchor="middle" font-size="10">tree rebuilt</text>
+</svg>

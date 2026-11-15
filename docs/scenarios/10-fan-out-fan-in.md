@@ -2,49 +2,7 @@
 
 ## Sequence Diagram
 
-```
-Main Core         Orchestrator        Aux Core 1    Aux Core 2    Aux Core 3
-   │                  │                  │              │              │
-   │ handler: fan-out │                  │              │              │
-   │ same task to 3   │                  │              │              │
-   │ aux cores        │                  │              │              │
-   │                  │                  │              │              │
-   │ cog_agent_spawn() x3                │              │              │
-   │ (same task)      │                  │              │              │
-   │─────────────────>│                  │              │              │
-   │                  │ place S1→aux1    │              │              │
-   │                  │ place S2→aux2    │              │              │
-   │                  │ place S3→aux3    │              │              │
-   │                  │                  │              │              │
-   │                  │ spawn commands   │              │              │
-   │                  │─────────────────>│              │              │
-   │                  │───────────────────────────────>│              │
-   │                  │─────────────────────────────────────────────>│
-   │                  │                  │              │              │
-   │                  │                  │ S1 running   │ S2 running   │ S3 running
-   │                  │                  │              │              │
-   │                  │                  │              │ S2 completes │
-   │                  │                  │              │              │
-   │ COG_EVENT_SUBAGENT_RESULT from S2   │              │              │
-   │<────────────────────────────────────────────────────│              │
-   │                  │                  │              │              │
-   │ handler:         │                  │              │              │
-   │ - record S2 win  │                  │              │              │
-   │ - cancel S1, S3  │                  │              │              │
-   │                  │                  │              │              │
-   │ cog_agent_cancel(S1)                │              │              │
-   │ cog_agent_cancel(S3)                │              │              │
-   │─────────────────>│                  │              │              │
-   │                  │ cancel S1        │              │              │
-   │                  │─────────────────>│              │              │
-   │                  │ cancel S3        │              │              │
-   │                  │─────────────────────────────────────────────>│
-   │                  │                  │              │              │
-   │                  │                  │ S1 cancelled │              │ S3 cancelled
-   │                  │                  │              │              │
-   │ transition state │                  │              │              │
-   │ with S2's result │                  │              │              │
-```
+![Sequence Diagram](svg/10-fan-out-fan-in.svg)
 
 ## Header Coverage
 

@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#333"/>
+    </marker>
+  </defs>
+  
+  <text x="450" y="25" text-anchor="middle" font-size="16" font-weight="bold">Scenario 14: Conversation Forking</text>
+  
+  <!-- Actors -->
+  <rect x="50" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="100" y="75" text-anchor="middle">User</text>
+  
+  <rect x="200" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="250" y="75" text-anchor="middle">Main Core</text>
+  
+  <rect x="350" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="400" y="75" text-anchor="middle">Session</text>
+  
+  <rect x="500" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="550" y="75" text-anchor="middle">Branch A</text>
+  
+  <rect x="650" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="700" y="75" text-anchor="middle">Branch B</text>
+  
+  <!-- Lifelines -->
+  <line x1="100" y1="90" x2="100" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="250" y1="90" x2="250" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="400" y1="90" x2="400" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="550" y1="90" x2="550" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="700" y1="90" x2="700" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  
+  <!-- 1. User asks question -->
+  <line x1="100" y1="120" x2="250" y2="120" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="175" y="115" text-anchor="middle" font-size="10">"Explain X"</text>
+  
+  <!-- 2. Core adds to session -->
+  <line x1="250" y1="140" x2="400" y2="140" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="325" y="135" text-anchor="middle" font-size="10">cog_session_add_message()</text>
+  
+  <!-- 3. Tree state -->
+  <rect x="350" y="155" width="100" height="40" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="400" y="170" text-anchor="middle" font-size="10">root → node1</text>
+  <text x="400" y="183" text-anchor="middle" font-size="9">(user: Explain X)</text>
+  
+  <!-- 4. LLM responds -->
+  <rect x="200" y="200" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="250" y="220" text-anchor="middle" font-size="10">LLM response</text>
+  
+  <!-- 5. Add response -->
+  <line x1="250" y1="240" x2="400" y2="240" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="325" y="235" text-anchor="middle" font-size="10">add assistant msg</text>
+  
+  <!-- 6. Tree grows -->
+  <rect x="350" y="255" width="100" height="40" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="400" y="270" text-anchor="middle" font-size="10">root → n1 → n2</text>
+  <text x="400" y="283" text-anchor="middle" font-size="9">(user + assistant)</text>
+  
+  <!-- 7. User forks -->
+  <line x1="100" y1="300" x2="250" y2="300" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="175" y="295" text-anchor="middle" font-size="10">"Try different approach"</text>
+  
+  <!-- 8. Core forks -->
+  <line x1="250" y1="320" x2="400" y2="320" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="325" y="315" text-anchor="middle" font-size="10">cog_session_fork(n2)</text>
+  
+  <!-- 9. Fork creates branches -->
+  <rect x="350" y="335" width="100" height="40" fill="#fff3cd" stroke="#333" rx="3"/>
+  <text x="400" y="350" text-anchor="middle" font-size="10">root → n1 → n2</text>
+  <text x="400" y="363" text-anchor="middle" font-size="9">         ├─ n3A</text>
+  <text x="400" y="376" text-anchor="middle" font-size="9">         └─ n3B</text>
+  
+  <!-- 10. Branch A continues -->
+  <line x1="250" y1="390" x2="550" y2="390" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="400" y="385" text-anchor="middle" font-size="10">continue on A</text>
+  
+  <!-- 11. Branch B continues -->
+  <line x1="250" y1="410" x2="700" y2="410" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="475" y="405" text-anchor="middle" font-size="10">continue on B</text>
+  
+  <!-- 12. Shared ancestors -->
+  <rect x="350" y="430" width="100" height="20" fill="#e1f5ff" stroke="#333" rx="3"/>
+  <text x="400" y="445" text-anchor="middle" font-size="9">ancestors shared, not copied</text>
+</svg>

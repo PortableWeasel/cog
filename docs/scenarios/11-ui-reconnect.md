@@ -2,46 +2,7 @@
 
 ## Sequence Diagram
 
-```
-UI Process        IPC Fabric         Main Core           Provider
-   │                  │                  │                  │
-   │                  │                  │ streaming LLM    │
-   │                  │                  │ response to UI   │
-   │<─────────────────│<─────────────────│                  │
-   │                  │                  │                  │
-   │ CRASH / DISCONNECT                 │                  │
-   │                  │                  │                  │
-   │                  │ COG_EVENT_IPC_DISCONNECTED           │
-   │                  │─────────────────>│                  │
-   │                  │                  │                  │
-   │                  │                  │ handler:         │
-   │                  │                  │ - continue LLM   │
-   │                  │                  │ - buffer output  │
-   │                  │                  │ - don't waste    │
-   │                  │                  │   tokens         │
-   │                  │                  │                  │
-   │                  │                  │ LLM continues    │
-   │                  │                  │ chunks buffered  │
-   │                  │                  │                  │
-   │ RECONNECT        │                  │                  │
-   │                  │                  │                  │
-   │ cog_ipc_endpoint_connect()          │                  │
-   │─────────────────>│                  │                  │
-   │                  │ accept           │                  │
-   │                  │─────────────────>│                  │
-   │                  │                  │                  │
-   │                  │ COG_EVENT_IPC_CONNECTED              │
-   │                  │─────────────────>│                  │
-   │                  │                  │                  │
-   │                  │                  │ handler:         │
-   │                  │                  │ - identify UI    │
-   │                  │                  │ - send buffered  │
-   │                  │                  │   chunks         │
-   │<─────────────────│<─────────────────│                  │
-   │                  │                  │                  │
-   │ render buffered  │                  │                  │
-   │ + live output    │                  │                  │
-```
+![Sequence Diagram](svg/11-ui-reconnect.svg)
 
 ## Header Coverage
 

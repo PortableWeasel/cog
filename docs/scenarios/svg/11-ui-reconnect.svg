@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#333"/>
+    </marker>
+  </defs>
+  
+  <text x="450" y="25" text-anchor="middle" font-size="16" font-weight="bold">Scenario 11: UI Disconnect → Buffer → Reconnect → Replay</text>
+  
+  <!-- Actors -->
+  <rect x="50" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="100" y="75" text-anchor="middle">UI</text>
+  
+  <rect x="200" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="250" y="75" text-anchor="middle">IPC Fabric</text>
+  
+  <rect x="350" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="400" y="75" text-anchor="middle">Main Core</text>
+  
+  <rect x="500" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="550" y="75" text-anchor="middle">Provider</text>
+  
+  <rect x="650" y="50" width="100" height="40" fill="#e1f5ff" stroke="#333" rx="5"/>
+  <text x="700" y="75" text-anchor="middle">Session</text>
+  
+  <!-- Lifelines -->
+  <line x1="100" y1="90" x2="100" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="250" y1="90" x2="250" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="400" y1="90" x2="400" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="550" y1="90" x2="550" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  <line x1="700" y1="90" x2="700" y2="450" stroke="#999" stroke-dasharray="5,5"/>
+  
+  <!-- 1. Normal streaming -->
+  <line x1="550" y1="110" x2="400" y2="110" stroke="#333" stroke-dasharray="5,5" marker-end="url(#arrow)"/>
+  <text x="475" y="105" text-anchor="middle" font-size="10">LLM chunk</text>
+  
+  <!-- 2. UI disconnects -->
+  <rect x="50" y="130" width="100" height="30" fill="#f8d7da" stroke="#333" rx="3"/>
+  <text x="100" y="150" text-anchor="middle" font-size="10">UI disconnects</text>
+  
+  <!-- 3. IPC detects -->
+  <line x1="100" y1="170" x2="250" y2="170" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="175" y="165" text-anchor="middle" font-size="10">disconnect</text>
+  
+  <!-- 4. IPC buffers events -->
+  <rect x="200" y="185" width="100" height="40" fill="#fff3cd" stroke="#333" rx="3"/>
+  <text x="250" y="200" text-anchor="middle" font-size="10">buffer events</text>
+  <text x="250" y="213" text-anchor="middle" font-size="9">for session X</text>
+  
+  <!-- 5. Core continues -->
+  <rect x="350" y="230" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="400" y="250" text-anchor="middle" font-size="10">continue processing</text>
+  
+  <!-- 6. More chunks -->
+  <line x1="550" y1="270" x2="400" y2="270" stroke="#333" stroke-dasharray="5,5" marker-end="url(#arrow)"/>
+  <text x="475" y="265" text-anchor="middle" font-size="10">more chunks</text>
+  
+  <!-- 7. Buffer grows -->
+  <rect x="200" y="285" width="100" height="30" fill="#fff3cd" stroke="#333" rx="3"/>
+  <text x="250" y="305" text-anchor="middle" font-size="10">buffer: N events</text>
+  
+  <!-- 8. UI reconnects -->
+  <line x1="100" y1="330" x2="250" y2="330" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="175" y="325" text-anchor="middle" font-size="10">reconnect(session_id)</text>
+  
+  <!-- 9. IPC replays buffer -->
+  <line x1="250" y1="350" x2="100" y2="350" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="175" y="345" text-anchor="middle" font-size="10">replay buffered events</text>
+  
+  <!-- 10. UI catches up -->
+  <rect x="50" y="370" width="100" height="30" fill="#d4edda" stroke="#333" rx="3"/>
+  <text x="100" y="390" text-anchor="middle" font-size="10">render all chunks</text>
+  
+  <!-- 11. Resume normal -->
+  <line x1="400" y1="410" x2="100" y2="410" stroke="#333" marker-end="url(#arrow)"/>
+  <text x="250" y="405" text-anchor="middle" font-size="10">resume streaming</text>
+</svg>

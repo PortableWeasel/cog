@@ -2,32 +2,7 @@
 
 ## Sequence Diagram
 
-```
-Main Core         Orchestrator        Aux Core 2        Subagent S1    Subagent S2
-   │                  │                  │                  │               │
-   │                  │                  │ running S1, S2   │               │
-   │                  │                  │                  │               │
-   │                  │                  │ CRASH (segfault) │               │
-   │                  │                  │                  │               │
-   │                  │ heartbeat timeout│                  │               │
-   │                  │ (no heartbeat    │                  │               │
-   │                  │  for threshold)  │                  │               │
-   │                  │                  │                  │               │
-   │                  │ mark DEAD        │                  │               │
-   │                  │                  │                  │               │
-   │ COG_EVENT_IPC_DISCONNECTED           │                  │               │
-   │<─────────────────│                  │                  │               │
-   │                  │                  │                  │               │
-   │ handler:         │                  │                  │               │
-   │ - find affected  │                  │                  │               │
-   │   subagents S1,S2│                  │                  │               │
-   │ - mark FAILED    │                  │                  │               │
-   │ - notify parents │                  │                  │               │
-   │                  │                  │                  │               │
-   │                  │ optionally:      │                  │               │
-   │                  │ cog_orchestrator_spawn()             │               │
-   │                  │ (replacement)    │                  │               │
-```
+![Sequence Diagram](svg/07-aux-crash.svg)
 
 ## Header Coverage
 

@@ -2,54 +2,7 @@
 
 ## Sequence Diagram
 
-```
-Signal          Core             Net             Provider         IPC
-  │               │               │                │               │
-  │ SIGINT        │               │                │               │
-  │──────────────>│               │                │               │
-  │               │               │                │               │
-  │               │ cog_core_stop()│               │               │
-  │               │ (sets flag)   │                │               │
-  │               │               │                │               │
-  │               │ finish current│                │               │
-  │               │ event dispatch│                │               │
-  │               │               │                │               │
-  │               │ COG_EVENT_SHUTDOWN             │               │
-  │               │ enqueue       │                │               │
-  │               │               │                │               │
-  │               │ shutdown handler:              │               │
-  │               │               │                │               │
-  │               │ cog_net_cancel() for each      │               │
-  │               │ in-flight request              │               │
-  │               │──────────────>│                │               │
-  │               │               │                │               │
-  │               │ cog_ipc_broadcast() shutdown   │               │
-  │               │ to all subagents               │               │
-  │               │───────────────────────────────────────────────>│
-  │               │               │                │               │
-  │               │ wait for acks │                │               │
-  │               │ (with timeout)│                │               │
-  │               │               │                │               │
-  │               │ cog_provider_disconnect()      │               │
-  │               │ for each provider              │               │
-  │               │───────────────────────────────>│               │
-  │               │               │                │               │
-  │               │ cog_ipc_endpoint_disconnect()  │               │
-  │               │ cog_ipc_endpoint_free()        │               │
-  │               │───────────────────────────────────────────────>│
-  │               │               │                │               │
-  │               │ cog_net_free()│                │               │
-  │               │──────────────>│                │               │
-  │               │               │                │               │
-  │               │ cog_session_free()             │               │
-  │               │ cog_obs_free() │               │               │
-  │               │ cog_config_tree_free()         │               │
-  │               │ cog_core_free()│               │               │
-  │               │               │                │               │
-  │               │ return from cog_core_run()     │               │
-  │               │               │                │               │
-  │               │ main() returns 0               │               │
-```
+![Sequence Diagram](svg/05-graceful-shutdown.svg)
 
 ## Header Coverage
 
