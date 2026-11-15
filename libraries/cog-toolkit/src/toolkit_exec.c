@@ -23,11 +23,11 @@ static void invoke(cog_core_t *core, const cog_tool_table_t *table,
     call->invoked = true;
     cog_toolkit_result_t *out = &call->outcome;
     out->output = call->capture;
-    if (call->cancelled) { out->status = COG_ERROR_ABORTED; return; }
+    if (call->cancelled) { out->status = COG_ERROR_ABORTED; call->finished = true; return; }
     const cog_tool_t *tool;
     out->status = cog_tool_table_lookup(table, call->name, &tool);
-    if (out->status != COG_OK) { return; }
-    if (tool->handler == NULL) { out->status = COG_ERROR_UNSUPPORTED; return; }
+    if (out->status != COG_OK) { call->finished = true; return; }
+    if (tool->handler == NULL) { out->status = COG_ERROR_UNSUPPORTED; call->finished = true; return; }
     uint32_t timeout = call->timeout_ms != 0U ? call->timeout_ms : default_timeout;
     uint64_t began = clock_ms();
     size_t length = 0U;
@@ -48,6 +48,8 @@ static void invoke(cog_core_t *core, const cog_tool_table_t *table,
         out->status = COG_ERROR_TIMEOUT;
     }
     if (call->cancelled) { out->status = COG_ERROR_ABORTED; }
+    call->finished = true;
+    if (out->status != COG_OK) { out->error_message = "tool execution failed; outcome retained"; }
 }
 
 cog_result_t cog_toolkit_execute(cog_core_t *core, const cog_tool_table_t *table,
@@ -95,6 +97,7 @@ static void run_index(batch_t *batch, size_t index)
     result->output = output;
     if (result->status != COG_ERROR_OVERFLOW) {
         memcpy(output, call->capture, call->outcome.output_len + 1U);
+        if (call->outcome.output_len == 0U) { result->output = NULL; }
     }
 }
 

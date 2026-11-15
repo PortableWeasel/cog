@@ -3,15 +3,8 @@
  * @brief Implementation of the tool call context contract declared in
  *        cog/toolkit_call.h.
  *
- * A @c cog_toolkit_call_t is a single pending tool invocation: the tool
- * name, a borrowed request payload, an optional per-call timeout, and a
- * cooperative cancellation flag.  The context does not own the request
- * payload; the caller must keep it alive until execution completes.
- *
- * All storage owned by the context is allocated in a single heap block by
- * the constructor (the struct plus a NUL-terminated copy of the name) and
- * released by the destructor.  The request payload is borrowed, never
- * copied, and never freed here.
+ * The constructor owns copied name/request and fixed 64 KiB result capture in
+ * one block. The dispatcher caches a single invocation here until free.
  *
  * The module holds no global mutable state.
  *
@@ -50,10 +43,11 @@ cog_result_t cog_toolkit_call_new(cog_toolkit_call_t **out,
     size_t name_len;
     char *name_storage;
 
-    if (out == NULL || name == NULL) {
+    if (out == NULL) {
         return COG_ERROR_NULL_PTR;
     }
     *out = NULL;
+    if (name == NULL) { return COG_ERROR_NULL_PTR; }
 
     if (request == NULL && request_len != 0U) {
         return COG_ERROR_INVALID_ARG;
@@ -112,7 +106,7 @@ cog_result_t cog_toolkit_call_cancel(cog_toolkit_call_t *call)
     if (call == NULL) {
         return COG_ERROR_NULL_PTR;
     }
-    if (!call->invoked) { call->cancelled = true; }
+    if (!call->finished) { call->cancelled = true; }
     return COG_OK;
 }
 

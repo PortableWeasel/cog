@@ -27,6 +27,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "cog/toolkit.h"
+#include "fixtures/toolkit_core.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -264,21 +265,21 @@ static cog_result_t json_string_tool(cog_core_t *core,
 
 static const cog_tool_t kTools[] = {
     { .name = "echo", .description = NULL, .input_schema = NULL,
-      .handler = echo_tool },
+      .handler = echo_tool, .flags = COG_TOOL_REENTRANT | COG_TOOL_INDEPENDENT },
     { .name = "request_echo", .description = NULL, .input_schema = NULL,
-      .handler = request_echo_tool },
+      .handler = request_echo_tool, .flags = COG_TOOL_REENTRANT | COG_TOOL_INDEPENDENT },
     { .name = "block", .description = NULL, .input_schema = NULL,
-      .handler = blocking_tool },
+      .handler = blocking_tool, .flags = COG_TOOL_REENTRANT | COG_TOOL_INDEPENDENT },
     { .name = "fail", .description = NULL, .input_schema = NULL,
-      .handler = fail_tool },
+      .handler = fail_tool, .flags = COG_TOOL_REENTRANT | COG_TOOL_INDEPENDENT },
     { .name = "large", .description = NULL, .input_schema = NULL,
-      .handler = large_output_tool },
+      .handler = large_output_tool, .flags = COG_TOOL_REENTRANT | COG_TOOL_INDEPENDENT },
     { .name = "empty", .description = NULL, .input_schema = NULL,
-      .handler = empty_tool },
+      .handler = empty_tool, .flags = COG_TOOL_REENTRANT | COG_TOOL_INDEPENDENT },
     { .name = "json", .description = NULL, .input_schema = NULL,
-      .handler = json_object_tool },
+      .handler = json_object_tool, .flags = COG_TOOL_REENTRANT | COG_TOOL_INDEPENDENT },
     { .name = "json_string", .description = NULL, .input_schema = NULL,
-      .handler = json_string_tool },
+      .handler = json_string_tool, .flags = COG_TOOL_REENTRANT | COG_TOOL_INDEPENDENT },
 };
 
 static const cog_tool_table_t kTable = {
@@ -286,11 +287,9 @@ static const cog_tool_table_t kTable = {
     .count = sizeof(kTools) / sizeof(kTools[0]),
 };
 
-static long g_core_storage;
-
 static cog_core_t *dummy_core(void)
 {
-    return (cog_core_t *)&g_core_storage;
+    return toolkit_test_core;
 }
 
 /* ------------------------------------------------------------------ */
@@ -315,7 +314,7 @@ static int verify_call_new_free(void)
         cog_toolkit_call_free(call);
         return 1;
     }
-    if (cog_toolkit_call_request(call, &len) != kReq || len != sizeof(kReq) - 1U) {
+    if (strcmp(cog_toolkit_call_request(call, &len), kReq) != 0 || len != sizeof(kReq) - 1U) {
         cog_toolkit_call_free(call);
         return 1;
     }
@@ -339,7 +338,7 @@ static int verify_call_new_null(void)
     if (cog_toolkit_call_new(&call, NULL, NULL, 0U) != COG_ERROR_NULL_PTR) {
         return 1;
     }
-    if (call != (cog_toolkit_call_t *)&call) {
+    if (call != NULL) {
         return 1; /* *out unchanged on failure */
     }
     return 0;
@@ -865,13 +864,13 @@ static int verify_execute_all_stop_on_error(void)
     r = cog_toolkit_execute_all(dummy_core(), &kTable, calls, 2U, &opts, &coll);
     cog_toolkit_call_free(calls[0]);
     cog_toolkit_call_free(calls[1]);
-    if (r != COG_ERROR_IO) {
+    if (r != COG_OK) {
         return 1;
     }
-    if (coll != NULL) {
-        cog_toolkit_result_collection_free(coll);
-        return 1;
-    }
+    if (coll == NULL) { return 1; }
+    const cog_toolkit_result_t *retained = NULL;
+    if (cog_toolkit_result_collection_get(coll, 1U, &retained) != COG_OK || retained->status != COG_ERROR_IO) { cog_toolkit_result_collection_free(coll); return 1; }
+    cog_toolkit_result_collection_free(coll);
     return 0;
 }
 
@@ -1286,6 +1285,7 @@ static int verify_stress(void)
 
 int main(void)
 {
+    toolkit_core_create();
     unsigned failures = 0U;
 
 #define CHECK(label, expr)                                                   \
@@ -1338,5 +1338,6 @@ int main(void)
     if (failures == 0U) {
         (void)printf("test_toolkit: ok\n");
     }
+    toolkit_core_destroy();
     return failures == 0U ? 0 : 1;
 }

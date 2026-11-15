@@ -23,6 +23,7 @@ struct cog_toolkit_call {
     uint32_t timeout_ms;
     bool cancelled;
     bool invoked;
+    bool finished;
     char *capture;
     cog_toolkit_result_t outcome;
 };

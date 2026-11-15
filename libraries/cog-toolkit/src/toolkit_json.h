@@ -15,5 +15,6 @@ typedef struct cog_toolkit_json {
 cog_result_t cog_toolkit_json_new(cog_toolkit_json_t *json,
     const char *arguments, size_t arguments_len, const char *schema,
     const cog_tool_async_config_t *config);
+cog_result_t cog_toolkit_json_validate_output(const char *text, size_t length, const char *schema);
 void cog_toolkit_json_free(cog_toolkit_json_t *json);
 #endif

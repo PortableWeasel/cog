@@ -99,11 +99,12 @@ static bool integer_value(yyjson_val *value, int64_t *out)
 static bool number_value(yyjson_val *value, double *out)
 {
     const char *raw = yyjson_get_raw(value);
-    char *end = NULL;
+    yyjson_val parsed;
     if (raw == NULL) { return false; }
-    errno = 0;
-    *out = strtod(raw, &end);
-    return end != raw && *end == '\0' && isfinite(*out) && errno != ERANGE;
+    const char *end = yyjson_read_number(raw, &parsed, 0U, NULL, NULL);
+    if (end == NULL || *end != '\0') { return false; }
+    *out = yyjson_get_num(&parsed);
+    return isfinite(*out);
 }
 
 static cog_result_t strict_value(yyjson_val *value)
@@ -384,4 +385,25 @@ void cog_toolkit_json_free(cog_toolkit_json_t *json)
     yyjson_doc_free(json->schema);
     free(json->pool);
     memset(json, 0, sizeof(*json));
+}
+
+/* Legacy validator has no constructor/config parameter. Automatic local storage
+   bounds its parser without hidden allocation or a process-global codec pool. */
+cog_result_t cog_toolkit_json_validate_output(const char *text, size_t length,
+                                             const char *schema)
+{
+    _Alignas(max_align_t) unsigned char pool[1048576U];
+    cog_toolkit_json_t json = {0};
+    json.pool = pool;
+    json.pool_bytes = sizeof(pool);
+    json.max_depth = 64U;
+    if (length >= 65536U || strlen(schema) >= 65536U) { return COG_ERROR_LIMIT; }
+    if (!yyjson_alc_pool_init(&json.allocator, pool, sizeof(pool))) { return COG_ERROR_LIMIT; }
+    cog_result_t r = parse(&json, text, length, &json.arguments);
+    if (r == COG_OK) { r = parse(&json, schema, strlen(schema), &json.schema); }
+    if (r == COG_OK) { r = schema_check(yyjson_doc_get_root(json.schema)); }
+    if (r == COG_OK) { r = schema_apply(yyjson_doc_get_root(json.arguments), yyjson_doc_get_root(json.schema)); }
+    yyjson_doc_free(json.arguments);
+    yyjson_doc_free(json.schema);
+    return r;
 }
