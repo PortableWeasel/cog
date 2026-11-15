@@ -7,10 +7,11 @@
 #include <unistd.h>
 static size_t saves, fail_at, appends;
 static bool fail_append;
+static cog_result_t save_failure;
 cog_result_t __real_cog_store_save(cog_store_t *store,const cog_session_t *session);
 cog_result_t __wrap_cog_store_save(cog_store_t *store,const cog_session_t *session);
 cog_result_t __wrap_cog_store_save(cog_store_t *store,const cog_session_t *session)
-{if(++saves==fail_at)return COG_ERROR_IO;return __real_cog_store_save(store,session);}
+{if(++saves==fail_at)return save_failure;return __real_cog_store_save(store,session);}
 cog_result_t __real_cog_session_append(cog_session_t *session,const cog_message_t *message,cog_session_node_t **node);
 cog_result_t __wrap_cog_session_append(cog_session_t *session,const cog_message_t *message,cog_session_node_t **node);
 cog_result_t __wrap_cog_session_append(cog_session_t *session,const cog_message_t *message,cog_session_node_t **node)
@@ -26,7 +27,8 @@ int main(void)
         {.kind=COG_PROVIDER_DELTA_FINISH,.finish_reason=COG_FINISH_REASON_TOOL_CALLS,.outcome=COG_OK},
         {.kind=COG_PROVIDER_DELTA_TEXT,.data="must not send",.data_len=13},
         {.kind=COG_PROVIDER_DELTA_FINISH,.finish_reason=COG_FINISH_REASON_STOP,.outcome=COG_OK}};
-    for(size_t failure=3;failure<=5;failure++) {
+    for(size_t phase=0;phase<4;phase++) {
+        size_t failure=phase==0U?1U:phase+2U;
         char root[]="/tmp/cog-k-save-XXXXXX";REQUIRE(mkdtemp(root)!=NULL);
         char store[512],effect[512],cleanup[1024];
         REQUIRE(snprintf(store,sizeof(store),"%s/store",root)>0);
@@ -37,9 +39,14 @@ int main(void)
             .explicit_options=COG_CLI_OPT_BACKEND|COG_CLI_OPT_WORKSPACE|COG_CLI_OPT_POLICY|COG_CLI_OPT_STORE_MODE|COG_CLI_OPT_STORE_DIR};
         cog_cli_app_t *app=NULL;REQUIRE(cog_cli_app_new(&app,&opts)==COG_OK);
         saves=0;fail_at=failure==5U?0U:failure;appends=0;fail_append=failure==5U;
-        REQUIRE(cog_cli_app_run(app)==COG_ERROR_IO);
+        save_failure=failure==1U?COG_ERROR_INDETERMINATE:COG_ERROR_IO;
+        REQUIRE(cog_cli_app_run(app)==save_failure);
         cog_mock_state_t state;REQUIRE(cog_mock_provider_state(cog_cli_app_provider(app),&state)==COG_OK);
-        REQUIRE(state.send_count==1U);
+        REQUIRE(state.send_count==(failure==1U?0U:1U));
+        if(failure==1U) {
+            REQUIRE(cog_cli_app_submit(app,"second",6)==COG_ERROR_INDETERMINATE);
+            REQUIRE(cog_cli_app_run(app)==COG_ERROR_INDETERMINATE);
+        }
         REQUIRE((access(effect,F_OK)==0)==(failure>=4U));
         if(failure>=4U) {
             REQUIRE(app->terminal_result_pending && app->execution!=NULL);

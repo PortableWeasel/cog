@@ -76,7 +76,7 @@ static cog_session_t *make_session(const char *id)
 {
     cog_session_t *s = NULL;
     cog_session_config_t cfg;
-    cog_message_t m;
+    cog_message_t m = {0};
 
     (void)memset(&cfg, 0, sizeof(cfg));
     cfg.id = id;
@@ -140,7 +140,7 @@ static void scenario_persistence(void)
     size_t id_count = 0U;
     size_t found = 0U;
     cog_session_node_t *active;
-    cog_message_t m;
+    cog_message_t m = {0};
     cog_session_node_t *appended = NULL;
 
     if (mkdtemp(dir) == NULL) {
@@ -237,7 +237,7 @@ static void scenario_tool_identity_roundtrip(void)
     cog_session_node_t *root = NULL;
     cog_session_node_t *tc = NULL;
     cog_session_node_t *tr = NULL;
-    cog_message_t m;
+    cog_message_t m = {0};
     const cog_message_t *msgs = NULL;
     size_t count = 0U;
     const cog_message_tool_call_t call = {"search-1", "search", "{\"q\":\"X\"}", 9U};

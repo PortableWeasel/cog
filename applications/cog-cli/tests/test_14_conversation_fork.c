@@ -67,7 +67,7 @@ static cog_session_node_t *add_msg(cog_session_t *s,
                                    cog_message_role_t role,
                                    const char *text)
 {
-    cog_message_t m;
+    cog_message_t m = {0};
     cog_session_node_t *out = NULL;
 
     (void)memset(&m, 0, sizeof(m));

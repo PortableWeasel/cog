@@ -25,7 +25,9 @@ bool cog_cli_text_valid(const char *text, size_t length)
 }
 cog_result_t cog_cli_save(cog_cli_app_t *app)
 {
-    return app->store == NULL ? COG_OK : cog_store_save(app->store, app->session);
+    cog_result_t rc = app->store == NULL ? COG_OK : cog_store_save(app->store, app->session);
+    if (rc == COG_ERROR_INDETERMINATE) app->recovery = true;
+    return rc;
 }
 static cog_result_t log_deliver(void *arg, const char *record, size_t length)
 {
