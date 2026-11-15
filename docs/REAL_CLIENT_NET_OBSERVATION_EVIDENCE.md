@@ -91,3 +91,33 @@ client cancellation. This avoids a delayed-client race with body completion.
 The changed observer fixture passes again under all three optimized/sanitized
 profiles; production source and the previously passing sixteen-test set are
 unchanged.
+
+## Independent acceptance and main integration
+
+Different critic review passed cycle 1 on complete writer checkpoint `bd02941`.
+Production source stayed at `1f829ec` and the public header exactly matched
+approved `7096360`; the critic made no production changes. Independent full
+strict GCC Release, Clang Release and Clang Release ASan/UBSan/LSan builds each
+passed the same 16/16 focused tests. The critic regression and final review are
+recorded in [independent evidence](REAL_CLIENT_NET_OBSERVATION_CRITIC.md).
+
+Root-authorized no-fast-forward merge
+`1484675f06f31de95f8bb379d4d10e868a5a8aa2` integrated reviewed `fb0faff`
+(writer checkpoint plus critic acceptance and approved DESIGN decision) into
+main `081e1f5` without conflicts. Fresh main
+`build-review-net-observation` completed a full strict Clang Release build
+without warnings and passed all 16/16 net/consumer checks. The admitted
+c-ares-only curl build/library/include provenance and test scope match the
+independent runs above.
+
+The approved design/header/source commits are retained as ancestors of main.
+The original critic test `5384d98` and incorporated `44107f6` have the identical
+stable patch ID `d5f71de2ec7398d0451974c4b9a752e241951f33`; its original review
+branch is also retained. The managed net implementation, review and completed
+observability-design worktrees are archived after these checks. Existing
+`build_user/` and all R12 worktrees are preserved; the R12 writer was notified
+to retain both approved DESIGN decisions on its later integration.
+
+This closes only net primitive `1a2b9c8` and its scoped validation child.
+Application bridge/timing `b64ee7c` remains pending after R12 `af6956a`;
+M and P remain open. No paid/live request was made.
