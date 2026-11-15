@@ -264,7 +264,9 @@ static int output_and_limits(const char *store)
     CHECK(cog_cli_app_new(&app,&o)==COG_OK);full=fopen("/dev/full","w");CHECK(full!=NULL);
     app->out=full;CHECK(cog_cli_app_run(app)==COG_ERROR_IO);app->out=stdout;(void)fclose(full);
     cog_cli_display_snapshot_t display;CHECK(cog_cli_app_display_snapshot(app,&display)==COG_OK);
-    CHECK(display.item_count==2U && display.items[1].status==COG_MESSAGE_INCOMPLETE);
+    /* The mock already retained successful FINISH: wire completion wins the
+       cleanup cancel, while the separate output error still propagates IO. */
+    CHECK(display.item_count==2U && display.items[1].status==COG_MESSAGE_COMPLETE);
     CHECK(display.items[1].text_len==8U && memcmp(display.items[1].text,"retained",8)==0);
     cog_cli_app_free(app);
     o=options(store);o.session_action=COG_CLI_SESSION_RESUME;o.source_session_id="usage";

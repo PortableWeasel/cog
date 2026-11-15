@@ -24,7 +24,8 @@ with tempfile.TemporaryDirectory(prefix='cog-l-installed-') as root:
     missing=root/'does-not-exist'/'store'
     assert run('--sessions','--store',str(missing)).stdout=='' and not missing.exists()
     assert run(*common,'--resume','missing','--prompt','must not send',code=1).stdout==''
-    run('--sessions','--no-store',code=2)
+    # Store-mode incompatibility is rejected during effective configuration.
+    run('--sessions','--no-store',code=1)
     subprocess.run([fixture,'seed',str(store)],env=env,check=True,timeout=10)
     assert run(*common,'--resume','uncertain','--prompt','must not send',code=1).stdout==''
     recover=['--store',str(store),'--recover','uncertain','--fenced','--interactive']
