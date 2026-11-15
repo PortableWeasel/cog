@@ -6,8 +6,13 @@ function(target_enable_warnings tgt)
             -Wmissing-prototypes -Wstrict-prototypes
             -Wundef -Wpointer-arith
             -Wcast-align -Wwrite-strings
-            -Wlogical-op -Wformat=2
+            -Wformat=2
             $<$<CONFIG:Debug>:-fno-omit-frame-pointer>)
+
+        # -Wlogical-op is GNU-only; clang rejects it under -Werror.
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU")
+            target_compile_options(${tgt} PRIVATE -Wlogical-op)
+        endif()
 
         if(COG_ENABLE_WERROR)
             target_compile_options(${tgt} PRIVATE -Werror)
