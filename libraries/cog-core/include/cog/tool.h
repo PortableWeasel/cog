@@ -17,7 +17,9 @@
 #include <cog/event.h>
 #include <cog/result.h>
 
+#include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,7 +34,11 @@ typedef struct cog_core cog_core_t;
  * The caller supplies the result buffer, so no hidden allocation occurs
  * and ownership never transfers.  If the buffer is too small the tool
  * reports the required length via @p out_result_len (when non-NULL) and
- * returns @c COG_ERROR_OVERFLOW.
+ * returns @c COG_ERROR_OVERFLOW. This is NOT permission to invoke again:
+ * side effects may already have occurred. The dispatcher invokes a call at
+ * most once, including overflow/error paths, and caches its outcome. Blocking
+ * handlers are legacy only and cannot satisfy responsive real-client service.
+ * Use the asynchronous table below for process/workspace release tools.
  *
  * @param[in,out] core             Core instance that requested the tool.
  * @param[in]     request          Tool request payload (e.g. JSON arguments).
@@ -71,6 +77,121 @@ typedef cog_result_t (*cog_tool_fn)(cog_core_t *core,
                                      size_t result_capacity,
                                      size_t *out_result_len);
 
+/** @brief Constructor reservation and explicit application-owned tool context. */
+typedef struct cog_tool_async_config {
+    size_t max_output_bytes; /**< Nonzero capture bound excluding NUL. */
+    uint32_t timeout_ms; /**< Nonzero monotonic execution deadline. */
+    uint32_t terminate_grace_ms; /**< TERM-to-KILL grace, zero means immediate KILL. */
+    void *user; /**< Borrowed workspace/policy config; valid until destroy. */
+} cog_tool_async_config_t;
+
+/** @brief Borrowed final tool outcome, retained until destroy. */
+typedef struct cog_tool_output {
+    cog_result_t status;
+    const char *output; /**< UTF-8/text result, NUL terminated; never grows. */
+    size_t output_len;
+    bool truncated; /**< Capture ceiling reached; explicit, never hidden. */
+    bool side_effects_possible; /**< True once an external effect may have begun. */
+    int exit_status; /**< Process status only when exit_status_known. */
+    bool exit_status_known;
+} cog_tool_output_t;
+
+/**
+ * @brief Static nonblocking tool operations; no workers are created implicitly.
+ *
+ * new_ copies request, reserves complete bounded output/state and performs no
+ * external side effects. start is called at most once after strict argument
+ * schema validation, explicit ALLOW policy, and durable STARTED intent. poll
+ * never waits; output is exposed only after done=true, and result is repeatable
+ * without execution. cancel is idempotent; it sets no global/signal flag.
+ * Process tools own a distinct process group: TERM then deadline-driven KILL,
+ * drain pipes and reap all owned children with nonblocking checks before done.
+ * A timeout/cancel/error can leave file effects; report side_effects_possible.
+ * destroy requires never-started or done, otherwise INVALID_STATE, and returns
+ * all constructor resources. No handles/callbacks/child zombies after success.
+ *
+ * Every callback is owner-thread only, nonrecursive and returns NULL_PTR for
+ * required NULLs. new_ returns NOMEM/LIMIT/INVALID_ARG/UNSUPPORTED before effects
+ * and sets *out_handle=NULL on failure. start returns INVALID_STATE on repeat;
+ * if an effect starts, it returns OK and poll/result expose any ensuing error.
+ * poll returns OK with done/deadline (UINT64_MAX if none), INVALID_ARG on a
+ * backwards clock, or driver error requiring cancellation. result returns
+ * AGAIN until terminal then OK even when output.status is failure. cancel and
+ * destroy return OK or INVALID_STATE. No runtime Cog allocations after new_.
+ * Descriptors/callers must honor these contracts; the core cannot preempt an
+ * arbitrary blocking C callback or provide an OS sandbox.
+ */
+/**
+ * @brief Reserve async tool state without external effects; see table contract.
+ * @param[in,out] core Borrowed core.
+ * @param[in] request Complete validated arguments, copied during this call.
+ * @param[in] request_len Exact argument bytes.
+ * @param[in] config Explicit limits and borrowed user context.
+ * @param[out] out_handle Owned state on OK, NULL on failure.
+ * @return OK, NULL_PTR, INVALID_ARG, LIMIT, NOMEM or UNSUPPORTED.
+ * @note Owner thread, no execution; matching destroy releases all storage.
+ */
+typedef cog_result_t (*cog_tool_async_new_fn)(cog_core_t *core,
+    const char *request, size_t request_len,
+    const cog_tool_async_config_t *config, void **out_handle);
+/**
+ * @brief Begin effects once after policy and persistence; see table contract.
+ * @param[in,out] handle Prepared tool state.
+ * @param[in] now_ms Monotonic time.
+ * @return OK, NULL_PTR, INVALID_ARG or INVALID_STATE; failure has no effects.
+ * @note Owner thread, nonblocking; effects begun imply OK and retained outcome.
+ */
+typedef cog_result_t (*cog_tool_async_start_fn)(void *handle, uint64_t now_ms);
+/**
+ * @brief Service bounded execution/cleanup work.
+ * @param[in,out] handle Admitted tool state.
+ * @param[in] now_ms Nondecreasing monotonic time.
+ * @param[out] out_done True only when terminal and all owned children reaped.
+ * @param[out] out_next_deadline_ms Absolute timer or UINT64_MAX.
+ * @return OK, NULL_PTR, INVALID_ARG, INVALID_STATE or fatal driver error.
+ * @note Owner thread, no sleeping; result status describes execution failure.
+ */
+typedef cog_result_t (*cog_tool_async_poll_fn)(void *handle, uint64_t now_ms,
+    bool *out_done, uint64_t *out_next_deadline_ms);
+/**
+ * @brief Request idempotent cancellation without waiting for process exit.
+ * @param[in,out] handle Tool state.
+ * @param[in] now_ms Nondecreasing monotonic time.
+ * @return OK, NULL_PTR, INVALID_ARG. Owner thread; continue poll until done.
+ */
+typedef cog_result_t (*cog_tool_async_cancel_fn)(void *handle, uint64_t now_ms);
+/**
+ * @brief View retained terminal output without execution or allocation.
+ * @param[in] handle Tool state.
+ * @param[out] out_result Borrowed view, unchanged on failure.
+ * @return OK, NULL_PTR, AGAIN before done. Owner thread; view until destroy.
+ */
+typedef cog_result_t (*cog_tool_async_result_fn)(const void *handle,
+    cog_tool_output_t *out_result);
+/**
+ * @brief Free prepared/terminal tool state.
+ * @param[in,out] handle Tool state, NULL is OK.
+ * @return OK, INVALID_STATE if active (handle remains intact).
+ * @note Owner thread; cancel/poll before destruction; no hidden waits.
+ */
+typedef cog_result_t (*cog_tool_async_destroy_fn)(void *handle);
+/** @brief Every callback is required; definitions are static const. */
+typedef struct cog_tool_async_vtable {
+    cog_tool_async_new_fn new_;
+    cog_tool_async_start_fn start;
+    cog_tool_async_poll_fn poll;
+    cog_tool_async_cancel_fn cancel;
+    cog_tool_async_result_fn result;
+    cog_tool_async_destroy_fn destroy;
+} cog_tool_async_vtable_t;
+
+/** @brief Explicit opt-in capabilities of an asynchronous descriptor. */
+typedef enum cog_tool_flag {
+    COG_TOOL_REENTRANT = 1u,
+    COG_TOOL_INDEPENDENT = 2u,
+    COG_TOOL_SIDE_EFFECTING = 4u
+} cog_tool_flag_t;
+
 /**
  * @brief Descriptor for a single tool.
  *
@@ -83,7 +204,9 @@ typedef struct cog_tool {
     const char *description; /**< Human-readable description; may be NULL. */
     const char *input_schema; /**< Input validation schema (e.g. JSON Schema);
                                   may be NULL. */
-    cog_tool_fn handler;     /**< Tool implementation.  Non-NULL. */
+    cog_tool_fn handler;     /**< Legacy blocking handler; NULL if async only. */
+    const cog_tool_async_vtable_t *async; /**< Static operations for responsive use. */
+    uint32_t flags; /**< cog_tool_flag_t bits; concurrency requires first two. */
 } cog_tool_t;
 
 /**

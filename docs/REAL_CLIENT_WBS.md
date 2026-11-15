@@ -31,7 +31,9 @@ header gate because it must complete before K.
 
 ## Scheduling and completion rules
 
-A and B may run concurrently. C–E are serial header/scenario reviews.
+A and B may run concurrently. C–E are serial header/scenario reviews. The initial public contracts and
+compatibility changes for C are recorded in [REAL_CLIENT_CONTRACTS.md](REAL_CLIENT_CONTRACTS.md);
+that pass alone does not satisfy D or E.
 After E, F/G/I/J/Q may run concurrently only in isolated worktrees with
 nonoverlapping file ownership. H waits for F/G; K joins H/I/J/Q; L completes
 single-process UX. M is the first usable-client acceptance gate. N–P finish

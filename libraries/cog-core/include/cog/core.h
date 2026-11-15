@@ -64,6 +64,29 @@ typedef struct cog_core cog_core_t;
 typedef void (*cog_wait_fn)(void *arg);
 
 /**
+ * @brief Fallible nonblocking external service hook, including timers/net/tools.
+ * @param[in,out] arg Caller-owned context retained until core_free.
+ * @param[in] now_ms Nondecreasing monotonic milliseconds from the core clock.
+ * @param[out] out_next_deadline_ms Absolute next desired service time;
+ * UINT64_MAX means none. Past/due means no idle wait.
+ * @return COG_OK or AGAIN for normal operation; any other result stops run()
+ * and propagates unchanged. Hook may enqueue; OVERFLOW must be handled by
+ * retaining the source item, never losing an accepted provider/tool result.
+ * @note Owner thread, no waits, recursion into run(), or destruction of core.
+ */
+typedef cog_result_t (*cog_service_fn)(void *arg, uint64_t now_ms,
+                                      uint64_t *out_next_deadline_ms);
+/**
+ * @brief Fallible bounded idle hook for stdin/IPC readiness.
+ * @param[in,out] arg Caller context.
+ * @param[in] max_wait_ms Maximum relative wait, possibly zero.
+ * @return COG_OK or AGAIN; other errors propagate from run().
+ * @note Must return within supplied budget subject to OS scheduling and on
+ * stop wakeup. Must not drain work indefinitely. Owner thread only.
+ */
+typedef cog_result_t (*cog_idle_fn)(void *arg, uint32_t max_wait_ms);
+
+/**
  * @brief Configuration passed to @c cog_core_new.
  *
  * Callers should zero-initialise this struct to obtain defaults; adding
@@ -185,6 +208,18 @@ typedef struct cog_core_config {
      * @c cog_core_run.  The caller retains ownership of the store.
      */
     cog_store_t *store;
+
+    /** Nonblocking service, called before first dispatch, before every idle
+     * wait, at due deadlines, and at least every service_interval dispatches
+     * even while the queue remains nonempty. IPC and stop checks receive the
+     * same fairness. Core links no net/provider/toolkit implementation. */
+    cog_service_fn service_fn;
+    void *service_arg; /**< Borrowed context, not freed by core. */
+    size_t service_interval; /**< Max dispatched events between service; default 16. */
+    cog_idle_fn idle_fn; /**< Bounded wait; NULL uses bounded platform wait/yield. */
+    void *idle_arg; /**< Borrowed idle context. */
+    uint32_t max_idle_wait_ms; /**< Default 10; reduced to earliest deadline. */
+    size_t ipc_service_quantum; /**< Max IPC units per fairness step; default 16. */
 } cog_core_config_t;
 
 /**
@@ -196,7 +231,8 @@ typedef struct cog_core_config {
  * @return COG_ERROR_NULL_PTR if @p out or @p config is NULL.
  * @return COG_ERROR_INVALID_ARG if @p config->session is NULL, if
  *         @p config->dispatch_table is NULL, or if
- *         @p config->dispatch_table_size is zero.
+ *         @p config->dispatch_table_size is zero, or legacy wait_fn is combined
+ *         with service_fn/idle_fn (unbounded legacy waiting is incompatible).
  * @return COG_ERROR_NOMEM if allocation fails.
  *
  * @post On success, @p *out is a valid core and the caller owns it.  If
@@ -227,20 +263,26 @@ void cog_core_free(cog_core_t *core);
 /**
  * @brief Run the agent event loop.
  *
- * Drains the internal event queue, dispatches events through the static
- * table, and waits via @p config->wait_fn when no events are available.
+ * Dispatches bounded batches through the static table and services IPC,
+ * deadlines, stop requests and config.service_fn even while work is queued.
+ * Idle waits are capped by max_idle_wait_ms and the next service deadline;
+ * service/idle errors are returned unchanged, AGAIN is normal no-progress.
+ * Legacy wait_fn is supported only without the new service/idle hooks.
  * Returns when @c cog_core_stop is called or a fatal error occurs.
  *
  * @param[in,out] core Core to run.
  * @return COG_OK if the loop exited because @c cog_core_stop was called.
  * @return COG_ERROR_NULL_PTR if @p core is NULL.
  * @return COG_ERROR_INVALID_STATE if the core is already running.
- * @return Another error code if dispatch or auto-save fails.
+ * @return Another error code if dispatch, service, idle, IPC or auto-save fails.
  *
  * @pre @p core has been created with @c cog_core_new and is not already
  *      running.
  *
- * @post The core is no longer running.
+ * @post The core is no longer running. Application-owned asynchronous work
+ * remains explicitly owned; the application cancels/drains/releases it.
+ * @note Hooks/handlers must perform bounded CPU/I/O work. Fairness bounds
+ * dispatch counts and requested waits, not arbitrary handler or OS latency.
  *
  * Threading: single-threaded driver.  Only one thread may call
  * @c cog_core_run at a time.  @c cog_core_stop may be called from

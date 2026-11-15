@@ -70,10 +70,15 @@ typedef struct cog_session_config {
     /**
      * @brief Maximum number of nodes retained in the tree.
      *
-     * Zero selects a sensible default. When exceeded, oldest leaf nodes
-     * are pruned.
+     * Zero selects 4096. At capacity insertion fails COG_ERROR_LIMIT without
+     * pruning or changing the active branch; history is never silently lost.
      */
     size_t max_nodes;
+    /** Constructor-reserved payload arena; zero selects 16 MiB. Covers all
+     * nested message/tool/opaque/raw/ledger data; no allocation during append,
+     * fork, ledger update or history building. Exhaustion fails LIMIT atomically. */
+    size_t max_payload_bytes;
+    size_t max_tool_calls_per_message; /**< Zero selects 16; fixed ledger slots. */
 } cog_session_config_t;
 
 /* ------------------------------------------------------------------ */
@@ -147,6 +152,8 @@ typedef struct cog_cost {
      * @brief Total cost for this exchange.
      */
     double total_cost;
+    bool tokens_known; /**< False means unavailable, never assume counts are zero. */
+    bool total_cost_known; /**< False means unknown, not a zero-cost exchange. */
 } cog_cost_t;
 
 /* ------------------------------------------------------------------ */
@@ -169,7 +176,7 @@ typedef enum cog_node_role {
  *
  * This is a read-only view into a node. The session owns the data.
  */
-typedef struct cog_node_data {
+typedef struct cog_node_data_view {
     /**
      * @brief Unique node identifier (for persistence).
      */
@@ -244,6 +251,10 @@ typedef struct cog_node_data {
      * @brief Provider name (e.g. "anthropic", "openai").
      */
     const char *provider;
+    /** Complete structured message view (preferred over legacy text fields).
+     * All nested storage is session-owned until reset/free or explicit discard.
+     * One assistant node per turn; no durable node for each display delta. */
+    const cog_message_t *message;
 } cog_node_data_t;
 
 /* ------------------------------------------------------------------ */
@@ -400,6 +411,12 @@ const cog_node_data_t *cog_node_data(const cog_session_node_t *node);
 /**
  * @brief Add a message as a child of the given parent node.
  *
+ * Deep-copies the complete structured message, including call IDs, JSON,
+ * opaque bytes and usage into constructor-reserved storage. Validates message
+ * structure and branch-local result associations before changing the tree.
+ * Each identified assistant call starts a PROPOSED execution ledger entry.
+ * Returns INVALID_ARG for invalid association/duplicate result, LIMIT if
+ * reserved node/payload/ledger capacity is exhausted; failure is atomic.
  * Creates a new node and appends it to the parent's children. If @p parent
  * is NULL, the message is added as a child of the root (or becomes the root
  * if the session is empty).
@@ -442,7 +459,10 @@ cog_result_t cog_session_append(cog_session_t *session,
                                  cog_session_node_t **out_node);
 
 /**
- * @brief Add a tool call node.
+ * @brief Legacy unidentified tool node for inspection only.
+ *
+ * New code appends one assistant message with identified tool_calls. This
+ * helper cannot invent a provider call ID; its history is not replay-safe.
  *
  * @param[in,out] session   Session to modify.
  * @param[in]     parent    Parent node; may be NULL for root.
@@ -460,7 +480,10 @@ cog_result_t cog_session_add_tool_call(cog_session_t *session,
                                         cog_session_node_t **out_node);
 
 /**
- * @brief Add a tool result node.
+ * @brief Legacy tool result for inspection only.
+ *
+ * New code appends a TOOL message with explicit tool_call_id. This helper
+ * does not invent missing identity and cannot authorize execution/replay.
  *
  * The new node deep-copies the parent node's tool name (when the parent
  * carries one, e.g. a tool-call node) so history messages retain tool
@@ -484,6 +507,8 @@ cog_result_t cog_session_add_tool_result(cog_session_t *session,
 /**
  * @brief Fork the conversation from a given node.
  *
+ * Refuses INVALID_STATE if the selected path has incomplete messages or any
+ * unresolved tool ledger; forking never authorizes repeating ancestor effects.
  * Creates a new branch starting from @p node. The forked branch shares
  * all ancestor nodes but has its own children. This is cheap (shared
  * immutable nodes).
@@ -509,7 +534,10 @@ cog_result_t cog_session_fork(cog_session_t *session,
  * @brief Get the conversation history from root to a given node.
  *
  * Returns the path of messages that should be sent to the LLM as context.
- * The returned array is owned by the session.
+ * Legacy scratch array is constructor-reserved and owned by the session;
+ * no allocation occurs here. Views remain valid until next history query,
+ * mutation/reset/free. Prefer cog_session_copy_history for caller ownership.
+ * Incomplete/unsafe legacy tool history returns INVALID_STATE; no truncation.
  *
  * @param[in]  session  Session to query.
  * @param[in]  node     Leaf node (end of conversation path).
@@ -524,6 +552,70 @@ cog_result_t cog_session_get_history(const cog_session_t *session,
                                       const cog_session_node_t *node,
                                       const cog_message_t **out_msgs,
                                       size_t *out_count);
+
+/**
+ * @brief Copy active-path message views into caller-provided array.
+ * @param[in] session Session owner; non-NULL.
+ * @param[in] node Leaf in this session; NULL selects current active leaf.
+ * @param[out] messages Destination array; NULL iff capacity=0.
+ * @param[in] capacity Number of message entries available.
+ * @param[out] out_count Required entries on success/OVERFLOW.
+ * @return COG_OK; OVERFLOW writes count only and no entries; NULL_PTR;
+ * INVALID_ARG for foreign node; INVALID_STATE for incomplete/uncorrelated
+ * history or unresolved/indeterminate tools. No implicit context pruning.
+ * @note No allocation. Array caller-owned; nested views session-owned until
+ * mutation/reset/free. Owner thread only. Empty history succeeds with count 0.
+ */
+cog_result_t cog_session_copy_history(const cog_session_t *session,
+                                      const cog_session_node_t *node,
+                                      cog_message_t *messages, size_t capacity,
+                                      size_t *out_count);
+
+/** @brief Persisted at-most-once execution ledger, keyed by assistant/call ID. */
+typedef enum cog_tool_execution_state {
+    COG_TOOL_EXECUTION_PROPOSED = 0,
+    COG_TOOL_EXECUTION_STARTED,
+    COG_TOOL_EXECUTION_SUCCEEDED,
+    COG_TOOL_EXECUTION_FAILED,
+    COG_TOOL_EXECUTION_DENIED,
+    COG_TOOL_EXECUTION_CANCELLED,
+    COG_TOOL_EXECUTION_INDETERMINATE
+} cog_tool_execution_state_t;
+
+/**
+ * @brief Compare-and-transition one identified tool's durable intent state.
+ * @param[in,out] session Session with the assistant node.
+ * @param[in] assistant Assistant message node in session.
+ * @param[in] call_id Nonempty ID belonging to that assistant node.
+ * @param[in] expected Required previous state.
+ * @param[in] next New state: PROPOSED->STARTED/DENIED, STARTED->SUCCEEDED/
+ * FAILED/CANCELLED/INDETERMINATE; all final states immutable.
+ * @return COG_OK; NULL_PTR; NOT_FOUND for unknown ID; INVALID_STATE on stale
+ * expected, illegal transition or mutation of a fork-shared ancestor.
+ * @note Owner thread; no allocation/execution/save. Application MUST durably
+ * save STARTED before executing; save failure means do not execute. It saves
+ * result+terminal state together before sending the next model request. This
+ * is at-most-once admission, not an impossible exactly-once filesystem/process
+ * transaction: a crash after STARTED resumes INDETERMINATE and NEVER reruns.
+ */
+cog_result_t cog_session_tool_transition(cog_session_t *session,
+                                         cog_session_node_t *assistant,
+                                         const char *call_id,
+                                         cog_tool_execution_state_t expected,
+                                         cog_tool_execution_state_t next);
+/**
+ * @brief Query the ledger for one assistant tool.
+ * @param[in] session Session owner.
+ * @param[in] assistant Assistant node.
+ * @param[in] call_id Identified call.
+ * @param[out] out_state Snapshot, unchanged on failure.
+ * @return COG_OK; NULL_PTR; NOT_FOUND; INVALID_ARG for foreign node.
+ * @note Owner thread, no allocation; fork ancestors retain execution identity.
+ */
+cog_result_t cog_session_tool_state(const cog_session_t *session,
+                                    const cog_session_node_t *assistant,
+                                    const char *call_id,
+                                    cog_tool_execution_state_t *out_state);
 
 /* ------------------------------------------------------------------ */
 /* Timing and billing                                                  */

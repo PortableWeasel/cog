@@ -42,6 +42,11 @@ typedef enum cog_result {
     COG_ERROR_TIMEOUT = -12,        /**< The operation exceeded its time limit. */
     COG_ERROR_UNAVAILABLE = -13,    /**< The requested resource is temporarily
                                          unavailable (e.g. rate limited). */
+    COG_ERROR_UNSUPPORTED = -14,   /**< Unsupported protocol/backend/version. */
+    COG_ERROR_PROTOCOL = -15,      /**< Malformed or inconsistent peer data. */
+    COG_ERROR_DENIED = -16,        /**< Explicit execution policy denial. */
+    COG_ERROR_LIMIT = -17,         /**< Configured resource limit exhausted. */
+    COG_ERROR_INDETERMINATE = -18, /**< Side effect may have occurred; no replay. */
 } cog_result_t;
 
 #ifdef __cplusplus

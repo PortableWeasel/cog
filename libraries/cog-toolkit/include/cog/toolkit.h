@@ -30,6 +30,7 @@
 #include <cog/toolkit_call.h>
 #include <cog/toolkit_exec.h>
 #include <cog/toolkit_result.h>
+#include <cog/workspace.h>
 
 #ifdef __cplusplus
 extern "C" {

@@ -6,6 +6,11 @@
  * Sessions are trees of nodes with messages, timing, billing, and provider
  * data. The store is responsible for persisting and loading sessions.
  *
+ * Version 2 writes structured messages, exact opaque bytes, known/unknown
+ * usage and tool execution ledger. v1 text-only sessions migrate losslessly in
+ * memory; v1 tool records lack stable call IDs and are inspection-only, never
+ * assigned invented IDs or executed/replayed. Unknown versions fail UNSUPPORTED.
+ * No on-disk rewrite during load; explicit save publishes v2 atomically.
  * The backend is selected via a static dispatch table. The default
  * implementation is file-based (JSONL + index).
  *
@@ -26,6 +31,23 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/** @brief Current structured store version; v1 remains a legacy read format. */
+#define COG_STORE_FORMAT_V2 2u
+/** @brief File load policy: unsafe legacy records require explicit inspection. */
+typedef enum cog_store_load_mode {
+    COG_STORE_LOAD_REPLAY = 0,
+    COG_STORE_LOAD_INSPECT
+} cog_store_load_mode_t;
+/** @brief Facts returned by version-aware load; never stored credentials. */
+typedef struct cog_store_load_report {
+    uint32_t source_version;
+    bool migrated_in_memory;
+    bool recovered_truncated_tail;
+    size_t discarded_tail_bytes;
+    bool replay_safe;
+    size_t indeterminate_tools;
+} cog_store_load_report_t;
 
 /* ------------------------------------------------------------------ */
 /* Opaque types                                                        */
@@ -127,6 +149,11 @@ typedef struct cog_store_vtable {
     cog_store_delete_fn delete_;
     cog_store_list_fn list;
     cog_store_exists_fn exists;
+    /** Version-aware load, same error/ownership rules as cog_store_load_ex.
+     * Mandatory for v2 backends; old custom tables return UNSUPPORTED until
+     * upgraded rather than losing structured fields. */
+    cog_result_t (*load_ex)(void *store, const char *id, cog_store_load_mode_t mode,
+                            cog_session_t **out, cog_store_load_report_t *report);
 } cog_store_vtable_t;
 
 /* ------------------------------------------------------------------ */
@@ -152,7 +179,8 @@ typedef struct cog_store_config {
     /**
      * @brief Maximum number of sessions to keep.
      *
-     * Zero means unlimited. When exceeded, oldest sessions are pruned.
+     * Zero means no count policy. At a nonzero limit a new session save
+     * returns LIMIT; no stored session is silently deleted.
      */
     size_t max_sessions;
 
@@ -165,6 +193,14 @@ typedef struct cog_store_config {
      * @brief Whether to compress stored data.
      */
     bool compress;
+    /** Recover only one unterminated final JSONL record after a fully valid
+     * committed prefix. Default false (IO on any truncation). A malformed
+     * complete line, invalid association, bad checksum/version/index metadata
+     * or middle corruption always fails IO/PROTOCOL; never skip records. */
+    bool recover_truncated_tail;
+    /** Constructor-reserved read/write/codec workspace; 0 selects 16 MiB.
+     * Above capacity returns LIMIT, never hidden growth or partial publication. */
+    size_t max_record_bytes;
 } cog_store_config_t;
 
 /* ------------------------------------------------------------------ */
@@ -205,19 +241,33 @@ void cog_store_free(cog_store_t *store);
 /* ------------------------------------------------------------------ */
 
 /**
- * @brief Save a session.
+ * @brief Durably publish a complete v2 session generation.
+ *
+ * All structured messages, opaque byte lengths/bytes, usage availability and
+ * tool ledger are saved together. Write temporary files, fsync files, atomically
+ * publish a generation manifest, then fsync the directory; readers observe the
+ * complete old or complete new generation. Replacing nodes/index separately
+ * without an atomic generation commit is insufficient. Save failure before
+ * publication leaves the old generation; a failed final durability sync returns
+ * IO and caller treats effects as uncertain, never authorizing tool execution.
+ * No credential/raw authorization bytes may be persisted.
  *
  * @param[in] store   Store instance.
  * @param[in] session Session to save.
- * @return COG_OK on success.
- *
+ * @return COG_OK; NULL_PTR; NOMEM for backend setup; LIMIT; IO; PROTOCOL for
+ * invalid session associations; UNSUPPORTED for backend version/capabilities.
+ * @note Runtime Cog work uses constructor storage, no implicit buffer growth.
  * Threading: not thread-safe.
  */
 cog_result_t cog_store_save(cog_store_t *store,
                              const cog_session_t *session);
 
 /**
- * @brief Load a session.
+ * @brief Load replay-safe v1 text or v2; equivalent to load_ex(REPLAY).
+ *
+ * Unsafe legacy tool identity fails UNSUPPORTED with *out=NULL. Outstanding
+ * STARTED v2 entries become INDETERMINATE in memory; never rerun. The caller
+ * inspects/reconciles them before continuation; ordinary history building fails.
  *
  * @param[in]  store Store instance.
  * @param[in]  id    Session id to load.
@@ -232,7 +282,30 @@ cog_result_t cog_store_load(cog_store_t *store,
                              cog_session_t **out);
 
 /**
- * @brief Append a single node to a persisted session.
+ * @brief Version-aware load with explicit recovery/inspection evidence.
+ * @param[in,out] store Store; single owner thread, no concurrent writer.
+ * @param[in] id Nonempty session ID (no traversal/separators).
+ * @param[in] mode REPLAY rejects unsafe legacy tool records; INSPECT loads them
+ * with report.replay_safe=false and disables send/tool history reconstruction.
+ * @param[out] out Owned session, matched by cog_session_free; NULL on failure.
+ * @param[out] report Required evidence; unchanged on failure.
+ * @return COG_OK; NULL_PTR; INVALID_ARG; NOT_FOUND; UNSUPPORTED for version or
+ * unsafe REPLAY migration; LIMIT/NOMEM; IO/PROTOCOL for corruption. Missing
+ * index may be rebuilt from the validated log in reserved workspace; a corrupt
+ * authoritative generation is never silently replaced with another branch.
+ * @note Recovery is enabled only by recover_truncated_tail; no disk writes.
+ * Exact opaque data and call associations survive save/load/fork round trips.
+ */
+cog_result_t cog_store_load_ex(cog_store_t *store, const char *id,
+                               cog_store_load_mode_t mode, cog_session_t **out,
+                               cog_store_load_report_t *report);
+
+/**
+ * @brief Commit one node and its execution ledger without replaying effects.
+ *
+ * Uses the same durable generation transaction as save; cannot expose a result
+ * without its final ledger state. Existing-node/ledger updates require save.
+ * A v1 store must first be explicitly saved as v2; append returns UNSUPPORTED.
  *
  * @param[in] store   Store instance.
  * @param[in] session Session containing the node.
@@ -307,6 +380,9 @@ bool cog_store_auto_save(const cog_store_t *store);
  *   - nodes.jsonl: append-only node log
  *   - index.bin: node_id → offset index for fast lookups
  *
+ * v2 uses immutable generation files plus one atomically replaced manifest;
+ * the names above describe the legacy v1 layout. Migration and commit contracts
+ * above govern the v2 representation; unsupported compression fails explicitly.
  * This backend is always available.
  */
 extern const cog_store_vtable_t cog_store_file_backend;

@@ -6,8 +6,9 @@
  * name, the serialised request payload, an optional timeout, and a
  * cancellation flag.  Callers create the context, configure it, pass it
  * to @c cog_toolkit_execute or @c cog_toolkit_execute_all, and then free
- * it.  The context does not own the request payload; the caller must keep
- * the payload alive until execution completes.
+ * it. The constructor copies the name and request and reserves 64 KiB of
+ * legacy result storage. Its runtime paths never grow storage or repeat a
+ * handler after overflow. Responsive clients use an execution handle instead.
  *
  * Threading model: a single @c cog_toolkit_call_t instance is not
  * thread-safe.  It should be configured on the same thread that will pass
@@ -56,7 +57,9 @@ typedef struct cog_toolkit_call cog_toolkit_call_t;
  *         @p request_len is non-zero.
  * @return COG_ERROR_NOMEM if allocation fails.
  *
- * @post On success, @p *out is a valid call context and the caller owns it.
+ * @post On success, @p *out owns copied name/request and fixed result storage;
+ * caller input storage may immediately be freed. One call context is one
+ * invocation; every later execute copies the cached outcome, never re-executes.
  * @post On failure, @p *out is NULL and no resources are held.
  *
  * Threading: not thread-safe.
@@ -73,7 +76,7 @@ cog_result_t cog_toolkit_call_new(cog_toolkit_call_t **out,
  *
  * @post All storage owned by @p call is released.  @p call must not be
  *       used after this call.  The request payload supplied at
- *       construction is not freed; the caller retains ownership of it.
+ *       construction was copied, so caller storage remains caller-owned.
  *
  * Threading: not thread-safe.
  */
@@ -159,7 +162,7 @@ const char *cog_toolkit_call_name(const cog_toolkit_call_t *call);
  *         the request length is zero.
  *
  * @note The returned pointer remains valid until the call context is
- *       freed, but the payload itself is owned by the caller.
+ *       freed; the returned copied payload is owned by the call.
  *
  * Threading: not thread-safe.
  */
