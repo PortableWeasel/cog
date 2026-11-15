@@ -18,8 +18,14 @@ endif()
 # -----------------------------------------------------------------------
 option(COG_BUILD_CLI "Build the CLI application" ON)
 option(COG_ENABLE_ASAN "Enable AddressSanitizer + UBSan" OFF)
+option(COG_ENABLE_TSAN "Enable ThreadSanitizer (mutually exclusive with ASan)" OFF)
 option(COG_ENABLE_WERROR "Treat compiler warnings as errors" OFF)
 option(COG_BUILD_BENCHMARKS "Build benchmark executables (opt-in; not part of the default CTest run)" OFF)
+
+if(COG_ENABLE_ASAN AND COG_ENABLE_TSAN)
+    message(FATAL_ERROR
+        "COG_ENABLE_ASAN and COG_ENABLE_TSAN require separate builds")
+endif()
 
 include(CTest)
 
@@ -42,16 +48,18 @@ add_subdirectory(libraries/cog-net)
 add_subdirectory(libraries/cog-orchestrator)
 
 # -----------------------------------------------------------------------
-# Tests
-# -----------------------------------------------------------------------
-add_subdirectory(tests)
-
-# -----------------------------------------------------------------------
 # Applications
 # -----------------------------------------------------------------------
+# The shared scenario tests link cog::cli, so define the application
+# targets before descending into tests/scenarios.
 if(COG_BUILD_CLI)
     add_subdirectory(applications/cog-cli)
 endif()
+
+# -----------------------------------------------------------------------
+# Tests
+# -----------------------------------------------------------------------
+add_subdirectory(tests)
 
 # -----------------------------------------------------------------------
 # Proof-of-concepts

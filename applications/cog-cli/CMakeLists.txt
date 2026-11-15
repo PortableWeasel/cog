@@ -8,11 +8,14 @@
 # the app programmatically instead of spawning the binary.
 # -----------------------------------------------------------------------
 
+include(GNUInstallDirs)
+
 add_library(cog-cli-lib STATIC
     src/cli.c
     src/mock_provider.c
 )
 add_library(cog::cli ALIAS cog-cli-lib)
+set_target_properties(cog-cli-lib PROPERTIES EXPORT_NAME cli)
 
 target_include_directories(cog-cli-lib
     PUBLIC
@@ -30,6 +33,24 @@ target_enable_warnings(cog-cli-lib)
 add_executable(cog-cli src/main.c)
 target_link_libraries(cog-cli PRIVATE cog::cli)
 target_enable_warnings(cog-cli)
+
+# -----------------------------------------------------------------------
+# Install rules
+# -----------------------------------------------------------------------
+install(TARGETS cog-cli
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+install(TARGETS cog-cli-lib
+    EXPORT cog-cli-targets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+
+install(DIRECTORY include/cog_cli
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+install(EXPORT cog-cli-targets
+    FILE cog-cli-targets.cmake
+    NAMESPACE cog::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cog)
 
 # -----------------------------------------------------------------------
 # Tests

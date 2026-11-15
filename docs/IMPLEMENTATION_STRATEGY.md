@@ -276,7 +276,7 @@ tests/
 
 ### Scenario tests (end-to-end)
 
-The 12 scenario traces become executable tests:
+The 20 scenario traces become executable tests:
 
 ```
 tests/
@@ -285,6 +285,11 @@ tests/
     test_02_network_recovery.c
     test_03_subagent_lifecycle.c
     ...
+applications/cog-cli/tests/
+    test_11_ui_reconnect.c
+    test_12_rate_limit.c
+    ...
+    test_20_interrupt_and_queue.c
 ```
 
 Each test:
@@ -469,7 +474,7 @@ A module is done when:
 The project is done when:
 
 - [ ] All 24 modules implemented
-- [ ] All 12 scenario tests pass
+- [ ] All 20 scenario tests pass
 - [ ] Full end-to-end: user prompt → LLM → streaming → UI
 - [ ] Documentation updated
 - [ ] No open tickets

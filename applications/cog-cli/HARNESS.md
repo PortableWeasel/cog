@@ -1,7 +1,7 @@
 # Scenario Harness Contract
 
-This document is the contract for the four scenario batches that follow
-this ticket:
+This document is the contract for the four scenario batches integrated by
+Stage 12.6f:
 
 | Ticket | Scenarios |
 |--------|-----------|
@@ -10,13 +10,25 @@ this ticket:
 | `e69a38a` (12.6d) | 11 ui-reconnect, 12 rate-limit, 13 session-persistence, 14 conversation-fork, 15 multi-turn-tools |
 | `c12c392` (12.6e) | 16 error-propagation, 17 session-migration, 18 observability, 19 connection-events, 20 interrupt-and-queue |
 
-Scenario tests link `cog::cli` and drive the app **programmatically** —
-they never spawn the binary.  `tests/test_cli_harness.c` is a working
+CLI-driven scenario tests link `cog::cli` and drive the app
+**programmatically**; library-focused scenarios link only the libraries they
+exercise. None spawn the CLI binary. `tests/test_cli_harness.c` is a working
 template: copy a scenario function from it and extend.
+
+Scenarios 01–10 and the 05b shutdown regression are registered from
+`tests/scenarios/CMakeLists.txt`; scenarios 11–20 are registered beside this
+guide in `tests/CMakeLists.txt`. All use the `scenario` CTest label and a
+30-second timeout. Run the complete set with:
+
+```bash
+ctest --test-dir build -L scenario --output-on-failure
+```
+
+That command runs 21 executables: the 20 numbered scenarios plus 05b.
 
 ## The fixture pattern
 
-Every scenario follows the same five steps:
+CLI-driven scenarios follow this five-step fixture pattern:
 
 ```c
 /* 1. Script the mock provider (chunks / errors / rate limits / cancel). */
@@ -110,8 +122,9 @@ directly or `cog_cli_app_cancel(app)` while streaming.
   `st.send_count == 2`, and the recovered chunk in history.
 - **05 graceful-shutdown**: `cog_cli_app_shutdown` then run; expect
   `COG_OK` and a clean teardown (ASan-clean).
-- **13 session-persistence**: set `opts.store_dir`; after the run assert
-  `cog_store_exists(store, cog_session_id(session))`.
+- **13 session-persistence**: drive the file-backed `cog_store_*` API
+  directly and verify save/load/append/list/delete tree fidelity. The CLI's
+  `opts.store_dir` auto-save path is exercised by scenario 17.
 - **20 interrupt-and-queue**: path A = submit then cancel, assert only
   the user message remains; path B = `cog_cli_app_queue` while a turn is
   pending, assert both turns appear in history.
@@ -120,5 +133,18 @@ directly or `cog_cli_app_cancel(app)` while streaming.
 
 The app owns everything it creates; `cog_cli_app_free(app)` releases it
 in the documented order (core → provider → obs → store → session →
-script storage).  Scripts and their strings are borrowed by the provider
+script storage). Scripts and their strings are borrowed by the provider
 (struct copied at connect), so keep them alive until the app is freed.
+
+## Shared fixtures and process safety
+
+Temporary files, stores, and sockets use `mkstemp`/`mkdtemp` templates with
+scenario-specific prefixes, so independent tests can run in parallel.
+Scenarios 07 and 10 reuse the `aux_core` target from
+`tests/integration/fixtures/aux_core.c`; CMake supplies its absolute path
+with `COG_AUX_CORE_BIN` and adds an explicit target dependency. Only PIDs
+returned by orchestrators owned by a scenario are killed or reaped. Tests
+must never signal processes by name or use broad process kills.
+
+For strict and sanitizer verification commands, see `docs/README.md`.
+ThreadSanitizer and AddressSanitizer builds must be separate.

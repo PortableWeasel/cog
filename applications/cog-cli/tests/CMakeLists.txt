@@ -45,6 +45,52 @@ target_compile_definitions(run_cli_smoke PRIVATE
     COG_CLI_BIN="$<TARGET_FILE:cog-cli>")
 
 # -----------------------------------------------------------------------
+# Executable scenarios 11-20
+#
+# Scenarios 01-10 are registered from tests/scenarios.  Keeping the later
+# scenarios beside the CLI library preserves their source ownership while
+# the common scenario label makes the complete set selectable in CTest.
+# -----------------------------------------------------------------------
+function(cog_add_cli_scenario target)
+    add_executable(${target} ${target}.c)
+    target_enable_warnings(${target})
+    add_test(NAME scenario-${target}
+        COMMAND ${target}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(scenario-${target} PROPERTIES
+        LABELS "scenario"
+        TIMEOUT 30)
+endfunction()
+
+set(COG_APP_SCENARIO_TESTS
+    test_11_ui_reconnect
+    test_12_rate_limit
+    test_13_session_persistence
+    test_14_conversation_fork
+    test_15_multi_turn_tools
+    test_16_error_propagation
+    test_17_session_migration
+    test_18_observability
+    test_19_connection_events
+    test_20_interrupt_and_queue
+)
+
+foreach(test IN LISTS COG_APP_SCENARIO_TESTS)
+    cog_add_cli_scenario(${test})
+endforeach()
+
+target_link_libraries(test_11_ui_reconnect PRIVATE cog::cli)
+target_link_libraries(test_12_rate_limit PRIVATE cog::cli)
+target_link_libraries(test_13_session_persistence PRIVATE cog::core)
+target_link_libraries(test_14_conversation_fork PRIVATE cog::core)
+target_link_libraries(test_15_multi_turn_tools PRIVATE cog::cli cog::toolkit)
+target_link_libraries(test_16_error_propagation PRIVATE cog::cli)
+target_link_libraries(test_17_session_migration PRIVATE cog::cli)
+target_link_libraries(test_18_observability PRIVATE cog::obs)
+target_link_libraries(test_19_connection_events PRIVATE cog::obs)
+target_link_libraries(test_20_interrupt_and_queue PRIVATE cog::cli)
+
+# -----------------------------------------------------------------------
 # CTest registration
 # -----------------------------------------------------------------------
 add_test(NAME cli-options

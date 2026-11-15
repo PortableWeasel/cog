@@ -18,6 +18,8 @@
  *     (send_count == 2), never more.
  *  4. The retried request succeeds and the recovered chunk lands in the
  *     session history.
+ *  5. A request queued while the rate-limited turn is retried remains
+ *     queued, then runs exactly once after recovery.
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -167,10 +169,69 @@ static void scenario_rate_limit_bounded_backoff(void)
     cog_cli_app_free(app);
 }
 
+/* ------------------------------------------------------------------ */
+/* Scenario 12 — queued input survives backoff and runs after recovery */
+/* ------------------------------------------------------------------ */
+
+static void scenario_rate_limit_queue(void)
+{
+    static const cog_mock_step_t steps[] = {
+        {COG_MOCK_STEP_ERROR, NULL, COG_ERROR_UNAVAILABLE, 429, true,
+         5U, "rate limited"},
+        {COG_MOCK_STEP_CHUNK, "recovered", COG_OK, 0, false, 0U, NULL},
+    };
+    static const cog_mock_script_t script = {
+        steps, 2U, 1U, COG_OK, 0U,
+    };
+    cog_cli_options_t opts;
+    cog_cli_app_t *app = NULL;
+    const cog_message_t *msgs = NULL;
+    size_t count = 0U;
+    cog_mock_state_t st;
+
+    (void)memset(&opts, 0, sizeof(opts));
+    opts.prompt = "first";
+    opts.script = &script;
+    app = fixture_new(&opts);
+    CHECK(app != NULL);
+
+    /* This request stays in the session's pending queue while the first
+     * turn observes the 429, waits, and retries.  LLM_COMPLETE for the
+     * recovered turn must inject it exactly once as the next turn. */
+    CHECK(cog_cli_app_queue(app, "second", 6U) == COG_OK);
+    CHECK(cog_cli_app_run(app) == COG_OK);
+    CHECK(cog_cli_app_state(app) == (cog_state_t)0); /* IDLE */
+
+    CHECK(cog_mock_provider_state(cog_cli_app_provider(app), &st) == COG_OK);
+    CHECK_EQ_INT((long long)st.error_count, 2LL); /* one per scripted turn */
+    CHECK_EQ_INT((long long)st.send_count, 4LL);  /* two sends per turn */
+    CHECK_EQ_INT((long long)st.chunk_count, 2LL);
+
+    CHECK(cog_session_get_history(cog_cli_app_session(app),
+                                  cog_session_active(cog_cli_app_session(app)),
+                                  &msgs, &count) == COG_OK);
+    CHECK_EQ_INT((long long)count, 4LL);
+    CHECK(msgs[0].role == COG_MESSAGE_ROLE_USER);
+    CHECK(msgs[0].content_len == 5U);
+    CHECK(memcmp(msgs[0].content, "first", 5U) == 0);
+    CHECK(msgs[1].role == COG_MESSAGE_ROLE_ASSISTANT);
+    CHECK(msgs[1].content_len == 9U);
+    CHECK(memcmp(msgs[1].content, "recovered", 9U) == 0);
+    CHECK(msgs[2].role == COG_MESSAGE_ROLE_USER);
+    CHECK(msgs[2].content_len == 6U);
+    CHECK(memcmp(msgs[2].content, "second", 6U) == 0);
+    CHECK(msgs[3].role == COG_MESSAGE_ROLE_ASSISTANT);
+    CHECK(msgs[3].content_len == 9U);
+    CHECK(memcmp(msgs[3].content, "recovered", 9U) == 0);
+
+    cog_cli_app_free(app);
+}
+
 int main(void)
 {
     scenario_rate_limit_metadata();
     scenario_rate_limit_bounded_backoff();
+    scenario_rate_limit_queue();
 
     if (failures != 0) {
         (void)fprintf(stderr, "test_12_rate_limit: %d failure(s)\n",
