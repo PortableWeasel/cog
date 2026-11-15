@@ -451,6 +451,26 @@ static int test_log_null_deliver_among_working(void)
 /* Filtered-out records still undergo field validation                 */
 /* ------------------------------------------------------------------ */
 
+static int test_log_zero_count_sink_table(void)
+{
+    cog_obs_t *obs = NULL;
+    cog_obs_config_t cfg = make_config();
+    cog_obs_sink_table_t empty = { NULL, 0U };
+
+    /* A zero-count sink table is valid: the NULL-deliver rejection loop
+     * must not reject it (there are no configured sinks to check). */
+    cfg.sinks = &empty;
+    if (cog_obs_new(&obs, &cfg) != COG_OK || obs == NULL) {
+        return 1;
+    }
+    if (cog_obs_log(obs, COG_OBS_INFO, "m", NULL, 0U) != COG_OK) {
+        cog_obs_free(obs);
+        return 1;
+    }
+    cog_obs_free(obs);
+    return 0;
+}
+
 static int test_log_filtered_invalid_fields_precedence(void)
 {
     cog_obs_t *obs = NULL;
@@ -531,6 +551,7 @@ int main(void)
     CHECK("log_to log-only delivers", test_log_to_log_only_delivers());
     CHECK("log NULL deliver among working",
           test_log_null_deliver_among_working());
+    CHECK("log zero-count sink table", test_log_zero_count_sink_table());
     CHECK("log filtered invalid fields precedence",
           test_log_filtered_invalid_fields_precedence());
     CHECK("conn event conn_id zero", test_conn_event_conn_id_zero());
@@ -542,3 +563,4 @@ int main(void)
     }
     return failures == 0U ? 0 : 1;
 }
+
