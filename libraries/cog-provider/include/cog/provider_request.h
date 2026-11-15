@@ -229,7 +229,7 @@ typedef struct cog_provider_limits {
 } cog_provider_limits_t;
 
 /**
- * @brief Validate that a request is well-formed.
+ * @brief Validate request structure only; this is not provider compatibility preflight.
  *
  * @param[in] request Request to validate.
  * @return COG_OK on success.
@@ -242,6 +242,10 @@ typedef struct cog_provider_limits {
  *         parameters are nonfinite/out of range. Provider-specific protocol/schema
  *         validation and finite output/context limits are enforced before send.
  * @note No allocation. Does not retain any input or initiate network activity.
+ * Does not validate continuation formats, call/result history eligibility or
+ * configured model/workspace support. Use cog_provider_preflight on a connected
+ * provider before restored pending-tool admission; send still validates COMPLETE
+ * history before accepting a wire turn.
  *
  * Threading: the request must not be modified during the call.
  */
