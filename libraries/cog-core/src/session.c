@@ -1048,5 +1048,6 @@ void cog_session_mark_committed(const cog_session_t *session)
 {
     if (session == NULL) return;
     cog_session_t *s = (cog_session_t *)session;
-    for (size_t i = 0U; i < s->node_count; ++i) s->nodes[i].committed = true;
+    for (size_t i = 0U; i < s->max_nodes; ++i)
+        if (s->nodes[i].used) s->nodes[i].committed = true;
 }

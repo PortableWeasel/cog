@@ -112,15 +112,16 @@ _Static_assert(offsetof(struct cog_session, attached) == 64U,
                "session_internal: attached offset regression (64-bit)");
 #endif
 
+/** Logical persistence bookkeeping; source is constructor-owned mutable storage.
+ * Called only after successful/uncertain publication, never changes view bytes.
+ * Marks every occupied slot, including slots beyond holes left by draft discard. */
+void cog_session_mark_committed(const cog_session_t *session);
+
 /** Allocation-free validation of exact public snapshot records. No normalization,
  * allocation, mutation, disk or activation. Shared by restore and bounded store
  * admission/diff checks. Return OK, NULL_PTR, PROTOCOL, LIMIT identity exhaustion
  * or unsupported unsafe legacy tools. inspection_only restricts, never grants.
  */
-/** Logical persistence bookkeeping; source is constructor-owned mutable storage.
- * Called only after successful/uncertain publication, never changes view bytes. */
-void cog_session_mark_committed(const cog_session_t *session);
-
 cog_result_t cog_session_snapshot_validate(const cog_session_snapshot_t *snapshot);
 
 #endif /* COG_SESSION_INTERNAL_H */

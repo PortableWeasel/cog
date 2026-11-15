@@ -21,6 +21,9 @@
 static unsigned boundary, trigger;
 static bool crash_fault, enabled, fail_temp_unlink;
 static int pause_ready_fd=-1, pause_release_fd=-1;
+static bool watch_parent, fail_parent_sync;
+static struct stat parent_identity;
+static size_t parent_syncs, watched_publications;
 static bool reject_allocations;
 static size_t allocation_attempts, allocation_failure;
 void *__real_malloc(size_t n);
@@ -58,9 +61,22 @@ static bool fail_now(void)
     if (crash_fault) _exit(77);
     errno=EIO;return true;
 }
-int __wrap_fsync(int fd) { return fail_now() ? -1 : __real_fsync(fd); }
+int __wrap_fsync(int fd)
+{
+    if(watch_parent){
+        struct stat st;CHECK(fstat(fd,&st)==0);
+        if(st.st_dev==parent_identity.st_dev && st.st_ino==parent_identity.st_ino){
+            ++parent_syncs;
+            if(fail_parent_sync){errno=EIO;return -1;}
+        }
+    }
+    return fail_now() ? -1 : __real_fsync(fd);
+}
 int __wrap_renameat(int a,const char *b,int c,const char *d)
-{ return fail_now() ? -1 : __real_renameat(a,b,c,d); }
+{
+    if(watch_parent && strcmp(d,"manifest.bin")==0){CHECK(parent_syncs!=0U);++watched_publications;}
+    return fail_now() ? -1 : __real_renameat(a,b,c,d);
+}
 int __wrap_linkat(int a,const char *b,int c,const char *d,int flags)
 {
     if(pause_ready_fd>=0){
@@ -216,6 +232,35 @@ static void cas_faults(bool crash)
     }
     CHECK(total>=8U);(void)printf("owner %s: %u syscall boundaries\n",crash?"crash":"EIO",total);
 }
+static void base_parent_durability(void)
+{
+    char parent[]="/tmp/cog-store-parent-durability-XXXXXX";CHECK(mkdtemp(parent)!=NULL);
+    CHECK(stat(parent,&parent_identity)==0);
+    char base[1024],manifest[1100];
+    CHECK(snprintf(base,sizeof(base),"%s/newstore",parent)>0);
+    CHECK(snprintf(manifest,sizeof(manifest),"%s/created/manifest.bin",base)>0);
+    cog_store_t *s=store(base,false);cog_session_t *c=session("created");
+    /* The parent descriptor must be synced before manifest publication. EIO
+     * after mkdir is known prepublication failure, then an EEXIST retry must
+     * fsync the parent again instead of assuming the root became durable. */
+    watch_parent=true;fail_parent_sync=true;parent_syncs=0U;watched_publications=0U;
+    CHECK(cog_store_save(s,c)==COG_ERROR_IO);
+    CHECK(parent_syncs==1U && watched_publications==0U && access(manifest,F_OK)!=0);
+    fail_parent_sync=false;parent_syncs=0U;
+    CHECK(cog_store_save(s,c)==COG_OK && parent_syncs>=1U && watched_publications==1U);
+    watch_parent=false;cog_session_free(c);cog_store_free(s);cleanup(base);
+    /* Owner bootstrap has the same directory-root durability precondition. */
+    CHECK(snprintf(base,sizeof(base),"%s/newowner",parent)>0);
+    CHECK(snprintf(manifest,sizeof(manifest),"%s/created/manifest.bin",base)>0);
+    s=store(base,true);cog_store_owner_t owner={1U,789U};
+    watch_parent=true;fail_parent_sync=true;parent_syncs=0U;watched_publications=0U;
+    CHECK(cog_store_owner_compare_exchange(s,"created",(cog_store_owner_t){0},owner,(cog_store_checkpoint_t){0})==COG_ERROR_IO);
+    CHECK(parent_syncs==1U && watched_publications==0U && access(manifest,F_OK)!=0);
+    fail_parent_sync=false;parent_syncs=0U;
+    CHECK(cog_store_owner_compare_exchange(s,"created",(cog_store_owner_t){0},owner,(cog_store_checkpoint_t){0})==COG_OK);
+    CHECK(parent_syncs>=1U && watched_publications==1U);
+    watch_parent=false;cog_store_free(s);cleanup(base);CHECK(rmdir(parent)==0);
+}
 static void stale_temp_checkpoint(void)
 {
     char base[]="/tmp/cog-store-stale-temp-XXXXXX";CHECK(mkdtemp(base)!=NULL);
@@ -292,6 +337,6 @@ int main(int argc,char **argv)
     if(argc==3)return child_probe(argv[2],strcmp(argv[1],"hold")==0);
     char exe[1024];ssize_t n=readlink("/proc/self/exe",exe,sizeof(exe)-1U);CHECK(n>0);exe[(size_t)n]='\0';
     char base[]="/tmp/cog-store-process-XXXXXX";CHECK(mkdtemp(base)!=NULL);
-    process_crash(exe,base);cleanup(base);bounded_allocations();session_limit_race();stale_temp_checkpoint();save_faults(false);save_faults(true);cas_faults(false);cas_faults(true);
+    process_crash(exe,base);cleanup(base);bounded_allocations();session_limit_race();stale_temp_checkpoint();base_parent_durability();save_faults(false);save_faults(true);cas_faults(false);cas_faults(true);
     (void)puts("test_store_fencing: ok");return 0;
 }

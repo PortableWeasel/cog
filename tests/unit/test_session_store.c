@@ -172,6 +172,25 @@ static bool custom_exists(void *ctx,const char *id)
 { custom_t *c=ctx; CHECK(c!=NULL && id!=NULL); ++c->calls; return true; }
 static const cog_store_vtable_t custom_vtable={.name="custom",.save=custom_save,.load=custom_load,.append=custom_append,
     .delete_=custom_delete,.list=custom_list,.exists=custom_exists,.load_ex=custom_load_ex};
+/* Saving must protect a live slot beyond an earlier discarded draft hole. */
+static void sparse_committed(const char *base, bool custom)
+{
+    cog_session_t *s=new_session(custom ? "sparse-custom" : "sparse-file");
+    cog_store_t *st=NULL;custom_t context={.source=s};
+    cog_store_config_t cfg={.base_dir=base,.backend=custom ? &custom_vtable : NULL,.backend_context=&context};
+    CHECK(cog_store_new(&st,&cfg)==COG_OK);
+    cog_session_node_t *root=add(s,"root"),*first=add(s,"discarded");
+    CHECK(cog_session_fork(s,root,NULL)==COG_OK);
+    const cog_message_t m={.role=COG_MESSAGE_ROLE_USER,.content="retained",.content_len=8U};
+    cog_session_node_t *second=NULL;CHECK(cog_session_add_message(s,root,&m,&second)==COG_OK);
+    CHECK(cog_session_discard_node(s,first)==COG_OK);
+    CHECK(cog_store_save(st,s)==COG_OK);
+    CHECK(cog_session_discard_node(s,second)==COG_ERROR_INVALID_STATE);
+    CHECK(cog_session_reset(s)==COG_ERROR_INVALID_STATE);
+    cog_session_snapshot_t v;CHECK(cog_session_snapshot_view(s,&v)==COG_OK && v.node_count==2U);
+    CHECK(strcmp(v.nodes[1].content,"retained")==0);
+    cog_store_free(st);cog_session_free(s);
+}
 static void custom_backend(void)
 {
     cog_session_t *s=new_session("custom"),*out=NULL; custom_t c={.source=s}; cog_store_t *st=NULL;
@@ -190,6 +209,6 @@ int main(void)
 {
     char a[]="/tmp/cog-store-v2-XXXXXX",b[]="/tmp/cog-store-limit-XXXXXX",c[]="/tmp/cog-store-structured-XXXXXX";
     CHECK(mkdtemp(a)!=NULL && mkdtemp(b)!=NULL && mkdtemp(c)!=NULL);
-    basics(a);limits(b);structured(c);legacy(a);custom_backend();
+    basics(a);limits(b);structured(c);legacy(a);custom_backend();sparse_committed(a,false);sparse_committed(a,true);
     remove_tree(a);remove_tree(b);remove_tree(c);(void)puts("test_session_store: ok");return 0;
 }

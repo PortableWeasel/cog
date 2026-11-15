@@ -75,6 +75,10 @@ directory. The new manifest is the sole transaction commit point. Immutable
 files left before publication are harmless orphans; generation selection probes
 existing names and never reuses their tokens. Files retain mode 0600. New session/anchor
 creation is fsynced through the session and base directories before admission.
+A configured root created by the backend also has its actual parent directory
+fsynced before ownership-domain creation/publication. Existing-root retries
+confirm that parent again, so an earlier uncertain mkdir/fsync never turns into
+an assumed durable root. Parent open/fsync failure returns IO before publication.
 Readers validate exact size, checksums and decoded semantic associations; they
 never substitute an older generation after corrupt authoritative data.
 
@@ -177,8 +181,8 @@ result immutability and corrupt-latest refusal without fallback.
 `test_store_fencing` uses real fork+exec children and independently opened locks,
 SIGKILL/reap after durable STARTED, fresh-epoch recovery, and anchor inode
 stability. Test-only linker wrappers inject EIO and abrupt process exit at all
-15 write/fsync/link/unlink/rename boundaries of STARTED->SUCCEEDED+result publication,
-and all ten owner CAS boundaries. Every restart observes exactly complete old
+16 write/fsync/link/unlink/rename boundaries of STARTED->SUCCEEDED+result publication,
+and all eleven owner CAS boundaries. Every restart observes exactly complete old
 or complete new state, old exact checkpoint remains valid, and identical CAS
 retry durably resolves uncertain publication. The same test injects every store
 constructor allocation failure and proves zero direct Cog allocations during
@@ -188,7 +192,11 @@ deterministic multiprocess admission race verifies max_sessions across distinct
 IDs. A retained-temp hardlink fixture and repeated unlink EIO prove that retries
 never truncate a committed checkpoint. Successful or uncertain publication marks
 source nodes committed; generic custom-save bookkeeping is conservative on IO,
-and reset/discard cannot erase those source nodes.
+and reset/discard cannot erase those source nodes, including live occupied slots
+beyond holes left by discarded drafts. Parent-directory syscall ordering is
+verified for first save and owner bootstrap; injected parent fsync EIO prevents
+publication and retry confirms durability through EEXIST. These are filesystem
+ordering/failure tests, not a simulated power-loss guarantee.
 
 Seven targeted CMake tests pass under C11 Werror and ASan/UBSan with leak
 detection. These are targeted G evidence; unrelated provider/application delivery

@@ -115,7 +115,19 @@ static cog_result_t read_at(int dir, const char *name, unsigned char *p, size_t 
 static int open_base(cog_store_t *s, bool create)
 {
     if (create && mkdir(s->base, 0700) != 0 && errno != EEXIST) return -1;
-    return open(s->base, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    int base = open(s->base, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (base < 0 || !create) return base;
+    /* Persist the configured store root's directory entry before any durable
+     * owner/data success. Confirm even when mkdir returns EEXIST: an earlier
+     * attempt may have created the root then failed this parent fsync. Opening
+     * the actual parent's descriptor also handles relative/trailing-slash paths
+     * without allocating or guessing a pathname split. */
+    int parent = openat(base, "..", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (parent < 0) { int saved = errno; (void)close(base); errno = saved; return -1; }
+    if (fsync(parent) != 0) {
+        int saved = errno; (void)close(parent); (void)close(base); errno = saved; return -1;
+    }
+    (void)close(parent); return base;
 }
 static cog_result_t domain_lock(cog_store_t *s, int *base, int *lock)
 {
