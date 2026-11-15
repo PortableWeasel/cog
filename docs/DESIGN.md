@@ -122,8 +122,9 @@ block.
   candidate tree, then calls `commit()`. Commit runs validators registered
   per subtree; on failure, the candidate is discarded or rolled back. The
   running tree is what the rest of the system reads.
-- **Observability** — structured stderr logging and a queryable
-  connection-status interface.
+- **Observability** — structured stderr logging through a static sink
+  table, an explicit span stack for tracing, and a fixed-capacity,
+  queryable table of connection snapshots.
 - **Lifecycle** — explicit `init` / `run` / `shutdown` with no global
   constructors.
 - **Provider & model registry** — reads the committed configuration
@@ -368,6 +369,117 @@ propagated rather than swallowed.
 owned by the thread that created it or performed the execution.  Parallel
 execution is cooperative and bounded by @c max_parallel; thread safety can
 be layered on top later with external locking.
+
+---
+
+## Observability
+
+cog-obs is the observability layer shared by a core process and any UI
+attached to it.  It covers three capabilities that all draw from one
+caller-allocated context, `cog_obs_t`: structured logging, trace spans, and
+connection diagnostics.
+
+### Why one context, not three subsystems
+
+The three capabilities share a clock, a service name, and a lifetime.  A
+log record wants a span id; a stall report wants to be a log record; a
+health check wants both.  Giving them one context keeps that shared state
+explicit instead of scattering three partially-initialised globals — and it
+keeps the "no global constructors" rule intact, since `cog_obs_new` is the
+only way to obtain one.
+
+### Structured logging
+
+Field *names* never appear as literals at call sites.  The caller declares
+a static const `cog_obs_field_desc_t` per attribute, collects them into a
+static const `cog_obs_field_table_t`, and references them by index:
+
+```c
+static const cog_obs_field_desc_t fields[] = {
+    { "conn_id",  COG_OBS_FIELD_UINT   },
+    { "endpoint", COG_OBS_FIELD_STRING },
+    { "retries",  COG_OBS_FIELD_UINT   },
+};
+static const cog_obs_field_table_t field_table = { fields, 3 };
+```
+
+Consequences worth stating plainly:
+
+- The emitted key set is enumerable at build time, so log consumers can be
+  generated rather than discovered.
+- No per-call string formatting, no key interning, no hidden allocation.
+- Kind mismatches are caught at the call boundary: a field whose value kind
+  disagrees with its descriptor is rejected with
+  `COG_ERROR_INVALID_ARG` rather than being silently mis-rendered.
+
+Records are formatted once into a context-owned scratch buffer as
+`timestamp severity service message key=value ...` and then offered to each
+sink whose own threshold admits them.  Sinks are a static const table:
+there is no runtime registration, matching the provider and toolkit design.
+The caller owns every destination; cog-obs never opens, closes, or flushes
+anything.
+
+`cog_obs_log_to` additionally copies the formatted text into a
+caller-provided buffer, so the CLI can display exactly the line it logged.
+When the buffer is too small it returns `COG_ERROR_OVERFLOW` and reports the
+required capacity, allowing a retry with a larger buffer.
+
+### Trace spans
+
+`cog_obs_trace_begin` pushes a span onto an explicit stack owned by the
+context; `cog_obs_trace_end` pops it, computes a duration, and hands a
+`cog_obs_span_record_t` to the configured trace sink.  The parent of a new
+span is whatever is currently on top of the stack.
+
+The deliberate choice here is **no thread-local ambient span**.  An ambient
+span would make `begin`/`end` convenient but would also mean the concept of
+"the current span" lives outside any struct — precisely the hidden global
+state rule 2 forbids.  Instead the tree shape is derived from the order of
+`begin`/`end` calls, and spans must be closed in reverse order; closing out
+of order returns `COG_ERROR_INVALID_ARG`.  The stack has a fixed capacity
+taken from the configuration and returns `COG_ERROR_OVERFLOW` rather than
+growing.
+
+A NULL trace sink is legal and costs one branch: spans are still tracked so
+that `cog_obs_trace_current` and `cog_obs_trace_depth` work for callers that
+want structural context without emitting anything.
+
+### Connection diagnostics
+
+The transport owns the truth about its connections.  cog-obs provides a
+fixed-capacity table of snapshots that the transport publishes into, so that
+the CLI, a UI process, or a health report can query in-flight state without
+touching transport internals:
+
+- `cog_obs_diag_publish` inserts or updates a snapshot keyed by
+  `conn_id`, taking the first free slot for new ids.
+- `cog_obs_diag_clear` frees a slot.
+- `cog_obs_diag_count` / `cog_obs_diag_at` enumerate occupied slots in slot
+  order, skipping gaps.
+- `cog_obs_diag_count_state` answers "how many are stalled?" directly,
+  which is the question the orchestrator's health reporting actually asks.
+- `cog_obs_diag_format` renders one snapshot as the same greppable text line
+  the CLI prints.
+
+A full table is an error (`COG_ERROR_OVERFLOW`), never a silent drop: losing
+diagnostics is a failure mode the caller should be told about.  Snapshot
+string pointers are borrowed, not copied — passing static literals is the
+intended usage — so the table stays allocation-free.
+
+### Threading and lifecycle
+
+A `cog_obs_t` is **not** thread-safe.  It owns a mutable span stack, a
+scratch buffer, and a diagnostic table, none of which are locked.  This
+matches the rest of Cog: one context per thread or per core process, driven
+by the thread that runs `cog_core_run`.  Field tables, sink tables, message
+ids, and span names are read-only after construction and may be shared by
+any number of threads.  Multi-threaded logging is achieved by creating one
+context per thread or by external locking; cog-obs does not provide it.
+
+Ownership is uniform across the library: the caller owns the context, the
+strings it passes, the buffers it supplies, and every sink destination.
+cog-obs owns only its own internal tables, released by `cog_obs_free`, which
+discards open spans rather than emitting them.
 
 ---
 
