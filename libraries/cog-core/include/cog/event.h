@@ -75,6 +75,9 @@ typedef enum cog_event_kind {
     COG_EVENT_RETRY,              /**< User requests retry of failed operation. */
     COG_EVENT_ABORT,              /**< User requests abort of failed operation. */
     COG_EVENT_ERROR,              /**< Error occurred (provider, tool, etc). */
+    /* Append only: preserve every earlier event kind's numeric value. */
+    COG_EVENT_SUBAGENT_SPAWN,     /**< Core-owned queued agent spawn intent. */
+    COG_EVENT_SUBAGENT_CANCEL,    /**< Core-owned queued agent cancel intent. */
 } cog_event_kind_t;
 
 /**
@@ -90,6 +93,33 @@ typedef struct cog_event {
     size_t payload_len;      /**< Payload size in bytes; zero when payload is NULL. */
     uint64_t source_id;      /**< Diagnostic source identifier; zero when unknown. */
 } cog_event_t;
+
+/**
+ * @brief Immutable payload for SUBAGENT_SPAWN/CANCEL, not a wire message.
+ *
+ * Core emits event.id=(cog_event_id_t)event.kind, source_id=agent_id and
+ * payload_len=sizeof(cog_event_agent_intent_t). Applications install static
+ * dispatch rows for these IDs in every state where intents may arrive. This
+ * convention does not globally reserve IDs or equate all application IDs/kinds.
+ * action must equal the event kind; all identity fields match copy_config.
+ *
+ * Each constructor-reserved agent record holds one spawn and one cancel
+ * payload. Successful admission leases that immutable storage through queueing
+ * and dispatch; the core releases the lease only after handler/dispatch returns,
+ * including UNHANDLED, handler error or denied-transition exits. release refuses
+ * outstanding leases, so later queue pushes and terminal updates cannot overwrite
+ * the payload. A handler copies this pointer-free value and copy_config strings
+ * to caller-owned storage before deferring work past return. No queue deep-copy
+ * or per-intent allocation is implied; the generic event queue borrows payload.
+ * Only agent_spawn/cancel may originate these intents; public core_enqueue
+ * rejects their kinds instead of accepting an unleased/duplicate forged intent.
+ */
+typedef struct cog_event_agent_intent {
+    uint64_t agent_id; /**< Nonzero cog_agent_id_t value; avoids include cycle. */
+    uint64_t execution_epoch; /**< Actual admitted nonzero attempt epoch. */
+    cog_peer_id_t owner_peer; /**< 0 local; remote placement selected by app. */
+    cog_event_kind_t action; /**< SUBAGENT_SPAWN or SUBAGENT_CANCEL only. */
+} cog_event_agent_intent_t;
 
 /**
  * @brief Payload for COG_EVENT_IPC_* events.

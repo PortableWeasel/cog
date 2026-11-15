@@ -97,3 +97,67 @@ constructor introduces no global mutable identity state. This narrows obsolete
 process-wide type prose to the existing single-fabric routing boundary and
 changes no function declaration or layout. Independent Q review verifies this
 header/trace/fixture consistency amendment before integration.
+
+## Local-agent intent amendment (86f7a3c under bf7a450)
+
+The core queues intent; it does not invoke an application runtime or know a
+remote wire protocol. The static application dispatcher consumes these events.
+This is a targeted header gap amendment after E, not a new release-gate claim.
+
+```mermaid
+sequenceDiagram
+    App->>Core: cog_agent_spawn(config,id)
+    Core->>Core: reserve record/child/payload and atomically queue SPAWN
+    Core-->>App: SUBAGENT_SPAWN typed payload under dispatch lease
+    App->>Core: cog_agent_copy_config(id,config,owned bytes,capacity,required)
+    App->>Core: cog_agent_is_cancelled(id,cancelled) before effects
+    alt local and not cancelled
+      App->>Runtime: start copied task with actual nonzero local epoch
+    else remote and not cancelled
+      App->>Wire: forward copied correlated bounded application protocol
+    end
+    App->>Core: cog_agent_cancel(id)
+    Core-->>App: SUBAGENT_CANCEL leased identity/action
+    App->>Runtime: cancel or forward; drain/reap before terminal update
+    App->>Core: apply_update; copy_update; enqueue notification; ack_update
+    App->>Core: release only after terminal, notification ack and intent leases end
+```
+
+| Intent step | Exact public declaration | Declaring header |
+|---|---|---|
+| Static dispatch convention and leased payload | `COG_EVENT_SUBAGENT_SPAWN`; `COG_EVENT_SUBAGENT_CANCEL`; `cog_event_agent_intent_t.agent_id`; `cog_event_agent_intent_t.execution_epoch`; `cog_event_agent_intent_t.owner_peer`; `cog_event_agent_intent_t.action` | [event.h](../../libraries/cog-core/include/cog/event.h) |
+| Copy before deferred work / first update | `cog_agent_copy_config`; `cog_agent_config_t.task`; `cog_agent_config_t.parent_session_id`; `cog_agent_config_t.execution_epoch` | [agent.h](../../libraries/cog-core/include/cog/agent.h) |
+| Atomic admission and release lifetime | `cog_agent_spawn`; `cog_agent_cancel`; `cog_agent_is_cancelled`; `cog_agent_release` | [agent.h](../../libraries/cog-core/include/cog/agent.h) |
+| Origin and lease unwind | `cog_core_enqueue`; `cog_core_run`; `cog_core_free` | [core.h](../../libraries/cog-core/include/cog/core.h) |
+
+1. **Header pass 1:** append event kinds without renumbering earlier values.
+   Core-originated event ID is `(cog_event_id_t)kind`, source_id is agent ID;
+   static application rows handle those IDs, which are not globally reserved.
+   A pointer-free typed payload carries action and exact ID/epoch/placement.
+2. **Targeted trace pass 2:** local epoch=0 resolves to assigned agent ID, so
+   copy_config or the spawn event supplies it before the first update. Copy
+   OVERFLOW changes required bytes only; successful task/optional-parent bytes
+   remain caller-owned after dispatch/release. A remote handler forwards its
+   own protocol; arbitrary IPC delivery is not an agent execution grant.
+3. **Consistency pass 3:** queue-full spawn leaves no child/record/event/lease
+   or output ID; first cancel OVERFLOW changes no state. Repeated admitted
+   active cancel is OK without another event, terminal cancel is INVALID_STATE.
+   If cancel is admitted before spawn dispatch, the handler checks cancelled
+   and starts no effects. Terminal can be applied early, but release still
+   refuses queued/in-dispatch intent leases. Lease unwind occurs after every
+   dispatch result, including UNHANDLED/handler/transition error. Deferred work
+   must copy scalars and strings; destruction never executes queued intents.
+
+The core reserves one spawn and one cancel payload per bounded agent record;
+no per-intent allocation, dynamic registry or provider/orchestrator link is added.
+Public core_enqueue rejects these origin-controlled kinds with INVALID_ARG,
+preventing an unleased forged duplicate. Generic event queues still borrow the
+payload pointer, so this does not require a new deep-copy queue policy.
+
+Required bf7a450 executable checks: exact dispatch IDs/action/owner/assigned epoch;
+caller task mutation after spawn; config capacity retry before first update; full
+queue spawn/cancel rollback; duplicate cancellation; cancel-before-spawn; terminal
+release blocked until pending spawn/cancel handlers return (including errors);
+owned deferred config after release; no implicit remote wire send. This design
+commit supplies declarations/traces only; writer and independent code review
+must establish those runtime results before package completion.

@@ -277,7 +277,9 @@ cog_result_t cog_core_new(cog_core_t **out, const cog_core_config_t *config);
  *       retains ownership of it.
  *
  * Threading: not thread-safe.  @p core must not be running when this
- * function is called.
+ * function is called. Queued agent intents are discarded and their leases
+ * released before registry storage is destroyed; caller first fences/drains
+ * all already-started owned work. No queued intent is executed by destruction.
  */
 void cog_core_free(cog_core_t *core);
 
@@ -300,7 +302,10 @@ void cog_core_free(cog_core_t *core);
  * @pre @p core has been created with @c cog_core_new and is not already
  *      running.
  *
- * @post The core is no longer running. Application-owned asynchronous work
+ * @post A popped agent intent lease is released after its dispatch/handler
+ * returns on every success/error path; no pointer escapes to deferred work.
+ * Unprocessed intents remain queued/leased for a later run or explicit teardown.
+ * The core is no longer running. Application-owned asynchronous work
  * remains explicitly owned; the application cancels/drains/releases it.
  * @note Hooks/handlers must perform bounded CPU/I/O work. Fairness bounds
  * dispatch counts and requested waits, not arbitrary handler or OS latency.
@@ -345,6 +350,9 @@ void cog_core_stop(cog_core_t *core);
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p core or @p event is NULL.
  * @return COG_ERROR_OVERFLOW if the internal queue is full.
+ * @return COG_ERROR_INVALID_ARG for SUBAGENT_SPAWN/CANCEL kinds, which only
+ * agent_spawn/cancel may originate through atomic leased admission. This does
+ * not reserve their numeric dispatch IDs for unrelated application events.
  *
  * @post The event is copied into the core's queue.
  *
