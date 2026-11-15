@@ -13,6 +13,10 @@ add_library(cog-toolkit STATIC
 )
 add_library(cog::toolkit ALIAS cog-toolkit)
 
+# Export as cog::toolkit (matching the build-tree alias) so installed
+# consumers use the same target name as in-tree consumers.
+set_target_properties(cog-toolkit PROPERTIES EXPORT_NAME toolkit)
+
 target_include_directories(cog-toolkit
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

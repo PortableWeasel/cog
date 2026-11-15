@@ -19,6 +19,10 @@ add_library(cog-ipc STATIC
 )
 add_library(cog::ipc ALIAS cog-ipc)
 
+# Export as cog::ipc (matching the build-tree alias) so installed
+# consumers use the same target name as in-tree consumers.
+set_target_properties(cog-ipc PROPERTIES EXPORT_NAME ipc)
+
 target_include_directories(cog-ipc
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

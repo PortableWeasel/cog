@@ -166,4 +166,29 @@ pins:
 - ownership and NULL/not-found behavior
 
 Run with `ctest -R unit-provider` (plain, ASan/UBSan, and Clang builds all
+
+### Core integration (ticket 1433731)
+
+`tests/integration/test_core_provider.c` wires a real cog-core agent to a
+fake static-vtable provider and drives the full user-input -> send ->
+LLM_CHUNK -> LLM_COMPLETE flow through the real dispatch table and session
+history.  It pins:
+
+- streaming: each chunk is appended to the session tree as an assistant
+  message and the final chunk closes the turn with LLM_COMPLETE;
+- error/retry metadata: a receive failure carrying a `cog_provider_error_t`
+  (http_status, retryable, retry_after_ms, message) is read off the
+  provider by the handler and propagated out of `cog_core_run`;
+- cancellation: a receive returning `COG_ERROR_ABORTED` is handled
+  gracefully (the turn returns to IDLE without appending a partial
+  response);
+- provider accessor/ownership: `cog_core_provider` returns the configured
+  instance and the core borrows it (`cog_core_free` does not disconnect
+  it).
+
+The fake provider embeds the same first-member vtable layout as the
+private `struct cog_provider` so the public `cog_provider_*` wrappers
+dispatch correctly, but the test never includes the private header.
+
+Run with `ctest -R integration-core-provider`.
 pass).

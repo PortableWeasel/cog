@@ -315,6 +315,21 @@ core configured with a real obs context logs `core.created`,
 through a capture sink, with no hidden allocations (clean under
 ASan/UBSan/LSan).
 
+`tests/integration/test_core_provider.c` (ticket 1433731) verifies the
+core+provider integration: a real core configured with a fake
+static-vtable provider drives a user-input -> send -> LLM_CHUNK ->
+LLM_COMPLETE flow through real dispatch and session history, covering
+streaming content, error/retry metadata propagation, cancellation, and
+provider accessor/ownership (the core borrows the provider and does not
+disconnect it on `cog_core_free`).
+
+`tests/integration/test_core_toolkit.c` (ticket 1433731) verifies the
+core+toolkit integration: a real core/static tool table dispatches to the
+toolkit, executes independent tools concurrently (proving overlap),
+collects exactly `call_count` ordered results into session history, and
+covers timeout, cooperative cancellation, and tool error propagation
+without data races (clean under TSan).
+
 `tests/integration/test_core_session.c` verifies the cross-module effects:
 session attachment (reset refused while attached, allowed after teardown),
 run-loop mutation of session history, and pending-message auto-injection
@@ -330,3 +345,15 @@ borrowed store outlives `cog_core_free` and remains usable.
 
 All tests are compiled and run with strict warning flags and ASan/UBSan
 through the CMake/CTest build.
+
+## Build / export (ticket 1433731)
+
+`cog-core` and `cog-result` (and, for the core+provider/core+toolkit
+integration, `cog-provider`, `cog-toolkit`, `cog-ipc`, and `cog-obs`) set
+`EXPORT_NAME` so the installed export sets produce the same target names
+as the build-tree aliases: `cog::core`, `cog::result`, `cog::provider`,
+`cog::toolkit`, `cog::ipc`, `cog::obs`.  An external consumer can
+`include()` the installed `*-targets.cmake` files in dependency order
+(result -> ipc -> obs -> core -> provider/toolkit) and link `cog::provider`
+/ `cog::toolkit` with correct include and link dependencies and no cycles.
+This is verified by an external consumer build against a staged install.

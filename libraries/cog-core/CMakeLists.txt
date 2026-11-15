@@ -22,6 +22,10 @@ add_library(cog-core STATIC
 )
 add_library(cog::core ALIAS cog-core)
 
+# Export as cog::core (matching the build-tree alias) so installed
+# consumers use the same target name as in-tree consumers.
+set_target_properties(cog-core PROPERTIES EXPORT_NAME core)
+
 target_include_directories(cog-core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -57,6 +61,9 @@ target_enable_warnings(cog-core)
 # its public API includes.
 add_library(cog-result INTERFACE)
 add_library(cog::result ALIAS cog-result)
+
+# Export as cog::result (matching the build-tree alias).
+set_target_properties(cog-result PROPERTIES EXPORT_NAME result)
 
 target_include_directories(cog-result
     INTERFACE
