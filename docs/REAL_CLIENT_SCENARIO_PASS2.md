@@ -39,7 +39,7 @@ presence and crash/result-resize oracles without claiming a running codec/store.
 | D11 | Public status query could not ingest remote results; replacement status storage invalidated queued events | Peer/attempt/sequence-bound apply/copy/ack/release; bounded captured snapshots, portable CGA1 codec, explicit cancel-terminal race semantics | N/O/Q |
 | D12 | Bounded replay lacked generations/GAP and active text resynchronization | CGR1 DATA/GAP/CURSOR, empty-window conventions; CGD1 atomic full visible snapshot including active/incomplete aggregate and exact session/cursor anchor | O/K |
 | D13 | Polling a readable prefix did not make blocking full IPC receive/send fair | All sockets nonblocking, constructor frame queues and bounded service; partial cursors; recv overflow retention; transactional send/broadcast admission | Q/O |
-| D14 | Original17 used nonexistent serialization helpers and unfenced routing updates | Quiescent same-host shared-store checkpoint + exclusive owner guard + durable epoch CAS; portable CGH1; target staged through initial route publication; restart/lost-ACK/IO rules | G/N/O |
+| D14 | Original17 used nonexistent serialization helpers and unfenced routing updates | Quiescent same-host shared-store checkpoint + exclusive owner guard + durable epoch CAS; portable CGH1; target staged through initial route publication; restart/lost-ACK/IO rules; owned deletion/anchor replacement refused, store outlives every guard | G/N/O |
 
 No known required public-call gap remains after these amendments. This is the
 writer's pass-2 conclusion for independent review, not gate-E approval. Narrow
@@ -118,7 +118,7 @@ headers under GCC C11, G++ C++17, Clang C11 and Clang++ C++17) with warning-as-e
 flags; **four** mixed-public-include external-provider consumer compilations.
 The public base prefix is statically asserted and all eight callbacks form a
 static const table without private headers. Identifier/member and local-link
-audits pass for **38 diagrams, 870 exact table references and 188 struct fields**.
+audits pass for **38 diagrams, 876 exact table references and 188 struct fields**.
 Fixture JSON/base64/length equality and scoped whitespace checks also pass. These checks establish declaration and
 include consistency only. Existing production `.c` bodies still implement older
 layouts/semantics and intentionally require delivery migration; a whole-product
@@ -171,3 +171,15 @@ new executable assertions. No authenticated provider request was made in D.
 | R16 | [R16: Stop and shutdown with active transport, tools and saved intent](scenarios/R16-shutdown.md) | Covered, independent review pending |
 | R17 | [R17: Context, token, turn, output and tool-round limits](scenarios/R17-limits.md) | Covered, independent review pending |
 | R18 | [R18: Install, external provider, independent net contexts and cleanup](scenarios/R18-embedding.md) | Covered, independent review pending |
+
+
+## Independent-review correction: owned deletion
+
+Critic review found that legacy delete/delete_ could otherwise bypass the owner
+lock by removing/recreating its anchor. The initial profile now returns
+UNSUPPORTED for deletion of any owner-record session or ownership anchor,
+regardless of require_owner and even after guard release. The check/deletion
+serializes with bootstrap/adoption; no owned identity can be reset to absent.
+`cog_store_free` explicitly requires all guard borrowers drained and guards
+released. Original17 and R10 include this race/refusal and lifetime branch.
+No new API or production implementation is added by this correction.

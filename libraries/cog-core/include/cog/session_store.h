@@ -117,7 +117,13 @@ typedef cog_result_t (*cog_store_append_fn)(void *store,
  *
  * @param[in] store Store instance.
  * @param[in] id    Session id to delete.
- * @return COG_OK on success.
+ * @return COG_ERROR_UNSUPPORTED for any durable owner record or ownership lock
+ * anchor, including after all guards release. This rule also binds delete_;
+ * require_owner=false cannot bypass it. Initial profile never unlinks/replaces
+ * an ownership anchor or downgrades an owned identity to bootstrap-absent.
+ * The refusal check/deletion must serialize with owner bootstrap/adoption in
+ * the same stable ownership domain; it cannot race creation of an owner/anchor.
+ * @return COG_OK only for supported unowned legacy deletion.
  * @return COG_ERROR_NOT_FOUND if the session doesn't exist.
  */
 typedef cog_result_t (*cog_store_delete_fn)(void *store, const char *id);
@@ -266,6 +272,9 @@ cog_result_t cog_store_new(cog_store_t **out,
  * @brief Destroy a session store.
  *
  * @param[in,out] store Store to destroy; may be NULL (no-op).
+ * @pre All owner guards have been released and every guard borrower/execution
+ * is drained and destroyed. Guards retain this context/backend lifetime; free
+ * never invalidates a live guard or implicitly releases its ownership anchor.
  *
  * @post All resources held by @p store are released.
  *
@@ -364,7 +373,13 @@ cog_result_t cog_store_append(cog_store_t *store,
  *
  * @param[in] store Store instance.
  * @param[in] id    Session id to delete.
- * @return COG_OK on success.
+ * @return COG_ERROR_UNSUPPORTED for any durable owner record or ownership lock
+ * anchor, including after all guards release. This rule also binds delete_;
+ * require_owner=false cannot bypass it. Initial profile never unlinks/replaces
+ * an ownership anchor or downgrades an owned identity to bootstrap-absent.
+ * The refusal check/deletion must serialize with owner bootstrap/adoption in
+ * the same stable ownership domain; it cannot race creation of an owner/anchor.
+ * @return COG_OK only for supported unowned legacy deletion.
  * @return COG_ERROR_NOT_FOUND if the session doesn't exist.
  *
  * Threading: not thread-safe.

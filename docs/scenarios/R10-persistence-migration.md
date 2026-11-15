@@ -27,7 +27,7 @@ decisions in the diagram are not invented library functions.
 
 | Step | Exact calls, types, events or fields | Declaring header |
 |---|---|---|
-| Version-aware operations | `COG_STORE_FORMAT_V2`, `cog_store_save`, `cog_store_load_ex`, `cog_store_load_report_t`, `COG_STORE_LOAD_REPLAY`, `COG_STORE_LOAD_INSPECT` | [libraries/cog-core/include/cog/session_store.h](../../libraries/cog-core/include/cog/session_store.h) |
+| Version-aware operations | `cog_store_delete`, `cog_store_delete_fn`, `cog_store_free`, `COG_STORE_FORMAT_V2`, `cog_store_save`, `cog_store_load_ex`, `cog_store_load_report_t`, `COG_STORE_LOAD_REPLAY`, `COG_STORE_LOAD_INSPECT` | [libraries/cog-core/include/cog/session_store.h](../../libraries/cog-core/include/cog/session_store.h) |
 | Recovery policy | `cog_store_config_t`, `cog_store_append` | [libraries/cog-core/include/cog/session_store.h](../../libraries/cog-core/include/cog/session_store.h) |
 | History refusal/ledger | `cog_session_copy_history`, `cog_session_tool_state`, `COG_TOOL_EXECUTION_INDETERMINATE` | [libraries/cog-core/include/cog/session.h](../../libraries/cog-core/include/cog/session.h) |
 | Exact structured content | `cog_message_t`, `cog_message_opaque_t`, `cog_usage_t` | [libraries/cog-core/include/cog/message.h](../../libraries/cog-core/include/cog/message.h) |
@@ -41,6 +41,8 @@ decisions in the diagram are not invented library functions.
 - Failed directory durability sync means IO/uncertain, never permission to execute after STARTED. Crash after a real effect but before final result publication loads INDETERMINATE without rerun.
 
 ## Failure and capacity branches
+
+- Owned-session or ownership-anchor deletion returns UNSUPPORTED through both public and backend paths; require_owner=false is not a bypass. Race deletion against bootstrap/adoption and verify the stable anchor is never unlinked/recreated. Free the store only after all guards/borrowers are released.
 
 - Fixtures must include v1 text, v1 tools inspect/refusal, v2 complete, unknown version, STARTED, unknown opaque namespace, missing derived index and each atomic-publish crash point.
 - INSPECT is not a bypass for provider_send or tools. It allows observation only; replay_safe=false is propagated.

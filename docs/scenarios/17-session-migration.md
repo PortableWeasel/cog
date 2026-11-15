@@ -35,6 +35,7 @@ sequenceDiagram
 | Durable identity and exact generation | `cog_store_owner_t`; `cog_store_checkpoint_t`; `cog_store_config_t.require_owner` | [session_store.h](../../libraries/cog-core/include/cog/session_store.h) |
 | Confirm current committed facts | `cog_store_owner_read`; `cog_store_load_report_t.checkpoint_generation` | [session_store.h](../../libraries/cog-core/include/cog/session_store.h) |
 | Guarded quiescent checkpoint | `cog_store_checkpoint_save`; `cog_store_checkpoint_load`; `cog_store_owner_guard_t` | [session_store.h](../../libraries/cog-core/include/cog/session_store.h) |
+| Delete/teardown refusal | `cog_store_delete`; `cog_store_delete_fn`; `cog_store_free` | [session_store.h](../../libraries/cog-core/include/cog/session_store.h) |
 | Freeze/commit/activate | `cog_store_owner_release`; `cog_store_owner_compare_exchange`; `cog_store_owner_acquire` | [session_store.h](../../libraries/cog-core/include/cog/session_store.h) |
 | Tool guard lifetime | `cog_store_owner_guard_borrow`; `cog_store_owner_guard_return` | [session_store.h](../../libraries/cog-core/include/cog/session_store.h) |
 | Quiesce model work | `cog_provider_cancel`; `cog_provider_next`; `cog_provider_disconnect` | [provider_vtable.h](../../libraries/cog-provider/include/cog/provider_vtable.h) |
@@ -52,6 +53,7 @@ sequenceDiagram
 - Target failure before commit leaves source frozen. Abort/resume advances epoch even when returning to the same source incarnation; no old PREPARED/COMMIT ACK can later activate that attempt. Lost ACK is resolved by exact durable owner comparison and guard acquisition, never guessed rollback.
 - Publish/fsync uncertainty is INDETERMINATE. Neither side resumes on an assumption. Identical CAS retry confirms durability; `owner_read` is diagnostic, not an activation grant. After commit, route failure leaves the new durable owner authoritative; retry route publication, never restore the old owner from a stale ACK.
 - Restart consults durable owner/checkpoint, fences/reaps prior owned processes and admits a fresh incarnation/epoch. STARTED or unresolved effect intent remains INDETERMINATE and cannot be replayed automatically. OS lock release on process death is not proof that descendant side effects completed.
+- Deletion through public delete or backend delete_ refuses any durable owner record or ownership lock anchor with UNSUPPORTED, even after guards release or via an unguarded context. Refusal is serialized against bootstrap/adoption; no unlink/recreate can reset fencing identity. Store destruction requires all guard borrowers drained and guards released first.
 - Every CGH1 message echoes session, expected/next owner, source/target peer and exact generation. Wrong peer, stale epoch or changed checkpoint ACK is rejected. No native pointer struct or arbitrary store path crosses IPC.
 
 ## Gap amendment
@@ -71,6 +73,6 @@ pass; it does not prove the new fence/guard contract.
 
 Required future tests: source/target failure at every checkpoint, release, CAS,
 fsync, guard acquisition and route publication boundary; stale ACKs and duplicate
-commit; same-process competing contexts; exact-generation refusal; old incarnation
+commit; same-process competing contexts; delete attempts with live/released guards and concurrent owner bootstrap/adoption; exact-generation refusal; old incarnation
 restart; live child/unresolved ledger refusal; byte-exact opaque continuation and
 no duplicate effects. No passing runtime result is inferred from this trace.
