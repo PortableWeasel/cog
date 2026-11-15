@@ -1,0 +1,11 @@
+@PACKAGE_INIT@
+include(CMakeFindDependencyMacro)
+find_dependency(cog-net CONFIG)
+# The existing component export files share the cog directory. Load their
+# acyclic dependency order, while allowing embedding hosts to preload targets.
+foreach(_component result ipc obs core provider)
+    if(NOT TARGET cog::${_component})
+        include("${CMAKE_CURRENT_LIST_DIR}/../cog/cog-${_component}-targets.cmake")
+    endif()
+endforeach()
+unset(_component)

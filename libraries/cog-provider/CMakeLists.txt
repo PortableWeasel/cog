@@ -10,6 +10,9 @@
 add_library(cog-provider STATIC
     src/provider.c
     src/endpoint.c
+    src/openrouter.c
+    src/openrouter_codec.c
+    src/vendor/yyjson.c
 )
 add_library(cog::provider ALIAS cog-provider)
 
@@ -25,11 +28,13 @@ target_include_directories(cog-provider
 target_compile_features(cog-provider PUBLIC c_std_11)
 
 # cog-provider headers include cog-core headers (e.g. <cog/result.h>).
-target_link_libraries(cog-provider PUBLIC cog::core)
+target_link_libraries(cog-provider PUBLIC cog::core cog::net)
 
 # Apply the project-wide strict-warning policy (and ASan/UBSan when enabled)
 # to the production sources.
 target_enable_warnings(cog-provider)
+set_source_files_properties(src/vendor/yyjson.c PROPERTIES COMPILE_OPTIONS "-w")
+target_include_directories(cog-provider SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/vendor)
 
 # -----------------------------------------------------------------------
 # Unit test — contract test for provider.h / endpoint.h (see
@@ -84,3 +89,39 @@ install(EXPORT cog-provider-targets
     FILE cog-provider-targets.cmake
     NAMESPACE cog::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cog)
+if(BUILD_TESTING)
+    add_executable(test_openrouter ${PROJECT_SOURCE_DIR}/tests/unit/test_openrouter.c)
+    target_link_libraries(test_openrouter PRIVATE cog::provider)
+    target_link_options(test_openrouter PRIVATE
+        -Wl,--wrap=cog_net_request,--wrap=cog_net_service,--wrap=cog_net_peek_request
+        -Wl,--wrap=cog_net_ack,--wrap=cog_net_request_release
+        -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc)
+    target_enable_warnings(test_openrouter)
+    add_test(NAME unit-openrouter COMMAND test_openrouter)
+endif()
+if(BUILD_TESTING)
+    # Exercise the mock boundary independently of pending CLI conversation work.
+    add_executable(test_mock_provider_contract
+        ${PROJECT_SOURCE_DIR}/applications/cog-cli/src/mock_provider.c
+        ${PROJECT_SOURCE_DIR}/applications/cog-cli/tests/test_mock_provider.c)
+    target_include_directories(test_mock_provider_contract PRIVATE ${PROJECT_SOURCE_DIR}/applications/cog-cli/include)
+    target_link_libraries(test_mock_provider_contract PRIVATE cog::provider)
+    target_enable_warnings(test_mock_provider_contract)
+    add_test(NAME unit-mock-provider COMMAND test_mock_provider_contract)
+endif()
+if(BUILD_TESTING AND COG_NET_CURL_BUILD_DIR AND COG_NET_CURL_LIBRARY)
+    add_executable(test_openrouter_https ${PROJECT_SOURCE_DIR}/tests/integration/test_openrouter_https.c)
+    target_link_libraries(test_openrouter_https PRIVATE cog::provider)
+    target_enable_warnings(test_openrouter_https)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME integration-openrouter-https COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests-run-https.py $<TARGET_FILE:test_openrouter_https>)
+endif()
+
+include(CMakePackageConfigHelpers)
+configure_package_config_file(cmake/cog-provider-config.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/cog-provider-config.cmake"
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cog-provider)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/cog-provider-config.cmake"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cog-provider)
+install(FILES src/vendor/LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/cog-provider RENAME yyjson-LICENSE)

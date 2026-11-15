@@ -712,3 +712,15 @@ returning the existing immutable shared fork point. A nonleaf selection retains
 the current active leaf until explicit `add_message(parent=fork_point)` creates
 and selects a divergent child. A leaf selection may select that leaf. This
 keeps immediate snapshots valid without copying effect-bearing nodes.
+
+### Stage 14.H provider delivery boundary
+
+The H implementation follows the approved typed provider contract: constructor
+pools, strict private namespaced yyjson, request serialization before send,
+retained transactional deltas, private fragmented tool/opaque assembly and
+terminal validation before tool readiness. A single ordinary retained slot plus
+a resumable final cursor and independent FINISH satisfy bounded expansion even
+with an entry ceiling of one. Actual net composition uses request-local peek/ack
+and never retries. The [mock fixture amendment](REAL_CLIENT_H_MOCK_AMENDMENT.md)
+adds a header-first typed script constructor for K's subsequent tool-loop tests.
+H review/integration evidence does not waive the remaining application gates.
