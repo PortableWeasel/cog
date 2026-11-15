@@ -101,3 +101,8 @@ zero-entry ledger, refuse history/ordinary append/fork, and restore the exact
 records only in inspection mode. The earlier branch-local and divergent-discard
 regressions remain passing. All four suites plus the independent legacy
 reproduction pass strict C11-Werror-NDEBUG and ASan/UBSan (ten executions).
+
+Independent review accepted G.1 and the final G.2 commit bookkeeping at
+`619fa0a`; merge `3c4e39c` preserves the reviewed history. Combined core/store
+and scenario 13/14 evidence, including the remaining application/release limits,
+is recorded in `../session_store/CONTRACT.md` and ticket `0a33dd7`.

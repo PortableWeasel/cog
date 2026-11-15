@@ -2,8 +2,8 @@
 
 The public contract is `libraries/cog-core/include/cog/session_store.h`.
 Stage 14.G.2 implements the approved version 2 transaction and same-host fencing
-profile. Independent review remains required; this document records executable
-writer evidence rather than closing package G.
+profile. Independent review accepted `619fa0a` after the focused revisions;
+merge `3c4e39c` integrates that branch with the existing F/Q deliveries.
 
 ## Constructor and dispatch ownership
 
@@ -200,8 +200,8 @@ ordering/failure tests, not a simulated power-loss guarantee.
 
 Seven targeted CMake tests pass under C11 Werror and ASan/UBSan with leak
 detection. These are targeted G evidence; unrelated provider/application delivery
-and broad package integration are separate gates. Independent G review remains
-pending.
+and broad package integration are separate gates. Independent review and combined
+G/Q integration evidence are recorded below.
 
 ## Stage 14.G private codec boundary (implemented)
 
@@ -235,11 +235,50 @@ opaque embedded NUL, usage, committed STARTED vs restored INDETERMINATE, every
 binary truncation boundary, descriptor/encoded capacity failure, unsupported
 wire versions, trailing bytes and strict v1 migration/inspection/tail behavior.
 Targeted C11-Werror and ASan/UBSan codec/session executions pass. This evidence
-does not establish atomic manifest transactions or ownership-fencing behavior;
-those remain G.2 transaction/backend delivery and independent-review work.
+does not alone establish atomic manifest transactions or ownership fencing;
+the separately reviewed transaction/fencing tests above cover those boundaries.
 
 Additional codec adversarial coverage mutates every byte of a valid structured
 record and checks bounded decode/restore without effects, exercises arbitrary
 scratch-buffer alignment, duplicate v1 fields, noncanonical base64 padding and
 embedded-NUL legacy payload refusal. Scratch allocation aligns actual addresses,
 including callers that supply an unaligned byte-buffer start.
+
+## Independent acceptance and combined G/Q integration
+
+Tickets `f94a903`, `953ed5c`, `0a33dd7` and `b8a6fc1` record independent
+review, merge and combined validation. Review rejected branch-local result
+omission, divergent-draft active selection, a legacy helper regression, sparse
+source commit marking and missing store-root parent durability. The accepted
+branch also fixes the independently reproduced temporary-hardlink checkpoint
+corruption, global session-count admission race and persisted PROPOSED denial.
+All reviewed fixes remain in the merge history.
+
+The merged `test_core_service` target links the real `cog-core`, `cog-ipc` and
+`cog-obs` archives, including the migrated session/store implementation; it uses
+no isolation store double. F transport and Q scheduler CMake registrations are
+preserved additively. Twenty-seven targeted tests pass in Debug C11 Werror and
+ASan/UBSan with leak detection: the seven G suites, core/service/event/state/
+handler/result/tool/IPC/observability units, five core/store integration tests,
+and executable scenarios 13/14. Scenario 13 now uses identified assistant calls,
+durable STARTED and a correlated final result; scenario 14 preserves shared
+ancestor identity and verifies immutable ancestry and independent child metrics.
+Legacy core fixtures now zero-initialize complete messages, exclude the text
+terminator from UTF-8 byte lengths, provide mandatory custom load_ex and expect
+the approved v2 deletion refusal.
+
+Independent reproducers under `/tmp/g2-independent` also pass strict and
+sanitizer builds for sparse committed slots, base-parent descriptor syncing,
+post-link cleanup EIO/retry, and concurrent max_sessions admission. The permanent
+fencing suite covers 16 save and 11 owner CAS syscall boundaries with EIO and
+process-exit injection. These checks establish the tested ordering and restart
+behavior; they do not simulate a physical power failure.
+
+This is a library delivery gate, not the full application/release gate. The
+default full build still stops at the old fake provider vtable's missing poll
+initializer in `test_core_provider.c`, owned by H integration. Legacy unit-agent
+expectations still assume dynamic results/256 default records rather than Q's
+constructor-reserved buffers/16 default slots; release ticket `b569276` tracks
+that migration. H/K must finish the real provider/tool conversation loop and
+remaining application scenarios. I/J/L/N/O and full installed packaging/release
+gate P remain separate; no live or paid model calls were used here.

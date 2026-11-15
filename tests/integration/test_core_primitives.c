@@ -70,7 +70,7 @@ static cog_handler_result_t on_start(cog_core_t *core,
                                      const cog_event_t *event)
 {
     static const cog_message_t msg = {
-        COG_MESSAGE_ROLE_USER, "hello", 5U, NULL
+        .role = COG_MESSAGE_ROLE_USER, .content = "hello", .content_len = 5U
     };
     cog_handler_result_t r = { ST_RUNNING, COG_OK };
 
@@ -94,7 +94,7 @@ static cog_handler_result_t on_user(cog_core_t *core,
                                     const cog_event_t *event)
 {
     static const cog_message_t msg = {
-        COG_MESSAGE_ROLE_ASSISTANT, "hi", 2U, NULL
+        .role = COG_MESSAGE_ROLE_ASSISTANT, .content = "hi", .content_len = 2U
     };
     cog_handler_result_t r = { ST_RUNNING, COG_OK };
 
@@ -196,7 +196,7 @@ static int expect_history(cog_session_t *s, size_t want_count,
 static int fixture_new(cog_core_t *core, cog_session_t **s,
                        cog_event_queue_t **q)
 {
-    cog_session_config_t cfg = {NULL, 0U}; /* default node cap */
+    cog_session_config_t cfg = {0}; /* default constructor reservations */
     cog_session_t *session = NULL;
     cog_event_queue_t *queue = NULL;
 
