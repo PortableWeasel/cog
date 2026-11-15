@@ -50,6 +50,21 @@ add_test(NAME unit-provider
     COMMAND test_provider
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
+# Critic adversarial contract test (ticket c42b7ca): out-parameter
+# preservation, exact vtable call counts, connect/disconnect error
+# propagation, and select_by_model / lookup edge cases.
+add_executable(test_provider_critic
+    ${PROJECT_SOURCE_DIR}/tests/unit/test_provider_critic.c
+)
+target_link_libraries(test_provider_critic PRIVATE cog::provider)
+target_enable_warnings(test_provider_critic)
+target_include_directories(test_provider_critic PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+add_test(NAME unit-provider-critic
+    COMMAND test_provider_critic
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
 # -----------------------------------------------------------------------
 # Install rules
 # -----------------------------------------------------------------------
