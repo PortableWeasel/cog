@@ -866,6 +866,239 @@ static void test_shutdown_preserves_pending(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Deterministic shutdown-preserves-pending (ticket ed77259).          */
+/* ------------------------------------------------------------------ */
+
+/* Context shared between the run thread (parked in the wait hook) and the
+ * test thread (which issues the concurrent stop).  The mutex/condvar make
+ * the stop land deterministically while the queue is empty and a pending
+ * message exists, with no timing sleeps. */
+typedef struct stop_ctx {
+    cog_core_t *core;
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+    int parked;      /**< Wait hook has queued the pending msg and blocked. */
+    int stop_called; /**< Test thread has called cog_core_stop. */
+} stop_ctx_t;
+
+/* Runs on the run thread.  The queue is empty and no pending message
+ * exists yet, so the loop calls this hook.  We queue a pending message for
+ * the core's own session (single-threaded use: we are on the run thread),
+ * then block until the test thread has issued a concurrent stop. */
+static void park_wait_fn(void *arg)
+{
+    stop_ctx_t *ctx = (stop_ctx_t *)arg;
+    const char *sid = cog_session_id(cog_core_session(ctx->core));
+
+    (void)cog_core_queue_message(ctx->core, sid, "hello", 5U);
+
+    pthread_mutex_lock(&ctx->lock);
+    ctx->parked = 1;
+    pthread_cond_signal(&ctx->cond);
+    while (!ctx->stop_called) {
+        pthread_cond_wait(&ctx->cond, &ctx->lock);
+    }
+    pthread_mutex_unlock(&ctx->lock);
+}
+
+static void *run_loop_thread(void *arg)
+{
+    cog_core_t *core = (cog_core_t *)arg;
+    return (void *)(intptr_t)cog_core_run(core);
+}
+
+static void test_shutdown_preserves_pending_deterministic(void)
+{
+    cog_session_t *session = NULL;
+    cog_core_t *core = NULL;
+    cog_core_config_t cfg;
+    stop_ctx_t ctx;
+    const char *sid;
+    size_t pc = 0U;
+    pthread_t th;
+    void *ret = NULL;
+
+    CHECK(cog_session_new(&session, NULL) == COG_OK);
+    sid = cog_session_id(session);
+    CHECK(sid != NULL);
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.session = session;
+    cfg.dispatch_table = dispatch_table;
+    cfg.dispatch_table_size = sizeof(dispatch_table) / sizeof(dispatch_table[0]);
+    cfg.wait_fn = park_wait_fn;
+    cfg.wait_arg = &ctx;
+
+    CHECK(cog_core_new(&core, &cfg) == COG_OK);
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.core = core;
+    CHECK(pthread_mutex_init(&ctx.lock, NULL) == 0);
+    CHECK(pthread_cond_init(&ctx.cond, NULL) == 0);
+
+    /* Run the loop on a separate thread.  It drains the empty queue and
+     * parks in the wait hook, which queues a pending message and blocks. */
+    CHECK(pthread_create(&th, NULL, run_loop_thread, core) == 0);
+
+    /* Wait until the wait hook has queued the pending message and is
+     * blocked: the queue is empty and a pending message exists. */
+    pthread_mutex_lock(&ctx.lock);
+    while (!ctx.parked) {
+        pthread_cond_wait(&ctx.cond, &ctx.lock);
+    }
+    pthread_mutex_unlock(&ctx.lock);
+
+    /* Concurrent stop from this thread while the queue is empty and a
+     * pending message exists.  The loop must exit without dequeuing and
+     * dropping the pending message. */
+    cog_core_stop(core);
+    pthread_mutex_lock(&ctx.lock);
+    ctx.stop_called = 1;
+    pthread_cond_signal(&ctx.cond);
+    pthread_mutex_unlock(&ctx.lock);
+
+    CHECK(pthread_join(th, &ret) == 0);
+    CHECK((cog_result_t)(intptr_t)ret == COG_OK);
+
+    /* The pending message must survive shutdown, not be dequeued and
+     * dropped. */
+    CHECK(cog_core_pending_count(core, sid, &pc) == COG_OK);
+    CHECK_EQ_INT(pc, 1);
+
+    pthread_cond_destroy(&ctx.cond);
+    pthread_mutex_destroy(&ctx.lock);
+    cog_core_free(core);
+    cog_session_free(session);
+}
+
+/* ------------------------------------------------------------------ */
+/* Stop-after-inject restoration (ticket ed77259, review ba0d9ea).     */
+/* ------------------------------------------------------------------ */
+
+/* A stop may land after a pending message is injected but before the
+ * injected event is dispatched.  That window is too small to hit with
+ * timing, so this test uses a linker wrap around cog_event_queue_push
+ * (see tests/unit/CMakeLists.txt: -Wl,--wrap=cog_event_queue_push).  When
+ * armed, the next USER_INPUT enqueue (the pending-message injection)
+ * triggers a concurrent stop immediately after the event is enqueued but
+ * before it is dispatched, exercising the restoration path
+ * deterministically.  The wrap is test-only; production code is unchanged. */
+static cog_core_t *g_wrap_core;
+static int g_wrap_stop;
+
+cog_result_t __real_cog_event_queue_push(cog_event_queue_t *q,
+                                         const cog_event_t *event);
+cog_result_t __wrap_cog_event_queue_push(cog_event_queue_t *q,
+                                         const cog_event_t *event);
+
+cog_result_t __wrap_cog_event_queue_push(cog_event_queue_t *q,
+                                         const cog_event_t *event)
+{
+    cog_result_t rc = __real_cog_event_queue_push(q, event);
+
+    if (rc == COG_OK && g_wrap_stop && event->kind == COG_EVENT_USER_INPUT) {
+        cog_core_stop(g_wrap_core);
+    }
+    return rc;
+}
+
+/* Simple USER_INPUT handler that records the payload into session history
+ * and enqueues nothing, so the only USER_INPUT push in the test is the
+ * pending-message injection. */
+static cog_handler_result_t on_record_input(cog_core_t *core,
+                                            const cog_event_t *event)
+{
+    cog_message_t msg;
+    cog_handler_result_t r = {ST_IDLE, COG_OK};
+
+    msg.role = COG_MESSAGE_ROLE_USER;
+    msg.content = (const char *)event->payload;
+    msg.content_len = event->payload_len;
+    msg.name = NULL;
+    if (cog_session_append(cog_core_session(core), &msg, NULL) != COG_OK) {
+        r.status = COG_ERROR_IO;
+    }
+    return r;
+}
+
+static const cog_state_t record_transitions[] = {
+    ST_IDLE,
+    COG_TRANSITION_SELF,
+    COG_TRANSITION_END,
+};
+
+static const cog_dispatch_entry_t record_table[] = {
+    COG_DISPATCH_ENTRY(ST_IDLE, COG_EVENT_USER_INPUT, on_record_input,
+                       record_transitions),
+};
+
+static void test_stop_after_inject_restores_pending(void)
+{
+    cog_session_t *session = NULL;
+    cog_core_t *core = NULL;
+    cog_core_config_t cfg;
+    wait_ctx_t ctx;
+    const char *sid;
+    size_t pc = 0U;
+    pthread_t th;
+    void *ret = NULL;
+    const cog_message_t *msgs = NULL;
+    size_t count = 0U;
+
+    CHECK(cog_session_new(&session, NULL) == COG_OK);
+    sid = cog_session_id(session);
+    CHECK(sid != NULL);
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.session = session;
+    cfg.dispatch_table = record_table;
+    cfg.dispatch_table_size =
+        sizeof(record_table) / sizeof(record_table[0]);
+    cfg.wait_fn = stop_wait_fn;
+    cfg.wait_arg = &ctx;
+
+    CHECK(cog_core_new(&core, &cfg) == COG_OK);
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.core = core;
+
+    /* A pending message exists; the queue is empty. */
+    CHECK(cog_core_queue_message(core, sid, "hello", 5U) == COG_OK);
+
+    /* Arm the wrap: the next USER_INPUT enqueue (the injection) triggers a
+     * concurrent stop immediately after the event is enqueued but before it
+     * is dispatched. */
+    g_wrap_core = core;
+    g_wrap_stop = 1;
+
+    CHECK(pthread_create(&th, NULL, run_loop_thread, core) == 0);
+    CHECK(pthread_join(th, &ret) == 0);
+    CHECK((cog_result_t)(intptr_t)ret == COG_OK);
+
+    /* The injected event was never dispatched; the pending message must be
+     * restored at the head of the FIFO, not dropped or duplicated. */
+    CHECK(cog_core_pending_count(core, sid, &pc) == COG_OK);
+    CHECK_EQ_INT(pc, 1);
+
+    /* Disarm the wrap and run again: the restored message must be delivered
+     * correctly (the wait hook stops the loop after it is dispatched). */
+    g_wrap_stop = 0;
+    CHECK(cog_core_run(core) == COG_OK);
+
+    CHECK(cog_core_pending_count(core, sid, &pc) == COG_OK);
+    CHECK_EQ_INT(pc, 0);
+    CHECK(cog_session_get_history(session, cog_session_active(session),
+                                  &msgs, &count) == COG_OK);
+    CHECK_EQ_INT(count, 1);
+    CHECK(msgs[0].role == COG_MESSAGE_ROLE_USER);
+    CHECK(msgs[0].content_len == 5U);
+    CHECK(memcmp(msgs[0].content, "hello", 5U) == 0);
+
+    cog_core_free(core);
+    cog_session_free(session);
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -883,6 +1116,8 @@ int main(void)
     test_pending_injection();
     test_queue_message_size_max();
     test_shutdown_preserves_pending();
+    test_shutdown_preserves_pending_deterministic();
+    test_stop_after_inject_restores_pending();
     test_ipc_acceptance();
 
     if (failures != 0) {

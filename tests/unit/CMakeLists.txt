@@ -50,6 +50,11 @@ target_enable_warnings(test_ipc_critic)
 find_package(Threads REQUIRED)
 target_link_libraries(test_core PRIVATE Threads::Threads)
 
+# test_core also exercises the stop-after-inject restoration window via a
+# test-only linker wrap around cog_event_queue_push (see test_core.c).  The
+# wrap is confined to this test binary; production code is unchanged.
+target_link_options(test_core PRIVATE -Wl,--wrap=cog_event_queue_push)
+
 # test_agent is a white-box test: it drives the private status-transition
 # hooks declared in agent_internal.h (start/complete/fail/timeout), so it
 # includes the cog-core src directory.  The public contract is still

@@ -133,6 +133,15 @@ cog_result_t cog_core_run(cog_core_t *core);
   core's session as a `COG_EVENT_USER_INPUT`; if none is pending it calls
   `wait_fn(wait_arg)`, or busy-waits with a short yield when `wait_fn` is
   NULL.
+- **Stop-after-inject restoration.**  If a stop request lands after a
+  pending message has been injected but before the injected event is
+  dispatched, the loop removes that exact event from the queue and
+  restores the pending message at the head of the pending FIFO (preserving
+  its text ownership and FIFO order), then exits without dispatching it.
+  The message is therefore never dropped or duplicated by a concurrent
+  stop; a later `cog_core_run` delivers it normally.  Only an allocation
+  failure while restoring the session id can drop the message (the text is
+  then released so nothing leaks).
 - **IPC drain.**  When an endpoint is configured, each empty-queue pass
   drains it with non-blocking polls (timeout 0): a listener accepts every
   pending connection (enqueuing `COG_EVENT_IPC_CONNECTED` per peer and
@@ -258,6 +267,18 @@ Per header: a single `cog_core_t` is driven by one thread calling
 `cog_core_run`. `cog_core_stop` may be called from another thread or a
 signal handler. `cog_core_enqueue` is single-producer with respect to the
 queue. The pending-message functions are not thread-safe.
+
+The stop request and the running flag are C11 `_Atomic bool` fields. The
+run loop reads the stop request with acquire ordering and `cog_core_stop`
+writes it with release ordering, so a concurrent stop is guaranteed to be
+observed before the loop dequeues or injects any pending message (the
+stop-before-inject guarantee holds under concurrency). If a stop lands
+after an injection but before the injected event is dispatched, the loop
+restores the pending message (see the stop-after-inject restoration note
+under `cog_core_run`), so a concurrent stop never drops or duplicates a
+pending message. The running flag is a relaxed status snapshot;
+`cog_core_is_running` may be called from any thread but the result is not
+a synchronisation point.
 
 ## Ownership
 
