@@ -334,8 +334,42 @@ static void reconnect_resets_handshake_timer(void)
     assert(rc == COG_OK || rc == COG_ERROR_AGAIN);
     pair_free(&f);
 }
+static void reconnect_after_failed_handshake(void)
+{
+    fixture_t f = {0};
+    cog_ipc_endpoint_config_t cfg = {0};
+    uint64_t deadline;
+    cog_peer_id_t id;
+    cog_result_t rc;
+    cfg.connect_timeout_ms = 3U;
+    path_new(f.path);
+    assert(cog_ipc_endpoint_new_ex(&f.listener, &cfg) == COG_OK);
+    assert(cog_ipc_endpoint_listen(f.listener, f.path) == COG_OK);
+    assert(cog_ipc_endpoint_new_ex(&f.client, &cfg) == COG_OK);
+    assert(cog_ipc_endpoint_connect(f.client, f.path, NULL) == COG_ERROR_AGAIN);
+    assert(cog_ipc_endpoint_service(f.client, 5000U, &deadline) == COG_ERROR_AGAIN);
+    assert(deadline == 5003U);
+    assert(cog_ipc_endpoint_service(f.client, 5003U, &deadline) == COG_ERROR_IO);
+    /* Drain the old connection and start a new lifetime with an independent,
+     * earlier clock origin. Neither old clock nor expired timer may leak. */
+    assert(cog_ipc_endpoint_accept(f.listener, &f.accepted, NULL) == COG_OK);
+    assert(cog_ipc_endpoint_free(f.accepted) == COG_OK);
+    assert(cog_ipc_endpoint_disconnect(f.client) == COG_OK);
+    assert(cog_ipc_endpoint_connect(f.client, f.path, NULL) == COG_ERROR_AGAIN);
+    assert(cog_ipc_endpoint_service(f.client, 10U, &deadline) == COG_ERROR_AGAIN);
+    assert(deadline == 13U);
+    assert(cog_ipc_endpoint_accept(f.listener, &f.accepted, NULL) == COG_OK);
+    rc = cog_ipc_endpoint_service(f.accepted, 10U, &deadline);
+    assert(rc == COG_OK || rc == COG_ERROR_AGAIN);
+    rc = cog_ipc_endpoint_service(f.client, 11U, &deadline);
+    assert(rc == COG_OK || rc == COG_ERROR_AGAIN);
+    assert(cog_ipc_endpoint_get_peer_id(f.client, &id) == COG_OK && id != 0U);
+    assert(deadline == UINT64_MAX);
+    pair_free(&f);
+}
 int main(void)
 {
+    reconnect_after_failed_handshake();
     reconnect_resets_handshake_timer();
     independent_fabrics();
     fragmented();

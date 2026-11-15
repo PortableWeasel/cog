@@ -87,3 +87,33 @@ The final runs include fixed local agent/task/status/result capacity checks and
 two independent ID1 fabrics. `git diff --check` passes. The coordinator reviewed
 and approved the identity header/scenario consistency amendment before commit;
 this does not replace independent implementation review.
+
+
+## Review cycle 1 revision 1
+
+Independent review rejected writer tip cfdbbdd and added permanent regressions
+in 8385d89 for pending auto-injection/public-dequeue aliasing and a stale IPC
+handshake deadline after reuse. The pending flaw could duplicate/drop prompts
+and underflow an emptied owner's count; the reconnect flaw rejected a new
+attempt after the old deadline.
+
+The revision moves an injected item out of the logical FIFO after successful
+enqueue. Its independent copied event bytes and an explicit owner/restore-slot
+lease keep public dequeue/count/queue coherent. Draining all remaining items or
+adding replacement/other-session items cannot mutate its identity or steal its
+restoration capacity. Stop/error before dispatch restores that exact copy at the
+front; normal dispatch releases the lease without touching a mutable FIFO head.
+Regression coverage drains one/all remaining entries, requests owner reuse,
+queues replacements to capacity, stops/errors before dispatch, then reruns and
+asserts exactly one delivery in FIFO order. The existing concurrent stop-after-
+inject test remains in the six-suite run.
+
+Disconnect now clears all connection-lifetime clock/deadline, direction and
+identity/prefix state. Tests reconnect after the previous successful deadline
+and after an expired failed handshake, including an independent earlier clock
+origin for the new attempt. Public API declarations and shared CMake are unchanged.
+
+Revision validation: the six executables including the permanent critic and
+extended mutation/reconnect regressions pass strict GCC, strict Clang, separate
+ASan+UBSan with leak/error halt, and TSan with error halt. `git diff --check`
+passes. This is writer evidence for rereview, not an independent PASS or merge.

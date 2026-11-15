@@ -48,9 +48,15 @@ per-entry text buffers from the configured limits (defaults 17/8/65536). Owner
 IDs reserve 128 bytes including NUL. Long text/IDs or owner exhaustion return
 LIMIT atomically; an individual full FIFO returns OVERFLOW. Empty owner slots
 are reusable. Overflow dequeue reports the required length and retains the
-message. Injection copies to a constructor-reserved dispatch buffer and retains
-the FIFO head until actual dispatch; stop before dispatch removes only the
-queue descriptor, preserving the message without allocation or duplication.
+message. Successful auto-enqueue copies into a constructor-reserved dispatch
+buffer and logically removes the FIFO head immediately. An explicit owner lease
+holds one restoration slot until dispatch, so public dequeue/count see only the
+remaining logical FIFO, draining cannot change the injected item, and another
+session cannot reuse its owner. Queue admission counts that leased physical slot
+when checking reservations. Stop/error before dispatch removes the descriptor
+and restores the exact copied item at the head ahead of replacements, without
+allocation, loss or duplication. Dispatch releases the lease and never removes
+a mutable FIFO head by a remembered index.
 
 The core reserves agent records and five per-record string buffers using
 max_agents/max_agent_message_bytes (defaults 16/65536). Local spawn uses the

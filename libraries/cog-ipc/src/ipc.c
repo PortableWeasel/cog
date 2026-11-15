@@ -245,6 +245,11 @@ cog_result_t cog_ipc_endpoint_disconnect(cog_ipc_endpoint_t *ep)
     ep->connecting = 0;
     ep->connect_pending = 0;
     ep->clock_set = 0;
+    ep->last_now = 0U;
+    ep->handshake_deadline = 0U;
+    ep->direction = 0U;
+    memset(ep->identity, 0, sizeof(ep->identity));
+    memset(ep->prefix, 0, sizeof(ep->prefix));
     ep->failure = COG_OK;
     ep->peer_id = 0U;
     ep->peers = NULL;

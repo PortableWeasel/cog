@@ -15,6 +15,7 @@
 typedef struct core_pending_owner {
     char id[128];
     size_t count;
+    bool leased; /**< An injected copy reserves this owner and one restore slot. */
 } core_pending_owner_t;
 typedef struct core_pending_item {
     size_t length;
@@ -59,7 +60,7 @@ struct cog_core {
     char *pending_text;
     size_t pending_owner_capacity, pending_per_owner, pending_bytes;
     char *injected_payload;
-    size_t injected_owner;
+    size_t injected_owner, injected_length;
     bool injected;
     cog_agent_registry_t agents;
 };
@@ -124,7 +125,7 @@ static size_t core_pending_owner(const cog_core_t *core, const char *id)
 {
     size_t i;
     for (i = 0U; i < core->pending_owner_capacity; ++i) {
-        if (core->pending_owners[i].count != 0U &&
+        if ((core->pending_owners[i].count != 0U || core->pending_owners[i].leased) &&
             strcmp(core->pending_owners[i].id, id) == 0) {
             return i;
         }
@@ -140,6 +141,7 @@ static void core_pending_remove(cog_core_t *core, size_t owner)
 {
     core_pending_owner_t *entry = &core->pending_owners[owner];
     size_t base = owner * core->pending_per_owner;
+    assert(entry->count != 0U);
     --entry->count;
     if (entry->count != 0U) {
         memmove(core->pending_items + base, core->pending_items + base + 1U,
@@ -153,7 +155,8 @@ static cog_result_t core_inject_pending(cog_core_t *core)
     size_t owner = core_pending_owner(core, cog_session_id(core->session));
     cog_event_t event = {0};
     cog_result_t rc;
-    if (owner == SIZE_MAX) {
+    if (owner == SIZE_MAX || core->pending_owners[owner].count == 0U ||
+        core->injected) {
         return COG_ERROR_NOT_FOUND;
     }
     memcpy(core->injected_payload, core_pending_text(core, owner, 0U),
@@ -166,8 +169,13 @@ static cog_result_t core_inject_pending(cog_core_t *core)
     if (rc == COG_OK) {
         core->injected = true;
         core->injected_owner = owner;
+        core->injected_length = event.payload_len;
+        core->pending_owners[owner].leased = true;
+        core_pending_remove(core, owner);
     }
-    /* Keep the FIFO head reserved until actual dispatch; stop cannot lose it. */
+    /* Successful enqueue logically removes the item. Its independent copy
+     * owns the event bytes; the immutable owner lease reserves restoration
+     * capacity without leaving the injected item publicly dequeuable. */
     return rc;
 }
 static cog_result_t core_ipc_enqueue(cog_core_t *core, cog_event_kind_t kind,
@@ -604,7 +612,7 @@ cog_result_t cog_core_run(cog_core_t *core)
             break;
         }
         if (core->injected && event.payload == core->injected_payload) {
-            core_pending_remove(core, core->injected_owner);
+            core->pending_owners[core->injected_owner].leased = false;
             core->injected = false;
         }
         rc = core_dispatch(core, &event);
@@ -617,13 +625,30 @@ cog_result_t cog_core_run(cog_core_t *core)
             break;
         }
     }
-    /* An injected item stays at the FIFO head until dispatch. Remove its
-     * queue descriptor on stop, preserving the reserved bytes for run retry. */
+    /* The queued injected copy has not reached its handler. Its owner and
+     * one FIFO slot stayed leased despite public drain/queue operations, so
+     * restoring it at the head cannot overwrite a replacement or overflow. */
     if (core->injected) {
         cog_event_t event;
+        size_t owner = core->injected_owner;
+        core_pending_owner_t *entry = &core->pending_owners[owner];
+        size_t base = owner * core->pending_per_owner;
         cog_result_t pop = cog_event_queue_pop(core->event_queue, &event);
         assert(pop == COG_OK && event.payload == core->injected_payload);
+        assert(entry->leased && entry->count < core->pending_per_owner);
         (void)pop;
+        if (entry->count != 0U) {
+            memmove(core->pending_items + base + 1U, core->pending_items + base,
+                    entry->count * sizeof(*core->pending_items));
+            memmove(core_pending_text(core, owner, 1U),
+                    core_pending_text(core, owner, 0U),
+                    entry->count * core->pending_bytes);
+        }
+        memcpy(core_pending_text(core, owner, 0U), core->injected_payload,
+               core->injected_length + 1U);
+        core->pending_items[base].length = core->injected_length;
+        ++entry->count;
+        entry->leased = false;
         core->injected = false;
     }
     if (core->obs != NULL) {
@@ -721,7 +746,8 @@ cog_result_t cog_core_queue_message(cog_core_t *core, const char *session_id,
     owner = core_pending_owner(core, session_id);
     if (owner == SIZE_MAX) {
         for (i = 0U; i < core->pending_owner_capacity; ++i) {
-            if (core->pending_owners[i].count == 0U) {
+            if (core->pending_owners[i].count == 0U &&
+                !core->pending_owners[i].leased) {
                 break;
             }
         }
@@ -731,7 +757,7 @@ cog_result_t cog_core_queue_message(cog_core_t *core, const char *session_id,
         owner = i;
     }
     entry = &core->pending_owners[owner];
-    if (entry->count == core->pending_per_owner) {
+    if (entry->count + (entry->leased ? 1U : 0U) >= core->pending_per_owner) {
         return COG_ERROR_OVERFLOW;
     }
     memcpy(entry->id, session_id, n + 1U);
@@ -750,7 +776,7 @@ cog_result_t cog_core_dequeue_message(cog_core_t *core, const char *session_id,
         return COG_ERROR_NULL_PTR;
     }
     owner = core_pending_owner(core, session_id);
-    if (owner == SIZE_MAX) {
+    if (owner == SIZE_MAX || core->pending_owners[owner].count == 0U) {
         return COG_ERROR_NOT_FOUND;
     }
     length = core->pending_items[owner * core->pending_per_owner].length;

@@ -21,6 +21,10 @@ typedef struct fixture {
     int mode;
     cog_result_t failure;
     char drained[16], delivered[16];
+    char deliveries[4][16];
+    size_t delivery_count;
+    int pending_action;
+    cog_result_t pending_error;
 } fixture_t;
 static cog_handler_result_t handle(cog_core_t *core, const cog_event_t *event)
 {
@@ -39,6 +43,9 @@ static cog_handler_result_t handle(cog_core_t *core, const cog_event_t *event)
             assert(event->payload_len < sizeof(f->delivered));
             memcpy(f->delivered, event->payload, event->payload_len);
             f->delivered[event->payload_len] = '\0';
+            assert(f->delivery_count < 4U);
+            memcpy(f->deliveries[f->delivery_count++], f->delivered,
+                   event->payload_len + 1U);
         }
         ++f->handled;
         if (f->mode == 1 || f->mode == 3) {
@@ -70,8 +77,39 @@ static cog_result_t service(void *arg, uint64_t now, uint64_t *deadline)
     if (f->mode == 4) {
         *deadline = now;
         if (f->services == 2U) {
-            assert(cog_core_dequeue_message(f->core, cog_session_id(f->session),
-                                             f->drained, sizeof(f->drained), NULL) == COG_OK);
+            const char *id = cog_session_id(f->session);
+            size_t count = SIZE_MAX;
+            assert(cog_core_pending_count(f->core, id, &count) == COG_OK);
+            assert(count == 1U); /* Injected first is already logically removed. */
+            assert(cog_core_dequeue_message(f->core, id, f->drained, sizeof(f->drained),
+                                            NULL) == COG_OK);
+            if (f->pending_action != 0) {
+                char untouched[16] = "untouched";
+                assert(cog_core_dequeue_message(f->core, id, untouched,
+                                                sizeof(untouched),
+                                                NULL) == COG_ERROR_NOT_FOUND);
+                assert(strcmp(untouched, "untouched") == 0);
+                assert(cog_core_pending_count(f->core, id, &count) == COG_OK &&
+                       count == 0U);
+                assert(cog_core_queue_message(f->core, "other-owner", "other", 5U) ==
+                       COG_OK);
+                /* An empty logical FIFO still has a stable owner lease. */
+                assert(cog_core_queue_message(f->core, "third-owner", "third", 5U) ==
+                       COG_ERROR_LIMIT);
+                if (f->pending_action >= 2) {
+                    assert(cog_core_queue_message(f->core, id, "replacement", 11U) ==
+                           COG_OK);
+                    /* One physical slot stays reserved for restoration. */
+                    assert(cog_core_queue_message(f->core, id, "extra", 5U) ==
+                           COG_ERROR_OVERFLOW);
+                }
+                if (f->pending_action == 2) {
+                    cog_core_stop(f->core);
+                }
+                if (f->pending_action == 3) {
+                    return f->pending_error;
+                }
+            }
         }
     }
     if (f->peer != NULL) {
@@ -279,19 +317,61 @@ static void pending_drain_during_injection(void)
     f.mode = 4;
     f.stop_at = 1U;
     create(&f, &cfg);
-    assert(cog_core_queue_message(f.core, cog_session_id(f.session), "first", 5U) == COG_OK);
-    assert(cog_core_queue_message(f.core, cog_session_id(f.session), "second", 6U) == COG_OK);
+    assert(cog_core_queue_message(f.core, cog_session_id(f.session), "first", 5U) ==
+           COG_OK);
+    assert(cog_core_queue_message(f.core, cog_session_id(f.session), "second", 6U) ==
+           COG_OK);
     assert(cog_core_run(f.core) == COG_OK);
     /* Public draining at the service boundary must neither deliver the
      * already injected prompt twice nor discard a different FIFO entry. */
-    assert((strcmp(f.drained, "first") == 0 && strcmp(f.delivered, "second") == 0) ||
-           (strcmp(f.drained, "second") == 0 && strcmp(f.delivered, "first") == 0));
-    assert(cog_core_pending_count(f.core, cog_session_id(f.session), &remaining) == COG_OK);
+    assert(strcmp(f.drained, "second") == 0 && strcmp(f.delivered, "first") == 0);
+    assert(cog_core_pending_count(f.core, cog_session_id(f.session), &remaining) ==
+           COG_OK);
     assert(remaining == 0U);
     destroy(&f);
 }
+static void pending_lease_survives_public_mutation(void)
+{
+    int action;
+    for (action = 1; action <= 3; ++action) {
+        fixture_t f = {0};
+        cog_core_config_t cfg = {0};
+        const char *id;
+        size_t count;
+        f.mode = 4;
+        f.stop_at = 1U;
+        f.pending_action = action;
+        f.pending_error = COG_ERROR_PROTOCOL;
+        create(&f, &cfg);
+        id = cog_session_id(f.session);
+        assert(cog_core_queue_message(f.core, id, "first", 5U) == COG_OK);
+        assert(cog_core_queue_message(f.core, id, "second", 6U) == COG_OK);
+        assert(cog_core_run(f.core) == (action == 3 ? COG_ERROR_PROTOCOL : COG_OK));
+        assert(strcmp(f.drained, "second") == 0);
+        if (action == 1) {
+            assert(f.delivery_count == 1U && strcmp(f.deliveries[0], "first") == 0);
+            assert(cog_core_pending_count(f.core, id, &count) == COG_OK && count == 0U);
+            /* Dispatch releases the lease, permitting an empty owner to be reused. */
+            assert(cog_core_queue_message(f.core, "third-owner", "third", 5U) ==
+                   COG_OK);
+        } else {
+            assert(f.delivery_count == 0U && f.handled == 0U);
+            assert(cog_core_pending_count(f.core, id, &count) == COG_OK && count == 2U);
+            f.stop_at = 2U;
+            assert(cog_core_run(f.core) == COG_OK);
+            assert(f.delivery_count == 2U && f.handled == 2U);
+            assert(strcmp(f.deliveries[0], "first") == 0);
+            assert(strcmp(f.deliveries[1], "replacement") == 0);
+            assert(cog_core_pending_count(f.core, id, &count) == COG_OK && count == 0U);
+        }
+        assert(cog_core_pending_count(f.core, "other-owner", &count) == COG_OK &&
+               count == 1U);
+        destroy(&f);
+    }
+}
 int main(void)
 {
+    pending_lease_survives_public_mutation();
     pending_drain_during_injection();
     agent_reservations();
     queued_fairness();
