@@ -1,12 +1,12 @@
 /** @file session_store.c
  * @brief Constructor-bounded immutable transactions and same-host fencing.
  */
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #include "cog/session_store.h"
 #include "session_store_codec.h"
 #include "session_internal.h"
 #include <assert.h>
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #define STORE_CAP ((size_t)16 * 1024U * 1024U)
@@ -175,8 +176,9 @@ static cog_result_t manifest_read(int dir, manifest_t *m)
     if (rc == COG_ERROR_NOT_FOUND) { *m = (manifest_t){0}; return COG_OK; }
     if (rc == COG_ERROR_LIMIT) return COG_ERROR_IO;
     if (rc != COG_OK) return rc;
-    if (n != MAN_SIZE || memcmp(p, "COGMAN2\0", 8U) != 0 || get64(p + 8U) != 2U ||
+    if (n != MAN_SIZE || memcmp(p, "COGMAN2\0", 8U) != 0 ||
         get64(p + 56U) != checksum(p, 56U)) return COG_ERROR_IO;
+    if (get64(p + 8U) != 2U) return COG_ERROR_UNSUPPORTED;
     manifest_t v = {get64(p + 16U), get64(p + 24U), get64(p + 32U),
         {get64(p + 40U), get64(p + 48U)}, true};
     if ((v.owner.epoch == 0U) != (v.owner.instance_id == 0U) ||
@@ -193,7 +195,11 @@ static cog_result_t publish_file(int dir, const char *tmp, const char *name,
     bool immutable, bool *published)
 {
     *published = false;
-    int fd = openat(dir, tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
+    /* A crash/failed cleanup can leave tmp hardlinked to a previously installed
+     * immutable generation. Detach that name before allocating a fresh inode;
+     * truncating an old temporary name could corrupt an exact old checkpoint. */
+    if (unlinkat(dir, tmp, 0) != 0 && errno != ENOENT) return COG_ERROR_IO;
+    int fd = openat(dir, tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd < 0) return COG_ERROR_IO;
     cog_result_t rc = io_write(fd, head, hsize);
     if (rc == COG_OK) rc = io_write(fd, body, bsize);
@@ -204,7 +210,9 @@ static cog_result_t publish_file(int dir, const char *tmp, const char *name,
         if (status != 0) rc = COG_ERROR_IO;
         else *published = true;
     }
-    if (immutable || rc != COG_OK) (void)unlinkat(dir, tmp, 0);
+    if (immutable || rc != COG_OK) {
+        if (unlinkat(dir, tmp, 0) != 0 && errno != ENOENT && rc == COG_OK) rc = COG_ERROR_IO;
+    }
     return rc;
 }
 static cog_result_t manifest_publish(int dir, const manifest_t *m, bool *published)
@@ -296,8 +304,8 @@ static bool node_equal(cog_store_t *s, const cog_node_data_t *a, const cog_node_
     cog_session_snapshot_t v = {.session_id = "node", .nodes = &av, .node_count = 1U};
     size_t an = 0U, bn = 0U;
     if (cog_store_codec_encode(&v, s->write_buffer, s->capacity, &an) != COG_OK) return false;
-    /* read_buffer holds the committed decoded data, so never overwrite it. The
-     * unused tail of write_buffer is the second comparison destination. */
+    /* read_buffer and scratch hold the committed decoded data. The constructor
+     * reserves a separate comparison buffer so full-capacity records still fit. */
     v.nodes = &bv;
     if (cog_store_codec_encode(&v, s->compare_buffer, s->capacity, &bn) != COG_OK) return false;
     return an == bn && memcmp(s->write_buffer, s->compare_buffer, an) == 0;
@@ -321,14 +329,15 @@ static bool audit_equal(const cog_tool_audit_record_t *a, const cog_tool_audit_r
         bytes_eq(a->evidence, a->evidence_len, b->evidence, b->evidence_len);
 }
 static bool recovery_result(const cog_session_snapshot_t *old, const cog_session_snapshot_t *now,
-    const cog_node_data_t *n)
+    const cog_node_data_t *n, bool recovery)
 {
     if (n->message == NULL || n->message->role != COG_MESSAGE_ROLE_TOOL) return false;
     const cog_node_data_t *a = node_find(now, n->parent_id);
     while (a != NULL && a->role != COG_NODE_ASSISTANT) a = node_find(now, a->parent_id);
     if (a == NULL) return false;
     const cog_tool_ledger_record_t *l = ledger_find(old, a->node_id, n->message->tool_call_id);
-    return l != NULL && (l->state == COG_TOOL_EXECUTION_STARTED || l->state == COG_TOOL_EXECUTION_INDETERMINATE);
+    return l != NULL && ((!recovery && l->state == COG_TOOL_EXECUTION_PROPOSED) ||
+        l->state == COG_TOOL_EXECUTION_STARTED || l->state == COG_TOOL_EXECUTION_INDETERMINATE);
 }
 static bool indeterminate(const cog_session_snapshot_t *v);
 static cog_result_t monotonic(cog_store_t *s, const cog_session_snapshot_t *old,
@@ -337,15 +346,24 @@ static cog_result_t monotonic(cog_store_t *s, const cog_session_snapshot_t *old,
     if (!str_eq(old->session_id, now->session_id) || !str_eq(old->parent_session_id, now->parent_session_id) ||
         old->inspection_only != now->inspection_only || now->node_id_high_water < old->node_id_high_water ||
         now->audit_high_water < old->audit_high_water) return COG_ERROR_INVALID_STATE;
+    size_t cursor = 0U;
     for (size_t i = 0U; i < old->node_count; ++i) {
-        const cog_node_data_t *n = node_find(now, old->nodes[i].node_id);
-        if (n == NULL || !node_equal(s, &old->nodes[i], n)) return COG_ERROR_INVALID_STATE;
+        while (cursor < now->node_count && now->nodes[cursor].node_id != old->nodes[i].node_id) ++cursor;
+        if (cursor == now->node_count || !node_equal(s, &old->nodes[i], &now->nodes[cursor]))
+            return COG_ERROR_INVALID_STATE;
+        ++cursor;
+    }
+    for (size_t i = 0U; i < now->ledger_count; ++i) {
+        const cog_tool_ledger_record_t *l = &now->ledger[i];
+        if (ledger_find(old, l->assistant_node_id, l->call_id) == NULL)
+            for (size_t k = 0U; k < l->audit_count; ++k)
+                if (l->audit[k].sequence <= old->audit_high_water) return COG_ERROR_INVALID_STATE;
     }
     for (size_t i = 0U; i < now->node_count; ++i) {
         const cog_node_data_t *n = &now->nodes[i];
         if (node_find(old, n->node_id) == NULL &&
             (n->node_id <= old->node_id_high_water ||
-            ((recovery || unresolved(old) || indeterminate(now)) && !recovery_result(old, now, n)))) return COG_ERROR_INVALID_STATE;
+            ((recovery || unresolved(old) || indeterminate(now)) && !recovery_result(old, now, n, recovery)))) return COG_ERROR_INVALID_STATE;
     }
     if (recovery && old->ledger_count != now->ledger_count) return COG_ERROR_INVALID_STATE;
     for (size_t i = 0U; i < old->ledger_count; ++i) {
@@ -388,27 +406,73 @@ static cog_result_t validate(const cog_session_snapshot_t *v, const char *id)
     if (!str_eq(v->session_id, id)) return COG_ERROR_PROTOCOL;
     return cog_session_snapshot_validate(v);
 }
+/* Linux getdents64 uses caller-provided storage, unlike fdopendir/readdir,
+ * whose opaque DIR allocation would violate constructor-bounded runtime work.
+ * The initial fenced file profile already requires Linux flock semantics. */
+typedef struct directory_cursor {
+    int fd;
+    size_t at, size;
+    unsigned char bytes[4096];
+} directory_cursor_t;
+static cog_result_t directory_open(int dir, directory_cursor_t *cursor)
+{
+    *cursor = (directory_cursor_t){.fd = openat(dir, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC)};
+    return cursor->fd >= 0 ? COG_OK : COG_ERROR_IO;
+}
+static cog_result_t directory_next(directory_cursor_t *cursor, const char **name)
+{
+    *name = NULL;
+    if (cursor->at == cursor->size) {
+        long n;
+        do { n = syscall(SYS_getdents64, cursor->fd, cursor->bytes, sizeof(cursor->bytes)); }
+        while (n < 0 && errno == EINTR);
+        if (n < 0) return COG_ERROR_IO;
+        if (n == 0) return COG_OK;
+        cursor->at = 0U; cursor->size = (size_t)n;
+    }
+    /* linux_dirent64: ino64, off64, reclen16, type8, name[]. Read native
+     * scalars with memcpy, avoiding alignment assumptions about byte storage. */
+    if (cursor->size - cursor->at < 20U) return COG_ERROR_IO;
+    unsigned short length;
+    (void)memcpy(&length, cursor->bytes + cursor->at + 16U, sizeof(length));
+    if (length < 20U || (size_t)length > cursor->size - cursor->at ||
+        memchr(cursor->bytes + cursor->at + 19U, '\0', (size_t)length - 19U) == NULL)
+        return COG_ERROR_IO;
+    *name = (const char *)cursor->bytes + cursor->at + 19U;
+    cursor->at += length; return COG_OK;
+}
+static cog_result_t count_sessions(cog_store_t *s, size_t *count)
+{
+    int base = open_base(s, false);
+    if (base < 0) return COG_ERROR_IO;
+    directory_cursor_t cursor;
+    cog_result_t rc = directory_open(base, &cursor); (void)close(base);
+    if (rc != COG_OK) return rc;
+    size_t n = 0U; const char *name;
+    while ((rc = directory_next(&cursor, &name)) == COG_OK && name != NULL) {
+        if (valid_id(name) != COG_OK) continue;
+        int dir = session_dir(s, name);
+        if (dir < 0) continue;
+        struct stat st;
+        if (fstatat(dir, MANIFEST, &st, AT_SYMLINK_NOFOLLOW) == 0 ||
+            fstatat(dir, "meta.json", &st, AT_SYMLINK_NOFOLLOW) == 0) ++n;
+        (void)close(dir);
+    }
+    (void)close(cursor.fd);
+    if (rc == COG_OK) *count = n;
+    return rc;
+}
 static cog_result_t next_generation(int dir, uint64_t current, uint64_t *next)
 {
-    int copy = openat(dir, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (copy < 0) return COG_ERROR_IO;
-    DIR *dp = fdopendir(copy);
-    if (dp == NULL) { (void)close(copy); return COG_ERROR_IO; }
-    struct dirent *de;
-    while ((de = readdir(dp)) != NULL) {
-        if (strlen(de->d_name) != 35U || strncmp(de->d_name, "generation-", 11U) != 0 ||
-            strcmp(de->d_name + 31U, ".bin") != 0) continue;
-        uint64_t n = 0U; bool good = true;
-        for (size_t i = 11U; i < 31U; ++i) {
-            unsigned char c = (unsigned char)de->d_name[i];
-            if (c < '0' || c > '9' || n > (UINT64_MAX - (uint64_t)(c - '0')) / 10U) { good = false; break; }
-            n = n * 10U + (uint64_t)(c - '0');
+    char name[64]; struct stat st;
+    do {
+        if (current == UINT64_MAX) return COG_ERROR_LIMIT;
+        ++current; generation_name(name, sizeof(name), current);
+        if (fstatat(dir, name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+            if (errno != ENOENT) return COG_ERROR_IO;
+            *next = current; return COG_OK;
         }
-        if (good && n > current) current = n;
-    }
-    (void)closedir(dp);
-    if (current == UINT64_MAX) return COG_ERROR_LIMIT;
-    *next = current + 1U; return COG_OK;
+    } while (true);
 }
 static bool file_exists(void *ctx, const char *id)
 {
@@ -441,6 +505,15 @@ static bool indeterminate(const cog_session_snapshot_t *v)
         if (v->ledger[i].state == COG_TOOL_EXECUTION_INDETERMINATE) return true;
     return false;
 }
+static bool complete_path(const cog_session_snapshot_t *v)
+{
+    const cog_node_data_t *n = node_find(v, v->active_node_id);
+    while (n != NULL) {
+        if (n->message != NULL && n->message->status != COG_MESSAGE_COMPLETE) return false;
+        n = node_find(v, n->parent_id);
+    }
+    return true;
+}
 static cog_result_t file_commit(cog_store_t *s, const cog_session_t *session,
     cog_store_owner_guard_t *guard, bool checkpoint, bool append, const cog_session_node_t *node,
     cog_store_checkpoint_t *out)
@@ -455,8 +528,8 @@ static cog_result_t file_commit(cog_store_t *s, const cog_session_t *session,
     if (s->require_owner && (guard == NULL || guard->store != s || strcmp(guard->id, v.session_id) != 0))
         return COG_ERROR_INVALID_STATE;
     if (guard != NULL && (append || checkpoint) && guard->recovery) return COG_ERROR_INVALID_STATE;
-    if (checkpoint && (unresolved(&v) || v.inspection_only)) return COG_ERROR_INDETERMINATE;
-    int dir = -1, lock = -1;
+    if (checkpoint && (unresolved(&v) || v.inspection_only || !complete_path(&v))) return COG_ERROR_INDETERMINATE;
+    int dir = -1, lock = -1, admission_base = -1, admission_domain = -1;
     if (guard != NULL) {
         if (guard->store != s || find_guard(s, v.session_id) != guard) return COG_ERROR_INVALID_STATE;
         dir = session_dir(s, v.session_id);
@@ -482,6 +555,13 @@ static cog_result_t file_commit(cog_store_t *s, const cog_session_t *session,
         rc = monotonic(s, &old, &v, guard != NULL && guard->recovery);
         if (rc != COG_OK) goto done;
         if (append && v.node_count != old.node_count + 1U) { rc = COG_ERROR_INVALID_STATE; goto done; }
+        if (append) for (size_t i = 0U; i < old.ledger_count; ++i) {
+            const cog_tool_ledger_record_t *a = &old.ledger[i];
+            const cog_tool_ledger_record_t *b = ledger_find(&v, a->assistant_node_id, a->call_id);
+            if (b == NULL || a->state != b->state || a->audit_count != b->audit_count) {
+                rc = COG_ERROR_INVALID_STATE; goto done;
+            }
+        }
     } else {
         struct stat st;
         if (fstatat(dir, "meta.json", &st, AT_SYMLINK_NOFOLLOW) == 0) {
@@ -495,13 +575,12 @@ static cog_result_t file_commit(cog_store_t *s, const cog_session_t *session,
             if (rc != COG_OK) goto done;
         }
         if (s->max_sessions != 0U && !file_exists(s, v.session_id)) {
-            /* Count without an allocating list operation. */
-            int base = open_base(s, false);
-            DIR *dp = base < 0 ? NULL : fdopendir(base);
-            if (dp == NULL) { if (base >= 0) (void)close(base); rc = COG_ERROR_IO; goto done; }
-            size_t n = 0U; struct dirent *de;
-            while ((de = readdir(dp)) != NULL) if (file_exists(s, de->d_name)) ++n;
-            (void)closedir(dp);
+            /* Admission and publication share the ownership-domain lock, so
+             * distinct session locks cannot oversubscribe the global policy. */
+            rc = domain_lock(s, &admission_base, &admission_domain);
+            if (rc != COG_OK) goto done;
+            size_t n = 0U; rc = count_sessions(s, &n);
+            if (rc != COG_OK) goto done;
             if (n >= s->max_sessions) { rc = COG_ERROR_LIMIT; goto done; }
         }
     }
@@ -522,9 +601,12 @@ static cog_result_t file_commit(cog_store_t *s, const cog_session_t *session,
     rc = publish_file(dir, ".generation.tmp", name, p, n + GEN_SIZE, NULL, 0U, true, &published);
     if (rc != COG_OK) goto done;
     rc = manifest_publish(dir, &m, &published);
-    if (guard != NULL && (published || rc == COG_OK)) guard->blocked = indeterminate(&v);
+    if (published) cog_session_mark_committed(session);
+    if (guard != NULL && (published || rc == COG_OK)) guard->blocked = rc != COG_OK || indeterminate(&v);
     if (rc == COG_OK && out != NULL) out->generation = m.generation;
  done:
+    if (admission_domain >= 0) (void)close(admission_domain);
+    if (admission_base >= 0) (void)close(admission_base);
     if (lock >= 0) (void)close(lock);
     (void)close(dir);
     return rc;
@@ -588,7 +670,13 @@ static cog_result_t file_checkpoint_load(void *ctx, const char *id, cog_store_ch
 { return cp.generation == 0U ? COG_ERROR_NOT_FOUND : file_load_common(ctx, id, cp.generation, mode, out, report); }
 static cog_result_t file_checkpoint_save(void *ctx, const cog_session_t *session, const void *guard,
     cog_store_checkpoint_t *out)
-{ return file_commit(ctx, session, (cog_store_owner_guard_t *)guard, true, false, NULL, out); }
+{
+    cog_store_t *s = ctx; const cog_store_owner_guard_t *g = guard;
+    if (s == NULL || session == NULL || g == NULL || out == NULL) return COG_ERROR_NULL_PTR;
+    if (!s->require_owner || g->store != s || g->recovery || g->borrowers != 0U ||
+        find_guard(s, cog_session_id(session)) != g) return COG_ERROR_INVALID_STATE;
+    return file_commit(s, session, (cog_store_owner_guard_t *)g, true, false, NULL, out);
+}
 static cog_result_t file_owner_read(void *ctx, const char *id, cog_store_owner_t *owner, cog_store_checkpoint_t *cp)
 {
     cog_store_t *s = ctx;
@@ -616,7 +704,7 @@ static cog_result_t file_owner_cas(void *ctx, const char *id, cog_store_owner_t 
     cog_result_t arg_rc = valid_id(id); if (arg_rc != COG_OK) return arg_rc;
     if ((expected.epoch == 0U) != (expected.instance_id == 0U) || expected.epoch == UINT64_MAX ||
         next.epoch != expected.epoch + 1U || next.instance_id == 0U) return COG_ERROR_INVALID_ARG;
-    int dir, lock;
+    int dir, lock, admission_base = -1, admission_domain = -1;
     cog_result_t rc = session_lock(s, id, &dir, &lock);
     if (rc != COG_OK) return rc;
     manifest_t m;
@@ -635,6 +723,13 @@ static cog_result_t file_owner_cas(void *ctx, const char *id, cog_store_owner_t 
         struct stat st;
         if (fstatat(dir, "meta.json", &st, AT_SYMLINK_NOFOLLOW) == 0) { rc = COG_ERROR_UNSUPPORTED; goto done; }
     }
+    if (!m.present && s->max_sessions != 0U) {
+        rc = domain_lock(s, &admission_base, &admission_domain);
+        if (rc != COG_OK) goto done;
+        size_t n = 0U; rc = count_sessions(s, &n);
+        if (rc != COG_OK) goto done;
+        if (n >= s->max_sessions) { rc = COG_ERROR_LIMIT; goto done; }
+    }
     if (same_owner(m.owner, next)) {
         rc = durable_confirm(dir, &m);
         if (rc != COG_OK) rc = COG_ERROR_INDETERMINATE;
@@ -644,6 +739,8 @@ static cog_result_t file_owner_cas(void *ctx, const char *id, cog_store_owner_t 
         if (rc != COG_OK && published) rc = COG_ERROR_INDETERMINATE;
     }
  done:
+    if (admission_domain >= 0) (void)close(admission_domain);
+    if (admission_base >= 0) (void)close(admission_base);
     (void)close(lock); (void)close(dir); return rc;
 }
 static cog_result_t file_acquire_common(cog_store_t *s, const char *id, cog_store_owner_t expected,
@@ -721,20 +818,23 @@ static cog_result_t file_delete(void *ctx, const char *id)
     if (fstatat(dir, ANCHOR, &st, AT_SYMLINK_NOFOLLOW) == 0 ||
         fstatat(dir, MANIFEST, &st, AT_SYMLINK_NOFOLLOW) == 0) { rc = COG_ERROR_UNSUPPORTED; goto close_dir; }
     if (fstatat(dir, "meta.json", &st, AT_SYMLINK_NOFOLLOW) != 0) { rc = COG_ERROR_NOT_FOUND; goto close_dir; }
-    int copy = openat(dir, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    DIR *dp = copy < 0 ? NULL : fdopendir(copy);
-    if (dp == NULL) { if (copy >= 0) (void)close(copy); rc = COG_ERROR_IO; goto close_dir; }
-    struct dirent *de;
-    while ((de = readdir(dp)) != NULL) {
-        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
-        if (!legacy_file(de->d_name) || fstatat(dir, de->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(st.st_mode)) {
+    directory_cursor_t cursor;
+    rc = directory_open(dir, &cursor);
+    if (rc != COG_OK) goto close_dir;
+    const char *name;
+    while ((rc = directory_next(&cursor, &name)) == COG_OK && name != NULL) {
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+        if (!legacy_file(name) || fstatat(dir, name, &st, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(st.st_mode)) {
             rc = COG_ERROR_IO; break;
         }
     }
-    rewinddir(dp);
-    if (rc == COG_OK) while ((de = readdir(dp)) != NULL)
-        if (legacy_file(de->d_name) && unlinkat(dir, de->d_name, 0) != 0) { rc = COG_ERROR_IO; break; }
-    (void)closedir(dp);
+    (void)close(cursor.fd);
+    if (rc == COG_OK) rc = directory_open(dir, &cursor);
+    if (rc == COG_OK) {
+        while ((rc = directory_next(&cursor, &name)) == COG_OK && name != NULL)
+            if (legacy_file(name) && unlinkat(dir, name, 0) != 0) { rc = COG_ERROR_IO; break; }
+        (void)close(cursor.fd);
+    }
     if (rc == COG_OK && (unlinkat(base, id, AT_REMOVEDIR) != 0 || fsync(base) != 0)) rc = COG_ERROR_IO;
  close_dir:
     (void)close(dir);
@@ -750,22 +850,26 @@ static cog_result_t file_list(void *ctx, char ***out, size_t *count)
     *out = NULL; *count = 0U;
     int base = open_base(s, false);
     if (base < 0) return errno == ENOENT ? COG_OK : COG_ERROR_IO;
-    DIR *dp = fdopendir(base);
-    if (dp == NULL) { (void)close(base); return COG_ERROR_IO; }
+    directory_cursor_t cursor;
+    cog_result_t rc = directory_open(base, &cursor); (void)close(base);
+    if (rc != COG_OK) return rc;
     /* list is explicitly an output constructor; allocation belongs to caller. */
-    size_t n = 0U; struct dirent *de;
-    while ((de = readdir(dp)) != NULL) if (file_exists(s, de->d_name)) ++n;
-    if (n > SIZE_MAX / sizeof(char *)) { (void)closedir(dp); return COG_ERROR_LIMIT; }
+    size_t n = 0U; const char *name;
+    while ((rc = directory_next(&cursor, &name)) == COG_OK && name != NULL)
+        if (file_exists(s, name)) ++n;
+    if (rc != COG_OK) { (void)close(cursor.fd); return rc; }
+    if (n > SIZE_MAX / sizeof(char *)) { (void)close(cursor.fd); return COG_ERROR_LIMIT; }
     char **ids = n == 0U ? NULL : calloc(n, sizeof(*ids));
-    if (n != 0U && ids == NULL) { (void)closedir(dp); return COG_ERROR_NOMEM; }
-    rewinddir(dp); size_t at = 0U; cog_result_t rc = COG_OK;
-    while ((de = readdir(dp)) != NULL) if (file_exists(s, de->d_name)) {
+    if (n != 0U && ids == NULL) { (void)close(cursor.fd); return COG_ERROR_NOMEM; }
+    if (lseek(cursor.fd, 0, SEEK_SET) < 0) { (void)close(cursor.fd); free(ids); return COG_ERROR_IO; }
+    cursor.at = 0U; cursor.size = 0U; size_t at = 0U;
+    while ((rc = directory_next(&cursor, &name)) == COG_OK && name != NULL) if (file_exists(s, name)) {
         if (at == n) { rc = COG_ERROR_AGAIN; break; }
-        ids[at] = strdup(de->d_name);
+        ids[at] = strdup(name);
         if (ids[at] == NULL) { rc = COG_ERROR_NOMEM; break; }
         ++at;
     }
-    (void)closedir(dp);
+    (void)close(cursor.fd);
     if (rc != COG_OK) { for (size_t i = 0U; i < at; ++i) free(ids[i]); free(ids); return rc; }
     if (at > 1U) qsort(ids, at, sizeof(*ids), compare_ids);
     *out = ids; *count = at; return COG_OK;
@@ -848,7 +952,10 @@ cog_result_t cog_store_save(cog_store_t *s, const cog_session_t *session)
     cog_result_t rc = valid_id(cog_session_id(session));
     if (rc != COG_OK) return rc;
     if (s->require_owner && find_guard(s, cog_session_id(session)) == NULL) return COG_ERROR_INVALID_STATE;
-    return s->backend->save(s->context, session);
+    rc = s->backend->save(s->context, session);
+    if (rc == COG_OK || (rc == COG_ERROR_IO && s->backend != &cog_store_file_backend))
+        cog_session_mark_committed(session);
+    return rc;
 }
 /** @brief Dispatch version-aware constructor load. */
 cog_result_t cog_store_load_ex(cog_store_t *s, const char *id, cog_store_load_mode_t mode,
@@ -872,7 +979,10 @@ cog_result_t cog_store_append(cog_store_t *s, const cog_session_t *session, cons
     if (rc != COG_OK) return rc;
     cog_store_owner_guard_t *g = find_guard(s, cog_session_id(session));
     if (s->require_owner && (g == NULL || g->recovery)) return COG_ERROR_INVALID_STATE;
-    return s->backend->append(s->context, session, node);
+    rc = s->backend->append(s->context, session, node);
+    if (rc == COG_OK || (rc == COG_ERROR_IO && s->backend != &cog_store_file_backend))
+        cog_session_mark_committed(session);
+    return rc;
 }
 /** @brief Delete only supported unowned legacy data. */
 cog_result_t cog_store_delete(cog_store_t *s, const char *id)
@@ -901,8 +1011,11 @@ cog_result_t cog_store_checkpoint_save(cog_store_t *s, const cog_session_t *sess
     if (s == NULL || session == NULL || g == NULL || cp == NULL) return COG_ERROR_NULL_PTR;
     if (!s->require_owner || g->store != s || g->recovery || g->borrowers != 0U ||
         find_guard(s, cog_session_id(session)) != g) return COG_ERROR_INVALID_STATE;
-    return s->backend->checkpoint_save(s->context, session,
+    cog_result_t rc = s->backend->checkpoint_save(s->context, session,
         s->backend == &cog_store_file_backend ? (const void *)g : g->backend_guard, cp);
+    if (rc == COG_OK || (rc == COG_ERROR_IO && s->backend != &cog_store_file_backend))
+        cog_session_mark_committed(session);
+    return rc;
 }
 /** @brief Load one exact immutable token. */
 cog_result_t cog_store_checkpoint_load(cog_store_t *s, const char *id, cog_store_checkpoint_t cp,

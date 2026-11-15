@@ -1,246 +1,200 @@
 # session_store.h Contract
 
-`libraries/cog-core/include/cog/session_store.h` — pluggable session
-persistence backend.
+The public contract is `libraries/cog-core/include/cog/session_store.h`.
+Stage 14.G.2 implements the approved version 2 transaction and same-host fencing
+profile. Independent review remains required; this document records executable
+writer evidence rather than closing package G.
 
-This document records the executable contract verified by
-`tests/unit/test_session_store.c` and `tests/integration/test_store_session.c`
-and implemented by `libraries/cog-core/src/session_store.c` (ticket 0efef06,
-Stage 12.2d). It intentionally does **not** expand the public API; it
-documents what the header declares and pins the implementation's
-interpretation of every ambiguous point so the Critic can review the choices.
+## Constructor and dispatch ownership
 
-## Status
+`cog_store_new` validates every required save/load/append/delete/list/exists and
+load_ex callback before construction. Fenced callbacks are a complete optional
+group; an incomplete group or require_owner with an incapable backend returns
+UNSUPPORTED. Compression is unsupported. A custom backend receives exactly the
+borrowed `backend_context`, including NULL for stateless implementations. The
+wrapper neither interprets nor destroys it. Builtin contexts are constructor-owned.
 
-Implemented. Guard: `COG_SESSION_STORE_H`. Includes `<cog/result.h>`,
-`<cog/session.h>`, `<stdbool.h>`, `<stddef.h>`, `<stdint.h>`.
+The file constructor copies base_dir (default `.`) and reserves four separate
+max_record_bytes buffers (default 16 MiB each): encode, read, decode descriptors,
+and exact immutable-node comparison. The reservation is an explicit per-buffer
+ceiling, not an aggregate memory claim. Buffers never grow during operations.
+Save, append, owner_read, CAS, guard borrows/returns and checkpoint save perform
+no runtime allocation. Directory scans use Linux getdents64 into fixed caller
+storage rather than opaque allocating DIR handles. List is an explicit caller-owned output constructor;
+load/checkpoint_load call the explicit session restore constructor; owner_acquire
+and owner_acquire_recovery construct a separately matched guard. Free requires
+all guards released, and never silently releases live ownership.
 
-## Public types
+The null backend is nondurable: save and append return UNSUPPORTED, load and
+delete return NOT_FOUND, exists is false, and list constructs an empty list.
+It cannot satisfy require_owner or authorize a durable tool intent.
 
-| Type | Kind | Notes |
-|------|------|-------|
-| `cog_store_t` | opaque struct | Created by `cog_store_new`, destroyed by `cog_store_free`. |
-| `cog_store_save_fn` | function pointer | `cog_result_t (*)(void *, const cog_session_t *)`. |
-| `cog_store_load_fn` | function pointer | `cog_result_t (*)(void *, const char *, cog_session_t **)`. |
-| `cog_store_append_fn` | function pointer | `cog_result_t (*)(void *, const cog_session_t *, const cog_session_node_t *)`. |
-| `cog_store_delete_fn` | function pointer | `cog_result_t (*)(void *, const char *)`. |
-| `cog_store_list_fn` | function pointer | `cog_result_t (*)(void *, char ***, size_t *)`. |
-| `cog_store_exists_fn` | function pointer | `bool (*)(void *, const char *)`. |
-| `cog_store_vtable_t` | struct | `name` + the six operation pointers. |
-| `cog_store_config_t` | struct | `backend`, `base_dir`, `max_sessions`, `auto_save`, `compress`. |
-
-## Constants / globals
-
-| Symbol | Meaning |
-|--------|---------|
-| `cog_store_file_backend` | `extern const` file backend vtable (default). |
-| `cog_store_null_backend` | `extern const` no-op backend vtable. |
-
-Both are plain `static const`-style vtable instances defined in
-`session_store.c`; there is no backend registry and no global mutable state.
-
-## Functions and error codes
-
-Every function returns `cog_result_t` except `cog_store_free` (void),
-`cog_store_exists` (bool), and `cog_store_auto_save` (bool). Codes marked
-**(ext)** are fail-closed extensions not listed in the header's `@return`
-block but consistent with `cog/result.h`; they are pinned by the tests.
-
-| Function | Success | Errors |
-|----------|---------|--------|
-| `cog_store_new` | `COG_OK` | `NULL_PTR` (out NULL), `NOMEM`, `INVALID_ARG` (ext: backend vtable has a NULL operation) |
-| `cog_store_free` | — (void) | NULL is a no-op |
-| `cog_store_save` | `COG_OK` | `NULL_PTR` (store/session NULL), `INVALID_ARG` (ext: unsafe id), `OVERFLOW` (ext: id too long), `IO`, `NOMEM` |
-| `cog_store_load` | `COG_OK` | `NULL_PTR` (store/id/out NULL), `NOT_FOUND`, `INVALID_ARG` (ext), `OVERFLOW` (ext), `IO` (malformed/corrupt), `NOMEM` |
-| `cog_store_append` | `COG_OK` | `NULL_PTR`, `INVALID_STATE` (ext: node not in session), `INVALID_ARG` (ext), `OVERFLOW` (ext), `IO`, `NOMEM` |
-| `cog_store_delete` | `COG_OK` | `NULL_PTR`, `NOT_FOUND`, `INVALID_ARG` (ext), `OVERFLOW` (ext), `IO` |
-| `cog_store_list` | `COG_OK` | `NULL_PTR` (store/out_ids/out_count NULL), `IO`, `NOMEM` |
-| `cog_store_exists` | bool | false for NULL store/id, unsafe/over-long id, or absent session |
-| `cog_store_auto_save` | bool | false for NULL store; otherwise the configured `auto_save` flag |
-
-`COG_ERROR_NOMEM` is not injectable through this API (no allocation-failure
-hook), so it is documented but not exercised by the tests.
-
-### Null backend semantics
-
-The null backend's own documentation ("all operations return COG_OK but do
-nothing") takes precedence over the generic `load` doc. Concretely:
-
-- `save` / `append` / `delete` return `COG_OK` and touch nothing.
-- `list` returns `COG_OK` with `*out_ids = NULL` and `*out_count = 0`.
-- `exists` returns `false`.
-- `load` returns `COG_OK` and sets `*out = NULL` (nothing was loaded; the
-  caller never receives uninitialised output).
-- Argument validation still applies: NULL store/session/id/out return
-  `COG_ERROR_NULL_PTR` / `false` exactly as for the file backend.
-
-### File backend on-disk layout
-
-One directory per session under `base_dir`:
+## File representation and commit point
 
 ```
-<base_dir>/<session_id>/meta.json
-<base_dir>/<session_id>/nodes.jsonl
-<base_dir>/<session_id>/index.bin
+base_dir/.cog-domain.lock             stable ownership-domain anchor
+base_dir/session_id/.owner.lock      stable independently opened session anchor
+base_dir/session_id/manifest.bin     single atomic owner/data authority
+base_dir/session_id/generation-00000000000000000001.bin
+base_dir/session_id/generation-00000000000000000002.bin
 ```
 
-- `meta.json` — `{"version":1,"id":"<b64>","parent_id":"<b64>"|null,
-  "max_nodes":N,"node_count":N,"next_node_id":N,"active_node_id":N}`.
-  `id` is base64 of the session id and must equal the directory name.
-- `nodes.jsonl` — append-only, one JSON object per node in DFS pre-order
-  (every parent precedes its children; sibling order is preserved). Each
-  record carries `node_id`, `parent_id`, `role`, and base64-encoded string
-  payloads (`content`, `tool_name`, `tool_args`, `tool_result`,
-  `raw_request`, `raw_response`, `model`, `provider`), plus `chunk_count`,
-  `timing{...}` and `cost{...}`. Base64 preserves embedded NUL bytes and
-  byte lengths exactly.
-- `index.bin` — advisory `node_id -> byte-offset` cache: 8-byte magic
-  `COGIDX01`, a native-order `uint64_t` count, then `count` pairs of
-  `(uint64_t node_id, uint64_t offset)` sorted by node id. It is maintained
-  by `save` (full rebuild) and `append` (in-order extension when cheap);
-  `load` treats `nodes.jsonl` as the source of truth, so a missing or
-  corrupt `index.bin` is **non-fatal** and is regenerated on the next full
-  save. Native byte order is documented (the cache is rebuildable, so it is
-  not a portable interchange format).
+All integer fields below are explicit little-endian uint64 values. Checksums
+are FNV-1a 64-bit for corruption detection, not cryptographic authentication.
+The authoritative manifest is exactly 64 bytes:
 
-`save` writes each file to a `.tmp` sibling and renames it into place
-(three independent atomic renames, not one atomic transaction). A crash
-mid-save can leave an inconsistent store that `load` rejects with
-`COG_ERROR_IO` (fail closed); re-saving repairs it.
+| Offset | Field |
+| --- | --- |
+| 0 | Eight-byte `COGMAN2\0` marker |
+| 8 | Format version, 2 |
+| 16 | Exact current immutable generation, or zero before first checkpoint |
+| 24 | Complete generation file byte length, including envelope |
+| 32 | Checksum of complete generation file |
+| 40 | Owner epoch, or zero for unowned |
+| 48 | Owner process incarnation, or zero for unowned |
+| 56 | Checksum of preceding 56 manifest bytes |
 
-### Append semantics
+Each immutable generation has a 40-byte envelope followed by the private codec
+payload:
 
-`append(session, node)` persists exactly one node:
+| Offset | Field |
+| --- | --- |
+| 0 | Eight-byte `COGGEN2\0` marker |
+| 8 | Exact generation token |
+| 16 | Payload byte length |
+| 24 | Payload checksum |
+| 32 | Checksum of preceding 32 envelope bytes |
+| 40 | Complete `COGSNAP2` snapshot payload |
 
-- If the session directory does not exist, the store **bootstraps**: it
-  creates the directory, writes a fresh `meta.json` (node_count 1) and a
-  one-entry `index.bin`, and writes the node as a standalone record. A
-  non-root node is snapshotted with `parent_id = 0` so the single-record
-  store loads as a one-node session (its in-memory parent is not part of
-  the persisted store yet).
-- If the session exists, the node record is appended to `nodes.jsonl` and
-  `meta.json` is rewritten with the incremented record count and the
-  appended node as the active node.
-- Appending a node whose id is already in the file produces a duplicate
-  record; `load` rejects duplicate node ids with `COG_ERROR_IO` (caller
-  misuse, fail closed).
-- `append` does not prune `max_sessions` (that is a `save`-time
-  maintenance operation).
+Publication first detaches any stale temporary name and exclusively creates a
+fresh inode (never truncating an existing potentially hardlinked checkpoint).
+Unlink errors fail closed. It writes `.generation.tmp`, fsyncs the complete file, installs an
+immutable generation with linkat (never replacing an existing token), writes
+and fsyncs `.manifest.tmp`, renames it over manifest.bin, and fsyncs the session
+directory. The new manifest is the sole transaction commit point. Immutable
+files left before publication are harmless orphans; generation selection probes
+existing names and never reuses their tokens. Files retain mode 0600. New session/anchor
+creation is fsynced through the session and base directories before admission.
+Readers validate exact size, checksums and decoded semantic associations; they
+never substitute an older generation after corrupt authoritative data.
 
-### Delete failure safety
+Prepublication errors return IO and leave the old manifest authoritative. A
+failed final directory sync returns IO for save and INDETERMINATE for owner CAS;
+the caller must not infer rollback or start effects. The held guard blocks new
+execution borrows after uncertain save publication. An identical owner retry
+revalidates and fsync-confirms the committed generation/manifest/directory before
+returning OK. A later successful save can durably confirm a new transaction.
 
-Before unlinking anything, `delete_session_dir` enumerates the complete
-session directory and rejects unknown entries. It also rejects a directory
-masquerading as one of the six known store files (`meta.json`,
-`nodes.jsonl`, `index.bin`, and their `.tmp` siblings). An expected
-content-related failure therefore returns `COG_ERROR_IO` with the session
-and its metadata intact: `exists` remains true, a repeated delete reports
-`IO` rather than `NOT_FOUND`, and removing the obstruction allows delete
-to succeed.
+## Monotonic committed history
 
-The store is single-threaded by contract. That contract does not make the
-preflight-plus-unlink sequence atomic against unrelated external
-filesystem mutation; such concurrent mutation is unsupported and may
-still produce an `IO` failure after a partial unlink. No filesystem-wide
-or cross-process locking is attempted.
+Every save/append, including direct builtin callbacks and require_owner=false,
+locks and validates the current committed generation before comparing data.
+The complete canonical codec bytes of each retained node must match: identity,
+parentage, stable sibling order, legacy fields, structured messages, exact
+opaque bytes, usage, timing, cost and provider diagnostic fields. All old nodes
+remain, allocator/audit high-water never decreases, and newly introduced node
+and audit identities exceed the committed high-water. A replacement object
+using the same session ID cannot erase history or rebind identities.
 
-### max_sessions pruning
+Every prior ledger key and immutable audit prefix remains. Only approved
+PROPOSED->STARTED/DENIED and STARTED->SUCCEEDED/FAILED/CANCELLED/INDETERMINATE
+transitions are accepted by ordinary save. Final outcomes/results cannot change.
+Existing ledger updates require save; append accepts exactly one new node with
+unchanged prior ledger state and uses the same complete transaction. Unresolved
+old work prevents unrelated newly inserted work. Invalid associations return
+PROTOCOL; valid but nonmonotonic changes return INVALID_STATE, without publication.
 
-After a successful `save`, if `max_sessions > 0` and the store holds more
-sessions, the oldest session directories (by directory mtime) are deleted
-until the count fits. The just-saved session is never pruned. `max_sessions
-== 0` means unlimited. `append` does not prune.
+Recovery-only saves allow only conservative STARTED->INDETERMINATE normalization
+and explicit audited reconciliation of INDETERMINATE to a supported final state.
+All old messages remain byte-exact; newly added nodes must be matching results
+for preexisting uncertain calls, never new user/assistant/tool-call work. Recovery
+guards refuse execution borrows, append and checkpoint save, even after the final
+uncertainty is closed. Release, CAS a new epoch against the resulting exact
+checkpoint, then acquire an ordinary guard to resume execution.
 
-### compress / auto_save
+## Locks and ownership
 
-Both flags are accepted and retained by the store.
+Bootstrap and deletion serialize through the stable base ownership-domain lock.
+All writers, CAS and acquisition use independently opened flock descriptions
+with CLOEXEC; contexts in the same process contend. An ordinary live matching
+guard holds the lock across save operations. Unguarded saves cannot change
+owned state, regardless of require_owner. CAS returns AGAIN while a guard or
+writer holds the anchor; it compares exact old owner and latest checkpoint,
+checks monotonic epoch without wrap, and publishes owner+checkpoint in one
+manifest transaction. Existing unowned v2 adoption validates exact safe data;
+v1 must first be explicitly migrated to v2. Coherent PROPOSED may acquire a normal
+guard. STARTED/INDETERMINATE requires the explicit recovery path.
 
-- `compress` is **not** honoured by the file backend: the documented
-  on-disk layout is plain JSONL + index, and the store does not pretend to
-  compress. A `compress = true` store writes the same plain files and
-  round-trips identically.
-- `auto_save` is recorded by this module and exposed read-only through
-  `cog_store_auto_save()` (false for a NULL store). The store itself
-  performs **no implicit writes**: the *trigger* lives in the core. Per
-  `cog/core.h`, when a store is configured and `cog_store_auto_save()` is
-  true, `core.c` saves the session once after each successfully handled
-  `COG_EVENT_LLM_COMPLETE` exchange (see the core CONTRACT). This module
-  only records and reports the flag.
+No store path unlinks or replaces either anchor. Any session containing an
+ownership anchor or manifest is undeletable through delete/delete_, including
+unowned v2 or after every guard releases. Only unowned legacy deletion is
+supported, with a complete known-file preflight before any removal. An operator
+must not externally remove/replace lock anchors while the store is in use.
+Callers fence/reap any old owned process group before admitting a fresh process
+incarnation; the store does not pretend an OS lock alone proves remote effects.
+Fork/exec callers must close inherited descriptors in their child before doing
+work; CLOEXEC prevents retention after exec. Library code does not fork commands.
 
-### Path safety
+A guard retains its store/context lifetime and counts bounded execution
+constructor borrows. Release refuses live borrowers. Checkpoint save also
+requires no borrowers, no unresolved effects and a complete selected replay path.
+Exact checkpoint load never substitutes latest and never activates execution.
 
-Every session id is validated before it is used as a directory name:
+## Load, legacy migration, paths and limits
 
-- empty id, `"."`, `".."`, ids containing `/` or `\`, and ids containing
-  control bytes (0x00–0x1F, 0x7F) are rejected with `COG_ERROR_INVALID_ARG`
-  (`exists` returns `false`);
-- ids longer than 128 bytes are rejected with `COG_ERROR_OVERFLOW`
-  (`exists` returns `false`);
-- a valid id may otherwise contain any printable bytes (e.g.
-  `under_score.dash-1`).
+Public loads decode into reserved workspace then call cog_session_restore to
+validate full tree/ledger/audit/branch semantics and normalize committed STARTED
+to INDETERMINATE. Raw codec decode deliberately retains STARTED for writer diffs.
+Failed public load sets out=NULL; report and owner/checkpoint outputs remain
+unchanged on failure. Load never rewrites disk. No advisory index is required.
 
-A hostile id can never escape `base_dir`.
+The original v1 meta.json/nodes.jsonl input is preserved. Replay-safe text
+migrates only in memory; explicit save publishes v2. Unidentified legacy tools
+require INSPECT and cannot invent call IDs or authorize replay. Embedded-NUL
+legacy fields that cannot be represented losslessly return UNSUPPORTED. Tail
+recovery is optional and discards only one unterminated record beyond the
+validated committed v1 count. v2 is a complete binary transaction: truncation,
+trailing bytes and corruption fail closed even with tail recovery enabled.
 
-## Ownership
+Session IDs are nonempty printable path components excluding slash, backslash,
+`.`/`..` and the reserved `.cog-domain.lock`. Controls fail INVALID_ARG; lengths
+over 128 bytes fail OVERFLOW. Descriptor-relative no-follow file/directory opens
+prevent symlink traversal. max_sessions holds the stable ownership-domain admission lock through
+counting/publication, including owner bootstrap, so distinct session IDs cannot
+oversubscribe it. Concurrent admission may return AGAIN; after the winner commits
+a full store returns LIMIT and never prunes stored sessions. Capacity failures return LIMIT without publication.
 
-- `cog_store_new` copies `config->base_dir`; the store owns its copy and
-  releases it in `cog_store_free`. The caller retains ownership of the
-  `config` struct and of any custom backend vtable.
-- `cog_store_load` returns a newly allocated session owned by the caller
-  (freed with `cog_session_free`). On failure `*out` is left untouched.
-- `cog_store_list` returns a caller-owned array of caller-owned id strings;
-  the caller frees each string and the array. An empty store returns
-  `*out_ids = NULL`, `*out_count = 0`.
-- The store never owns sessions or nodes; `save`/`append` only read them.
-- A core borrows its store (`cog_core_config_t.store`); `cog_core_free`
-  does not free it (verified by `tests/integration/test_store_session.c`).
+## Executable evidence
 
-## Invariants
+`test_session_store` covers public lifecycle/error paths, v2 complete generations,
+append, replacement-save refusal, list order, limit rejection without pruning,
+opaque embedded-NUL bytes, known usage, explicit v1 migration and exact custom
+backend_context/public snapshot restore. `test_store_adversarial` covers exact
+old checkpoints, stale CAS/guards, same-process contention, borrow lifetime,
+PROPOSED eligibility, recovery-only normalization/reconciliation, replacement
+result immutability and corrupt-latest refusal without fallback.
 
-- Node ids and parent ids are persisted exactly and restored exactly; a
-  loaded session continues its id sequence from the stored `next_node_id`.
-- The loaded session restores the stored active node, node cap
-  (`max_nodes`), parent-session id, timing, cost, chunk counts, and the raw
-  provider fields (`raw_request`, `raw_response`, `model`, `provider`).
-  The last two groups have no public setter, so the store restores them
-  through the private `session_internal.h` layout (the same single
-  definition session.c and core.c use); no public API is expanded.
-- `content` is length-prefixed and may contain embedded NUL bytes; the
-  base64 wire format preserves them. `tool_args` / `tool_result` /
-  `tool_name` are NUL-terminated by construction in session.c, so their
-  wire representation is lossless through the public API.
-- A loaded session whose stored `node_count` exceeds its stored
-  `max_nodes` is rebuilt with temporary headroom and then restored to the
-  stored cap (the cap is a soft limit; the tree is never truncated on
-  load).
-- `load` fails closed on: missing session (`NOT_FOUND`), missing
-  `meta.json` (`NOT_FOUND`), malformed/truncated `meta.json` or
-  `nodes.jsonl` (`IO`), a version mismatch (`IO`), a meta id that does not
-  match the directory name (`IO`), a record count that does not match
-  `meta.json` (`IO`), an unknown role, invalid base64, duplicate node ids,
-  a missing root or more than one root, a parent that does not precede its
-  child, an invalid `active_node_id`, or a `next_node_id` that is not
-  strictly greater than every node id (`IO`).
-- `list` returns only subdirectories of `base_dir` that contain a
-  `meta.json`; junk files and directories without `meta.json` are ignored.
-  Results are sorted lexicographically.
-- A missing `base_dir` behaves as an empty store for `list` (OK, count 0)
-  and `exists` (false); `load`/`delete` return `NOT_FOUND`. A `save` to a
-  `base_dir` whose parent does not exist returns `COG_ERROR_IO`.
+`test_store_fencing` uses real fork+exec children and independently opened locks,
+SIGKILL/reap after durable STARTED, fresh-epoch recovery, and anchor inode
+stability. Test-only linker wrappers inject EIO and abrupt process exit at all
+15 write/fsync/link/unlink/rename boundaries of STARTED->SUCCEEDED+result publication,
+and all ten owner CAS boundaries. Every restart observes exactly complete old
+or complete new state, old exact checkpoint remains valid, and identical CAS
+retry durably resolves uncertain publication. The same test injects every store
+constructor allocation failure and proves zero direct Cog allocations during
+save/read/CAS/checkpoint/borrow/release (explicit guard constructor OOM is tested).
+The wrappers call real syscalls and are absent from production builds. A
+deterministic multiprocess admission race verifies max_sessions across distinct
+IDs. A retained-temp hardlink fixture and repeated unlink EIO prove that retries
+never truncate a committed checkpoint. Successful or uncertain publication marks
+source nodes committed; generic custom-save bookkeeping is conservative on IO,
+and reset/discard cannot erase those source nodes.
 
-## Threading
+Seven targeted CMake tests pass under C11 Werror and ASan/UBSan with leak
+detection. These are targeted G evidence; unrelated provider/application delivery
+and broad package integration are separate gates. Independent G review remains
+pending.
 
-A store is owned by exactly one core instance and is not thread-safe; all
-access happens on the thread that runs `cog_core_run`.
-
-## Complexity
-
-- `save` is O(nodes) with an iterative DFS (no recursion-depth risk) plus
-  an O(n log n) index sort (insertion sort on a near-ordered list).
-- `load` is O(nodes) with a backward linear scan for parent lookup
-  (O(n) typical, O(n²) worst case for adversarial id orders).
-- `list`/`exists`/`delete` are O(sessions) directory scans.
-- `append` is O(1) amortized (one record write + meta rewrite).
 ## Stage 14.G private codec boundary (implemented)
 
 `session_store_codec.c/.h` encodes public snapshots as explicit little-endian

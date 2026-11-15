@@ -56,6 +56,8 @@ static void basics(const char *base)
     cog_session_free(loaded);
     cog_session_node_t *first = add(s,"hello"), *second;
     CHECK(cog_store_append(st,s,first) == COG_OK);
+    CHECK(cog_session_reset(s) == COG_ERROR_INVALID_STATE);
+    CHECK(cog_session_discard_node(s,first) == COG_ERROR_INVALID_STATE);
     CHECK(cog_store_append(st,s,first) == COG_ERROR_INVALID_STATE);
     second = add(s,"second"); CHECK(cog_store_append(st,s,second) == COG_OK);
     cog_store_load_report_t report = {0};
@@ -178,7 +180,8 @@ static void custom_backend(void)
     CHECK(cog_store_load(st,"custom",&out)==COG_OK && out!=NULL); CHECK(cog_store_exists(st,"custom"));
     CHECK(cog_store_delete(st,"custom")==COG_ERROR_UNSUPPORTED);
     char **ids=NULL;size_t n=0U;CHECK(cog_store_list(st,&ids,&n)==COG_OK && ids==NULL && n==0U);
-    CHECK(c.calls==6U); cog_store_free(st); cog_session_free(s); cog_session_free(out);
+    CHECK(c.calls==6U); CHECK(cog_session_reset(s)==COG_ERROR_INVALID_STATE);
+    CHECK(cog_session_discard_node(s,cog_session_active(s))==COG_ERROR_INVALID_STATE); cog_store_free(st); cog_session_free(s); cog_session_free(out);
     cog_store_vtable_t bad=custom_vtable;bad.load_ex=NULL;
     CHECK(cog_store_new(&st,&(cog_store_config_t){.backend=&bad})==COG_ERROR_UNSUPPORTED && st==NULL);
     bad.save=NULL; CHECK(cog_store_new(&st,&(cog_store_config_t){.backend=&bad})==COG_ERROR_INVALID_ARG && st==NULL);
