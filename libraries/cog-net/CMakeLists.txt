@@ -55,6 +55,14 @@ if(BUILD_TESTING)
         find_package(Python3 COMPONENTS Interpreter REQUIRED)
         add_test(NAME unit-net-https COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_https.py $<TARGET_FILE:test_net>)
+        add_executable(test_net_regressions ${PROJECT_SOURCE_DIR}/tests/unit/test_net_regressions.c)
+        target_link_libraries(test_net_regressions PRIVATE cog::net)
+        target_enable_warnings(test_net_regressions)
+        foreach(_regression completion replay)
+            add_test(NAME unit-net-${_regression}-regression COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_regressions.py
+                $<TARGET_FILE:test_net_regressions> ${_regression})
+        endforeach()
     endif()
 endif()
 
