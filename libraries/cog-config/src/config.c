@@ -59,6 +59,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -122,9 +123,19 @@ static cog_result_t node_add_child(cog_config_node_t *parent,
                                    cog_config_node_t *child)
 {
     if (parent->child_count == parent->child_cap) {
-        size_t new_cap = parent->child_cap != 0U ? parent->child_cap * 2U : 4U;
+        size_t new_cap;
         cog_config_node_t **nc;
 
+        if (parent->child_cap == 0U) {
+            new_cap = 4U;
+        } else if (parent->child_cap > SIZE_MAX / 2U) {
+            return COG_ERROR_OVERFLOW; /* doubling would wrap */
+        } else {
+            new_cap = parent->child_cap * 2U;
+        }
+        if (new_cap > SIZE_MAX / sizeof *nc) {
+            return COG_ERROR_OVERFLOW; /* byte count would wrap */
+        }
         nc = (cog_config_node_t **)realloc(parent->children,
                                            new_cap * sizeof *nc);
         if (nc == NULL) {

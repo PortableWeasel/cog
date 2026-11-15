@@ -50,6 +50,12 @@ typedef struct cog_config_tree cog_config_tree_t;
  *
  * Created by cog_config_begin and finalized by cog_config_commit or
  * cog_config_rollback.  Holds the candidate (uncommitted) configuration.
+ *
+ * A finalized transaction's struct is retained by its tree until
+ * cog_config_tree_free: stale-handle reuse is then detected
+ * deterministically (COG_ERROR_INVALID_STATE for mutations,
+ * COG_ERROR_NOT_FOUND for reads) and memory stays bounded by the
+ * number of transactions begun on the tree.
  */
 typedef struct cog_config_transaction cog_config_txn_t;
 
@@ -119,7 +125,6 @@ cog_result_t cog_config_begin(cog_config_tree_t *tree,
  * candidate is discarded and the running tree is unchanged.
  * On success, the candidate atomically replaces the running tree.
  *
- * @param[in,out] txn Transaction to commit.
  * Validators run in registration order, each fire only when its prefix
  * exists in the candidate (a prefix removed by delete, or never
  * present, is skipped; the empty prefix "" is a whole-tree validator
@@ -165,14 +170,14 @@ void cog_config_rollback(cog_config_txn_t *txn);
  * @brief Get a value by dotted path.
  *
  * @param[in]  txn       Transaction to read from.
- * @param[in]  path      Dotted path (e.g. "providers.openai.base-url").
- * @param[out] out_value Receives the value string, or NULL if not found.
- * @param[in]  txn       Transaction to read from.
  * @param[in]  path      Dotted path (see "Path grammar" above).
  * @param[out] out_value Receives a pointer to the value string, or NULL
- *                       on failure.  The pointer is owned by the
- *                       transaction's candidate tree and stays valid
- *                       until the transaction is finalized.
+ *                       on failure.  The pointer is borrowed from the
+ *                       candidate tree: it is invalidated by any
+ *                       subsequent set/delete on the same transaction
+ *                       (they may free candidate storage) and by
+ *                       finalization or tree destruction.  Callers must
+ *                       not dereference it after any of those.
  * @return COG_OK on success; @p *out_value points into the candidate.
  * @return COG_ERROR_NULL_PTR if @p txn, @p path, or @p out_value is NULL.
  * @return COG_ERROR_INVALID_ARG if @p path is empty or malformed.
@@ -234,8 +239,11 @@ cog_result_t cog_config_delete(cog_config_txn_t *txn,
  *                       tree root's children.
  * @param[out] out_keys  Caller-provided array of key pointers (may be
  *                       NULL when @p max_keys is zero).  The pointers
- *                       are owned by the candidate tree and stay valid
- *                       until the transaction is finalized.
+ *                       are borrowed from the candidate tree: they are
+ *                       invalidated by any subsequent set/delete on the
+ *                       same transaction (which may free node storage)
+ *                       and by finalization or tree destruction.  Callers
+ *                       must not dereference them after any of those.
  * @param[in]  max_keys  Maximum number of keys to return; zero means
  *                       count-only (no keys are written).
  * @param[out] out_count Receives the actual number of children.

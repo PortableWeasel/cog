@@ -14,6 +14,13 @@
  *   - transactions: begin/commit/rollback, atomicity, snapshot
  *     isolation of pre-commit readers (hot-reload semantics),
  *     finalization (INVALID_STATE/ NOT_FOUND on stale handles)
+ *   - mutation lifetime: pointers borrowed from get/list are
+ *     invalidated by any subsequent set/delete in the same transaction
+ *     (regression for review ed22846); old pointers are never
+ *     dereferenced in these tests — only the fresh transactional state
+ *     is asserted, per the narrowed contract in config.h and
+ *     contracts/CONTRACT.md.  ASan would flag any accidental
+ *     dereference of a freed pointer that slipped into these paths.
  *   - validators: fire-on-present-prefix, rejection keeps running
  *     untouched and the transaction retryable, skip-absent-prefix,
  *     whole-tree "", registration order, fixed-capacity overflow,
@@ -771,6 +778,110 @@ static int test_snapshot_isolation_stress(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Borrowed-pointer lifetime under mutation (review ed22846)            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Regression: a value pointer from cog_config_get is borrowed from the
+ * candidate and is invalidated by a subsequent cog_config_set on the
+ * same path (which frees the old value string) and by delete.  These
+ * tests assert the fresh transactional state only; the previously
+ * borrowed pointers are deliberately never dereferenced again (the
+ * contract says they must not be used after the mutation).
+ */
+static int test_mutation_lifetime_value(void)
+{
+    cog_config_tree_t *tree = NULL;
+    cog_config_txn_t *txn = NULL;
+    const char *v1 = NULL;
+    const char *v2 = NULL;
+
+    if (cog_config_tree_new(&tree) != COG_OK ||
+        cog_config_begin(tree, &txn) != COG_OK ||
+        cog_config_set(txn, "a", "first") != COG_OK) {
+        return 1;
+    }
+    /* v1 is a borrowed pointer into the candidate's value for "a" */
+    if (cog_config_get(txn, "a", &v1) != COG_OK ||
+        strcmp(v1, "first") != 0) {
+        return 1;
+    }
+    /* set on the same path replaces (and frees) the old string; v1 is
+     * now invalid and must not be dereferenced */
+    if (cog_config_set(txn, "a", "second") != COG_OK) {
+        return 1;
+    }
+    /* the fresh read reflects the new transactional state */
+    if (cog_config_get(txn, "a", &v2) != COG_OK ||
+        strcmp(v2, "second") != 0) {
+        return 1;
+    }
+
+    /* delete also invalidates borrowed pointers: fetch, delete, then
+     * only the fresh state is consulted */
+    if (cog_config_set(txn, "b", "x") != COG_OK ||
+        cog_config_get(txn, "b", &v1) != COG_OK) {
+        return 1;
+    }
+    if (cog_config_delete(txn, "b") != COG_OK) {
+        return 1;
+    }
+    if (expect_get_err(txn, "b", COG_ERROR_NOT_FOUND) != 0) {
+        return 1;
+    }
+
+    cog_config_rollback(txn);
+    cog_config_tree_free(tree);
+    return 0;
+}
+
+/**
+ * Regression: key pointers from cog_config_list are borrowed from the
+ * candidate and are invalidated by a subsequent delete that frees the
+ * listed child (via node_free/prune_empty).  Only the fresh listing is
+ * asserted; the old key pointers are never dereferenced again.
+ */
+static int test_mutation_lifetime_keys(void)
+{
+    cog_config_tree_t *tree = NULL;
+    cog_config_txn_t *txn = NULL;
+    const char *keys0[4];
+    const char *keys1[4];
+    size_t count = 0U;
+
+    if (cog_config_tree_new(&tree) != COG_OK ||
+        cog_config_begin(tree, &txn) != COG_OK ||
+        cog_config_set(txn, "a.k1", "1") != COG_OK ||
+        cog_config_set(txn, "a.k2", "2") != COG_OK ||
+        cog_config_set(txn, "b.k3", "3") != COG_OK) {
+        return 1;
+    }
+    /* keys0[0] and keys0[1] are borrowed pointers into the candidate */
+    if (cog_config_list(txn, "", keys0, 4U, &count) != COG_OK ||
+        count != 2U ||
+        strcmp(keys0[0], "a") != 0 || strcmp(keys0[1], "b") != 0) {
+        return 1;
+    }
+    /* deleting the last children of "a" frees it (prune_empty); the
+     * previously returned key pointer for "a" is now invalid and must
+     * not be dereferenced */
+    if (cog_config_delete(txn, "a.k1") != COG_OK ||
+        cog_config_delete(txn, "a.k2") != COG_OK) {
+        return 1;
+    }
+    /* the fresh listing reflects the pruned tree */
+    if (cog_config_list(txn, "", keys1, 4U, &count) != COG_OK ||
+        count != 1U ||
+        strcmp(keys1[0], "b") != 0) {
+        return 1;
+    }
+
+    cog_config_rollback(txn);
+    cog_config_tree_free(tree);
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Validators                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -1175,6 +1286,10 @@ int main(void)
     CHECK("rollback discards", test_rollback_discards());
     CHECK("no-op commit", test_noop_commit());
     CHECK("snapshot isolation stress", test_snapshot_isolation_stress());
+
+    /* Borrowed-pointer lifetime under mutation (review ed22846) */
+    CHECK("mutation lifetime value", test_mutation_lifetime_value());
+    CHECK("mutation lifetime keys", test_mutation_lifetime_keys());
 
     /* Validators */
     CHECK("validators basic", test_validators_basic());

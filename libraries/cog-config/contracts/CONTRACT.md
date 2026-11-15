@@ -77,7 +77,28 @@ candidate, and the running tree is untouched until commit.
 | No-op commit | A commit with no staged edits runs validators and succeeds (`COG_OK`); the running tree is unchanged. There is no declared "clean commit skips validators" carve-out, so validators always run against the candidate. Verified by `test_noop_commit`. |
 | Validator rejection | Returns `COG_ERROR_INVALID_ARG`. The staged edits are discarded and the candidate is re-derived as a clean copy of the unchanged running tree; the transaction remains usable, and a retry after new `set` calls is possible. Verified by `test_validator_rejects`. |
 | Finalization | A successful commit or a rollback finalizes the transaction: the candidate ceases to exist. Afterwards `commit`, `set`, and `delete` return `COG_ERROR_INVALID_STATE`; `get` and `list` return `COG_ERROR_NOT_FOUND`; `rollback` is a no-op. Verified by `test_commit_finalizes`, `test_rollback_discards`. |
-| Handle safety | A finalized transaction struct is retained (but inert) by its tree until `cog_config_tree_free` and is never recycled, so a stale handle can never alias a different transaction and the INVALID_STATE path is deterministic. |
+| Handle safety | A finalized transaction struct is retained (but inert) by its tree until `cog_config_tree_free` and is never recycled, so a stale handle can never alias a different transaction and the INVALID_STATE path is deterministic. The retention is a public-header promise (see the `cog_config_txn_t` doc) precisely because a config tree is long-lived under scenario 08 hot reload: the added memory is bounded by the number of transactions begun on the tree, released by `cog_config_tree_free`. |
+
+### Borrowed-pointer lifetime (regression: review ed22846)
+
+Pointers returned by `cog_config_get` (`*out_value`) and
+`cog_config_list` (`out_keys[]`) are **borrowed** from the candidate
+tree. They are invalidated by:
+
+- any subsequent `cog_config_set`/`cog_config_delete` **within the
+  same transaction** — `set` frees the replaced value string
+  (`set_rec`), `delete` frees node name strings (`node_free` via
+  `prune_empty`); and
+- finalization (`commit`/`rollback`) and `cog_config_tree_free`.
+
+Callers must not dereference (or otherwise use) a borrowed pointer
+after any of those. There is no stability promise across unrelated
+mutations either: after any mutation, re-fetch the pointers needed.
+The implementation deliberately does **not** defer frees to keep
+pointers stable (that would change the allocation profile); the
+contract is invalidation-on-mutation, and ASan-verified regression
+tests (`test_mutation_lifetime_value`, `test_mutation_lifetime_keys`)
+pin the fresh post-mutation state without dereferencing old pointers.
 
 ## Path-based access
 
@@ -87,8 +108,11 @@ candidate, and the running tree is untouched until commit.
 - `COG_ERROR_INVALID_ARG`: empty/malformed path.
 - `COG_ERROR_NOT_FOUND`: path missing; path resolves to a node carrying
   no value (container read); or the transaction is already finalized.
-- `COG_OK`: `*out_value` points into the candidate (borrowed; valid
-  until the transaction is finalized). It is NULLed before any failure.
+- `COG_OK`: `*out_value` points into the candidate; the pointer is
+  **borrowed** and invalidated by any subsequent `set`/`delete` in the
+  same transaction and by finalization/tree destruction (see
+  "Borrowed-pointer lifetime" above). No stability promise beyond
+  that. It is NULLed before any failure.
 
 ### `cog_config_set(txn, path, value)`
 
@@ -123,9 +147,12 @@ candidate, and the running tree is untouched until commit.
   truncated (fail loudly).
 - Count-only mode: `max_keys == 0` allows `out_keys == NULL` and
   returns the count without writing keys.
-- `COG_OK`: `out_keys` receives up to `max_keys` borrowed pointers to
-  child names, in the tree's child order (insertion order; deletions
-  shift, re-inserts append). Verified by `test_list`.
+- `COG_OK`: `out_keys` receives up to `max_keys` pointers to child
+  names, in the tree's child order (insertion order; deletions shift,
+  re-inserts append). The pointers are **borrowed**: invalidated by
+  any subsequent `set`/`delete` in the same transaction and by
+  finalization/tree destruction (see "Borrowed-pointer lifetime"
+  above). Verified by `test_list`.
 
 ## Validators
 
