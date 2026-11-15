@@ -36,7 +36,7 @@ typedef struct cog_provider {
  * until disconnect. Constructor validates backend capability and all limits.
  * @param[out] out_provider NULL on failure; owned instance on COG_OK.
  * @return NULL_PTR, INVALID_ARG (including missing required static callbacks),
- * UNSUPPORTED, NOMEM or COG_OK. Generic connect validates all eight callbacks
+ * UNSUPPORTED, NOMEM or COG_OK. Generic connect validates all nine callbacks
  * before invoking implementation connect. No wire effects
  * on failure. Called only on owner thread; no lazy dependency global init.
  */
@@ -51,6 +51,39 @@ typedef cog_result_t (*cog_provider_connect_fn)(const cog_endpoint_t *endpoint,
  * Uses the explicitly selected bounded-cancellation dependency backend.
  */
 typedef cog_result_t (*cog_provider_disconnect_fn)(cog_provider_t *provider);
+/** @brief History eligibility checked by no-wire request preflight. */
+typedef enum cog_provider_preflight_stage {
+    COG_PROVIDER_PREFLIGHT_COMPLETE = 0, /**< Every identified call has its result. */
+    COG_PROVIDER_PREFLIGHT_PENDING_TOOLS /**< One final assistant call group may remain open. */
+} cog_provider_preflight_stage_t;
+
+/**
+ * @brief Validate a known request without accepting or starting a turn.
+ * @param[in,out] provider Idle connected instance; prior FINISH consumed.
+ * @param[in] request Borrowed complete selected history and current request
+ * settings, including nested message/opaque bytes and advertised tools.
+ * @param[in] stage COMPLETE for ordinary send eligibility; PENDING_TOOLS for
+ * the selected final assistant call group awaiting tool execution/results.
+ * @return OK when the known input fits this implementation's protocol/profile;
+ * NULL_PTR; INVALID_ARG for unknown stage/structural values; INVALID_STATE for
+ * an active turn or invalid call/result sequence; NOT_FOUND for unknown model;
+ * UNSUPPORTED for model capability or continuation namespace/format/semantics;
+ * PROTOCOL for malformed strict protocol data; LIMIT for constructor ceilings.
+ * @post On every return no turn is accepted, no request/sequence/time advances,
+ * and no transport, service, tool, callback or external effect occurs. Existing
+ * retained output and last terminal error snapshot/lifetimes stay unchanged.
+ * No input is retained, modified, logged or rendered; no runtime allocation.
+ * @note Uses only constructor-reserved workspace. Validate selected history,
+ * model/generation, capabilities, tool declarations and all provider-owned
+ * message/opaque syntax using the same compatibility/limit rules as send.
+ * Success validates only currently supplied bytes: future tool output can
+ * still exhaust limits. It grants no policy, guard, ledger or effect admission.
+ * Caller still validates replay safety; recheck the completed request at send.
+ * Owner thread, outside callbacks; no recursive call on this instance.
+ */
+typedef cog_result_t (*cog_provider_preflight_fn)(cog_provider_t *provider,
+    const cog_provider_request_t *request, cog_provider_preflight_stage_t stage);
+
 /**
  * @brief Copy validated request transitively and start one asynchronous turn.
  * @param[in,out] provider Idle instance (prior FINISH consumed).
@@ -59,6 +92,7 @@ typedef cog_result_t (*cog_provider_disconnect_fn)(cog_provider_t *provider);
  * @return COG_OK; NULL_PTR; INVALID_ARG/UNSUPPORTED before network effects;
  * LIMIT if request/workspace cannot fit; INVALID_STATE if a turn is active.
  * @post Failure leaves instance idle and sends nothing. No runtime Cog allocation.
+ * Send requires COMPLETE history; preflight PENDING_TOOLS never authorizes send.
  * @note Owner thread; no blocking I/O or automatic retry/model substitution.
  */
 typedef cog_result_t (*cog_provider_send_fn)(cog_provider_t *provider,
@@ -126,7 +160,7 @@ typedef cog_result_t (*cog_provider_next_fn)(cog_provider_t *provider,
 typedef cog_result_t (*cog_provider_error_fn)(const cog_provider_t *provider,
                                              cog_provider_error_t *out_error);
 
-/** @brief All eight callbacks are required; table is static const. */
+/** @brief All nine callbacks are required; table is static const. */
 struct cog_provider_vtable {
     cog_provider_connect_fn connect;
     cog_provider_disconnect_fn disconnect;
@@ -136,6 +170,7 @@ struct cog_provider_vtable {
     cog_provider_cancel_fn cancel;
     cog_provider_next_fn next;
     cog_provider_error_fn error;
+    cog_provider_preflight_fn preflight;
 };
 
 /** @copydoc cog_provider_connect_fn */
@@ -143,6 +178,9 @@ cog_result_t cog_provider_connect(const cog_endpoint_t *endpoint,
                                   cog_provider_t **out_provider);
 /** @copydoc cog_provider_disconnect_fn */
 cog_result_t cog_provider_disconnect(cog_provider_t *provider);
+/** @copydoc cog_provider_preflight_fn */
+cog_result_t cog_provider_preflight(cog_provider_t *provider,
+    const cog_provider_request_t *request, cog_provider_preflight_stage_t stage);
 /** @copydoc cog_provider_send_fn */
 cog_result_t cog_provider_send(cog_provider_t *provider,
                                const cog_provider_request_t *request);

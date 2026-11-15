@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="300" viewBox="0 0 1000 300">
+ <rect width="1000" height="300" fill="#fff"/>
+ <g font-family="sans-serif" fill="#172554">
+  <text x="30" y="32" font-size="20">L/H preflight boundary — one owner thread, no wire turn</text>
+  <rect x="20" y="60" width="275" height="135" rx="8" fill="#dbeafe" stroke="#2563eb"/>
+  <text x="38" y="87" font-size="17">Application selected prefix</text>
+  <text x="38" y="115" font-size="14">Public session/message views</text>
+  <text x="38" y="141" font-size="14">Current model + limits + tools</text>
+  <text x="38" y="167" font-size="14">Store/ledger eligibility stays here</text>
+  <rect x="350" y="60" width="270" height="135" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="368" y="87" font-size="17">Generic provider dispatch</text>
+  <text x="368" y="115" font-size="14">cog_provider_preflight</text>
+  <text x="368" y="141" font-size="14">COMPLETE / PENDING_TOOLS</text>
+  <text x="368" y="167" font-size="14">Required static callback</text>
+  <rect x="675" y="60" width="305" height="135" rx="8" fill="#f3e8ff" stroke="#9333ea"/>
+  <text x="693" y="87" font-size="17">Adapter protocol workspace</text>
+  <text x="693" y="115" font-size="14">Opaque syntax + namespace support</text>
+  <text x="693" y="141" font-size="14">Known request representation limits</text>
+  <text x="693" y="167" font-size="14">No network / service / allocation</text>
+  <path d="M295 120H350 M620 120H675" stroke="#172554" stroke-width="3"/>
+  <path d="M340 114L350 120L340 126 M665 114L675 120L665 126" fill="none" stroke="#172554" stroke-width="3"/>
+  <text x="30" y="237" font-size="15">Preserve turn state, clock, retained deltas and last terminal error on every return.</text>
+  <text x="30" y="268" font-size="15">Only after compatibility + guard + policy + durable STARTED may a tool start; send requires COMPLETE.</text>
+ </g>
+</svg>

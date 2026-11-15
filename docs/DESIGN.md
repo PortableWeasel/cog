@@ -720,3 +720,16 @@ owns dependency initialization and signalfd lifecycle; no global signal target
 is introduced. [Application contract](../applications/cog-cli/CONTRACT.md) and
 [K evidence](REAL_CLIENT_K_EVIDENCE.md) distinguish this single-process delivery
 from L recovery interaction and N/O remote/headless orchestration.
+
+
+### L/H no-wire compatibility boundary (header amendment)
+
+Restored PROPOSED calls must pass the selected provider's protocol compatibility
+checks before any durable STARTED/tool effect. Structural request validation
+cannot establish opaque continuation support, and send cannot probe support
+without accepting a wire turn. The new generic `cog_provider_preflight` callback
+validates a known selected request in constructor workspace without network,
+turn/error/clock/output mutation or allocation. An explicit preflight-only stage
+permits the final pending tool group; normal send remains COMPLETE-only.
+[Three-pass contract](REAL_CLIENT_PREFLIGHT_CONTRACTS.md) gates implementation
+and keeps CLI dispatch independent of OpenRouter protocol types.

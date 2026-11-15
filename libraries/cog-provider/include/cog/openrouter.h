@@ -27,6 +27,12 @@ typedef struct cog_openrouter_config {
 /**
  * @brief Static adapter implementation, no implicit global initialization.
  *
+ * Generic preflight validates the complete known selected request in reserved
+ * parser/writer storage without net/service calls or accepting a turn. Both
+ * stages apply the same pinned namespace/json-v1 syntax and representation
+ * rules below; pending-tool preflight does not send an unresolved request.
+ * No preflight result changes retained output or the last terminal error.
+ *
  * The first release accepts limits.max_json_depth in 1..256; connect returns
  * INVALID_ARG for a larger value. Depth preflight bounds recursive duplicate
  * and opaque-value equality traversal before strict parsing/copying.

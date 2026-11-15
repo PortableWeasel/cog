@@ -414,7 +414,13 @@ const char *cog_cli_result_name(cog_result_t rc);
  * A competing live guard returns AGAIN; stale checkpoint/owner fails rather
  * than loading another generation. RESUME never reexecutes completed ancestor
  * calls. Coherent PROPOSED resumes only its current explicit policy phase,
- * before unrelated user/branch/model work. STARTED/INDETERMINATE refuses normal
+ * before unrelated user/branch/model work. Before any restored PROPOSED call
+ * can transition STARTED, the generic provider must preflight the bounded full
+ * selected prefix with PENDING_TOOLS and current request settings. Compatibility
+ * failure performs no tool/start/save of STARTED and never calls provider_send
+ * to probe support. Build the selected prefix from public node/message views;
+ * copy_history correctly refuses unresolved history and is not bypassed for send.
+ * STARTED/INDETERMINATE refuses normal
  * resume with INDETERMINATE, never an automatic recovery downgrade. Incomplete
  * text remains visible and requires K's fresh postfailure input to branch.
  * FORK selects fork_node_id through cog_cli_app_fork; --queue is invalid for
