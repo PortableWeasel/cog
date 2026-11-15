@@ -16,6 +16,7 @@
 # static-library/export cycle (cog::core -> cog::ipc -> cog::core).
 add_library(cog-ipc STATIC
     src/ipc.c
+    src/ipc_replay.c
 )
 add_library(cog::ipc ALIAS cog-ipc)
 
