@@ -2,7 +2,8 @@
 
 Package `32db464`; implementation children `194734c` (bounded config) and `a43e409`
 (CLI resolution), review `f47fd57`, integration `bd8ac08`, finalize `4fb9ab5`.
-This is writer evidence for independent review, not package/release acceptance.
+This record includes writer evidence and the independent J package acceptance below.
+It does not claim full application or real-client release acceptance.
 The branch merges main's integrated G/Q state through `e35dc9f`.
 
 The public headers are unchanged. The approved E07 pools are implemented in
@@ -103,4 +104,37 @@ bracketed IPv6 (including embedded IPv4), explicit ports 1/65535 and leading-zer
 U+0080, U+D7FF/U+E000 and U+10FFFF remain accepted; malformed native filesystem
 bytes remain accepted as paths. Failed constructors return INVALID_ARG and NULL.
 The five J tests pass again in strict GCC, strict Clang and separate Clang
-ASan/UBSan with leak detection (15 passes). Independent rereview is pending.
+ASan/UBSan with leak detection (15 passes). Independent rereview passed below.
+
+
+## Independent acceptance and integration
+
+Independent review `f47fd57` accepted corrected tip `acd16cc` after one rejection
+cycle. The critic reproduced all five J tests under GCC WERROR, Clang WERROR and
+separate Clang ASan/UBSan with leak detection: 15/15 passed. An independent
+20,000-case byte generator matched model admission against Python strict UTF-8
+decoding and checked 23 further HTTPS authority cases. The first review also
+matched 18,000 deterministic config operations, with concurrent snapshots and
+commit/delete/prune/rollback, against an independent map oracle. Separate sanitized
+probes checked callback protocol/overflow failures, numeric/presence rules and exact
+64 KiB file / 4095-byte line boundaries. Only synthetic credentials were used.
+
+Integration `bd8ac08` merged the approved branch into main as `1367a6f`, without
+conflicts. Root CMake and F/Q/G changes are retained; public headers are unchanged.
+The app target propagates toolkit, net and cli-config in its PUBLIC link interface.
+Generated export inspection and undefined-symbol inspection confirm cli-config
+uses only its own objects and libc (including inet_pton); this is not installed
+full-app runtime acceptance.
+
+Fresh main builds `/tmp/cog-j-main-gcc`, `/tmp/cog-j-main-clang` and
+`/tmp/cog-j-main-asan` repeated the five-target build and anchored CTest expression
+above: all 15 post-merge executions passed. The sanitizer run used leak detection
+and halt-on-error for ASan/UBSan. Main has no tracked modifications after this
+record; the preexisting untracked `build_user/` directory was preserved.
+
+J is accepted for bounded configuration, precedence/credential resolution and the
+private generation boundary. H/K still own provider construction, store guards,
+actual no-store execution denial, request-generation matching and installed full-app
+closure. The old REAL application entry remains UNSUPPORTED until K. The known
+legacy mock vtable strict-build failure belongs to H migration. No authenticated
+request or claim of a complete real conversation is part of J acceptance.
