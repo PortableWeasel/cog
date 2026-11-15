@@ -47,6 +47,11 @@ struct cog_session_node {
     size_t child_count;
     size_t tool_args_len;          /* byte length, including embedded NULs */
     size_t tool_result_len;        /* byte length, including embedded NULs */
+    cog_message_t message;
+    void *payload;
+    bool used;
+    bool shared;
+    bool committed;
     bool prunable_counted;         /* counted in session.prunable_leaf_count */
 };
 
@@ -70,6 +75,19 @@ struct cog_session {
     cog_message_t *history;        /* owned cache for cog_session_get_history */
     size_t history_count;
     size_t history_capacity;
+    struct cog_session_node *nodes;
+    unsigned char *arena;
+    size_t arena_capacity;
+    size_t max_calls;
+    size_t ledger_capacity;
+    size_t ledger_count;
+    cog_tool_ledger_record_t *ledger;
+    cog_tool_audit_record_t *audits;
+    cog_node_data_t *snapshot_nodes;
+    uint64_t audit_high_water;
+    bool inspection_only;
+    bool forked;
+
 };
 
 /* ------------------------------------------------------------------ */
@@ -93,5 +111,17 @@ _Static_assert(offsetof(struct cog_session, history) >
 _Static_assert(offsetof(struct cog_session, attached) == 64U,
                "session_internal: attached offset regression (64-bit)");
 #endif
+
+/** Logical persistence bookkeeping; source is constructor-owned mutable storage.
+ * Called only after successful/uncertain publication, never changes view bytes.
+ * Marks every occupied slot, including slots beyond holes left by draft discard. */
+void cog_session_mark_committed(const cog_session_t *session);
+
+/** Allocation-free validation of exact public snapshot records. No normalization,
+ * allocation, mutation, disk or activation. Shared by restore and bounded store
+ * admission/diff checks. Return OK, NULL_PTR, PROTOCOL, LIMIT identity exhaustion
+ * or unsupported unsafe legacy tools. inspection_only restricts, never grants.
+ */
+cog_result_t cog_session_snapshot_validate(const cog_session_snapshot_t *snapshot);
 
 #endif /* COG_SESSION_INTERNAL_H */

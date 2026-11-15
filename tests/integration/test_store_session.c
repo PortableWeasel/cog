@@ -104,7 +104,7 @@ static const cog_dispatch_entry_t dispatch_table[] = {
 static cog_handler_result_t as_on_user_input(cog_core_t *core,
                                              const cog_event_t *event)
 {
-    cog_message_t msg;
+    cog_message_t msg = {0};
     cog_handler_result_t r = {ST_RUNNING, COG_OK};
 
     (void)event;
@@ -131,7 +131,7 @@ static cog_handler_result_t as_on_chunk(cog_core_t *core,
 static cog_handler_result_t as_on_llm_complete(cog_core_t *core,
                                                const cog_event_t *event)
 {
-    cog_message_t msg;
+    cog_message_t msg = {0};
     cog_handler_result_t r = {ST_IDLE, COG_OK};
 
     (void)event;
@@ -253,6 +253,16 @@ static cog_result_t fail_append(void *store, const cog_session_t *session,
     return COG_OK;
 }
 
+static cog_result_t fail_load_ex(void *store, const char *id,
+                                  cog_store_load_mode_t mode,
+                                  cog_session_t **out,
+                                  cog_store_load_report_t *report)
+{
+    (void)mode;
+    (void)report;
+    return fail_load(store, id, out);
+}
+
 static cog_result_t fail_delete(void *store, const char *id)
 {
     (void)store;
@@ -277,13 +287,14 @@ static bool fail_exists(void *store, const char *id)
 }
 
 static const cog_store_vtable_t failing_backend = {
-    "failing",
-    fail_save,
-    fail_load,
-    fail_append,
-    fail_delete,
-    fail_list,
-    fail_exists,
+    .name = "failing",
+    .save = fail_save,
+    .load = fail_load,
+    .append = fail_append,
+    .delete_ = fail_delete,
+    .list = fail_list,
+    .exists = fail_exists,
+    .load_ex = fail_load_ex,
 };
 
 /* Free a cog_store_list result. */
@@ -409,12 +420,12 @@ static void test_full_cycle(void)
     scfg.id = "int-sess";
     CHECK(cog_session_new(&s, &scfg) == COG_OK);
     CHECK(cog_session_append(s,
-                             &(cog_message_t){COG_MESSAGE_ROLE_USER, "q1",
-                                              2U, NULL},
+                             &(cog_message_t){.role = COG_MESSAGE_ROLE_USER,
+                                              .content = "q1", .content_len = 2U},
                              &n) == COG_OK);
     CHECK(cog_session_append(s,
-                             &(cog_message_t){COG_MESSAGE_ROLE_ASSISTANT,
-                                              "a1", 2U, NULL},
+                             &(cog_message_t){.role = COG_MESSAGE_ROLE_ASSISTANT,
+                                              .content = "a1", .content_len = 2U},
                              NULL) == COG_OK);
     memset(&timing, 0, sizeof(timing));
     timing.duration_ms = 7U;
@@ -437,8 +448,8 @@ static void test_full_cycle(void)
 
     /* Append a third node through st2 and reload through st1. */
     CHECK(cog_session_append(loaded,
-                             &(cog_message_t){COG_MESSAGE_ROLE_USER, "q2",
-                                              2U, NULL},
+                             &(cog_message_t){.role = COG_MESSAGE_ROLE_USER,
+                                              .content = "q2", .content_len = 2U},
                              &n) == COG_OK);
     CHECK(cog_store_append(st2, loaded, n) == COG_OK);
     cog_session_free(loaded);
@@ -459,7 +470,7 @@ static void test_full_cycle(void)
                      "q2", 2U) == 0);
     }
 
-    /* List and delete through st2. */
+    /* List through st2; durable ownership anchors remain undeletable. */
     CHECK(cog_store_list(st2, &ids, &count) == COG_OK);
     CHECK(count == 1U);
     CHECK(strcmp(ids[0], "int-sess") == 0);
@@ -468,8 +479,8 @@ static void test_full_cycle(void)
     }
     free(ids);
     ids = NULL;
-    CHECK(cog_store_delete(st2, "int-sess") == COG_OK);
-    CHECK(!cog_store_exists(st1, "int-sess"));
+    CHECK(cog_store_delete(st2, "int-sess") == COG_ERROR_UNSUPPORTED);
+    CHECK(cog_store_exists(st1, "int-sess"));
 
     cog_session_free(s);
     cog_session_free(loaded);

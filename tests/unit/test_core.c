@@ -74,7 +74,7 @@ enum {
 static cog_handler_result_t on_user_input(cog_core_t *core,
                                           const cog_event_t *event)
 {
-    cog_message_t msg;
+    cog_message_t msg = {0};
     cog_event_t complete;
     cog_handler_result_t r = {ST_RUNNING, COG_OK};
 
@@ -1054,7 +1054,7 @@ cog_result_t __wrap_cog_event_queue_push(cog_event_queue_t *q,
 static cog_handler_result_t on_record_input(cog_core_t *core,
                                             const cog_event_t *event)
 {
-    cog_message_t msg;
+    cog_message_t msg = {0};
     cog_handler_result_t r = {ST_IDLE, COG_OK};
 
     msg.role = COG_MESSAGE_ROLE_USER;

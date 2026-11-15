@@ -79,3 +79,31 @@ start unrelated model/user/branch work. Crashed STARTED becomes INDETERMINATE an
 requires recovery. Cancelled unstarted proposals receive identified no-effect
 DENIED results; they are never mistaken for uncertain executed effects. Test the
 crash before STARTED save and cancel-after-proposal boundaries with zero effects.
+
+## G implementation clarification: explicit shared fork points
+
+`cog_session_fork` returns the same immutable shared node, preserving all tool
+execution identity. A selected leaf may become active. Selecting a nonleaf
+preserves the existing active leaf: `cog_session_add_message(parent=fork_point)`
+creates and selects the new divergent child; `append` continues the active leaf.
+An immediate snapshot after a nonleaf fork retains a valid active leaf. No node,
+call identity, payload allocation or ledger slot is copied by fork.
+
+Targeted header passes: (1) initial fork contract checked against identity and
+snapshot invariants; (2) trace nonleaf fork -> snapshot -> explicit child ->
+branch history, plus completed assistant-call fork with zero repeated effects;
+(3) consistency review against active-leaf restore, unresolved branch refusal and
+allocation-free constructor capacities. Independent G review remains required.
+
+## G.1 review consistency clarification: divergent draft cancellation
+
+For a text root A with existing child B, explicit fork/add under A may create
+draft C. Discarding active C refuses INVALID_STATE atomically while A retains
+B; otherwise the documented parent-on-success selection would make active A a
+nonleaf. The draft, selected leaf, siblings and node high-water stay unchanged.
+No sibling history is selected implicitly.
+
+Targeted passes: (1) header clarification of the extra refusal condition before
+implementation; (2) trace A -> B, fork A -> C, discard C -> unchanged active C;
+(3) check parent-on-success, snapshot active-leaf, draft-only removal and identity
+monotonicity together. Independent G.1 revision review remains required.

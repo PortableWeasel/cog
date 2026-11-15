@@ -15,16 +15,18 @@
  *  4. Append: an incremental node append is persisted and visible on a
  *     reload.
  *  5. List: the session id appears in the store listing.
- *  6. Delete: the session is removed and no longer exists.
+ *  6. Delete: durable lock anchors remain protected from deletion.
  */
 #define _POSIX_C_SOURCE 200809L
 
 #include "cog/session.h"
 #include "cog/session_store.h"
 
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static int failures = 0;
@@ -48,6 +50,26 @@ static int failures = 0;
             ++failures;                                                 \
         }                                                               \
     } while (0)
+
+/* Test-only teardown after all stores/guards are destroyed. */
+static void remove_tree(const char *path)
+{
+    DIR *directory = opendir(path);
+    struct dirent *entry;
+    CHECK(directory != NULL);
+    if (directory == NULL) return;
+    while ((entry = readdir(directory)) != NULL) {
+        char child[512];
+        struct stat info;
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+        CHECK(snprintf(child, sizeof(child), "%s/%s", path, entry->d_name) > 0);
+        CHECK(lstat(child, &info) == 0);
+        if (S_ISDIR(info.st_mode)) remove_tree(child);
+        else CHECK(unlink(child) == 0);
+    }
+    CHECK(closedir(directory) == 0);
+    CHECK(rmdir(path) == 0);
+}
 
 /** Build a session with a user + assistant node (stable id). */
 static cog_session_t *make_session(const char *id)
@@ -193,25 +215,18 @@ static void scenario_persistence(void)
     free(ids);
     CHECK_EQ_INT((long long)found, 1LL);
 
-    /* Delete: gone. */
-    CHECK(cog_store_delete(store, "sc13-session") == COG_OK);
-    CHECK(!cog_store_exists(store, "sc13-session"));
+    /* Publication creates a stable ownership anchor, even while unowned. */
+    CHECK(cog_store_delete(store, "sc13-session") == COG_ERROR_UNSUPPORTED);
+    CHECK(cog_store_exists(store, "sc13-session"));
 
     cog_session_free(loaded);
     cog_session_free(s);
     cog_store_free(store);
 
-    /* Best-effort cleanup of the temp dir. */
-    {
-        char path[256];
-        (void)snprintf(path, sizeof(path), "%s/sc13-session", dir);
-        (void)rmdir(path);
-        (void)rmdir(dir);
-    }
+    remove_tree(dir);
 }
 
-/* Tool-call/result round-trip: the result node's tool identity must
- * survive save/load, symmetric with the tool call. */
+/* One assistant call and its correlated result survive durable admission. */
 static void scenario_tool_identity_roundtrip(void)
 {
     char dir[] = "/tmp/cog-sc13-tool-XXXXXX";
@@ -225,6 +240,7 @@ static void scenario_tool_identity_roundtrip(void)
     cog_message_t m;
     const cog_message_t *msgs = NULL;
     size_t count = 0U;
+    const cog_message_tool_call_t call = {"search-1", "search", "{\"q\":\"X\"}", 9U};
 
     if (mkdtemp(dir) == NULL) {
         (void)fprintf(stderr, "mkdtemp failed\n");
@@ -236,7 +252,7 @@ static void scenario_tool_identity_roundtrip(void)
     store_cfg.base_dir = dir;
     CHECK(cog_store_new(&store, &store_cfg) == COG_OK);
 
-    /* Build a session with a tool call + result. */
+    /* Persist STARTED before accepting the simulated tool's result. */
     CHECK(cog_session_new(&s, &(cog_session_config_t){.id = "sc13-tool"}) ==
           COG_OK);
     (void)memset(&m, 0, sizeof(m));
@@ -244,12 +260,25 @@ static void scenario_tool_identity_roundtrip(void)
     m.content = "q";
     m.content_len = 1U;
     CHECK(cog_session_add_message(s, NULL, &m, &root) == COG_OK);
-    CHECK(cog_session_add_tool_call(s, root, "search", "{\"q\":\"X\"}",
-                                    &tc) == COG_OK);
-    CHECK(cog_session_add_tool_result(s, tc, "results for X", &tr) ==
-          COG_OK);
+    (void)memset(&m, 0, sizeof(m));
+    m.role = COG_MESSAGE_ROLE_ASSISTANT;
+    m.tool_calls = &call;
+    m.tool_call_count = 1U;
+    CHECK(cog_session_add_message(s, root, &m, &tc) == COG_OK);
+    CHECK(cog_session_tool_transition(s, tc, "search-1",
+          COG_TOOL_EXECUTION_PROPOSED, COG_TOOL_EXECUTION_STARTED) == COG_OK);
+    CHECK(cog_store_save(store, s) == COG_OK);
+    (void)memset(&m, 0, sizeof(m));
+    m.role = COG_MESSAGE_ROLE_TOOL;
+    m.tool_call_id = "search-1";
+    m.name = "search";
+    m.content = "results for X";
+    m.content_len = sizeof("results for X") - 1U;
+    CHECK(cog_session_append(s, &m, &tr) == COG_OK);
+    CHECK(cog_session_tool_transition(s, tc, "search-1",
+          COG_TOOL_EXECUTION_STARTED, COG_TOOL_EXECUTION_SUCCEEDED) == COG_OK);
 
-    /* Pre-save identity: the result inherits the call's name. */
+    /* Descriptive names are separate from the stable call ID. */
     CHECK(cog_node_data(tr)->tool_name != NULL);
     CHECK(strcmp(cog_node_data(tr)->tool_name, "search") == 0);
 
@@ -261,12 +290,14 @@ static void scenario_tool_identity_roundtrip(void)
     CHECK(cog_session_get_history(loaded, cog_session_active(loaded),
                                   &msgs, &count) == COG_OK);
     CHECK_EQ_INT((long long)count, 3LL);
-    CHECK(msgs[1].role == COG_MESSAGE_ROLE_TOOL);
-    CHECK(msgs[1].name != NULL);
-    CHECK(strcmp(msgs[1].name, "search") == 0);
+    CHECK(msgs[1].role == COG_MESSAGE_ROLE_ASSISTANT);
+    CHECK(msgs[1].tool_call_count == 1U);
+    CHECK(strcmp(msgs[1].tool_calls[0].id, "search-1") == 0);
+    CHECK(strcmp(msgs[1].tool_calls[0].name, "search") == 0);
     CHECK(msgs[2].role == COG_MESSAGE_ROLE_TOOL);
     CHECK(msgs[2].name != NULL);
     CHECK(strcmp(msgs[2].name, "search") == 0);
+    CHECK(strcmp(msgs[2].tool_call_id, "search-1") == 0);
     CHECK(msgs[2].content != NULL);
     CHECK(strcmp(msgs[2].content, "results for X") == 0);
 
@@ -274,12 +305,7 @@ static void scenario_tool_identity_roundtrip(void)
     cog_session_free(s);
     cog_store_free(store);
 
-    {
-        char path[256];
-        (void)snprintf(path, sizeof(path), "%s/sc13-tool", dir);
-        (void)rmdir(path);
-        (void)rmdir(dir);
-    }
+    remove_tree(dir);
 }
 
 int main(void)

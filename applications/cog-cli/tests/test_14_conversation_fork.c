@@ -7,19 +7,17 @@
  * histories with independent timing/cost.  This test drives the real
  * @c cog_session_* APIs.
  *
- * Fork semantics (see session.c): @c cog_session_fork deep-copies the
- * fork-point node and links the copy as the next sibling of the fork
- * point (same parent).  The copy shares all ancestors above the fork
- * point but is itself an independent node with its own node id.
+ * Fork returns the existing immutable shared fork point. Divergent children
+ * preserve ancestor node/effect identity and keep independent branch metrics.
  *
  * Tree built here:
- *   root -> n1 (user "Explain X") -> n2 (assistant "answer A")
- *   fork at n2 -> n2B (copy of n2, sibling of n2)
+ *   n1 (user "Explain X") -> n2 (assistant "answer A")
+ *   fork at n2 -> n2B (same immutable node)
  *   branch A: child of n2  -> n3A (assistant "branch A")
  *   branch B: child of n2B -> n3B (assistant "branch B")
  *
  * What is verified:
- *  1. Forking produces a new independent branch with its own node id.
+ *  1. Forking preserves the immutable ancestor's exact node id.
  *  2. Shared ancestors: root and n1 are common to both branches.
  *  3. Independent histories: branch A and branch B diverge after n2.
  *  4. Independent timing/cost: cumulative cost/timing differ per branch.
@@ -128,7 +126,7 @@ static void scenario_fork(void)
     n2 = add_msg(s, n1, COG_MESSAGE_ROLE_ASSISTANT, "answer A");
     CHECK(n2 != NULL);
 
-    /* Set cost/timing on n2 BEFORE forking so the copy inherits it. */
+    /* Set ancestor metrics before the node becomes shared and immutable. */
     (void)memset(&cost, 0, sizeof(cost));
     cost.input_tokens = 10U;
     cost.output_tokens = 5U;
@@ -140,16 +138,22 @@ static void scenario_fork(void)
     timing.ttft_ms = 20U;
     CHECK(cog_session_set_timing(s, n2, &timing) == COG_OK);
 
-    /* Fork at n2 -> n2B (independent copy, sibling of n2). */
+    /* Fork at n2 -> n2B (same immutable identity). */
     CHECK(cog_session_fork(s, n2, &n2b) == COG_OK);
     CHECK(n2b != NULL);
-    CHECK(cog_node_data(n2b)->node_id != cog_node_data(n2)->node_id);
+    CHECK(n2b == n2);
+    CHECK(cog_node_data(n2b)->node_id == cog_node_data(n2)->node_id);
+    CHECK(cog_session_active(s) == n2);
+    CHECK(cog_session_set_cost(s, n2b, &cost) == COG_ERROR_INVALID_STATE);
+    CHECK(cog_session_set_timing(s, n2b, &timing) == COG_ERROR_INVALID_STATE);
 
     /* Continue on both branches independently. */
     n3a = add_msg(s, n2, COG_MESSAGE_ROLE_ASSISTANT, "branch A");
     CHECK(n3a != NULL);
     n3b = add_msg(s, n2b, COG_MESSAGE_ROLE_ASSISTANT, "branch B");
     CHECK(n3b != NULL);
+    CHECK(cog_node_parent(n3a) == cog_node_parent(n3b));
+    CHECK(cog_node_data(n3a)->node_id != cog_node_data(n3b)->node_id);
 
     /* Independent cost on the two branch leaves. */
     (void)memset(&cost, 0, sizeof(cost));
@@ -192,7 +196,7 @@ static void scenario_fork(void)
     CHECK(memcmp(histB[2].content, "branch B", 8U) == 0);
 
     /* Independent cumulative cost: A = n2(15) + n3A(2) = 17;
-     * B = n2B(15, copied) + n3B(4) = 19. */
+     * B = shared n2(15) + n3B(4) = 19. */
     costA = cog_session_cumulative_cost(s, n3a);
     costB = cog_session_cumulative_cost(s, n3b);
     CHECK(costA > 16.9 && costA < 17.1);

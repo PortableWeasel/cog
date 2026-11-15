@@ -309,3 +309,16 @@ Q owns the nonblocking IPC profile needed by fair core scheduling before K.
 G owns checkpoint/guard persistence; K/O own display snapshot/replay; N/O own
 public child and same-host handoff integration. These assignments do not waive
 E or permit implementation before the final header gate.
+
+### G fork-point clarification
+
+Fork returns the same immutable shared node rather than inventing new assistant
+or effect identities. Nonleaf selection preserves the current active leaf until
+`add_message(parent=fork_point)` creates/selects the divergent child; leaf
+selection may select that leaf. Immediate snapshots always retain an active leaf.
+This clarification preserves the existing public snapshot/restore invariant.
+
+G.1 review clarifies active divergent draft discard: when removing the active
+leaf would leave its parent with other children, discard refuses INVALID_STATE
+atomically. This retains the parent-on-success selection contract and the
+snapshot active-leaf invariant without implicitly selecting sibling history.
