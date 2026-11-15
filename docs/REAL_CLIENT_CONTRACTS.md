@@ -1,8 +1,8 @@
 # Stage 14.C public contracts: pass 1
 
-> [Stage 14.E pass 3](REAL_CLIENT_PASS3.md) records the latest recovery, bounds,
-> compatibility and explicit DYNAMIC allocation decisions. Additional full
-> independent final review remains required before E closes or implementation.
+> [Stage 14.E final review](REAL_CLIENT_PASS3.md) passed after the additional
+> independent review of `8563f81`. The three header passes and final review are
+> complete; implementation and executable conformance remain delivery work.
 
 Ticket `5df3ba1`; based on integrated transport/protocol research A/B and DNS
 follow-up `23ae6c8`. This is the initial public-header pass. No production C

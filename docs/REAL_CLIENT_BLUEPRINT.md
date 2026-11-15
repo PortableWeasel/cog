@@ -1,15 +1,16 @@
 # Real-model client: release blueprint
 
-> [Stage 14.E pass 3](REAL_CLIENT_PASS3.md) records the latest recovery, bounds,
-> compatibility and explicit DYNAMIC allocation decisions. Additional full
-> independent final review remains required before E closes or implementation.
+> [Stage 14.E final review](REAL_CLIENT_PASS3.md) passed after the additional
+> independent review of `8563f81`. The three header passes and final review are
+> complete; implementation and executable conformance remain delivery work.
 
 Status: planning baseline, 2026-11-15. Parent ticket: `2b9d0ea`.
 The user authorized autonomous design decisions and testing. This supersedes
 Stage 14's earlier scope-confirmation requirement. Header and implementation
 gates remain technical requirements, not repeated user approval requests.
 The [Stage 14.C contract record](REAL_CLIENT_CONTRACTS.md) specifies public
-header pass 1; actual scenario pass 2 and independent pass 3 remain outstanding.
+header pass 1. Scenario pass 2 and pass 3 plus the additional independent final
+review are integrated; the accepted contracts include their later amendments.
 
 ## Release boundary and goals
 

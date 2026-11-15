@@ -1,8 +1,8 @@
 # Stage 14 execution scaffold
 
-> [Stage 14.E pass 3](REAL_CLIENT_PASS3.md) records the latest recovery, bounds,
-> compatibility and explicit DYNAMIC allocation decisions. Additional full
-> independent final review remains required before E closes or implementation.
+> [Stage 14.E final review](REAL_CLIENT_PASS3.md) passed after the additional
+> independent review of `8563f81`. The three header passes and final review are
+> complete; implementation and executable conformance remain delivery work.
 
 Parent: `2b9d0ea`. This is the current real-client roadmap; Stage 12 remains
 historical engine/mock-CLI delivery evidence. User delegates routine design
@@ -17,9 +17,9 @@ header gate because it must complete before K.
 |---|---|---|---|
 | A | `c5671b5` | Research: HTTPS lifecycle and event-loop PoC (integrated) | — |
 | B | `2e1cddf` | Research: JSON/SSE and OpenRouter wire fixtures (integrated) | — |
-| C | `5df3ba1` | Design: public headers pass 1 | A,B |
-| D | `345a536` | Design: scenario pass 2 and gap amendments | C |
-| E | `feb17b6` | GATE: header pass 3 and independent final review | D |
+| C | `5df3ba1` | Design: public headers pass 1 (integrated) | A,B |
+| D | `345a536` | Design: scenario pass 2 and gap amendments (integrated) | C |
+| E | `feb17b6` | GATE: header pass 3 and independent final review (passed) | D |
 | Q | `bcd9c0a` | Delivery: fair core service scheduling | E |
 | F | `8f55808` | Delivery: transport HTTPS and polling | E |
 | G | `cb8ba04` | Delivery: structured messages and versioned persistence | E |
@@ -52,8 +52,9 @@ A failed review returns work to its owner; repeated failures require design
 reassessment per cog-dev. No user confirmation is needed for routine fixes.
 
 The parent stays in progress until release gate P passes. The planning
-baseline and independently reviewed research A/B are integrated; actual header
-passes, implementation and release validation remain outstanding. Credentials
+baseline, independently reviewed research A/B and header passes C–E are integrated;
+implementation and release validation remain outstanding. F/G/I/J/Q are dependency-
+ready and must be refined into concrete owned tasks before source work. Credentials
 are accessible through the OpenRouter entry
 in ~/.pi/agent/auth.json; no new key is presently required. Never include its
 contents in logs, shell arguments, tickets, fixtures or source control.
@@ -69,9 +70,10 @@ with threaded resolver disabled; reject the installed threaded and hybrid
 profiles rather than relying only on ASYNCHDNS. The controlled c-ares local-DNS
 cancel/timeout/cleanup suite passes without leftover threads or descriptors;
 QUICK_EXIT leaves a thread alive after cleanup. Measured ceilings are empirical,
-and maintained shipped profiles must rerun the probes. Header gate E must still
-specify feature rejection/lifecycle and third-party allocation/OOM/memory-limit
-contracts before delivery adoption. Q must prove timer, IPC and cancellation
+and maintained shipped profiles must rerun the probes. Passed gate E specifies
+feature rejection/lifecycle and accepts explicit DYNAMIC third-party allocation
+without a total byte ceiling; delivery must prove OOM/cleanup and bounded Cog
+workspace behavior before runtime adoption. Q must prove timer, IPC and cancellation
 progress while the core event queue remains nonempty; the PoC only uses a
 synthetic queue.
 
@@ -81,7 +83,8 @@ offline cases in Release and sanitizer builds, and two successful synthetic
 live requests only (512 output tokens each; no retries). Saved fixtures prove
 identified tool/result correlation and repeated finish metadata. Reasoning was
 disabled; opaque continuation ownership/serialization/persistence and recoverable
-delta capacity semantics remain mandatory header gates. Review is offline and
+delta capacity semantics are defined by the accepted headers and still need
+implementation conformance tests. Review is offline and
 must not repeat the already completed live smoke.
 
 Each package validates its contract and negative paths. Gates run strict

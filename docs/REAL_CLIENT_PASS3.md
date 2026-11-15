@@ -1,8 +1,9 @@
 # Stage 14.E: header pass 3
 
 Ticket `feb17b6`; reviewed integrated pass 2 at `d4e3d7c` and the amended
-headers in this pass. The architect's third pass is complete. **E remains in
-progress for the additional full independent final review.** No production C,
+headers in this pass. The architect's third pass and the **additional full
+independent final review passed on revised tip `8563f81`**, after one correction
+cycle. Gate E is accepted for the declared supported profile. No production C,
 CMake, runtime scenario, sanitizer result or paid provider request is delivered.
 
 ## Review outcome and allocation decision
@@ -196,6 +197,34 @@ I must prove one effect across every overflow/cancel/reap boundary; J must prove
 bounded config/reset limits; H must prove strict parser/opaque fixtures. All old
 scenario executables must be migrated and pass before their delivery gates.
 
-No known required declaration gap is left open in this pass. The additional full
-independent final review must assess these new recovery/bounds decisions before
-closing E. No production implementation is authorized by this report alone.
+No known required declaration gap is left open after the independent final
+acceptance recorded below. Runtime implementation must follow the approved
+contracts and its separate review/integration gates.
+
+
+## Independent final acceptance and integration
+
+The independent critic reviewed the complete accepted design/research, all 38
+traces and public contracts, then rejected the initial tip `e71734d` in revision
+1 for E08–E11. The revised tip `8563f81` closes those findings: committed effect
+identity cannot be erased or rebound; unresolved calls remain recoverable on one
+active path; public snapshot/restore preserves exact identity and audit with
+explicit larger reservations; proven-unstarted PROPOSED remains distinct from
+uncertain effects. Recovery cannot execute tools or silently erase uncertainty.
+
+Final independent validation passed 120 strict compiler objects: all 28 public
+headers under GCC/G++/Clang/Clang++, four complete trace-symbol/member consumers,
+and four separately authored public custom snapshot/restore consumers. All 940
+exact table references, 112 distinct typed fields, 74 actual acyclic include
+edges, local links and exact synthetic opaque UTF-8/base64/length checks passed.
+The reviewed tip was preserved in merge `072de88`; integration ticket `6dca00c`
+records the clean merge and final status checks. No production C or CMake changed.
+
+The independent review accepts the declared DYNAMIC dependency profile as visible
+handle ownership with explicit host acknowledgement, never a total-memory or
+constructor-only claim. Cog runtime workspaces remain bounded; global Cog
+allocator hooks, refcounts and implicit dependency initialization/cleanup remain
+forbidden. Maintained shipped-profile and runtime conformance tests remain
+required. Header gate E is complete; F/G/I/J/Q may be refined into implementation,
+review and integration tasks. This acceptance does not mark any delivery or
+release runtime gate complete.

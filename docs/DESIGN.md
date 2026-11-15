@@ -1,22 +1,22 @@
 # Cog — System Design Blueprint
 
-> [Stage 14.E pass 3](REAL_CLIENT_PASS3.md) records the latest recovery, bounds,
-> compatibility and explicit DYNAMIC allocation decisions. Additional full
-> independent final review remains required before E closes or implementation.
+> [Stage 14.E final review](REAL_CLIENT_PASS3.md) passed after the additional
+> independent review of `8563f81`. The three header passes and final review are
+> complete; implementation and executable conformance remain delivery work.
 
 > Current extension: [real-client blueprint](REAL_CLIENT_BLUEPRINT.md) and
 > [Stage 14 execution scaffold](REAL_CLIENT_WBS.md). The material below
 > describes the original engine/mock-CLI baseline, not real-client release
 > completion. Stage 14 uses technical gates under delegated design authority.
 > [Transport research](research/https-lifecycle.md) is accepted as conditional
-> evidence only: allocation semantics and transport lifecycle remain header
-> gates; accepted DNS follow-up requires a verified c-ares primary resolver with
+> evidence for the accepted header profile; runtime lifecycle and maintained-build
+> conformance remain delivery work. DNS follow-up requires a c-ares primary resolver with
 > threaded resolution disabled, empirical shipped-profile validation and explicit
 > rejection of unsupported builds. Threaded/QUICK_EXIT alternatives fail cleanup.
 > Core fairness delivery Q must precede the real conversation-loop delivery K.
 > [Protocol research](research/provider-wire.md) selects private yyjson with
 > explicit pools and records two synthetic live requests; opaque continuation
-> and recoverable delta-capacity contracts remain required header work.
+> and recoverable delta-capacity contracts now require implementation conformance.
 
 > [Stage 14.C public contracts](REAL_CLIENT_CONTRACTS.md) now define initial
 > amendments to the baseline below: public provider base plus typed nonblocking
@@ -25,8 +25,8 @@
 > These amendments supersede corresponding baseline four-operation provider,
 > synchronous toolkit, unversioned-message and automatic transport retry text.
 > Cog workspaces are constructor-bounded; third-party handle runtime allocation
-> is explicitly declared and total dependency-memory caps are unsupported. Gate E
-> must review adoption. No production implementation or scenario gate is complete.
+> is explicitly declared and total dependency-memory caps are unsupported. Final E
+> review accepts that declared profile. No production delivery gate is complete.
 
 The [Stage 14.D pass-2 scenario register](REAL_CLIENT_SCENARIO_PASS2.md) records
 the current header amendments, all original20 plus R01–R18 traces and delivery

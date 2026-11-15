@@ -1,8 +1,8 @@
 # Stage 14.D: scenario pass 2 and amendment register
 
-> [Stage 14.E pass 3](REAL_CLIENT_PASS3.md) records the latest recovery, bounds,
-> compatibility and explicit DYNAMIC allocation decisions. Additional full
-> independent final review remains required before E closes or implementation.
+> [Stage 14.E final review](REAL_CLIENT_PASS3.md) passed after the additional
+> independent review of `8563f81`. The three header passes and final review are
+> complete; implementation and executable conformance remain delivery work.
 
 Ticket `345a536`; starts at integrated C `29b41e8`. This pass retraces **all 20
 original scenarios and R01–R18**, with one sequence diagram and exact declaring
