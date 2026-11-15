@@ -12,6 +12,8 @@ set(COG_UNIT_TESTS
     test_result
     test_message
     test_session
+    test_session_codec
+    test_session_allocations
     test_event
     test_state
     test_handler
@@ -20,6 +22,7 @@ set(COG_UNIT_TESTS
     test_tool
     test_session_store
     test_store_adversarial
+    test_store_fencing
     test_obs
     test_obs_types
     test_obs_critic
@@ -83,19 +86,17 @@ target_link_options(test_core PRIVATE -Wl,--wrap=cog_event_queue_push)
 target_include_directories(test_agent PRIVATE
     ${PROJECT_SOURCE_DIR}/libraries/cog-core/src)
 
-# test_session_store is a white-box test for the store's round-trips: it
-# populates raw provider fields and reads private lengths / next-node ids
-# through session_internal.h, the same private layout session_store.c
-# uses.  The public contract is still exercised through cog/session_store.h.
-target_include_directories(test_session_store PRIVATE
+# Private wire codec remains an internal module; the transaction and fencing
+# tests use the installed public store/session APIs.
+target_include_directories(test_session_codec PRIVATE
     ${PROJECT_SOURCE_DIR}/libraries/cog-core/src)
-
-# test_store_adversarial is a Critic white-box test (ticket 7ba4714): it
-# probes strict-schema rejections, append misuse, pruning, index
-# regeneration, stray-file delete, and bootstrap raw-field round-trips
-# through session_internal.h, the same private layout session_store.c uses.
-target_include_directories(test_store_adversarial PRIVATE
+target_include_directories(test_session_allocations PRIVATE
     ${PROJECT_SOURCE_DIR}/libraries/cog-core/src)
+target_link_options(test_session_allocations PRIVATE
+    -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=strdup)
+target_link_options(test_store_fencing PRIVATE
+    -Wl,--wrap=fsync,--wrap=renameat,--wrap=linkat,--wrap=write,--wrap=unlinkat
+    -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=strdup)
 
 # -----------------------------------------------------------------------
 # CTest registration
@@ -110,6 +111,18 @@ add_test(NAME unit-message
 
 add_test(NAME unit-session
     COMMAND test_session
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME unit-session-codec
+    COMMAND test_session_codec
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME unit-session-allocations
+    COMMAND test_session_allocations
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME unit-store-fencing
+    COMMAND test_store_fencing
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
 add_test(NAME unit-event

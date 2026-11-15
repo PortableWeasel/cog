@@ -1,895 +1,1053 @@
-/**
- * @file session.c
- * @brief Implementation of the hierarchical conversation tree declared in
- *        cog/session.h.
- *
- * Ticket: 0f055f5 (Stage 12.1a — Implement session.c)
- *
- * Design notes (the full executable contract is recorded in
- * libraries/cog-core/contracts/session/CONTRACT.md):
- *
- * - A session owns every node and every string it stores.  All content,
- *   tool, raw-data and metadata strings are deep-copied on insertion and
- *   released by cog_session_free / cog_session_reset / discard / prune.
- *   No hidden state exists outside the session struct.
- * - The tree is a plain parent/child/sibling structure.  The active node
- *   is the most recently added node; cog_session_append extends it.
- * - cog_session_fork deep-copies the fork-point node (data only, no
- *   children) and inserts the copy as the next sibling of the source, so
- *   the new branch shares all ancestors by reference while owning its own
- *   children.  Forking the root is a no-op that returns the root itself:
- *   the root is already the shared ancestor of every branch.
- * - cog_session_get_history returns a pointer into a per-session cache
- *   that is rebuilt on demand.  The cache is an implementation detail and
- *   is updated through the const-qualified session pointer.
- * - max_nodes is a soft cap: after each insertion the oldest leaf nodes
- *   (smallest node_id, excluding the root and the active node) are pruned
- *   until the count fits.  If only the root/active remain, the cap is
- *   exceeded rather than corrupting the tree.  A prunable-leaf counter
- *   avoids scanning the tree on chains where no pruning can occur.
+/** @file session.c
+ * @brief Constructor-bounded structured conversation trees and effect ledger.
+ * All mutation storage is reserved by cog_session_new. Public snapshots are
+ * the persistence boundary; private pointer layouts are never wire records.
  */
 #define _POSIX_C_SOURCE 200809L
-
 #include "cog/session.h"
-
 #include "session_internal.h"
-
+#include <stdalign.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
-/** Default node cap when cog_session_config_t.max_nodes is zero. */
-#define COG_SESSION_DEFAULT_MAX_NODES ((size_t)1024)
+#define DEFAULT_NODES ((size_t)4096)
+#define DEFAULT_PAYLOAD ((size_t)16 * 1024U * 1024U)
+#define DEFAULT_CALLS ((size_t)16)
+#define AUDITS_PER_CALL ((size_t)4)
 
-/* ------------------------------------------------------------------ */
-/* Internal helpers                                                    */
-/* ------------------------------------------------------------------ */
+/* Each allocation is a whole node payload (or parent ID). Free blocks coalesce,
+ * so discarding drafts really returns capacity without moving borrowed views. */
+typedef union arena_block {
+    max_align_t alignment;
+    struct { size_t size; bool free; } info;
+} arena_block_t;
 
-/** Deep-copy a NUL-terminated string; NULL stays NULL. */
-static char *dup_str(const char *s)
+typedef struct pack {
+    unsigned char *base;
+    size_t used;
+    bool failed;
+} pack_t;
+
+static size_t aligned(size_t n)
 {
-    if (s == NULL) {
+    const size_t a = alignof(max_align_t);
+    return n > SIZE_MAX - (a - 1U) ? 0U : (n + a - 1U) / a * a;
+}
+
+static void *pack_bytes(pack_t *p, const void *data, size_t size)
+{
+    size_t at = aligned(p->used);
+    void *out = NULL;
+    if ((p->used != 0U && at == 0U) || size > SIZE_MAX - at) {
+        p->failed = true;
         return NULL;
     }
-    return strdup(s);
+    if (p->base != NULL) {
+        out = p->base + at;
+        if (data != NULL && size != 0U) (void)memcpy(out, data, size);
+        else if (size != 0U) (void)memset(out, 0, size);
+    }
+    p->used = at + size;
+    return out;
 }
 
-/**
- * Deep-copy @p len bytes of @p s plus a NUL terminator.  NULL stays NULL.
- * Embedded NUL bytes are payload (content is length-prefixed).
- */
-static char *dup_bytes(const char *s, size_t len)
+static const char *pack_text(pack_t *p, const char *data, size_t len)
 {
-    char *copy;
-
-    if (s == NULL) {
-        return NULL;
-    }
-    copy = malloc(len + 1U);
-    if (copy == NULL) {
-        return NULL;
-    }
-    if (len > 0U) {
-        (void)memcpy(copy, s, len);
-    }
-    copy[len] = '\0';
-    return copy;
+    char *out;
+    if (data == NULL) return NULL;
+    if (len == SIZE_MAX) { p->failed = true; return NULL; }
+    out = pack_bytes(p, NULL, len + 1U);
+    if (out != NULL) { (void)memcpy(out, data, len); out[len] = '\0'; }
+    return out;
 }
 
-/** Release every string owned by a node (does not free the node itself). */
-static void node_free_strings(struct cog_session_node *n)
+static const char *pack_string(pack_t *p, const char *s)
 {
-    free((void *)n->data.content);
-    free((void *)n->data.tool_name);
-    free((void *)n->data.tool_args);
-    free((void *)n->data.tool_result);
-    free((void *)n->data.raw_request);
-    free((void *)n->data.raw_response);
-    free((void *)n->data.model);
-    free((void *)n->data.provider);
-    n->data.content = NULL;
-    n->data.tool_name = NULL;
-    n->data.tool_args = NULL;
-    n->data.tool_result = NULL;
-    n->data.raw_request = NULL;
-    n->data.raw_response = NULL;
-    n->data.model = NULL;
-    n->data.provider = NULL;
+    return s == NULL ? NULL : pack_text(p, s, strlen(s));
 }
 
-/** Free a subtree in post-order (children first). */
-static void node_free_deep(struct cog_session_node *n)
+static void *arena_alloc(cog_session_t *s, size_t bytes)
 {
-    struct cog_session_node *child = n->first_child;
-
-    while (child != NULL) {
-        struct cog_session_node *next = child->next_sibling;
-        node_free_deep(child);
-        child = next;
+    size_t at = 0U;
+    size_t need = aligned(bytes);
+    if (need == 0U || need > SIZE_MAX - sizeof(arena_block_t)) return NULL;
+    need += sizeof(arena_block_t);
+    while (at < s->arena_capacity) {
+        arena_block_t *b = (arena_block_t *)(void *)(s->arena + at);
+        if (b->info.free && b->info.size >= need) {
+            const size_t rest = b->info.size - need;
+            if (rest >= sizeof(arena_block_t) + alignof(max_align_t)) {
+                arena_block_t *tail = (arena_block_t *)(void *)(s->arena + at + need);
+                tail->info.size = rest;
+                tail->info.free = true;
+                b->info.size = need;
+            }
+            b->info.free = false;
+            return b + 1;
+        }
+        at += b->info.size;
     }
-    node_free_strings(n);
-    free(n);
+    return NULL;
 }
 
-/** True if @p n is a leaf that max_nodes pruning may remove. */
-static bool node_is_prunable(const cog_session_t *s,
-                             const struct cog_session_node *n)
+static void arena_free(cog_session_t *s, void *ptr)
 {
-    return n != NULL && n != s->root && n != s->active &&
-           n->child_count == 0U;
-}
-
-/** Keep the prunable-leaf counter exact after a local tree/active change. */
-static void session_sync_prunable(cog_session_t *s,
-                                  struct cog_session_node *n)
-{
-    const bool prunable = node_is_prunable(s, n);
-
-    if (n == NULL || prunable == n->prunable_counted) {
-        return;
-    }
-    if (prunable) {
-        s->prunable_leaf_count++;
-        n->prunable_counted = true;
-    } else {
-        s->prunable_leaf_count--;
-        n->prunable_counted = false;
+    size_t at = 0U;
+    if (ptr == NULL) return;
+    ((arena_block_t *)ptr - 1)->info.free = true;
+    while (at < s->arena_capacity) {
+        arena_block_t *b = (arena_block_t *)(void *)(s->arena + at);
+        const size_t next = at + b->info.size;
+        if (b->info.free && next < s->arena_capacity) {
+            arena_block_t *n = (arena_block_t *)(void *)(s->arena + next);
+            if (n->info.free) { b->info.size += n->info.size; continue; }
+        }
+        at += b->info.size;
     }
 }
 
-/** O(1) ownership check; a node belongs to exactly one session. */
-static bool session_contains(const cog_session_t *s,
-                             const cog_session_node_t *n)
+static void copy_message(pack_t *p, const cog_message_t *src, cog_message_t *dst)
 {
-    return s != NULL && n != NULL && n->session == s;
+    cog_message_t m = *src;
+    cog_message_tool_call_t *calls;
+    cog_message_opaque_t *opaque;
+    m.content = pack_text(p, src->content, src->content_len);
+    m.name = pack_string(p, src->name);
+    m.tool_call_id = pack_string(p, src->tool_call_id);
+    m.usage.currency = pack_string(p, src->usage.currency);
+    calls = pack_bytes(p, NULL, src->tool_call_count * sizeof(*calls));
+    m.tool_calls = src->tool_call_count == 0U ? NULL : calls;
+    for (size_t i = 0U; i < src->tool_call_count; ++i) {
+        cog_message_tool_call_t c = src->tool_calls[i];
+        c.id = pack_string(p, c.id);
+        c.name = pack_string(p, c.name);
+        c.arguments = pack_text(p, c.arguments, c.arguments_len);
+        if (calls != NULL) calls[i] = c;
+    }
+    opaque = pack_bytes(p, NULL, src->opaque_count * sizeof(*opaque));
+    m.opaque = src->opaque_count == 0U ? NULL : opaque;
+    for (size_t i = 0U; i < src->opaque_count; ++i) {
+        cog_message_opaque_t o = src->opaque[i];
+        o.namespace_id = pack_string(p, o.namespace_id);
+        o.format = pack_string(p, o.format);
+        o.data = o.data == NULL ? NULL : pack_bytes(p, o.data, o.size);
+        if (opaque != NULL) opaque[i] = o;
+    }
+    if (dst != NULL) *dst = m;
 }
 
-/** Drop the cached history array contents (the buffer itself is kept). */
-static void session_invalidate_history(cog_session_t *s)
+static bool contains(const cog_session_t *s, const cog_session_node_t *n)
 {
+    return s != NULL && n != NULL && n->session == s && n->used;
+}
+
+static bool on_path(const cog_session_node_t *leaf, const cog_session_node_t *n)
+{
+    for (; leaf != NULL; leaf = leaf->parent) if (leaf == n) return true;
+    return false;
+}
+
+static cog_session_node_t *find_node(const cog_session_t *s, uint64_t id)
+{
+    for (size_t i = 0U; i < s->max_nodes; ++i)
+        if (s->nodes[i].used && s->nodes[i].data.node_id == id) return &s->nodes[i];
+    return NULL;
+}
+
+static cog_tool_ledger_record_t *find_call(const cog_session_t *s,
+    const cog_session_node_t *n, const char *id)
+{
+    for (size_t i = 0U; i < s->ledger_count; ++i)
+        if (s->ledger[i].assistant_node_id == n->data.node_id &&
+            strcmp(s->ledger[i].call_id, id) == 0) return &s->ledger[i];
+    return NULL;
+}
+
+static bool final_state(cog_tool_execution_state_t state)
+{
+    return state == COG_TOOL_EXECUTION_SUCCEEDED || state == COG_TOOL_EXECUTION_FAILED ||
+        state == COG_TOOL_EXECUTION_DENIED || state == COG_TOOL_EXECUTION_CANCELLED ||
+        state == COG_TOOL_EXECUTION_ACKNOWLEDGED;
+}
+
+static cog_session_node_t *result_for(const cog_session_t *s,
+    const cog_session_node_t *assistant, const char *id)
+{
+    for (size_t i = 0U; i < s->max_nodes; ++i) {
+        cog_session_node_t *n = &s->nodes[i];
+        if (!n->used || n->data.message == NULL ||
+            n->message.role != COG_MESSAGE_ROLE_TOOL || n->message.tool_call_id == NULL ||
+            strcmp(n->message.tool_call_id, id) != 0) continue;
+        /* A result binds to the closest assistant turn, even if IDs repeat. */
+        const cog_session_node_t *a = n->parent;
+        while (a != NULL && a->data.role != COG_NODE_ASSISTANT) a = a->parent;
+        if (a == assistant) return n;
+    }
+    return NULL;
+}
+
+static bool unresolved(const cog_session_t *s)
+{
+    for (size_t i = 0U; i < s->ledger_count; ++i) {
+        const cog_tool_ledger_record_t *l = &s->ledger[i];
+        cog_session_node_t *n = find_node(s, l->assistant_node_id);
+        if (!final_state(l->state) || result_for(s, n, l->call_id) == NULL) return true;
+    }
+    return false;
+}
+
+static size_t path_results(const cog_session_node_t *leaf,
+    const cog_session_node_t *assistant, const char *id)
+{
+    size_t count_ = 0U;
+    for (const cog_session_node_t *n = leaf; n != NULL && n != assistant; n = n->parent) {
+        if (n->data.message == NULL || n->message.role != COG_MESSAGE_ROLE_TOOL ||
+            n->message.tool_call_id == NULL || strcmp(n->message.tool_call_id, id) != 0) continue;
+        const cog_session_node_t *a = n->parent;
+        while (a != NULL && a->data.role != COG_NODE_ASSISTANT) a = a->parent;
+        if (a == assistant) ++count_;
+    }
+    return count_;
+}
+
+/* A result on a sibling branch never completes the selected provider context. */
+static bool path_complete(const cog_session_t *s, const cog_session_node_t *leaf,
+    bool legacy_inspection)
+{
+    for (const cog_session_node_t *n = leaf; n != NULL; n = n->parent) {
+        if (n->data.message == NULL) {
+            if (!legacy_inspection || (n->data.role != COG_NODE_TOOL_CALL && n->data.role != COG_NODE_TOOL_RESULT))
+                return false;
+        } else if (n->message.status != COG_MESSAGE_COMPLETE) return false;
+    }
+    for (size_t i = 0U; i < s->ledger_count; ++i) {
+        const cog_tool_ledger_record_t *l = &s->ledger[i];
+        const cog_session_node_t *assistant = find_node(s, l->assistant_node_id);
+        if (on_path(leaf, assistant) && (!final_state(l->state) ||
+            path_results(leaf, assistant, l->call_id) != 1U)) return false;
+    }
+    return true;
+}
+
+static bool indeterminate(const cog_session_t *s)
+{
+    for (size_t i = 0U; i < s->ledger_count; ++i)
+        if (s->ledger[i].state == COG_TOOL_EXECUTION_INDETERMINATE) return true;
+    return false;
+}
+
+static void link_node(cog_session_t *s, cog_session_node_t *parent,
+    cog_session_node_t *n)
+{
+    n->session = s;
+    n->used = true;
+    n->parent = parent;
+    n->data.parent_id = parent == NULL ? 0U : parent->data.node_id;
+    if (parent == NULL) s->root = n;
+    else {
+        n->prev_sibling = parent->last_child;
+        if (parent->last_child != NULL) parent->last_child->next_sibling = n;
+        else parent->first_child = n;
+        parent->last_child = n;
+        ++parent->child_count;
+        if (parent->child_count > 1U) {
+            for (cog_session_node_t *a = parent; a != NULL; a = a->parent) a->shared = true;
+        }
+    }
+    s->active = n;
+    ++s->node_count;
     s->history_count = 0U;
 }
 
-/**
- * Link @p n as the last child of @p parent (or as the root when @p parent
- * is NULL), advance the active node, and bump the node count.
- */
-static void node_link(cog_session_t *s, struct cog_session_node *parent,
-                      struct cog_session_node *n)
+typedef enum insertion_mode {
+    INSERT_MESSAGE,
+    INSERT_RECONCILIATION,
+    INSERT_LEGACY_INSPECTION
+} insertion_mode_t;
+
+static cog_result_t insert(cog_session_t *s, cog_session_node_t *parent,
+    const cog_message_t *m, cog_session_node_t **out, insertion_mode_t mode)
 {
-    struct cog_session_node *old_active = s->active;
-
-    n->session = s;
-    n->parent = parent;
-    n->data.parent_id = (parent != NULL) ? parent->data.node_id : 0U;
-    if (parent == NULL) {
-        s->root = n;
-    } else {
-        n->prev_sibling = parent->last_child;
-        if (parent->last_child != NULL) {
-            parent->last_child->next_sibling = n;
-        } else {
-            parent->first_child = n;
-        }
-        parent->last_child = n;
-        parent->child_count++;
+    const bool reconciliation = mode == INSERT_RECONCILIATION;
+    pack_t measure = {0};
+    cog_session_node_t *n = NULL;
+    cog_tool_ledger_record_t *associated = NULL;
+    cog_result_t rc = cog_message_validate(m);
+    if (rc != COG_OK) return rc;
+    if (s->inspection_only || (!reconciliation && indeterminate(s))) return COG_ERROR_INVALID_STATE;
+    if (parent != NULL && !contains(s, parent)) return COG_ERROR_NOT_FOUND;
+    if (parent == NULL) parent = s->root;
+    if (m->tool_call_count > s->max_calls || m->tool_call_count > s->ledger_capacity - s->ledger_count ||
+        s->node_count == s->max_nodes || s->next_node_id == UINT64_MAX) return COG_ERROR_LIMIT;
+    if (m->tool_call_count > SIZE_MAX / sizeof(cog_message_tool_call_t) ||
+        m->opaque_count > SIZE_MAX / sizeof(cog_message_opaque_t)) return COG_ERROR_LIMIT;
+    if (unresolved(s) && (m->role != COG_MESSAGE_ROLE_TOOL || parent != s->active))
+        return COG_ERROR_INVALID_STATE;
+    if (m->role != COG_MESSAGE_ROLE_TOOL && !path_complete(s, parent, mode == INSERT_LEGACY_INSPECTION))
+        return COG_ERROR_INVALID_STATE;
+    if (m->role == COG_MESSAGE_ROLE_TOOL) {
+        cog_session_node_t *a = parent;
+        while (a != NULL && a->data.role != COG_NODE_ASSISTANT) a = a->parent;
+        if (a == NULL || m->status != COG_MESSAGE_COMPLETE) return COG_ERROR_INVALID_ARG;
+        associated = find_call(s, a, m->tool_call_id);
+        if (associated == NULL || result_for(s, a, m->tool_call_id) != NULL) return COG_ERROR_INVALID_ARG;
+        if (!reconciliation && associated->state == COG_TOOL_EXECUTION_INDETERMINATE)
+            return COG_ERROR_INVALID_STATE;
+        if (!reconciliation && associated->state == COG_TOOL_EXECUTION_PROPOSED)
+            return COG_ERROR_INVALID_STATE;
+        if (a->shared || parent != s->active) return COG_ERROR_INVALID_STATE;
     }
-    s->node_count++;
-    s->active = n;
-    session_sync_prunable(s, parent);
-    session_sync_prunable(s, old_active);
-    session_sync_prunable(s, n);
-    session_invalidate_history(s);
-}
-
-/**
- * Link @p n immediately after @p anchor (same parent).  Used by fork to
- * insert the branch copy as the next sibling of the fork point.
- */
-static void node_link_after(cog_session_t *s,
-                            struct cog_session_node *anchor,
-                            struct cog_session_node *n)
-{
-    struct cog_session_node *p = anchor->parent;
-    struct cog_session_node *old_active = s->active;
-
-    n->session = s;
-    n->parent = p;
-    n->data.parent_id = p->data.node_id;
-    n->prev_sibling = anchor;
-    n->next_sibling = anchor->next_sibling;
-    if (anchor->next_sibling != NULL) {
-        anchor->next_sibling->prev_sibling = n;
+    copy_message(&measure, m, NULL);
+    if (measure.failed) return COG_ERROR_LIMIT;
+    for (size_t i = 0U; i < s->max_nodes; ++i) if (!s->nodes[i].used) { n = &s->nodes[i]; break; }
+    if (n == NULL) return COG_ERROR_LIMIT;
+    void *payload = arena_alloc(s, measure.used == 0U ? 1U : measure.used);
+    if (payload == NULL) return COG_ERROR_LIMIT;
+    (void)memset(n, 0, sizeof(*n));
+    pack_t p = {payload, 0U, false};
+    copy_message(&p, m, &n->message);
+    n->payload = payload;
+    n->data.node_id = s->next_node_id++;
+    n->data.role = m->role == COG_MESSAGE_ROLE_TOOL ? COG_NODE_TOOL_RESULT : (cog_node_role_t)m->role;
+    n->data.content = n->message.content;
+    n->data.content_len = n->message.content_len;
+    n->data.message = &n->message;
+    n->data.tool_name = n->message.name;
+    if (m->role == COG_MESSAGE_ROLE_TOOL) {
+        n->data.tool_result = n->message.content;
+        n->tool_result_len = n->message.content_len;
     }
-    anchor->next_sibling = n;
-    if (p->last_child == anchor) {
-        p->last_child = n;
+    n->data.cost.tokens_known = m->usage.tokens_known;
+    n->data.cost.input_tokens = m->usage.input_tokens;
+    n->data.cost.output_tokens = m->usage.output_tokens;
+    n->data.cost.total_cost_known = m->usage.cost_known;
+    n->data.cost.total_cost = m->usage.cost;
+    link_node(s, parent, n);
+    for (size_t i = 0U; i < m->tool_call_count; ++i) {
+        const size_t slot = s->ledger_count++;
+        s->ledger[slot] = (cog_tool_ledger_record_t){n->data.node_id,
+            n->message.tool_calls[i].id, COG_TOOL_EXECUTION_PROPOSED,
+            &s->audits[slot * AUDITS_PER_CALL], 0U};
     }
-    p->child_count++;
-    s->node_count++;
-    s->active = n;
-    session_sync_prunable(s, p);
-    session_sync_prunable(s, old_active);
-    session_sync_prunable(s, n);
-    session_invalidate_history(s);
-}
-
-/** Unlink @p n from the tree (does not free it). */
-static void node_unlink(cog_session_t *s, struct cog_session_node *n)
-{
-    struct cog_session_node *p = n->parent;
-
-    if (n->prunable_counted) {
-        s->prunable_leaf_count--;
-        n->prunable_counted = false;
-    }
-    if (p == NULL) {
-        s->root = NULL;
-    } else {
-        if (p->first_child == n) {
-            p->first_child = n->next_sibling;
-        }
-        if (p->last_child == n) {
-            p->last_child = n->prev_sibling;
-        }
-        if (n->prev_sibling != NULL) {
-            n->prev_sibling->next_sibling = n->next_sibling;
-        }
-        if (n->next_sibling != NULL) {
-            n->next_sibling->prev_sibling = n->prev_sibling;
-        }
-        p->child_count--;
-    }
-    n->session = NULL;
-    n->parent = NULL;
-    n->prev_sibling = NULL;
-    n->next_sibling = NULL;
-    s->node_count--;
-    session_sync_prunable(s, p);
-    session_invalidate_history(s);
-}
-
-/** Record the oldest (smallest node_id) leaf excluding root and active. */
-static void find_oldest_leaf(struct cog_session_node *n,
-                             const cog_session_t *s,
-                             struct cog_session_node **out,
-                             uint64_t *out_id)
-{
-    struct cog_session_node *child;
-
-    if (n == NULL) {
-        return;
-    }
-    if (n->child_count == 0U && n != s->root && n != s->active) {
-        if (*out == NULL || n->data.node_id < *out_id) {
-            *out = n;
-            *out_id = n->data.node_id;
-        }
-    }
-    for (child = n->first_child; child != NULL; child = child->next_sibling) {
-        find_oldest_leaf(child, s, out, out_id);
-    }
-}
-
-/**
- * Enforce the max_nodes soft cap: repeatedly prune the oldest leaf that is
- * neither the root nor the active node until the count fits.
- */
-static void session_prune(cog_session_t *s)
-{
-    while (s->node_count > s->max_nodes && s->prunable_leaf_count > 0U) {
-        struct cog_session_node *oldest = NULL;
-        uint64_t oldest_id = 0U;
-
-        find_oldest_leaf(s->root, s, &oldest, &oldest_id);
-        if (oldest == NULL) {
-            break;
-        }
-        node_unlink(s, oldest);
-        node_free_strings(oldest);
-        free(oldest);
-    }
-}
-
-/** Fill a node's data fields from a chat message. */
-static cog_result_t node_init_from_message(struct cog_session_node *n,
-                                           const cog_message_t *msg)
-{
-    switch (msg->role) {
-    case COG_MESSAGE_ROLE_SYSTEM:
-        n->data.role = COG_NODE_SYSTEM;
-        break;
-    case COG_MESSAGE_ROLE_USER:
-        n->data.role = COG_NODE_USER;
-        break;
-    case COG_MESSAGE_ROLE_ASSISTANT:
-        n->data.role = COG_NODE_ASSISTANT;
-        break;
-    case COG_MESSAGE_ROLE_TOOL:
-        /* A TOOL message is a tool result; name identifies the tool call. */
-        n->data.role = COG_NODE_TOOL_RESULT;
-        n->data.tool_name = dup_str(msg->name);
-        n->data.tool_result = dup_bytes(msg->content, msg->content_len);
-        n->tool_result_len = msg->content_len;
-        if ((msg->name != NULL && n->data.tool_name == NULL) ||
-            (msg->content != NULL && n->data.tool_result == NULL)) {
-            return COG_ERROR_NOMEM;
-        }
-        return COG_OK;
-    default:
-        return COG_ERROR_INVALID_ARG;
-    }
-    n->data.content = dup_bytes(msg->content, msg->content_len);
-    n->data.content_len = msg->content_len;
-    if (msg->content != NULL && n->data.content == NULL) {
-        return COG_ERROR_NOMEM;
-    }
+    if (out != NULL) *out = n;
     return COG_OK;
 }
 
-/** Generate a process-unique session id (time + address of the session). */
-static void session_generate_id(cog_session_t *s)
-{
-    char buf[64];
-    uint64_t t = (uint64_t)time(NULL);
-    uintptr_t p = (uintptr_t)s;
-
-    (void)snprintf(buf, sizeof(buf), "sess-%016llx-%016llx",
-                   (unsigned long long)t, (unsigned long long)p);
-    s->id = strdup(buf);
-}
-
-/** Map a node to the chat message it contributes to the history. */
-static cog_message_t node_to_message(const struct cog_session_node *n)
-{
-    cog_message_t m = {0};
-
-    switch (n->data.role) {
-    case COG_NODE_SYSTEM:
-        m.role = COG_MESSAGE_ROLE_SYSTEM;
-        m.content = n->data.content;
-        m.content_len = n->data.content_len;
-        break;
-    case COG_NODE_USER:
-        m.role = COG_MESSAGE_ROLE_USER;
-        m.content = n->data.content;
-        m.content_len = n->data.content_len;
-        break;
-    case COG_NODE_ASSISTANT:
-        m.role = COG_MESSAGE_ROLE_ASSISTANT;
-        m.content = n->data.content;
-        m.content_len = n->data.content_len;
-        break;
-    case COG_NODE_TOOL_CALL:
-        /* Tool identity is preserved via name; args become the payload. */
-        m.role = COG_MESSAGE_ROLE_TOOL;
-        m.content = n->data.tool_args;
-        m.content_len = n->tool_args_len;
-        m.name = n->data.tool_name;
-        break;
-    case COG_NODE_TOOL_RESULT:
-        m.role = COG_MESSAGE_ROLE_TOOL;
-        m.content = n->data.tool_result;
-        m.content_len = n->tool_result_len;
-        m.name = n->data.tool_name;
-        break;
-    default:
-        /* Unreachable: roles are validated at node creation. */
-        break;
-    }
-    return m;
-}
-
-/* ------------------------------------------------------------------ */
-/* Lifecycle                                                           */
-/* ------------------------------------------------------------------ */
-
-cog_result_t cog_session_new(cog_session_t **out,
-                             const cog_session_config_t *config)
+cog_result_t cog_session_new(cog_session_t **out, const cog_session_config_t *config)
 {
     cog_session_t *s;
-
-    if (out == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
+    char id[96];
+    struct timespec ts;
+    if (out == NULL) return COG_ERROR_NULL_PTR;
     *out = NULL;
-
-    s = calloc(1, sizeof(*s));
-    if (s == NULL) {
-        return COG_ERROR_NOMEM;
+    if (config != NULL && config->id != NULL && config->id[0] == '\0') return COG_ERROR_INVALID_ARG;
+    s = calloc(1U, sizeof(*s));
+    if (s == NULL) return COG_ERROR_NOMEM;
+    s->max_nodes = config != NULL && config->max_nodes != 0U ? config->max_nodes : DEFAULT_NODES;
+    s->max_calls = config != NULL && config->max_tool_calls_per_message != 0U ? config->max_tool_calls_per_message : DEFAULT_CALLS;
+    const size_t payload = config != NULL && config->max_payload_bytes != 0U ? config->max_payload_bytes : DEFAULT_PAYLOAD;
+    if (s->max_nodes > SIZE_MAX / sizeof(*s->nodes) ||
+        s->max_nodes > SIZE_MAX / sizeof(*s->history) || s->max_nodes > SIZE_MAX / sizeof(*s->snapshot_nodes) ||
+        s->max_calls > SIZE_MAX / s->max_nodes || payload < sizeof(arena_block_t) + alignof(max_align_t)) {
+        free(s); return COG_ERROR_LIMIT;
     }
-    s->max_nodes = (config != NULL && config->max_nodes != 0U)
-                       ? config->max_nodes
-                       : COG_SESSION_DEFAULT_MAX_NODES;
-    if (config != NULL && config->id != NULL) {
-        s->id = strdup(config->id);
-        if (s->id == NULL) {
-            free(s);
-            return COG_ERROR_NOMEM;
-        }
-    } else {
-        session_generate_id(s);
-        if (s->id == NULL) {
-            free(s);
-            return COG_ERROR_NOMEM;
-        }
+    s->ledger_capacity = s->max_nodes * s->max_calls;
+    if (s->ledger_capacity > SIZE_MAX / AUDITS_PER_CALL / sizeof(*s->audits) ||
+        s->ledger_capacity > SIZE_MAX / sizeof(*s->ledger)) { free(s); return COG_ERROR_LIMIT; }
+    s->nodes = calloc(s->max_nodes, sizeof(*s->nodes));
+    s->history = calloc(s->max_nodes, sizeof(*s->history));
+    s->snapshot_nodes = calloc(s->max_nodes, sizeof(*s->snapshot_nodes));
+    s->ledger = calloc(s->ledger_capacity, sizeof(*s->ledger));
+    s->audits = calloc(s->ledger_capacity * AUDITS_PER_CALL, sizeof(*s->audits));
+    s->arena = malloc(payload);
+    if (s->nodes == NULL || s->history == NULL || s->snapshot_nodes == NULL || s->ledger == NULL || s->audits == NULL || s->arena == NULL) {
+        cog_session_free(s); return COG_ERROR_NOMEM;
     }
+    s->arena_capacity = payload / alignof(max_align_t) * alignof(max_align_t);
+    ((arena_block_t *)(void *)s->arena)->info.size = s->arena_capacity;
+    ((arena_block_t *)(void *)s->arena)->info.free = true;
+    if (config != NULL && config->id != NULL) s->id = strdup(config->id);
+    else {
+        (void)clock_gettime(CLOCK_REALTIME, &ts);
+        (void)snprintf(id, sizeof(id), "%lx-%lx-%lx-%llx", (unsigned long)getpid(),
+            (unsigned long)ts.tv_sec, (unsigned long)ts.tv_nsec, (unsigned long long)(uintptr_t)s);
+        s->id = strdup(id);
+    }
+    if (s->id == NULL) { cog_session_free(s); return COG_ERROR_NOMEM; }
     s->next_node_id = 1U;
+    s->history_capacity = s->max_nodes;
     *out = s;
     return COG_OK;
 }
 
-void cog_session_free(cog_session_t *session)
+void cog_session_free(cog_session_t *s)
 {
-    if (session == NULL) {
-        return;
-    }
-    if (session->root != NULL) {
-        node_free_deep(session->root);
-    }
-    free(session->history);
-    free(session->id);
-    free(session->parent_id);
-    free(session);
+    if (s == NULL) return;
+    free(s->nodes); free(s->arena); free(s->history); free(s->snapshot_nodes);
+    free(s->ledger); free(s->audits); free(s->id); free(s);
+}
+const char *cog_session_id(const cog_session_t *s) { return s == NULL ? NULL : s->id; }
+bool cog_session_is_empty(const cog_session_t *s) { return s == NULL || s->node_count == 0U; }
+cog_session_node_t *cog_session_root(const cog_session_t *s) { return s == NULL ? NULL : s->root; }
+cog_session_node_t *cog_session_active(const cog_session_t *s) { return s == NULL ? NULL : s->active; }
+cog_session_node_t *cog_node_parent(const cog_session_node_t *n) { return n == NULL ? NULL : n->parent; }
+cog_session_node_t *cog_node_first_child(const cog_session_node_t *n) { return n == NULL ? NULL : n->first_child; }
+cog_session_node_t *cog_node_next_sibling(const cog_session_node_t *n) { return n == NULL ? NULL : n->next_sibling; }
+size_t cog_node_child_count(const cog_session_node_t *n) { return n == NULL ? 0U : n->child_count; }
+const cog_node_data_t *cog_node_data(const cog_session_node_t *n) { return n == NULL ? NULL : &n->data; }
+
+cog_result_t cog_session_add_message(cog_session_t *s, cog_session_node_t *parent,
+    const cog_message_t *m, cog_session_node_t **out)
+{
+    if (s == NULL || m == NULL) return COG_ERROR_NULL_PTR;
+    return insert(s, parent, m, out, INSERT_MESSAGE);
+}
+cog_result_t cog_session_append(cog_session_t *s, const cog_message_t *m, cog_session_node_t **out)
+{
+    if (s == NULL || m == NULL) return COG_ERROR_NULL_PTR;
+    return insert(s, s->active, m, out, INSERT_MESSAGE);
 }
 
-const char *cog_session_id(const cog_session_t *session)
+static cog_result_t legacy(cog_session_t *s, cog_session_node_t *parent,
+    const char *name, const char *text, cog_node_role_t role, cog_session_node_t **out)
 {
-    return (session != NULL) ? session->id : NULL;
-}
-
-cog_result_t cog_session_reset(cog_session_t *session)
-{
-    if (session == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    if (session->attached) {
-        return COG_ERROR_INVALID_STATE;
-    }
-    if (session->root != NULL) {
-        node_free_deep(session->root);
-        session->root = NULL;
-    }
-    session->active = NULL;
-    session->node_count = 0U;
-    session->prunable_leaf_count = 0U;
-    session->next_node_id = 1U;
-    session_invalidate_history(session);
-    return COG_OK;
-}
-
-bool cog_session_is_empty(const cog_session_t *session)
-{
-    return (session == NULL) || (session->node_count == 0U);
-}
-
-/* ------------------------------------------------------------------ */
-/* Tree navigation                                                     */
-/* ------------------------------------------------------------------ */
-
-cog_session_node_t *cog_session_root(const cog_session_t *session)
-{
-    return (session != NULL) ? session->root : NULL;
-}
-
-cog_session_node_t *cog_session_active(const cog_session_t *session)
-{
-    return (session != NULL) ? session->active : NULL;
-}
-
-cog_session_node_t *cog_node_parent(const cog_session_node_t *node)
-{
-    return (node != NULL) ? node->parent : NULL;
-}
-
-cog_session_node_t *cog_node_first_child(const cog_session_node_t *node)
-{
-    return (node != NULL) ? node->first_child : NULL;
-}
-
-cog_session_node_t *cog_node_next_sibling(const cog_session_node_t *node)
-{
-    return (node != NULL) ? node->next_sibling : NULL;
-}
-
-size_t cog_node_child_count(const cog_session_node_t *node)
-{
-    return (node != NULL) ? node->child_count : 0U;
-}
-
-/* ------------------------------------------------------------------ */
-/* Node data access                                                    */
-/* ------------------------------------------------------------------ */
-
-const cog_node_data_t *cog_node_data(const cog_session_node_t *node)
-{
-    return (node != NULL) ? &node->data : NULL;
-}
-
-/* ------------------------------------------------------------------ */
-/* Tree mutation                                                       */
-/* ------------------------------------------------------------------ */
-
-cog_result_t cog_session_add_message(cog_session_t *session,
-                                     cog_session_node_t *parent,
-                                     const cog_message_t *msg,
-                                     cog_session_node_t **out_node)
-{
-    struct cog_session_node *n;
+    cog_message_t m = {0};
+    cog_session_node_t *n;
     cog_result_t rc;
-
-    if (session == NULL || msg == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    if (parent != NULL && !session_contains(session, parent)) {
-        return COG_ERROR_NOT_FOUND;
-    }
-
-    n = calloc(1, sizeof(*n));
-    if (n == NULL) {
-        return COG_ERROR_NOMEM;
-    }
-    n->data.node_id = session->next_node_id++;
-
-    rc = node_init_from_message(n, msg);
-    if (rc != COG_OK) {
-        free(n);
-        return rc;
-    }
-
-    if (parent == NULL) {
-        parent = session->root; /* still NULL when the session is empty */
-    }
-    node_link(session, parent, n);
-    session_prune(session);
-    if (out_node != NULL) {
-        *out_node = n;
-    }
+    if (s == NULL || text == NULL) return COG_ERROR_NULL_PTR;
+    if (unresolved(s)) return COG_ERROR_INVALID_STATE;
+    m.role = COG_MESSAGE_ROLE_ASSISTANT; m.content = text; m.content_len = strlen(text); m.name = name;
+    rc = insert(s, parent, &m, &n, INSERT_LEGACY_INSPECTION);
+    if (rc != COG_OK) return rc;
+    n->data.role = role; n->data.message = NULL;
+    n->data.tool_name = n->message.name;
+    if (role == COG_NODE_TOOL_CALL) { n->data.tool_args = n->message.content; n->tool_args_len = m.content_len; }
+    else { n->data.tool_result = n->message.content; n->tool_result_len = m.content_len; }
+    if (out != NULL) *out = n;
     return COG_OK;
 }
-
-cog_result_t cog_session_append(cog_session_t *session,
-                                const cog_message_t *msg,
-                                cog_session_node_t **out_node)
+cog_result_t cog_session_add_tool_call(cog_session_t *s, cog_session_node_t *p,
+    const char *name, const char *args, cog_session_node_t **out)
 {
-    if (session == NULL || msg == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    return cog_session_add_message(session, session->active, msg, out_node);
+    if (name == NULL) return COG_ERROR_NULL_PTR;
+    return legacy(s, p, name, args, COG_NODE_TOOL_CALL, out);
+}
+cog_result_t cog_session_add_tool_result(cog_session_t *s, cog_session_node_t *p,
+    const char *text, cog_session_node_t **out)
+{
+    if (p == NULL) return COG_ERROR_NULL_PTR;
+    return legacy(s, p, p->data.tool_name, text, COG_NODE_TOOL_RESULT, out);
 }
 
-cog_result_t cog_session_add_tool_call(cog_session_t *session,
-                                       cog_session_node_t *parent,
-                                       const char *tool_name,
-                                       const char *tool_args,
-                                       cog_session_node_t **out_node)
+cog_result_t cog_session_copy_history(const cog_session_t *s, const cog_session_node_t *n,
+    cog_message_t *messages, size_t cap, size_t *count)
 {
-    struct cog_session_node *n;
-
-    if (session == NULL || tool_name == NULL || tool_args == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    if (parent != NULL && !session_contains(session, parent)) {
-        return COG_ERROR_NOT_FOUND;
-    }
-
-    n = calloc(1, sizeof(*n));
-    if (n == NULL) {
-        return COG_ERROR_NOMEM;
-    }
-    n->data.node_id = session->next_node_id++;
-    n->data.role = COG_NODE_TOOL_CALL;
-    n->data.tool_name = strdup(tool_name);
-    n->tool_args_len = strlen(tool_args);
-    n->data.tool_args = dup_bytes(tool_args, n->tool_args_len);
-    if (n->data.tool_name == NULL || n->data.tool_args == NULL) {
-        node_free_strings(n);
-        free(n);
-        return COG_ERROR_NOMEM;
-    }
-
-    if (parent == NULL) {
-        parent = session->root;
-    }
-    node_link(session, parent, n);
-    session_prune(session);
-    if (out_node != NULL) {
-        *out_node = n;
-    }
-    return COG_OK;
-}
-
-cog_result_t cog_session_add_tool_result(cog_session_t *session,
-                                         cog_session_node_t *parent,
-                                         const char *tool_result,
-                                         cog_session_node_t **out_node)
-{
-    struct cog_session_node *n;
-
-    if (session == NULL || parent == NULL || tool_result == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    if (!session_contains(session, parent)) {
-        return COG_ERROR_NOT_FOUND;
-    }
-
-    n = calloc(1, sizeof(*n));
-    if (n == NULL) {
-        return COG_ERROR_NOMEM;
-    }
-    n->data.node_id = session->next_node_id++;
-    n->data.role = COG_NODE_TOOL_RESULT;
-    n->tool_result_len = strlen(tool_result);
-    n->data.tool_result = dup_bytes(tool_result, n->tool_result_len);
-    /* Inherit the parent tool-call node's tool name so history messages
-     * retain tool identity.  Deep-copied under the same ownership rules
-     * as every other node string (owned by the node, released by
-     * node_free_strings).  When the parent carries no tool name (e.g. it
-     * is a plain message node), the result node's tool_name stays NULL. */
-    n->data.tool_name = dup_str(parent->data.tool_name);
-    if (n->data.tool_result == NULL ||
-        (parent->data.tool_name != NULL && n->data.tool_name == NULL)) {
-        node_free_strings(n);
-        free(n);
-        return COG_ERROR_NOMEM;
-    }
-
-    node_link(session, parent, n);
-    session_prune(session);
-    if (out_node != NULL) {
-        *out_node = n;
-    }
-    return COG_OK;
-}
-
-cog_result_t cog_session_fork(cog_session_t *session,
-                              cog_session_node_t *node,
-                              cog_session_node_t **out_node)
-{
-    struct cog_session_node *src = node;
-    struct cog_session_node *copy;
-
-    if (session == NULL || node == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    if (!session_contains(session, node)) {
-        return COG_ERROR_NOT_FOUND;
-    }
-    if (src->parent == NULL) {
-        /* The root is already the shared ancestor of every branch. */
-        if (out_node != NULL) {
-            *out_node = node;
-        }
-        return COG_OK;
-    }
-
-    copy = calloc(1, sizeof(*copy));
-    if (copy == NULL) {
-        return COG_ERROR_NOMEM;
-    }
-    copy->data = src->data; /* copy scalars and pointers first */
-    copy->data.node_id = session->next_node_id++;
-    copy->data.parent_id = src->data.parent_id;
-    copy->tool_args_len = src->tool_args_len;
-    copy->tool_result_len = src->tool_result_len;
-    /* Null out the borrowed pointers, then deep-copy each owned string. */
-    copy->data.content = NULL;
-    copy->data.tool_name = NULL;
-    copy->data.tool_args = NULL;
-    copy->data.tool_result = NULL;
-    copy->data.raw_request = NULL;
-    copy->data.raw_response = NULL;
-    copy->data.model = NULL;
-    copy->data.provider = NULL;
-    copy->data.content = dup_bytes(src->data.content, src->data.content_len);
-    copy->data.tool_name = dup_str(src->data.tool_name);
-    copy->data.tool_args = dup_bytes(src->data.tool_args,
-                                     src->tool_args_len);
-    copy->data.tool_result = dup_bytes(src->data.tool_result,
-                                       src->tool_result_len);
-    copy->data.raw_request = dup_str(src->data.raw_request);
-    copy->data.raw_response = dup_str(src->data.raw_response);
-    copy->data.model = dup_str(src->data.model);
-    copy->data.provider = dup_str(src->data.provider);
-    if ((src->data.content != NULL && copy->data.content == NULL) ||
-        (src->data.tool_name != NULL && copy->data.tool_name == NULL) ||
-        (src->data.tool_args != NULL && copy->data.tool_args == NULL) ||
-        (src->data.tool_result != NULL && copy->data.tool_result == NULL) ||
-        (src->data.raw_request != NULL && copy->data.raw_request == NULL) ||
-        (src->data.raw_response != NULL && copy->data.raw_response == NULL) ||
-        (src->data.model != NULL && copy->data.model == NULL) ||
-        (src->data.provider != NULL && copy->data.provider == NULL)) {
-        node_free_strings(copy);
-        free(copy);
-        return COG_ERROR_NOMEM;
-    }
-
-    node_link_after(session, src, copy);
-    session_prune(session);
-    if (out_node != NULL) {
-        *out_node = copy;
-    }
-    return COG_OK;
-}
-
-/* ------------------------------------------------------------------ */
-/* History / context building                                          */
-/* ------------------------------------------------------------------ */
-
-cog_result_t cog_session_get_history(const cog_session_t *session,
-                                     const cog_session_node_t *node,
-                                     const cog_message_t **out_msgs,
-                                     size_t *out_count)
-{
-    cog_session_t *s = (cog_session_t *)session; /* internal cache update */
-    const struct cog_session_node *n;
     size_t depth = 0U;
-    size_t i;
-
-    if (session == NULL || node == NULL || out_msgs == NULL ||
-        out_count == NULL) {
-        return COG_ERROR_NULL_PTR;
+    if (s == NULL || count == NULL || (messages == NULL && cap != 0U)) return COG_ERROR_NULL_PTR;
+    if (n == NULL) n = s->active;
+    if (n != NULL && !contains(s, n)) return COG_ERROR_INVALID_ARG;
+    if (s->inspection_only || unresolved(s) || !path_complete(s, n, false)) return COG_ERROR_INVALID_STATE;
+    for (const cog_session_node_t *a = n; a != NULL; a = a->parent) {
+        if (a->data.message == NULL || a->message.status != COG_MESSAGE_COMPLETE) return COG_ERROR_INVALID_STATE;
+        ++depth;
     }
-    if (!session_contains(session, node)) {
-        return COG_ERROR_NOT_FOUND;
-    }
-
-    for (n = node; n != NULL; n = n->parent) {
-        depth++;
-    }
-
-    if (depth > s->history_capacity) {
-        cog_message_t *nbuf =
-            realloc(s->history, depth * sizeof(*nbuf));
-        if (nbuf == NULL) {
-            return COG_ERROR_NOMEM;
-        }
-        s->history = nbuf;
-        s->history_capacity = depth;
-    }
-
-    i = depth;
-    for (n = node; n != NULL; n = n->parent) {
-        i--;
-        s->history[i] = node_to_message(n);
-    }
-    s->history_count = depth;
-    *out_msgs = s->history;
-    *out_count = depth;
+    *count = depth;
+    if (depth > cap) return COG_ERROR_OVERFLOW;
+    for (const cog_session_node_t *a = n; a != NULL; a = a->parent) messages[--depth] = a->message;
     return COG_OK;
 }
 
-/* ------------------------------------------------------------------ */
-/* Timing and billing                                                  */
-/* ------------------------------------------------------------------ */
-
-cog_result_t cog_session_set_timing(cog_session_t *session,
-                                    cog_session_node_t *node,
-                                    const cog_timing_t *timing)
+cog_result_t cog_session_get_history(const cog_session_t *s, const cog_session_node_t *n,
+    const cog_message_t **messages, size_t *count)
 {
-    if (session == NULL || node == NULL || timing == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    if (!session_contains(session, node)) {
-        return COG_ERROR_NOT_FOUND;
-    }
-    node->data.timing = *timing;
+    cog_result_t rc;
+    if (s == NULL || n == NULL || messages == NULL || count == NULL) return COG_ERROR_NULL_PTR;
+    rc = cog_session_copy_history(s, n, s->history, s->history_capacity, count);
+    if (rc == COG_OK) *messages = s->history;
+    return rc;
+}
+
+cog_result_t cog_session_fork(cog_session_t *s, cog_session_node_t *n, cog_session_node_t **out)
+{
+    size_t count;
+    if (s == NULL || n == NULL) return COG_ERROR_NULL_PTR;
+    if (!contains(s, n)) return COG_ERROR_NOT_FOUND;
+    if (cog_session_copy_history(s, n, s->history, s->history_capacity, &count) != COG_OK)
+        return COG_ERROR_INVALID_STATE;
+    /* Fork names a shared immutable ancestor; children create divergent branches.
+     * Never copy an assistant call to a fresh identity and authorize its effect. */
+    for (cog_session_node_t *a = n; a != NULL; a = a->parent) a->shared = true;
+    s->forked = true;
+    if (n->child_count == 0U) s->active = n;
+    if (out != NULL) *out = n;
     return COG_OK;
 }
 
-cog_result_t cog_session_set_cost(cog_session_t *session,
-                                  cog_session_node_t *node,
-                                  const cog_cost_t *cost)
+static bool legal_transition(cog_tool_execution_state_t previous, cog_tool_execution_state_t next)
 {
-    if (session == NULL || node == NULL || cost == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    if (!session_contains(session, node)) {
-        return COG_ERROR_NOT_FOUND;
-    }
-    node->data.cost = *cost;
+    return (previous == COG_TOOL_EXECUTION_PROPOSED &&
+        (next == COG_TOOL_EXECUTION_STARTED || next == COG_TOOL_EXECUTION_DENIED)) ||
+        (previous == COG_TOOL_EXECUTION_STARTED &&
+        (next == COG_TOOL_EXECUTION_SUCCEEDED || next == COG_TOOL_EXECUTION_FAILED ||
+         next == COG_TOOL_EXECUTION_CANCELLED || next == COG_TOOL_EXECUTION_INDETERMINATE));
+}
+
+static cog_result_t audit_add(cog_session_t *s, cog_tool_ledger_record_t *l,
+    cog_tool_execution_state_t next, bool explicit_, const char *evidence, size_t length)
+{
+    if (l->audit_count == AUDITS_PER_CALL || s->audit_high_water == UINT64_MAX) return COG_ERROR_LIMIT;
+    cog_tool_audit_record_t *a = (cog_tool_audit_record_t *)l->audit;
+    a[l->audit_count++] = (cog_tool_audit_record_t){++s->audit_high_water,
+        l->state, next, explicit_, evidence, length};
+    l->state = next;
     return COG_OK;
 }
 
-double cog_session_cumulative_cost(const cog_session_t *session,
-                                   const cog_session_node_t *node)
+cog_result_t cog_session_tool_state(const cog_session_t *s, const cog_session_node_t *n,
+    const char *id, cog_tool_execution_state_t *out)
 {
-    const struct cog_session_node *n;
-    double total = 0.0;
-
-    if (session == NULL || node == NULL) {
-        return 0.0;
-    }
-    if (!session_contains(session, node)) {
-        return 0.0;
-    }
-    for (n = node; n != NULL; n = n->parent) {
-        total += n->data.cost.total_cost;
-    }
-    return total;
-}
-
-cog_result_t cog_session_cumulative_timing(const cog_session_t *session,
-                                           const cog_session_node_t *node,
-                                           cog_timing_t *out)
-{
-    const struct cog_session_node *n;
-    cog_timing_t acc = {0};
-
-    if (session == NULL || node == NULL || out == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    if (!session_contains(session, node)) {
-        return COG_ERROR_NOT_FOUND;
-    }
-    for (n = node; n != NULL; n = n->parent) {
-        acc.request_sent_ms += n->data.timing.request_sent_ms;
-        acc.first_token_ms += n->data.timing.first_token_ms;
-        acc.last_token_ms += n->data.timing.last_token_ms;
-        acc.duration_ms += n->data.timing.duration_ms;
-        acc.ttft_ms += n->data.timing.ttft_ms;
-        acc.tokens_per_second += n->data.timing.tokens_per_second;
-    }
-    *out = acc;
+    if (s == NULL || n == NULL || id == NULL || out == NULL) return COG_ERROR_NULL_PTR;
+    if (!contains(s, n)) return COG_ERROR_INVALID_ARG;
+    cog_tool_ledger_record_t *l = find_call(s, n, id);
+    if (l == NULL) return COG_ERROR_NOT_FOUND;
+    *out = l->state;
     return COG_OK;
 }
 
-/* ------------------------------------------------------------------ */
-/* Parent session                                                      */
-/* ------------------------------------------------------------------ */
-
-const char *cog_session_parent_id(const cog_session_t *session)
+cog_result_t cog_session_tool_transition(cog_session_t *s, cog_session_node_t *n,
+    const char *id, cog_tool_execution_state_t expected, cog_tool_execution_state_t next)
 {
-    return (session != NULL) ? session->parent_id : NULL;
+    if (s == NULL || n == NULL || id == NULL) return COG_ERROR_NULL_PTR;
+    if (!contains(s, n)) return COG_ERROR_INVALID_ARG;
+    cog_tool_ledger_record_t *l = find_call(s, n, id);
+    if (l == NULL) return COG_ERROR_NOT_FOUND;
+    if (s->inspection_only || indeterminate(s) || n->shared || n->message.status != COG_MESSAGE_COMPLETE ||
+        !on_path(s->active, n) || l->state != expected || !legal_transition(expected, next))
+        return COG_ERROR_INVALID_STATE;
+    return audit_add(s, l, next, false, NULL, 0U);
 }
 
-cog_result_t cog_session_set_parent(cog_session_t *session,
-                                    const char *parent_id)
+cog_result_t cog_session_reconcile_tool(cog_session_t *s, cog_session_node_t *n,
+    const char *id, cog_tool_execution_state_t resolution, const cog_message_t *result,
+    cog_session_node_t **out)
+{
+    cog_session_node_t *r;
+    cog_result_t rc;
+    if (s == NULL || n == NULL || id == NULL || result == NULL) return COG_ERROR_NULL_PTR;
+    if (!contains(s, n)) return COG_ERROR_INVALID_ARG;
+    cog_tool_ledger_record_t *l = find_call(s, n, id);
+    if (l == NULL) return COG_ERROR_NOT_FOUND;
+    if (n->shared || !on_path(s->active, n) || l->state != COG_TOOL_EXECUTION_INDETERMINATE)
+        return COG_ERROR_INVALID_STATE;
+    if ((resolution != COG_TOOL_EXECUTION_SUCCEEDED && resolution != COG_TOOL_EXECUTION_FAILED &&
+        resolution != COG_TOOL_EXECUTION_CANCELLED && resolution != COG_TOOL_EXECUTION_ACKNOWLEDGED) ||
+        result->role != COG_MESSAGE_ROLE_TOOL || result->tool_call_id == NULL ||
+        strcmp(result->tool_call_id, id) != 0 || result->content_len == 0U || result->status != COG_MESSAGE_COMPLETE)
+        return COG_ERROR_INVALID_ARG;
+    if (l->audit_count == AUDITS_PER_CALL || s->audit_high_water == UINT64_MAX) return COG_ERROR_LIMIT;
+    rc = insert(s, s->active, result, &r, INSERT_RECONCILIATION);
+    if (rc != COG_OK) return rc;
+    rc = audit_add(s, l, resolution, true, r->message.content, r->message.content_len);
+    if (out != NULL) *out = r;
+    return rc;
+}
+
+cog_result_t cog_session_discard_node(cog_session_t *s, cog_session_node_t *n)
+{
+    if (s == NULL || n == NULL) return COG_ERROR_NULL_PTR;
+    if (!contains(s, n)) return COG_ERROR_NOT_FOUND;
+    if (n->child_count != 0U || n->shared || n->committed || n->data.message == NULL ||
+        n->message.tool_call_count != 0U || n->message.role == COG_MESSAGE_ROLE_TOOL)
+        return COG_ERROR_INVALID_STATE;
+    cog_session_node_t *p = n->parent;
+    if (s->active == n && p != NULL && p->child_count > 1U) return COG_ERROR_INVALID_STATE;
+    if (p == NULL) s->root = NULL;
+    else {
+        if (p->first_child == n) p->first_child = n->next_sibling;
+        if (p->last_child == n) p->last_child = n->prev_sibling;
+        --p->child_count;
+    }
+    if (n->prev_sibling != NULL) n->prev_sibling->next_sibling = n->next_sibling;
+    if (n->next_sibling != NULL) n->next_sibling->prev_sibling = n->prev_sibling;
+    if (s->active == n) s->active = p;
+    arena_free(s, n->payload);
+    (void)memset(n, 0, sizeof(*n));
+    --s->node_count;
+    return COG_OK;
+}
+
+cog_result_t cog_session_reset(cog_session_t *s)
+{
+    if (s == NULL) return COG_ERROR_NULL_PTR;
+    if (s->attached || s->forked || s->ledger_count != 0U || s->inspection_only) return COG_ERROR_INVALID_STATE;
+    for (size_t i = 0U; i < s->max_nodes; ++i) {
+        cog_session_node_t *n = &s->nodes[i];
+        if (n->used && (n->committed || n->shared || n->data.message == NULL || n->message.role == COG_MESSAGE_ROLE_TOOL))
+            return COG_ERROR_INVALID_STATE;
+    }
+    for (size_t i = 0U; i < s->max_nodes; ++i) if (s->nodes[i].used) {
+        arena_free(s, s->nodes[i].payload); (void)memset(&s->nodes[i], 0, sizeof(s->nodes[i]));
+    }
+    s->root = NULL; s->active = NULL; s->node_count = 0U; s->history_count = 0U;
+    return COG_OK;
+}
+
+cog_result_t cog_session_set_timing(cog_session_t *s, cog_session_node_t *n, const cog_timing_t *t)
+{
+    if (s == NULL || n == NULL || t == NULL) return COG_ERROR_NULL_PTR;
+    if (!contains(s, n)) return COG_ERROR_NOT_FOUND;
+    if (n->shared || n->committed) return COG_ERROR_INVALID_STATE;
+    n->data.timing = *t; return COG_OK;
+}
+cog_result_t cog_session_set_cost(cog_session_t *s, cog_session_node_t *n, const cog_cost_t *c)
+{
+    if (s == NULL || n == NULL || c == NULL) return COG_ERROR_NULL_PTR;
+    if (!contains(s, n)) return COG_ERROR_NOT_FOUND;
+    if (n->shared || n->committed) return COG_ERROR_INVALID_STATE;
+    n->data.cost = *c; return COG_OK;
+}
+double cog_session_cumulative_cost(const cog_session_t *s, const cog_session_node_t *n)
+{
+    double cost = 0.0;
+    if (!contains(s, n)) return 0.0;
+    for (; n != NULL; n = n->parent) cost += n->data.cost.total_cost;
+    return cost;
+}
+cog_result_t cog_session_cumulative_timing(const cog_session_t *s, const cog_session_node_t *n, cog_timing_t *out)
+{
+    cog_timing_t t = {0};
+    if (s == NULL || n == NULL || out == NULL) return COG_ERROR_NULL_PTR;
+    if (!contains(s, n)) return COG_ERROR_NOT_FOUND;
+    for (; n != NULL; n = n->parent) {
+        t.request_sent_ms += n->data.timing.request_sent_ms;
+        t.first_token_ms += n->data.timing.first_token_ms;
+        t.last_token_ms += n->data.timing.last_token_ms;
+        t.duration_ms += n->data.timing.duration_ms;
+        t.ttft_ms += n->data.timing.ttft_ms;
+        t.tokens_per_second += n->data.timing.tokens_per_second;
+    }
+    *out = t; return COG_OK;
+}
+const char *cog_session_parent_id(const cog_session_t *s) { return s == NULL ? NULL : s->parent_id; }
+cog_result_t cog_session_set_parent(cog_session_t *s, const char *id)
 {
     char *copy = NULL;
-
-    if (session == NULL) {
-        return COG_ERROR_NULL_PTR;
+    if (s == NULL) return COG_ERROR_NULL_PTR;
+    if (id != NULL) {
+        const size_t len = strlen(id);
+        copy = arena_alloc(s, len + 1U);
+        if (copy == NULL) return COG_ERROR_LIMIT;
+        (void)memcpy(copy, id, len + 1U);
     }
-    if (parent_id != NULL) {
-        copy = strdup(parent_id);
-        if (copy == NULL) {
-            return COG_ERROR_NOMEM;
-        }
-    }
-    free(session->parent_id);
-    session->parent_id = copy;
+    arena_free(s, s->parent_id); s->parent_id = copy;
     return COG_OK;
 }
 
-/* ------------------------------------------------------------------ */
-/* Node mutation (cancellation support)                                */
-/* ------------------------------------------------------------------ */
-
-cog_result_t cog_session_discard_node(cog_session_t *session,
-                                      cog_session_node_t *node)
+/* Iterative preorder preserves actual sibling order, including after restores. */
+cog_result_t cog_session_snapshot_view(const cog_session_t *s, cog_session_snapshot_t *out)
 {
-    struct cog_session_node *parent;
-
-    if (session == NULL || node == NULL) {
-        return COG_ERROR_NULL_PTR;
+    size_t count = 0U;
+    const cog_session_node_t *n;
+    if (s == NULL || out == NULL) return COG_ERROR_NULL_PTR;
+    n = s->root;
+    while (n != NULL) {
+        if (count == s->max_nodes) return COG_ERROR_LIMIT;
+        s->snapshot_nodes[count++] = n->data;
+        if (n->first_child != NULL) n = n->first_child;
+        else {
+            while (n != NULL && n->next_sibling == NULL) n = n->parent;
+            if (n != NULL) n = n->next_sibling;
+        }
     }
-    if (node->child_count > 0U) {
-        return COG_ERROR_INVALID_STATE;
-    }
-    if (!session_contains(session, node)) {
-        return COG_ERROR_NOT_FOUND;
-    }
-
-    parent = node->parent;
-    node_unlink(session, node);
-    if (session->active == node) {
-        session->active = parent;
-        session_sync_prunable(session, parent);
-    }
-    node_free_strings(node);
-    free(node);
+    cog_session_snapshot_t snapshot = {s->id, s->parent_id,
+        s->active == NULL ? 0U : s->active->data.node_id, s->next_node_id - 1U,
+        s->audit_high_water, s->snapshot_nodes, count, s->ledger, s->ledger_count, s->inspection_only};
+    *out = snapshot;
     return COG_OK;
+}
+
+static cog_result_t restore_node(cog_session_t *s, const cog_node_data_t *src)
+{
+    cog_message_t legacy_message = {0};
+    const cog_message_t *m = src->message;
+    cog_session_node_t *parent = NULL;
+    pack_t measure = {0};
+    if (src->node_id == 0U || src->node_id >= s->next_node_id || find_node(s, src->node_id) != NULL ||
+        src->role < COG_NODE_SYSTEM || src->role > COG_NODE_TOOL_RESULT ||
+        (src->content == NULL && src->content_len != 0U)) return COG_ERROR_PROTOCOL;
+    if (src->parent_id == 0U) {
+        if (s->root != NULL) return COG_ERROR_PROTOCOL;
+    } else {
+        parent = find_node(s, src->parent_id);
+        if (parent == NULL) return COG_ERROR_PROTOCOL;
+    }
+    if (m == NULL && src->role <= COG_NODE_ASSISTANT) {
+        legacy_message.role = (cog_message_role_t)src->role;
+        legacy_message.content = src->content;
+        legacy_message.content_len = src->content_len;
+        m = &legacy_message;
+    }
+    if (m != NULL) {
+        if (m->tool_call_count > s->max_calls ||
+            m->opaque_count > SIZE_MAX / sizeof(cog_message_opaque_t) ||
+            m->tool_call_count > SIZE_MAX / sizeof(cog_message_tool_call_t)) return COG_ERROR_LIMIT;
+        if (cog_message_validate(m) != COG_OK ||
+            src->role != (m->role == COG_MESSAGE_ROLE_TOOL ? COG_NODE_TOOL_RESULT : (cog_node_role_t)m->role))
+            return COG_ERROR_PROTOCOL;
+        copy_message(&measure, m, NULL);
+    } else if (!s->inspection_only) return COG_ERROR_UNSUPPORTED;
+    (void)pack_text(&measure, src->content, src->content_len);
+    (void)pack_string(&measure, src->tool_name);
+    (void)pack_string(&measure, src->tool_args);
+    (void)pack_string(&measure, src->tool_result);
+    (void)pack_string(&measure, src->raw_request);
+    (void)pack_string(&measure, src->raw_response);
+    (void)pack_string(&measure, src->model);
+    (void)pack_string(&measure, src->provider);
+    if (measure.failed) return COG_ERROR_LIMIT;
+    void *payload = arena_alloc(s, measure.used == 0U ? 1U : measure.used);
+    if (payload == NULL) return COG_ERROR_LIMIT;
+    cog_session_node_t *n = &s->nodes[s->node_count];
+    pack_t p = {payload, 0U, false};
+    n->data = *src;
+    n->payload = payload;
+    n->committed = true;
+    if (m != NULL) {
+        copy_message(&p, m, &n->message);
+        n->data.message = &n->message;
+    }
+    n->data.content = pack_text(&p, src->content, src->content_len);
+    n->data.tool_name = pack_string(&p, src->tool_name);
+    n->data.tool_args = pack_string(&p, src->tool_args);
+    n->data.tool_result = pack_string(&p, src->tool_result);
+    n->data.raw_request = pack_string(&p, src->raw_request);
+    n->data.raw_response = pack_string(&p, src->raw_response);
+    n->data.model = pack_string(&p, src->model);
+    n->data.provider = pack_string(&p, src->provider);
+    n->tool_args_len = src->tool_args == NULL ? 0U : strlen(src->tool_args);
+    n->tool_result_len = src->tool_result == NULL ? 0U : strlen(src->tool_result);
+    link_node(s, parent, n);
+    return COG_OK;
+}
+
+static cog_result_t restore_ledger(cog_session_t *s, const cog_session_snapshot_t *snapshot)
+{
+    size_t required = 0U;
+    for (size_t i = 0U; i < s->node_count; ++i) {
+        const cog_session_node_t *n = &s->nodes[i];
+        if (n->data.message != NULL) {
+            if (n->message.tool_call_count > SIZE_MAX - required) return COG_ERROR_LIMIT;
+            required += n->message.tool_call_count;
+        }
+    }
+    if (required != snapshot->ledger_count) return COG_ERROR_PROTOCOL;
+    if (required > s->ledger_capacity) return COG_ERROR_LIMIT;
+    for (size_t i = 0U; i < required; ++i) {
+        const cog_tool_ledger_record_t *src = &snapshot->ledger[i];
+        cog_session_node_t *n = find_node(s, src->assistant_node_id);
+        bool match = false;
+        if (src->call_id == NULL || src->call_id[0] == '\0' || n == NULL || n->data.message == NULL ||
+            n->message.role != COG_MESSAGE_ROLE_ASSISTANT ||
+            src->state < COG_TOOL_EXECUTION_PROPOSED || src->state > COG_TOOL_EXECUTION_ACKNOWLEDGED ||
+            (src->audit_count != 0U && src->audit == NULL)) return COG_ERROR_PROTOCOL;
+        if (src->audit_count > AUDITS_PER_CALL) return COG_ERROR_LIMIT;
+        for (size_t k = 0U; k < n->message.tool_call_count; ++k)
+            if (strcmp(n->message.tool_calls[k].id, src->call_id) == 0) match = true;
+        if (!match || find_call(s, n, src->call_id) != NULL) return COG_ERROR_PROTOCOL;
+        cog_tool_execution_state_t state = COG_TOOL_EXECUTION_PROPOSED;
+        for (size_t k = 0U; k < src->audit_count; ++k) {
+            const cog_tool_audit_record_t *a = &src->audit[k];
+            if (a->sequence == 0U || a->sequence > snapshot->audit_high_water || a->previous != state ||
+                (k != 0U && a->sequence <= src->audit[k - 1U].sequence) ||
+                (a->evidence == NULL && a->evidence_len != 0U)) return COG_ERROR_PROTOCOL;
+            const cog_message_t evidence = {.role = COG_MESSAGE_ROLE_USER,
+                .content = a->evidence, .content_len = a->evidence_len};
+            if (cog_message_validate(&evidence) != COG_OK) return COG_ERROR_PROTOCOL;
+            if (a->explicit_reconciliation) {
+                if (state != COG_TOOL_EXECUTION_INDETERMINATE || !final_state(a->next) ||
+                    a->next == COG_TOOL_EXECUTION_DENIED || a->evidence_len == 0U)
+                    return COG_ERROR_PROTOCOL;
+            } else if (!legal_transition(state, a->next)) return COG_ERROR_PROTOCOL;
+            for (size_t j = 0U; j < i; ++j)
+                for (size_t q = 0U; q < s->ledger[j].audit_count; ++q)
+                    if (s->ledger[j].audit[q].sequence == a->sequence) return COG_ERROR_PROTOCOL;
+            state = a->next;
+        }
+        if (state != src->state) return COG_ERROR_PROTOCOL;
+        cog_tool_ledger_record_t *dst = &s->ledger[i];
+        *dst = *src;
+        dst->audit = &s->audits[i * AUDITS_PER_CALL];
+        for (size_t k = 0U; k < n->message.tool_call_count; ++k)
+            if (strcmp(n->message.tool_calls[k].id, src->call_id) == 0) dst->call_id = n->message.tool_calls[k].id;
+        for (size_t k = 0U; k < src->audit_count; ++k) {
+            cog_tool_audit_record_t a = src->audit[k];
+            if (a.evidence != NULL) {
+                if (a.evidence_len == SIZE_MAX) return COG_ERROR_LIMIT;
+                char *e = arena_alloc(s, a.evidence_len + 1U);
+                if (e == NULL) return COG_ERROR_LIMIT;
+                (void)memcpy(e, a.evidence, a.evidence_len); e[a.evidence_len] = '\0'; a.evidence = e;
+            }
+            s->audits[i * AUDITS_PER_CALL + k] = a;
+        }
+        ++s->ledger_count;
+    }
+    /* Every result resolves exactly one call on the same nearest assistant path. */
+    for (size_t i = 0U; i < s->node_count; ++i) {
+        const cog_session_node_t *r = &s->nodes[i];
+        if (r->data.message == NULL || r->message.role != COG_MESSAGE_ROLE_TOOL) continue;
+        const cog_session_node_t *a = r->parent;
+        while (a != NULL && a->data.role != COG_NODE_ASSISTANT) a = a->parent;
+        if (a == NULL || find_call(s, a, r->message.tool_call_id) == NULL ||
+            result_for(s, a, r->message.tool_call_id) != r || r->message.status != COG_MESSAGE_COMPLETE)
+            return COG_ERROR_PROTOCOL;
+    }
+    for (size_t i = 0U; i < s->ledger_count; ++i) {
+        cog_tool_ledger_record_t *l = &s->ledger[i];
+        const cog_session_node_t *a = find_node(s, l->assistant_node_id);
+        const cog_session_node_t *r = result_for(s, a, l->call_id);
+        if (!final_state(l->state) || r == NULL) {
+            if (!on_path(s->active, a)) return COG_ERROR_PROTOCOL;
+            for (const cog_session_node_t *descendant = s->active; descendant != a; descendant = descendant->parent)
+                if (descendant->data.message == NULL || descendant->message.role != COG_MESSAGE_ROLE_TOOL)
+                    return COG_ERROR_PROTOCOL;
+        }
+        if (final_state(l->state) && r == NULL) return COG_ERROR_PROTOCOL;
+        if (r != NULL && (!final_state(l->state) || !on_path(r, a))) return COG_ERROR_PROTOCOL;
+    }
+    s->audit_high_water = snapshot->audit_high_water;
+    for (size_t i = 0U; i < s->ledger_count; ++i)
+        if (s->ledger[i].state == COG_TOOL_EXECUTION_STARTED) {
+            cog_result_t rc = audit_add(s, &s->ledger[i], COG_TOOL_EXECUTION_INDETERMINATE, false, NULL, 0U);
+            if (rc != COG_OK) return rc;
+        }
+    return COG_OK;
+}
+
+cog_result_t cog_session_restore(cog_session_t **out, const cog_session_config_t *config,
+    const cog_session_snapshot_t *snapshot)
+{
+    cog_session_t *s = NULL;
+    cog_result_t rc;
+    if (out == NULL) return COG_ERROR_NULL_PTR;
+    *out = NULL;
+    if (snapshot == NULL || snapshot->session_id == NULL) return COG_ERROR_NULL_PTR;
+    if (snapshot->session_id[0] == '\0' || (config != NULL && config->id != NULL &&
+        strcmp(config->id, snapshot->session_id) != 0)) return COG_ERROR_INVALID_ARG;
+    if ((snapshot->node_count != 0U && snapshot->nodes == NULL) ||
+        (snapshot->ledger_count != 0U && snapshot->ledger == NULL) ||
+        ((snapshot->node_count == 0U) != (snapshot->active_node_id == 0U))) return COG_ERROR_PROTOCOL;
+    rc = cog_session_snapshot_validate(snapshot);
+    if (rc != COG_OK) return rc;
+    cog_session_config_t cfg = config == NULL ? (cog_session_config_t){0} : *config;
+    cfg.id = snapshot->session_id;
+    rc = cog_session_new(&s, &cfg);
+    if (rc != COG_OK) return rc;
+    if (snapshot->node_count > s->max_nodes) { rc = COG_ERROR_LIMIT; goto fail; }
+    s->inspection_only = snapshot->inspection_only;
+    s->next_node_id = snapshot->node_id_high_water + 1U;
+    rc = cog_session_set_parent(s, snapshot->parent_session_id);
+    if (rc != COG_OK) goto fail;
+    for (size_t i = 0U; i < snapshot->node_count; ++i) {
+        rc = restore_node(s, &snapshot->nodes[i]);
+        if (rc != COG_OK) goto fail;
+    }
+    s->active = find_node(s, snapshot->active_node_id);
+    if (snapshot->node_count != 0U && (s->active == NULL || s->active->child_count != 0U)) {
+        rc = COG_ERROR_PROTOCOL; goto fail;
+    }
+    rc = restore_ledger(s, snapshot);
+    if (rc != COG_OK) goto fail;
+    *out = s;
+    return COG_OK;
+fail:
+    cog_session_free(s);
+    return rc;
+}
+
+/* These view-only checks use snapshot arrays as their own bounded lookup table.
+ * Store owner/CAS/save admission can validate authoritative records without
+ * secretly constructing a temporary heap session. */
+static const cog_node_data_t *snapshot_node(const cog_session_snapshot_t *s, uint64_t id)
+{
+    for (size_t i = 0U; i < s->node_count; ++i) if (s->nodes[i].node_id == id) return &s->nodes[i];
+    return NULL;
+}
+static bool snapshot_path(const cog_session_snapshot_t *s, uint64_t leaf, uint64_t ancestor)
+{
+    for (size_t depth = 0U; leaf != 0U && depth < s->node_count; ++depth) {
+        if (leaf == ancestor) return true;
+        const cog_node_data_t *n = snapshot_node(s, leaf);
+        if (n == NULL) return false;
+        leaf = n->parent_id;
+    }
+    return false;
+}
+static const cog_node_data_t *snapshot_assistant(const cog_session_snapshot_t *s, uint64_t parent)
+{
+    for (size_t depth = 0U; parent != 0U && depth < s->node_count; ++depth) {
+        const cog_node_data_t *n = snapshot_node(s, parent);
+        if (n == NULL || n->role == COG_NODE_ASSISTANT) return n;
+        parent = n->parent_id;
+    }
+    return NULL;
+}
+static const cog_tool_ledger_record_t *snapshot_call(const cog_session_snapshot_t *s,
+    uint64_t assistant_id, const char *id)
+{
+    for (size_t i = 0U; i < s->ledger_count; ++i)
+        if (s->ledger[i].assistant_node_id == assistant_id && s->ledger[i].call_id != NULL &&
+            strcmp(s->ledger[i].call_id, id) == 0) return &s->ledger[i];
+    return NULL;
+}
+static size_t snapshot_results(const cog_session_snapshot_t *s, const cog_tool_ledger_record_t *l)
+{
+    size_t count_ = 0U;
+    for (size_t i = 0U; i < s->node_count; ++i) {
+        const cog_node_data_t *n = &s->nodes[i];
+        if (n->message == NULL || n->message->role != COG_MESSAGE_ROLE_TOOL ||
+            n->message->tool_call_id == NULL || strcmp(n->message->tool_call_id, l->call_id) != 0) continue;
+        const cog_node_data_t *a = snapshot_assistant(s, n->parent_id);
+        if (a != NULL && a->node_id == l->assistant_node_id) ++count_;
+    }
+    return count_;
+}
+
+static size_t snapshot_path_results(const cog_session_snapshot_t *s, uint64_t leaf,
+    const cog_tool_ledger_record_t *l)
+{
+    size_t count_ = 0U;
+    for (size_t depth = 0U; leaf != 0U && depth < s->node_count; ++depth) {
+        const cog_node_data_t *n = snapshot_node(s, leaf);
+        if (n == NULL) break;
+        if (n->message != NULL && n->message->role == COG_MESSAGE_ROLE_TOOL &&
+            n->message->tool_call_id != NULL && strcmp(n->message->tool_call_id, l->call_id) == 0) {
+            const cog_node_data_t *a = snapshot_assistant(s, n->parent_id);
+            if (a != NULL && a->node_id == l->assistant_node_id) ++count_;
+        }
+        leaf = n->parent_id;
+    }
+    return count_;
+}
+
+cog_result_t cog_session_snapshot_validate(const cog_session_snapshot_t *s)
+{
+    if (s == NULL || s->session_id == NULL) return COG_ERROR_NULL_PTR;
+    if (s->session_id[0] == '\0' || (s->node_count != 0U && s->nodes == NULL) ||
+        (s->ledger_count != 0U && s->ledger == NULL) ||
+        ((s->node_count == 0U) != (s->active_node_id == 0U))) return COG_ERROR_PROTOCOL;
+    if (s->node_id_high_water == UINT64_MAX) return COG_ERROR_LIMIT;
+    size_t roots = 0U, expected_ledger = 0U;
+    bool active = s->node_count == 0U;
+    for (size_t i = 0U; i < s->node_count; ++i) {
+        const cog_node_data_t *n = &s->nodes[i];
+        if (n->node_id == 0U || n->node_id > s->node_id_high_water || n->role < COG_NODE_SYSTEM ||
+            n->role > COG_NODE_TOOL_RESULT || (n->content == NULL && n->content_len != 0U)) return COG_ERROR_PROTOCOL;
+        bool parent = n->parent_id == 0U;
+        for (size_t k = 0U; k < i; ++k) {
+            if (s->nodes[k].node_id == n->node_id) return COG_ERROR_PROTOCOL;
+            if (s->nodes[k].node_id == n->parent_id) parent = true;
+        }
+        if (!parent || (n->parent_id == 0U && ++roots != 1U)) return COG_ERROR_PROTOCOL;
+        if (n->node_id == s->active_node_id) active = true;
+        if (n->parent_id == s->active_node_id && s->active_node_id != 0U) return COG_ERROR_PROTOCOL;
+        if (n->message == NULL) {
+            if (n->role > COG_NODE_ASSISTANT) {
+                if (!s->inspection_only) return COG_ERROR_UNSUPPORTED;
+            } else {
+                const cog_message_t legacy_message = {.role = (cog_message_role_t)n->role,
+                    .content = n->content, .content_len = n->content_len};
+                if (cog_message_validate(&legacy_message) != COG_OK) return COG_ERROR_PROTOCOL;
+            }
+        } else {
+            const cog_message_t *m = n->message;
+            if (cog_message_validate(m) != COG_OK || n->role !=
+                (m->role == COG_MESSAGE_ROLE_TOOL ? COG_NODE_TOOL_RESULT : (cog_node_role_t)m->role)) return COG_ERROR_PROTOCOL;
+            if (m->tool_call_count > SIZE_MAX - expected_ledger) return COG_ERROR_LIMIT;
+            expected_ledger += m->tool_call_count;
+        }
+    }
+    if (!active || (s->node_count != 0U && roots != 1U) || expected_ledger != s->ledger_count) return COG_ERROR_PROTOCOL;
+    for (size_t i = 0U; i < s->ledger_count; ++i) {
+        const cog_tool_ledger_record_t *l = &s->ledger[i];
+        const cog_node_data_t *n = snapshot_node(s, l->assistant_node_id);
+        if (n == NULL || n->message == NULL || n->message->role != COG_MESSAGE_ROLE_ASSISTANT ||
+            l->call_id == NULL || l->call_id[0] == '\0' ||
+            l->state < COG_TOOL_EXECUTION_PROPOSED || l->state > COG_TOOL_EXECUTION_ACKNOWLEDGED ||
+            (l->audit_count != 0U && l->audit == NULL)) return COG_ERROR_PROTOCOL;
+        if (l->audit_count > AUDITS_PER_CALL) return COG_ERROR_LIMIT;
+        bool call = false;
+        for (size_t k = 0U; k < n->message->tool_call_count; ++k)
+            if (strcmp(n->message->tool_calls[k].id, l->call_id) == 0) call = true;
+        if (!call) return COG_ERROR_PROTOCOL;
+        for (size_t k = 0U; k < i; ++k)
+            if (s->ledger[k].assistant_node_id == l->assistant_node_id && strcmp(s->ledger[k].call_id, l->call_id) == 0)
+                return COG_ERROR_PROTOCOL;
+        cog_tool_execution_state_t state_ = COG_TOOL_EXECUTION_PROPOSED;
+        for (size_t k = 0U; k < l->audit_count; ++k) {
+            const cog_tool_audit_record_t *a = &l->audit[k];
+            if (a->sequence == 0U || a->sequence > s->audit_high_water || a->previous != state_ ||
+                (k != 0U && a->sequence <= l->audit[k - 1U].sequence)) return COG_ERROR_PROTOCOL;
+            const cog_message_t evidence = {.role = COG_MESSAGE_ROLE_USER,
+                .content = a->evidence, .content_len = a->evidence_len};
+            if (cog_message_validate(&evidence) != COG_OK) return COG_ERROR_PROTOCOL;
+            if (a->explicit_reconciliation) {
+                if (a->previous != COG_TOOL_EXECUTION_INDETERMINATE || !final_state(a->next) ||
+                    a->next == COG_TOOL_EXECUTION_DENIED || a->evidence_len == 0U) return COG_ERROR_PROTOCOL;
+            } else if (!legal_transition(state_, a->next)) return COG_ERROR_PROTOCOL;
+            for (size_t j = 0U; j < i; ++j)
+                for (size_t q = 0U; q < s->ledger[j].audit_count; ++q)
+                    if (s->ledger[j].audit[q].sequence == a->sequence) return COG_ERROR_PROTOCOL;
+            state_ = a->next;
+        }
+        if (state_ != l->state) return COG_ERROR_PROTOCOL;
+        const size_t results = snapshot_results(s, l);
+        if (final_state(l->state)) { if (results != 1U) return COG_ERROR_PROTOCOL; }
+        else {
+            if (results != 0U || !snapshot_path(s, s->active_node_id, l->assistant_node_id)) return COG_ERROR_PROTOCOL;
+            uint64_t descendant = s->active_node_id;
+            while (descendant != l->assistant_node_id) {
+                const cog_node_data_t *d = snapshot_node(s, descendant);
+                if (d == NULL || d->message == NULL || d->message->role != COG_MESSAGE_ROLE_TOOL) return COG_ERROR_PROTOCOL;
+                descendant = d->parent_id;
+            }
+        }
+    }
+    for (size_t i = 0U; i < s->node_count; ++i) {
+        const cog_node_data_t *n = &s->nodes[i];
+        bool leaf = true;
+        for (size_t k = i + 1U; k < s->node_count; ++k)
+            if (s->nodes[k].parent_id == n->node_id) leaf = false;
+        const bool new_work = n->message == NULL || n->message->role != COG_MESSAGE_ROLE_TOOL;
+        for (size_t k = 0U; k < s->ledger_count; ++k) {
+            const cog_tool_ledger_record_t *l = &s->ledger[k];
+            /* Starting another message requires a completed parent context. */
+            if (new_work && snapshot_path(s, n->parent_id, l->assistant_node_id) &&
+                (!final_state(l->state) || snapshot_path_results(s, n->parent_id, l) != 1U))
+                return COG_ERROR_PROTOCOL;
+            /* Every retained leaf includes its own finalized results. Only the
+             * active leaf may carry an unresolved assistant turn. */
+            if (leaf && snapshot_path(s, n->node_id, l->assistant_node_id)) {
+                if (final_state(l->state)) {
+                    if (snapshot_path_results(s, n->node_id, l) != 1U) return COG_ERROR_PROTOCOL;
+                } else if (n->node_id != s->active_node_id) return COG_ERROR_PROTOCOL;
+            }
+        }
+        if (n->message == NULL || n->message->role != COG_MESSAGE_ROLE_TOOL) continue;
+        const cog_node_data_t *a = snapshot_assistant(s, n->parent_id);
+        if (a == NULL || n->message->status != COG_MESSAGE_COMPLETE ||
+            snapshot_call(s, a->node_id, n->message->tool_call_id) == NULL) return COG_ERROR_PROTOCOL;
+    }
+    return COG_OK;
+}
+
+void cog_session_mark_committed(const cog_session_t *session)
+{
+    if (session == NULL) return;
+    cog_session_t *s = (cog_session_t *)session;
+    for (size_t i = 0U; i < s->max_nodes; ++i)
+        if (s->nodes[i].used) s->nodes[i].committed = true;
 }

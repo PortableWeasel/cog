@@ -629,16 +629,21 @@ cog_result_t cog_session_add_tool_result(cog_session_t *session,
  * cannot strand recovery. Also refuses an incomplete selected path. Text-only
  * incomplete turns without identified ledger may explicitly fork from their
  * last safe ancestor. Forking never authorizes repeating ancestor effects.
- * Creates a new branch starting from @p node. The forked branch shares
- * all ancestor nodes but has its own children. This is cheap (shared
- * immutable nodes).
+ * Marks @p node and its ancestors immutable and returns that same shared fork
+ * point without copying node/effect identity or allocating. A selected leaf
+ * becomes active. Selecting a nonleaf preserves the current active leaf;
+ * add_message(parent=*out_node) explicitly creates and selects a divergent
+ * child. append() continues the current active leaf, so callers branching from
+ * a nonleaf must use add_message with the returned fork point. Snapshot views
+ * immediately after either fork operation always retain an existing active leaf.
  *
  * @param[in,out] session Session to modify.
  * @param[in]     node    Node to fork from.
  * @param[out]    out_node Receives the fork point node on the new branch.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p session or @p node is NULL.
- * @return COG_ERROR_NOMEM if allocation fails.
+ * @return COG_ERROR_INVALID_STATE for unresolved/unsafe selected history.
+ * No allocation or constructor-capacity consumption occurs.
  *
  * Threading: not thread-safe.
  */
@@ -874,6 +879,9 @@ cog_result_t cog_session_set_parent(cog_session_t *session,
  * @return COG_ERROR_NULL_PTR if @p session or @p node is NULL.
  * @return COG_ERROR_INVALID_STATE if non-leaf, fork-shared, identified-call/
  * result/ledger/audit-bearing, or otherwise not an uncommitted text draft.
+ * An active draft also refuses INVALID_STATE if its parent would retain another
+ * child: successful discard selects the parent, which must remain an active leaf.
+ * Refusal preserves the draft, active leaf, sibling order and all identities.
  * An assistant with a saved STARTED call cannot be discarded even if no result
  * child exists. Reset/discard must never erase execution identity or evidence.
  * @return COG_ERROR_NOT_FOUND if @p node is not in this session.
