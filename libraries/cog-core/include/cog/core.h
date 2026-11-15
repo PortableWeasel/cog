@@ -122,6 +122,18 @@ typedef struct cog_core_config {
     void *wait_arg;
 
     /**
+     * @brief Borrowed caller-owned context.
+     *
+     * The core stores this pointer verbatim and returns it from
+     * @c cog_core_user.  It is never freed, dereferenced, or mutated by
+     * the core.  The caller retains full ownership and must ensure the
+     * pointed-to object remains valid for the lifetime of the core.
+     *
+     * May be NULL.  Zero-initialising the config yields NULL.
+     */
+    void *user;
+
+    /**
      * @brief Optional IPC endpoint for multi-process operation.
      *
      * May be NULL for single-process operation (the default).  If
@@ -311,6 +323,22 @@ cog_state_t cog_core_state(const cog_core_t *core);
  * and may change immediately after the call returns.
  */
 bool cog_core_is_running(const cog_core_t *core);
+
+/**
+ * @brief Return the borrowed caller-owned context supplied at construction.
+ *
+ * @param[in] core Core to query; may be NULL.
+ * @return The pointer exactly as supplied in @p config->user, or NULL if
+ *         @p core is NULL or if no user context was configured.
+ *
+ * @note The returned pointer remains owned by the caller; the core does
+ *       not free it or modify the object it points to.
+ *
+ * Threading: not thread-safe.  The same context instance must only be
+ * used by one core / one run thread; the caller must provide any external
+ * synchronisation if the pointer is shared across threads.
+ */
+void *cog_core_user(const cog_core_t *core);
 
 /**
  * @brief Return the IPC endpoint owned by the core.
