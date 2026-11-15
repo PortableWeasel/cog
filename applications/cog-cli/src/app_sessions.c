@@ -183,6 +183,7 @@ cog_result_t cog_cli_sessions_prepare(cog_cli_app_t *app)
         .max_tokens = app->opts.max_output_tokens, .configuration_generation = app->configuration_generation};
     if (app->workspace != NULL) { request.tools_json = app->tools_json; request.tools_json_len = app->tools_json_len; }
     rc = cog_provider_preflight(app->provider, &request, COG_PROVIDER_PREFLIGHT_PENDING_TOOLS);
+    rc = cog_cli_observation_check(app, rc);
     if (rc != COG_OK) return rc;
     for (size_t i = 0U; i < message->tool_call_count; i++) {
         const cog_message_tool_call_t *source = &message->tool_calls[i];
@@ -225,6 +226,7 @@ cog_result_t cog_cli_app_fork(cog_cli_app_t *app, uint64_t node_id)
     if (app == NULL) return COG_ERROR_NULL_PTR;
     if (app->reload_in_progress) return COG_ERROR_INVALID_STATE;
     if (app->reload_cleanup_error != COG_OK) return COG_ERROR_INDETERMINATE;
+    if (app->observation_error != COG_OK) return COG_ERROR_INDETERMINATE;
     if (cog_cli_metadata(app)) return COG_ERROR_INVALID_STATE;
     if (app->assistant_pending) return app->assistant_error;
     if (app->recovery) return COG_ERROR_INDETERMINATE;

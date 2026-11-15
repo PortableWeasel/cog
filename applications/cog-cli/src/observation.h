@@ -26,6 +26,7 @@ cog_result_t cog_cli_observer_new(cog_cli_observer_t **out, size_t request_slots
 void cog_cli_observer_free(cog_cli_observer_t *observer);
 /** Borrow obs after app_new, before drive; NULL detaches only after all rows and
  * queued events have been cleared. No target destruction or ownership transfer.
+ * Unfiltered typed DEBUG logs require the shared observation_fields vocabulary.
  * @return OK; NULL_PTR for observer; INVALID_STATE for unsafe retarget/detach. */
 cog_result_t cog_cli_observer_bind(cog_cli_observer_t *observer, cog_obs_t *obs);
 /** Owner prepares one fixed copied scope immediately before provider_send.

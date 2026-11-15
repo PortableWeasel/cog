@@ -1169,8 +1169,47 @@ static int reload_mock_borrows(void)
     return 0;
 }
 
+static int observation_labels(void)
+{
+    CHECK(clean()==0);cog_cli_options_t input; base(&input);
+    reload_resolver_t resolver={"SYNTHETIC_LABEL_SECRET",NULL,0U,COG_OK};
+    input.model_id="safe/model";input.session_id="safe-session";
+    input.credential_ref="host:labels";input.credential_read=reload_resolve;input.credential_arg=&resolver;
+    input.explicit_options|=COG_CLI_OPT_MODEL|COG_CLI_OPT_CREDENTIAL;
+    cog_cli_configuration_t *current=NULL,*candidate=NULL;
+    CHECK(cog_cli_configuration_new(&current,&input,1U)==COG_OK);
+    const cog_cli_safe_labels_t *labels=cog_cli_configuration_labels(current);
+    CHECK(labels!=NULL && labels->session_available && labels->model_available);
+    CHECK(strcmp(labels->session,"safe-session")==0 && strcmp(labels->model,"safe/model")==0);
+    resolver.secret="safe";
+    const cog_cli_reload_options_t replacement={.credential_ref="host:labels",.credential_read=reload_resolve,.credential_arg=&resolver};
+    CHECK(cog_cli_configuration_reload_new(&candidate,current,&replacement,2U)==COG_OK);
+    const cog_cli_safe_labels_t *next=cog_cli_configuration_labels(candidate);
+    CHECK(!next->session_available && !next->model_available && next->session==NULL && next->model==NULL);
+    CHECK(labels->model_available && strcmp(labels->model,"safe/model")==0);
+    CHECK(strcmp(cog_cli_configuration_options(candidate)->model_id,"safe/model")==0);
+    cog_cli_configuration_free(candidate);cog_cli_configuration_free(current);
+    resolver.secret="SYNTHETIC_LABEL_SECRET";
+    const char *models[]={"prefix-SYNTHETIC_LABEL_SECRET-suffix","host:labels","safe/\"quote","safe/\xf0\x9f\x8c\xb1"};
+    for(size_t i=0U;i<sizeof(models)/sizeof(models[0]);i++){
+        input.model_id=models[i];CHECK(cog_cli_configuration_new(&current,&input,3U)==COG_OK);
+        labels=cog_cli_configuration_labels(current);CHECK(!labels->model_available && labels->model==NULL);
+        CHECK(strcmp(cog_cli_configuration_options(current)->model_id,models[i])==0);cog_cli_configuration_free(current);
+    }
+    char long_model[4096];memset(long_model,'a',sizeof(long_model)-1U);long_model[sizeof(long_model)-1U]='\0';
+    input.model_id=long_model;input.session_id=NULL;
+    CHECK(cog_cli_configuration_new(&current,&input,4U)==COG_OK);labels=cog_cli_configuration_labels(current);
+    CHECK(!labels->model_available && !labels->session_available && strlen(cog_cli_configuration_options(current)->model_id)==4095U);
+    cog_cli_configuration_free(current);
+    char long_secret[129];memset(long_secret,'s',sizeof(long_secret)-1U);long_secret[sizeof(long_secret)-1U]='\0';
+    resolver.secret=long_secret;input.model_id="safe/model";input.session_id="safe-session";
+    CHECK(cog_cli_configuration_new(&current,&input,5U)==COG_OK);labels=cog_cli_configuration_labels(current);
+    CHECK(!labels->model_available && !labels->session_available);cog_cli_configuration_free(current);
+    CHECK(cog_cli_configuration_labels(NULL)==NULL);CHECK(clean()==0);return 0;
+}
 int main(void)
 {
+    CHECK(observation_labels()==0);
     CHECK(session_unicode_boundary() == 0);
     CHECK(reload_generations() == 0);
     CHECK(reload_validation() == 0);

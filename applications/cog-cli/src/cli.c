@@ -31,9 +31,12 @@ cog_result_t cog_cli_save(cog_cli_app_t *app)
 }
 static cog_result_t log_deliver(void *arg, const char *record, size_t length)
 {
-    FILE *stream = arg;
-    return fwrite(record, 1U, length, stream) == length && fputc('\n', stream) != EOF
-        ? COG_OK : COG_ERROR_IO;
+    cog_cli_app_t *app = arg;
+    FILE *stream = app->log_file;
+    if (fwrite(record, 1U, length, stream) == length && fputc('\n', stream) != EOF && fflush(stream) == 0)
+        return COG_OK;
+    if (app->observation_error == COG_OK) app->observation_error = COG_ERROR_IO;
+    return COG_ERROR_IO;
 }
 static cog_result_t reserve_state(cog_cli_app_t *app)
 {
@@ -236,11 +239,14 @@ cog_result_t cog_cli_app_new(cog_cli_app_t **out, const cog_cli_options_t *input
     if (rc != COG_OK) goto fail;
     app->log_file = app->opts.log_path != NULL ? fopen(app->opts.log_path, "a") : stderr;
     if (app->log_file == NULL) { rc = COG_ERROR_IO; goto fail; }
+    if (app->log_file != stderr && setvbuf(app->log_file, app->log_buffer, _IOFBF, sizeof(app->log_buffer)) != 0) {
+        rc = COG_ERROR_IO; goto fail;
+    }
     app->log_sink = (cog_obs_sink_t){.name = "log", .deliver = log_deliver,
-        .user = app->log_file, .min_severity = COG_OBS_TRACE};
+        .user = app, .min_severity = COG_OBS_TRACE};
     app->sink_table = (cog_obs_sink_table_t){&app->log_sink, 1U};
-    cog_obs_config_t obs = {.min_severity = app->opts.verbose ? COG_OBS_DEBUG : COG_OBS_INFO,
-        .sinks = &app->sink_table, .service = "cog-cli"};
+    cog_obs_config_t obs = {.min_severity = app->opts.verbose || app->opts.log_path != NULL ? COG_OBS_DEBUG : COG_OBS_INFO,
+        .fields = cog_cli_observation_fields(), .sinks = &app->sink_table, .service = "cog-cli"};
     rc = cog_obs_new(&app->obs, &obs);
     if (rc != COG_OK) goto fail;
     if (app->opts.workspace_root != NULL && app->store != NULL) {
@@ -268,6 +274,8 @@ cog_result_t cog_cli_app_new(cog_cli_app_t **out, const cog_cli_options_t *input
     rc = cog_core_new(&app->core, &core);
     if (rc != COG_OK) goto fail;
     app->ipc = NULL;
+    rc = cog_cli_observation_check(app, COG_OK);
+    if (rc != COG_OK) goto fail;
     rc = cog_cli_sessions_prepare(app);
     if (rc != COG_OK) goto fail;
     if (app->opts.session_action == COG_CLI_SESSION_FORK) {
@@ -295,8 +303,17 @@ void cog_cli_app_free(cog_cli_app_t *app)
     if (app->workspace != NULL) (void)cog_workspace_free(app->workspace);
     if (app->core != NULL) { cog_core_free(app->core); app->core = NULL; }
     cog_result_t cleanup = cog_cli_reload_free(app);
+    cog_result_t ending = app->assistant_pending ? app->assistant_error :
+        app->terminal_result_pending ? app->tool_result_error :
+        app->deferred_error != COG_OK ? app->deferred_error :
+        cleanup != COG_OK ? cleanup : COG_ERROR_ABORTED;
+    if (app->tool_timed) cog_cli_observation_tool_end(app, ending, app->effects, false);
+    if (app->provider_timed) cog_cli_observation_provider_end(app, ending, 0);
+    cog_result_t observed = cog_cli_observation_detach(app, cleanup);
     if (cleanup != COG_OK)
         (void)fprintf(stderr, "cog-cli: provider cleanup: %s\n", cog_cli_result_name(cleanup));
+    else if (observed != COG_OK)
+        (void)fprintf(stderr, "cog-cli: observation failure: %s\n", cog_cli_result_name(observed));
     if (app->guard != NULL) (void)cog_store_owner_release(app->guard);
     if (app->obs != NULL) cog_obs_free(app->obs);
     if (app->store != NULL) cog_store_free(app->store);
@@ -319,6 +336,11 @@ cog_result_t cog_cli_app_run(cog_cli_app_t *app)
     }
     if (app->assistant_pending) return app->assistant_error;
     if (app->recovery) return COG_ERROR_INDETERMINATE;
+    cog_result_t observation = cog_cli_observation_check(app, COG_OK);
+    if (observation != COG_OK) {
+        cog_result_t drained = cog_cli_drain(app);
+        return cog_cli_observation_check(app, drained);
+    }
     atomic_store_explicit(&app->stop_requested, false, memory_order_release);
     app->shutdown = false;
     if (!app->active && !app->provider_active && app->execution == NULL)
@@ -340,7 +362,7 @@ cog_result_t cog_cli_app_run(cog_cli_app_t *app)
     }
     rc = cog_core_run(app->core);
     cog_result_t drain = cog_cli_drain(app);
-    return drain != COG_OK ? drain : rc;
+    return cog_cli_observation_check(app, drain != COG_OK ? drain : rc);
 }
 void cog_cli_app_stop(cog_cli_app_t *app)
 {
@@ -355,6 +377,7 @@ static cog_result_t input_add(cog_cli_app_t *app, const char *text, size_t lengt
     if (cog_cli_metadata(app)) return COG_ERROR_INVALID_STATE;
     if (app->reload_in_progress) return COG_ERROR_INVALID_STATE;
     if (app->reload_cleanup_error != COG_OK) return COG_ERROR_INDETERMINATE;
+    if (app->observation_error != COG_OK) return COG_ERROR_INDETERMINATE;
     if (length > app->opts.max_context_bytes) return COG_ERROR_LIMIT;
     if (!cog_cli_text_valid(text, length)) return COG_ERROR_INVALID_ARG;
     if (app->assistant_pending) return app->assistant_error;

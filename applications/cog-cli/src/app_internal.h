@@ -43,7 +43,7 @@ struct cog_cli_app {
     size_t tool_ordinal;
     const char *observed_tool; /* Static descriptor name or static unknown. */
     cog_obs_span_id_t provider_span, tool_span;
-    bool provider_timed, tool_timed, tool_observed, provider_usage_seen, observation_retry;
+    bool provider_timed, tool_timed, tool_execution_started, tool_observed, provider_usage_seen, observation_retry;
     bool observation_draining;
     char log_buffer[4096]; /* Owned setvbuf storage for an explicitly opened log. */
     cog_cli_configuration_t *configuration;
