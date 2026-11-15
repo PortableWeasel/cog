@@ -1060,15 +1060,22 @@ static void test_update_operations_do_not_allocate(void)
     cog_agent_config_t config = {0};
     cog_agent_id_t id = 0U;
     cog_agent_update_t update, copy;
+    cog_agent_config_t copied_config;
+    unsigned char wire[64];
+    cog_agent_id_t decoded_id = 0U;
     char data[32];
-    size_t needed, length;
+    size_t needed, length, wire_bytes;
     CHECK(core != NULL);
     config.task = "bounded";
     CHECK_EQ_INT(cog_agent_spawn(core, &config, &id), COG_OK);
     CHECK_EQ_INT(cog_core_run(core), COG_OK); /* Drain the spawn lease. */
     allocation_calls = 0U;
     allocation_tracking = true;
+    CHECK_EQ_INT(cog_agent_copy_config(core, id, &copied_config, data, sizeof(data), &needed), COG_OK);
     update = (cog_agent_update_t){0U, id, 1U, COG_AGENT_STATUS_RUNNING, COG_OK, "go", 2U};
+    CHECK_EQ_INT(cog_agent_update_encode(id, &update, wire, sizeof(wire), &wire_bytes), COG_OK);
+    CHECK_EQ_INT(cog_agent_update_decode(wire, wire_bytes, &decoded_id, &copy, data, sizeof(data), &needed), COG_OK);
+    CHECK_EQ_INT(decoded_id, id);
     CHECK_EQ_INT(cog_agent_apply_update(core, id, &update), COG_OK);
     CHECK_EQ_INT(cog_agent_copy_update(core, id, &copy, data, sizeof(data), &needed), COG_OK);
     CHECK_EQ_INT(cog_agent_ack_update(core, id, id, 1U), COG_OK);
@@ -1216,12 +1223,183 @@ static void test_retained_updates(void)
     cog_session_free(session);
 }
 
+/* Independent review regressions: exercise only public admission/dispatch APIs. */
+typedef struct critic_intent_context {
+    size_t spawn_count, cancel_count, generic_count, effect_count;
+    cog_agent_config_t config;
+    char storage[64];
+} critic_intent_context_t;
+
+static cog_handler_result_t critic_intent_handler(cog_core_t *core,
+                                                   const cog_event_t *event)
+{
+    critic_intent_context_t *context = cog_core_user(core);
+    const cog_event_agent_intent_t *intent = event->payload;
+    cog_event_agent_intent_t before;
+    size_t required = 0U;
+    bool cancelled = false;
+    cog_core_stop(core);
+    if (event->kind == COG_EVENT_ERROR) {
+        ++context->generic_count;
+        return (cog_handler_result_t){COG_TRANSITION_SELF, COG_OK};
+    }
+    CHECK_EQ_INT(event->id, event->kind);
+    CHECK_EQ_INT(event->payload_len, sizeof(*intent));
+    before = *intent;
+    CHECK_EQ_INT(event->source_id, intent->agent_id);
+    CHECK_EQ_INT(event->kind, intent->action);
+    CHECK_EQ_INT(cog_agent_release(core, intent->agent_id), COG_ERROR_INVALID_STATE);
+    CHECK_EQ_INT(cog_agent_copy_config(core, intent->agent_id, &context->config,
+                                       context->storage, sizeof(context->storage),
+                                       &required), COG_OK);
+    CHECK_EQ_INT(context->config.execution_epoch, intent->execution_epoch);
+    CHECK_EQ_INT(context->config.owner_peer, intent->owner_peer);
+    CHECK_EQ_INT(cog_agent_is_cancelled(core, intent->agent_id, &cancelled), COG_OK);
+    if (event->kind == COG_EVENT_SUBAGENT_SPAWN) {
+        /* Reuse the freed queue slot with the same numeric application ID. */
+        cog_event_t unrelated = {event->id, COG_EVENT_ERROR, NULL, 0U, 0U};
+        ++context->spawn_count;
+        if (!cancelled) ++context->effect_count;
+        CHECK_EQ_INT(cog_core_enqueue(core, &unrelated), COG_OK);
+        CHECK_EQ_INT(intent->agent_id, before.agent_id);
+        CHECK_EQ_INT(intent->execution_epoch, before.execution_epoch);
+        CHECK_EQ_INT(intent->owner_peer, before.owner_peer);
+        CHECK_EQ_INT(intent->action, before.action);
+    } else {
+        ++context->cancel_count;
+    }
+    return (cog_handler_result_t){COG_TRANSITION_SELF, COG_OK};
+}
+
+static cog_handler_result_t critic_denied_handler(cog_core_t *core,
+                                                  const cog_event_t *event)
+{
+    const cog_event_agent_intent_t *intent = event->payload;
+    CHECK_EQ_INT(cog_agent_release(core, intent->agent_id), COG_ERROR_INVALID_STATE);
+    return (cog_handler_result_t){77U, COG_OK};
+}
+
+static void test_critic_intent_boundaries(void)
+{
+    static const cog_dispatch_entry_t table[] = {
+        COG_DISPATCH_ENTRY(0U, COG_EVENT_SUBAGENT_SPAWN, critic_intent_handler, dummy_transitions),
+        COG_DISPATCH_ENTRY(0U, COG_EVENT_SUBAGENT_CANCEL, critic_intent_handler, dummy_transitions),
+    };
+    static const cog_dispatch_entry_t errors[] = {
+        COG_DISPATCH_ENTRY(0U, COG_EVENT_SUBAGENT_SPAWN, NULL, dummy_transitions),
+        COG_DISPATCH_ENTRY(0U, COG_EVENT_SUBAGENT_SPAWN, critic_denied_handler, dummy_transitions),
+    };
+    cog_session_t *session = NULL;
+    cog_core_t *core = NULL;
+    cog_core_config_t config = {0};
+    critic_intent_context_t context = {0};
+    cog_agent_config_t agent = {0};
+    cog_agent_id_t id = 0U;
+    cog_agent_update_t terminal;
+    char task[] = "owned task", parent[] = "owned parent";
+    CHECK_EQ_INT(cog_session_new(&session, NULL), COG_OK);
+    config.session = session;
+    config.dispatch_table = table;
+    config.dispatch_table_size = sizeof(table) / sizeof(table[0]);
+    config.event_queue_capacity = 2U;
+    config.max_agents = 1U;
+    config.user = &context;
+    CHECK_EQ_INT(cog_core_new(&core, &config), COG_OK);
+    agent.task = task; agent.parent_session_id = parent;
+    agent.timeout_ms = 123U; agent.group_id = 456U;
+    CHECK_EQ_INT(cog_agent_spawn(core, &agent, &id), COG_OK);
+    memset(task, 'x', sizeof(task) - 1U);
+    memset(parent, 'y', sizeof(parent) - 1U);
+    CHECK_EQ_INT(cog_agent_cancel(core, id), COG_OK);
+    CHECK_EQ_INT(cog_agent_cancel(core, id), COG_OK);
+    terminal = (cog_agent_update_t){0U, id, 1U, COG_AGENT_STATUS_CANCELLED,
+                                    COG_ERROR_ABORTED, "drained", 7U};
+    CHECK_EQ_INT(cog_agent_apply_update(core, id, &terminal), COG_OK);
+    CHECK_EQ_INT(cog_agent_ack_update(core, id, id, 1U), COG_OK);
+    CHECK_EQ_INT(cog_core_run(core), COG_OK);
+    CHECK_EQ_INT(context.spawn_count, 1U);
+    CHECK_EQ_INT(context.effect_count, 0U);
+    CHECK_EQ_INT(cog_agent_release(core, id), COG_ERROR_INVALID_STATE);
+    CHECK_EQ_INT(cog_core_run(core), COG_OK);
+    CHECK_EQ_INT(context.cancel_count, 1U);
+    CHECK_EQ_INT(cog_agent_release(core, id), COG_OK);
+    /* An unrelated event with the same dispatch ID has no intent lease. */
+    CHECK_EQ_INT(cog_core_run(core), COG_OK);
+    CHECK_EQ_INT(context.generic_count, 1U);
+    cog_core_free(core);
+    CHECK_EQ_STR(context.config.task, "owned task");
+    CHECK_EQ_STR(context.config.parent_session_id, "owned parent");
+    CHECK_EQ_INT(context.config.timeout_ms, 123U);
+    CHECK_EQ_INT(context.config.group_id, 456U);
+    CHECK_EQ_INT(context.config.execution_epoch, id);
+    cog_session_free(session);
+
+    for (size_t i = 0U; i < sizeof(errors) / sizeof(errors[0]); ++i) {
+        session = NULL; core = NULL;
+        CHECK_EQ_INT(cog_session_new(&session, NULL), COG_OK);
+        config.session = session;
+        config.dispatch_table = &errors[i]; config.dispatch_table_size = 1U;
+        CHECK_EQ_INT(cog_core_new(&core, &config), COG_OK);
+        agent.task = "exit"; agent.parent_session_id = NULL;
+        CHECK_EQ_INT(cog_agent_spawn(core, &agent, &id), COG_OK);
+        terminal = (cog_agent_update_t){0U, id, 1U, COG_AGENT_STATUS_COMPLETED, COG_OK, "", 0U};
+        CHECK_EQ_INT(cog_agent_apply_update(core, id, &terminal), COG_OK);
+        CHECK_EQ_INT(cog_agent_ack_update(core, id, id, 1U), COG_OK);
+        CHECK_EQ_INT(cog_core_run(core), i == 0U ? COG_ERROR_UNHANDLED : COG_ERROR_TRANSITION_DENIED);
+        CHECK_EQ_INT(cog_agent_release(core, id), COG_OK);
+        cog_core_free(core); cog_session_free(session);
+    }
+}
+
+static void test_critic_wire_atomicity(void)
+{
+    cog_agent_update_t update = {3U, 8U, 1U, COG_AGENT_STATUS_FAILED, COG_ERROR_IO, "abc", 3U};
+    cog_agent_update_t decoded, sentinel;
+    cog_agent_id_t id;
+    unsigned char wire[64], malformed[64], untouched[64];
+    char storage[8], expected[8];
+    size_t needed, required;
+    memset(wire, 0, sizeof(wire));
+    CHECK_EQ_INT(cog_agent_update_encode(7U, &update, wire, sizeof(wire), &needed), COG_OK);
+    for (size_t variant = 0U; variant < 6U; ++variant) {
+        size_t length = needed;
+        memcpy(malformed, wire, sizeof(wire));
+        if (variant == 0U) malformed[36] = 255U;
+        if (variant == 1U) memset(malformed + 37U, 0x7f, 4U);
+        if (variant == 2U) malformed[41] = 1U;
+        if (variant == 3U) malformed[46] = 0U;
+        if (variant == 4U) ++length;
+        if (variant == 5U) length = 44U;
+        memset(storage, 'X', sizeof(storage)); memcpy(expected, storage, sizeof(storage));
+        memset(&decoded, 0x5a, sizeof(decoded)); memcpy(&sentinel, &decoded, sizeof(decoded));
+        id = 99U; required = 999U;
+        CHECK_EQ_INT(cog_agent_update_decode(malformed, length, &id, &decoded,
+                                             storage, sizeof(storage), &required), COG_ERROR_PROTOCOL);
+        CHECK_EQ_INT(id, 99U); CHECK_EQ_INT(required, 999U);
+        CHECK(memcmp(&decoded, &sentinel, sizeof(decoded)) == 0);
+        CHECK(memcmp(storage, expected, sizeof(storage)) == 0);
+    }
+    memset(malformed, 0xa5, sizeof(malformed)); memcpy(untouched, malformed, sizeof(malformed));
+    update.data = "\xed\xa0\x80"; /* UTF-8 surrogate is never accepted. */
+    required = 999U;
+    CHECK_EQ_INT(cog_agent_update_encode(7U, &update, malformed, sizeof(malformed), &required), COG_ERROR_INVALID_ARG);
+    CHECK_EQ_INT(required, 999U);
+    CHECK(memcmp(malformed, untouched, sizeof(malformed)) == 0);
+    /* Successful in-place decode copies bytes before committing metadata. */
+    id = 0U;
+    CHECK_EQ_INT(cog_agent_update_decode(wire, needed, &id, &decoded,
+                                         (char *)wire, sizeof(wire), &required), COG_OK);
+    CHECK_EQ_STR(decoded.data, "abc"); CHECK_EQ_INT(id, 7U);
+}
+
 /* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
 int main(void)
 {
+    test_critic_intent_boundaries();
+    test_critic_wire_atomicity();
     test_intent_error_releases_lease();
     test_intent_queue_full();
 #ifdef COG_TEST_WRAP_ALLOC
