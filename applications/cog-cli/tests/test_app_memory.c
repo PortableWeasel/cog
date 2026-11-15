@@ -60,5 +60,14 @@ int main(void)
     allocation=0;fail_at=1;inject=true;
     cog_result_t rc=cog_cli_app_run(app);inject=false;
     REQUIRE(rc==COG_OK && allocation==0U);
+    cog_cli_app_free(app);
+    /* Reload's explicit constructors may allocate; publication's later service,
+       activation, notification and next model turn use only reserved storage. */
+    REQUIRE(cog_cli_app_new(&app,&opts)==COG_OK);
+    uint64_t generation=0U;
+    REQUIRE(cog_cli_app_reload(app,&(cog_cli_reload_options_t){.model_id="replacement"},&generation)==COG_OK);
+    allocation=0;fail_at=1U;inject=true;
+    rc=cog_cli_app_run(app);inject=false;
+    REQUIRE(rc==COG_OK && allocation==0U && generation==2U);
     cog_cli_app_free(app);return 0;
 }

@@ -204,6 +204,13 @@ if(COG_NET_CURL_BUILD_DIR AND COG_NET_CURL_LIBRARY)
 endif()
 target_enable_warnings(test_session_ux)
 add_test(NAME cli-session-ux COMMAND test_session_ux)
+
+add_executable(test_app_reload test_app_reload.c)
+target_include_directories(test_app_reload PRIVATE ../src)
+target_link_libraries(test_app_reload PRIVATE cog::cli)
+target_enable_warnings(test_app_reload)
+add_test(NAME cli-app-reload COMMAND test_app_reload)
+set_tests_properties(cli-app-reload PROPERTIES TIMEOUT 30)
 set_tests_properties(cli-session-ux PROPERTIES TIMEOUT 30)
 add_test(NAME cli-installed-session-ux COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/run_installed_session_ux.py ${PROJECT_BINARY_DIR}
