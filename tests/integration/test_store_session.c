@@ -320,6 +320,98 @@ static void test_core_borrows_store(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Auto-save boundary (Critic regression, gate 9b130b7)                */
+/*                                                                     */
+/* cog/core.h documents config.store as "If non-NULL, the core         */
+/* auto-saves sessions after each exchange."  The per-exchange         */
+/* auto-save trigger is NOT wired into core.c in this phase: the       */
+/* store module records the auto_save flag and the session_store       */
+/* CONTRACT.md defers the trigger to the core integration layer.       */
+/* This test pins the truthful current behavior: a core configured     */
+/* with a file store runs a full turn through the real run loop and    */
+/* the store remains empty afterwards.  It must be updated (or the     */
+/* header amended) when the auto-save trigger is wired in.             */
+/* ------------------------------------------------------------------ */
+
+/* Wait hook: stop the loop on the first wait (the queue is drained). */
+typedef struct no_autosave_wait_ctx {
+    cog_core_t *core;
+} no_autosave_wait_ctx_t;
+
+static void no_autosave_stop_wait(void *arg)
+{
+    no_autosave_wait_ctx_t *ctx = (no_autosave_wait_ctx_t *)arg;
+    cog_core_stop(ctx->core);
+}
+
+static void test_core_no_auto_save(void)
+{
+    char *base = make_tmp();
+    cog_store_config_t cfg;
+    cog_store_t *store = NULL;
+    cog_core_t *core = NULL;
+    cog_core_config_t ccfg;
+    cog_session_t *session = NULL;
+    cog_event_t ev;
+    char **ids = NULL;
+    size_t count = 0U;
+    no_autosave_wait_ctx_t wctx;
+
+    if (base == NULL) {
+        ++failures;
+        return;
+    }
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.base_dir = base;
+    cfg.auto_save = true;
+    CHECK(cog_store_new(&store, &cfg) == COG_OK);
+    CHECK(cog_session_new(&session, NULL) == COG_OK);
+
+    memset(&wctx, 0, sizeof(wctx));
+    memset(&ccfg, 0, sizeof(ccfg));
+    ccfg.session = session;
+    ccfg.dispatch_table = dispatch_table;
+    ccfg.dispatch_table_size =
+        sizeof(dispatch_table) / sizeof(dispatch_table[0]);
+    ccfg.store = store;
+    ccfg.wait_fn = no_autosave_stop_wait;
+    ccfg.wait_arg = &wctx;
+    CHECK(cog_core_new(&core, &ccfg) == COG_OK);
+    wctx.core = core;
+
+    /* One full turn: USER_INPUT (IDLE -> RUNNING), then LLM_COMPLETE
+     * (RUNNING -> IDLE); the wait hook stops the loop once drained. */
+    memset(&ev, 0, sizeof(ev));
+    ev.id = (cog_event_id_t)COG_EVENT_USER_INPUT;
+    ev.kind = COG_EVENT_USER_INPUT;
+    CHECK(cog_core_enqueue(core, &ev) == COG_OK);
+    memset(&ev, 0, sizeof(ev));
+    ev.id = (cog_event_id_t)COG_EVENT_LLM_COMPLETE;
+    ev.kind = COG_EVENT_LLM_COMPLETE;
+    CHECK(cog_core_enqueue(core, &ev) == COG_OK);
+    CHECK(cog_core_run(core) == COG_OK);
+
+    /* The auto-save trigger is deferred to the core integration layer:
+     * after a full exchange the store must still be empty. */
+    CHECK(cog_store_list(store, &ids, &count) == COG_OK);
+    CHECK(count == 0U);
+    if (ids != NULL) {
+        size_t i;
+
+        for (i = 0U; i < count; ++i) {
+            free(ids[i]);
+        }
+        free(ids);
+    }
+
+    cog_core_free(core);
+    cog_session_free(session);
+    cog_store_free(store);
+    rmtree(base);
+    free(base);
+}
+
+/* ------------------------------------------------------------------ */
 /* Core with a null-backend store, and with no store at all.           */
 /* ------------------------------------------------------------------ */
 
@@ -368,6 +460,7 @@ int main(void)
     test_full_cycle();
     test_core_borrows_store();
     test_core_null_and_no_store();
+    test_core_no_auto_save();
 
     if (failures == 0U) {
         printf("test_store_session: ok\n");
