@@ -105,3 +105,46 @@ loop/tool/diagnostic contracts; 03/07/09/10 and 11/17 retain N/O IPC/migration
 boundaries; 08 retains immutable J generations; 13 now invokes guarded RESUME;
 14 invokes safe app_fork; 20 retains K's fresh-input and queued-text rule. R10,
 R11 and R16 receive corresponding application traces. No implementation claim.
+
+## Pass 3 — consistency, failure cases and final self-review
+
+The third pass cross-checked every selector and operation against existing
+constructor ownership and the G/K contracts. Amendments from this pass:
+
+- All non-NEW actions resolve DEFAULT to DURABLE, including MOCK; explicit
+  DISABLED fails rather than quietly selecting an alternate location/backend.
+- Metadata modes do not bind an endpoint; normal REAL retains required model,
+  credential and borrowed net lifetime. Missing metadata model/credentials are
+  allowed while malformed present values and unusable durable location fail.
+- Constructor errors now distinguish malformed selectors (INVALID_ARG), absent
+  session/node (NOT_FOUND), competing live guard (AGAIN), unsafe normal resume
+  (INDETERMINATE), stale admission/no recovery uncertainty (INVALID_STATE),
+  missing RECOVER fencing assertion (DENIED), and reservation/platform limits.
+- Reconciliation remains one exact assistant/call, with resolution and nonempty
+  bounded evidence; a failed save freezes later reconciliation. No blanket
+  ALLOW, outcome inference, session-ID rebinding or automatic execution appears.
+
+| Edge | Contract outcome |
+|---|---|
+| NEW with source ID; LIST with source/identity; RESUME/FORK/RECOVER without source | INVALID_ARG before publication |
+| Multiple action flags, `--session` with non-NEW, `--from-node` outside FORK, `--fenced` outside RECOVER | INVALID_ARG; parser exits2 |
+| FORK with queued startup input; LIST/RECOVER with prompt/queue | INVALID_ARG, no reassignment/model effects |
+| Invalid UTF-8/control/separator/empty/oversize source ID; overflowing unsigned node ID | INVALID_ARG/LIMIT as documented, no guessed/truncated identity |
+| Missing store / explicit no-store on a non-NEW action | NOT_FOUND / INVALID_ARG, never null-store success |
+| Existing owner lock, owner/CAS race, changed checkpoint | AGAIN / INVALID_STATE, no activation grant from a read |
+| STARTED without final result, one of several uncertain calls, unsafe legacy tools | Normal INDETERMINATE / still frozen / UNSUPPORTED |
+| Different call/node/outcome or empty/over-limit evidence | NOT_FOUND/INVALID_STATE/INVALID_ARG/LIMIT, no mutation |
+| Reconciliation save failure or uncertain publication | Return original failure, retain recovery guard, freeze app; no model/tool admission |
+| EOF/SIGINT/SIGTERM in metadata recovery | Leave unresolved evidence intact, release only on app_free; no missing-core stop dereference |
+| Output/flush EPIPE/ENOSPC; unavailable usage | IO through cleanup / explicit availability, never guessed bill |
+
+All new public function parameters have directions, finite bounds, ownership,
+threading, failure and no-effect rules. Added types use existing session/core
+headers and add no library dependency. Static dispatch/data ownership stays in
+the app. Each source family's implementation/review/integration tickets exist;
+no production `.c` change has been made.
+
+Final self-review after pass 3 rechecked the 14 call traces plus original01–20
+mapping and the alternate failure edges above. Strict standalone C11 and C++11
+header compilation validates self-containment; it is not executable conformance.
+The independent final header review must PASS before L implementation starts.

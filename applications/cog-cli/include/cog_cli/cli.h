@@ -173,7 +173,8 @@ typedef struct cog_cli_options {
     bool previous_processes_fenced; /**< RECOVER only: --fenced records the
        operator's explicit assertion that prior command processes are stopped
        and reaped/fenced. It does NOT verify, stop or reap unknown old processes.
-       Required before recovery owner admission; a live store guard still wins. */
+       Required before recovery owner admission (DENIED if absent); invalid for
+       any other action. A live store guard still wins. */
     bool show_usage; /**< --usage prints only reported availability/counts/cost
        for completed turns to stderr; false keeps streamed stdout text-only. */
     /** Durable store directory override; NULL selects the mode-specific default. */
@@ -413,14 +414,15 @@ const char *cog_cli_result_name(cog_result_t rc);
  * text remains visible and requires K's fresh postfailure input to branch.
  * FORK selects fork_node_id through cog_cli_app_fork; --queue is invalid for
  * startup FORK, and its fresh --prompt/interactive input creates the new branch.
- * LIST and RECOVER require DURABLE; DEFAULT becomes DURABLE even for MOCK.
+ * All non-NEW actions require DURABLE; DEFAULT becomes DURABLE even for MOCK.
  * LIST constructs store-only metadata state: session/provider/core accessors
  * return NULL, no credential resolver/net/provider/guard or workspace executes.
  * RECOVER requires the explicit fencing assertion, loads uncertain history and
  * acquires only a recovery guard; provider/core remain NULL and no credentials
  * or net are required. It refuses absent uncertainty with INVALID_STATE.
  * Both metadata actions reject prompt/queue inputs; malformed configuration
- * still fails, but missing model/credential does not. LIST performs no store
+ * still fails, but missing model/credential does not. A usable durable location
+ * is still required. LIST performs no store
  * mutation; RECOVER never grants ordinary execution, even under ALLOW policy.
  * Normal modes build bounded session/provider/tool workspaces, obs/store/IPC and the core.
  * Normal REAL execution requires opts.net with explicit host dependency lifecycle; MOCK alone
@@ -431,16 +433,20 @@ const char *cog_cli_result_name(cog_result_t rc);
  * @param[in]  opts Parsed options; must be non-NULL.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p out or @p opts is NULL.
- * @return COG_ERROR_INVALID_ARG if @p opts->model_id or
- *         @p opts->endpoint_name is NULL.
- * @return COG_ERROR_NOT_FOUND if endpoint/model/credential reference is missing.
- * @return COG_ERROR_DENIED for refused credential access or unavailable policy.
+ * @return COG_ERROR_INVALID_ARG for invalid session selectors/IDs, conflicting
+ * fields, disabled store for a non-NEW action or malformed present values.
+ * @return COG_ERROR_NOT_FOUND for absent session/node or missing normal-mode
+ * endpoint/model/credential reference or usable durable location.
+ * @return COG_ERROR_DENIED for refused credential access, unavailable policy
+ * or missing explicit RECOVER fencing assertion.
  * @return COG_ERROR_LIMIT for invalid/exhausted finite limits; UNSUPPORTED for
  * a platform without a lock-free app stop flag or
  * backend capabilities/unknown config fields/unsafe continuation format.
  * @return COG_ERROR_IO if the log file cannot be opened or the IPC
  *         listener cannot bind.
- * @return Another error code from the underlying libraries.
+ * @return AGAIN for competing live ownership; INDETERMINATE for unsafe normal
+ * resume; INVALID_STATE for recovery without uncertain tools or stale admission;
+ * another error code from the underlying libraries.
  *
  * @post On success, @p *out is a valid app owned by the caller; release
  *       with @c cog_cli_app_free.
