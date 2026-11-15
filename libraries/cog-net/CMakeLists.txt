@@ -74,6 +74,14 @@ if(BUILD_TESTING)
         add_test(NAME unit-net-observer COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_observer.py $<TARGET_FILE:test_net_observer>)
         set_tests_properties(unit-net-observer PROPERTIES TIMEOUT 30)
+        add_executable(test_net_observer_critic ${PROJECT_SOURCE_DIR}/tests/unit/test_net_observer_critic.c)
+        target_link_libraries(test_net_observer_critic PRIVATE cog::net)
+        target_include_directories(test_net_observer_critic PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_options(test_net_observer_critic PRIVATE -Wl,--wrap=curl_multi_timeout)
+        target_enable_warnings(test_net_observer_critic)
+        add_test(NAME unit-net-observer-critic COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_observer_critic.py $<TARGET_FILE:test_net_observer_critic>)
+        set_tests_properties(unit-net-observer-critic PROPERTIES TIMEOUT 30)
         foreach(_regression completion completion-cancel error-cancel replay auth redirect proxy)
             add_test(NAME unit-net-${_regression}-regression COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_regressions.py
