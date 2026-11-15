@@ -745,8 +745,50 @@ static int session_inputs_are_direct(void)
     return 0;
 }
 
+/* The store ceiling is UTF-8 bytes, and every source-selecting action owns it. */
+static int session_unicode_boundary(void)
+{
+    static const cog_cli_session_action_t actions[] = {
+        COG_CLI_SESSION_RESUME, COG_CLI_SESSION_FORK, COG_CLI_SESSION_RECOVER};
+    size_t i;
+    CHECK(clean() == 0);
+    for (i = 0U; i < sizeof(actions) / sizeof(actions[0]); ++i) {
+        cog_cli_options_t o;
+        cog_cli_configuration_t *c = NULL;
+        const cog_cli_options_t *effective;
+        char source[129], expected[128];
+        memset(source, 's', 123U);
+        memcpy(source + 123U, "\xf0\x9f\x98\x80", 5U);
+        memcpy(expected, source, sizeof(expected));
+        cog_cli_options_defaults(&o);
+        o.backend = COG_CLI_BACKEND_MOCK;
+        o.explicit_options = COG_CLI_OPT_BACKEND;
+        o.session_action = actions[i];
+        o.source_session_id = source;
+        o.previous_processes_fenced = actions[i] == COG_CLI_SESSION_RECOVER;
+        o.fork_node_id = actions[i] == COG_CLI_SESSION_FORK ? UINT64_MAX : 0U;
+        CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_OK);
+        effective = cog_cli_configuration_options(c);
+        CHECK(effective->source_session_id != source);
+        memset(source, 'x', 127U);
+        CHECK(memcmp(effective->source_session_id, expected, sizeof(expected)) == 0);
+        CHECK(effective->session_action == actions[i] &&
+              effective->fork_node_id == o.fork_node_id &&
+              effective->previous_processes_fenced == o.previous_processes_fenced);
+        CHECK(effective->store_mode == COG_CLI_STORE_DURABLE);
+        cog_cli_configuration_free(c);
+        memcpy(source, expected, sizeof(expected));
+        source[127] = 'x'; source[128] = '\0';
+        CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_LIMIT && c == NULL);
+        source[126] = '\0'; /* Truncated four-byte scalar, below byte ceiling. */
+        CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_INVALID_ARG && c == NULL);
+    }
+    return 0;
+}
+
 int main(void)
 {
+    CHECK(session_unicode_boundary() == 0);
     CHECK(session_configuration() == 0);
     CHECK(session_selector_failures() == 0);
     CHECK(session_inputs_are_direct() == 0);
