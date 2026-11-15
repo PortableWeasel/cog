@@ -17,6 +17,7 @@ set(COG_UNIT_TESTS
     test_handler
     test_core
     test_agent
+    test_tool
 )
 
 foreach(test ${COG_UNIT_TESTS})
@@ -70,6 +71,10 @@ add_test(NAME unit-core
 
 add_test(NAME unit-agent
     COMMAND test_agent
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME unit-tool
+    COMMAND test_tool
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
 # -----------------------------------------------------------------------
