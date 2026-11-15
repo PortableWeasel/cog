@@ -8,18 +8,32 @@ retained as historical design material and is not current API coverage.
 
 ```mermaid
 sequenceDiagram
-    participant Transport
+    participant App
+    participant Net
+    participant Bridge
     participant Obs
-    participant Observer
-    Transport->>Obs: cog_obs_conn_event_emit(OPEN)
-    Obs->>Observer: configured conn_event_sink(event)
-    Transport->>Obs: CONNECTED then bounded PROGRESS deltas/totals
-    Obs->>Observer: update row by conn_id
-    alt Stall / new application-admitted attempt
-      Transport->>Obs: STALLED / RETRY with explicit attempt
+    App->>Net: request -> successful ID publication
+    Net->>Bridge: observer(ctx,OPEN numeric value)
+    Note over Bridge: reserve numeric entry + callback timestamp + pinned scope
+    App->>Bridge: owner drain after operation returns
+    Bridge->>Obs: conn_event_emit + diag_publish (copied sanitized row)
+    App->>Net: service
+    Net->>Bridge: actual CONNECTED, coalesced PROGRESS
+    Note over Net,Bridge: no payload/URL/header/opaque pointers
+    alt response inactivity timeout
+      Net->>Bridge: STALLED then FAILED/TIMEOUT
+    else fixed wire terminal
+      Net->>Bridge: final PROGRESS then CLOSED/FAILED once
     end
-    Transport->>Obs: CLOSED or FAILED terminal event
-    Observer->>Observer: retain/prune application table with finite policy
+    App->>Bridge: owner drain queued values after service returns
+    App->>Net: observer_status after provider/net operations
+    App->>Bridge: check separate drain/app error before admission
+    alt application actually admits another attempt
+      App->>Net: new request -> fresh OPEN identity
+      App->>Bridge: owner drain OPEN then RETRY (same captured timestamp)
+    end
+    App->>Net: cancel/release owned requests before free
+    Bridge->>Obs: clear/reuse bounded terminal rows
 ```
 
 ## Exact public-header coverage
@@ -30,6 +44,8 @@ presented as library calls. Each header path names the declaring public file.
 
 | Trace step | Exact declaration / member | Declaring header |
 |---|---|---|
+| Numeric source and callback | `cog_net_config_t.observer`; `observer_user`; `cog_net_observer_fn`; `cog_net_observation_t` | [net.h](../../libraries/cog-net/include/cog/net.h) |
+| Actual lifecycle / failure status | `cog_net_request`; `cog_net_service`; `cog_net_cancel`; `cog_net_request_release`; `cog_net_observer_status` | [net.h](../../libraries/cog-net/include/cog/net.h) |
 | Configured event callback | `cog_obs_config_t.conn_event_sink`; `cog_obs_config_t.conn_event_user`; `cog_obs_conn_event_sink_fn` | [libraries/cog-obs/include/cog/obs.h](../../libraries/cog-obs/include/cog/obs.h) |
 | Emit immutable event | `cog_obs_conn_event_emit`; `cog_obs_conn_event_t` | [libraries/cog-obs/include/cog/obs.h](../../libraries/cog-obs/include/cog/obs.h) |
 | Lifecycle kinds | `COG_OBS_CONN_EVENT_OPEN`; `COG_OBS_CONN_EVENT_CONNECTED`; `COG_OBS_CONN_EVENT_PROGRESS`; `COG_OBS_CONN_EVENT_STALLED`; `COG_OBS_CONN_EVENT_RETRY`; `COG_OBS_CONN_EVENT_CLOSED`; `COG_OBS_CONN_EVENT_FAILED` | [libraries/cog-obs/include/cog/obs.h](../../libraries/cog-obs/include/cog/obs.h) |
@@ -60,3 +76,51 @@ Future conformance requirements: Real transport event ordering, HTTP vs transpor
 Header tracing is complete only where the gap analysis says so. Production
 implementation and executable scenario migration remain gated by pass 3 and the
 independent final review; no passing runtime result is inferred from these tables.
+
+## Runtime observability amendment, pass 1
+
+Design `d32fafd` starts from main8c68b4a after K/L. Generic obs APIs are
+implemented but the scenario tests still manually emit observations. The
+[dedicated runtime contract](../REAL_CLIENT_OBSERVABILITY_CONTRACTS.md) defines
+the minimal production bridge; net.h supplies a numeric constructor-borrowed
+observer and checked latched status, with no payload/URL/secret pointers.
+Implementation and actual-path oracles are delivery `b64ee7c`, serialized after
+R12. No runtime passing claim follows from this header amendment.
+
+## Runtime pass 2: concrete production bridge
+
+The net callback supplies only actual numeric facts. The host bridge assigns
+monotonic callback timestamps, copied safe labels, globally distinct obs IDs and
+pinned application attempt/generation scope. HTTP429 CLOSED/OK stays distinct
+from provider failure and later admitted RETRY. Captured completion wins cancel
+even before retained terminal publication; an active release flushes progress and
+ABORTED once. The existing body selector/ack is never used to collect telemetry.
+A failed callback latches separately and is not retried; app admission checks it
+and joins cleanup. Context free ends the whole observation domain without a
+callback; observable terminal evidence uses explicit cancel/release before free.
+The dedicated contract traces15 success/failure/lifetime cases and actual-path
+required oracles. Existing hand-emitted test19 remains component-only evidence.
+
+## Runtime pass 3: consistency boundary
+
+Observation sequence is independent of retained body sequence and never acked.
+OPEN has zero counters; every PROGRESS delta contributes exactly once to its
+totals, with a final progress flush before terminal. Per-request callback counts
+are bounded (4/service,2/cancel-or-release,1/request constructor). Observer
+failure disables only the feed, not the transfer, and remains explicitly sticky.
+A caller never reports this lost feed as complete. Header includes remain acyclic
+and zero-init leaves the optional feed off. Different final header review and
+actual implementation/oracles are still required before runtime acceptance.
+
+## Independent-review clarification: queued bridge and error domains
+
+The strict net callback invokes no potentially blocking stdio/obs sinks. It
+copies numeric values, a checked callback-time timestamp and pinned OPEN scope
+into reserved bridge entries. Owner drain after each provider/net operation
+uses existing obs APIs outside callback; drain precedes scope clear, reload
+publication/retirement, row reuse and app/target teardown. A healthy reference
+host reserves at least4*N+2entries for N request slots, with overflow checks.
+Callback queue/clock failure latches net status; deferred sink/format failure
+latches separate private bridge/app state immediately, without pretending the
+already-returned callback can change net status. Both gate admission. New OPEN
+then app RETRY share the captured timestamp on actual retry admission.

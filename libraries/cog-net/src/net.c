@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
-#include <cog/net.h>
+#include "net_internal.h"
+#include <assert.h>
 #include <curl/curl.h>
 #include <dlfcn.h>
 #include <errno.h>
@@ -11,48 +12,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* All mutable state is owned by the caller's context. */
-typedef struct net_item {
-    cog_net_response_t view;
-    char *body;
-    char *headers;
-    bool exposed;
-} net_item_t;
-
-typedef struct net_request {
-    struct cog_net_ctx *ctx;
-    cog_request_id_t id;
-    CURL *easy;
-    CURLM *multi;
-    struct curl_slist *request_headers;
-    char *input;
-    char *header_buf;
-    size_t header_len;
-    net_item_t *items;
-    char *item_body;
-    char *item_headers;
-    size_t head, count;
-    uint64_t next_sequence;
-    uint64_t start_ms, last_byte_ms, pause_ms;
-    int status;
-    uint32_t retry_after;
-    bool retry_known, started, connected, response_started, active, paused, terminal;
-    cog_result_t callback_error, pending_result;
-    cog_net_error_kind_t pending_kind;
-    const char *pending_message;
-    bool pending_terminal;
-} net_request_t;
-
-struct cog_net_ctx {
-    net_request_t *requests;
-    size_t max_connections, request_bytes, header_bytes, chunk_bytes, chunks;
-    uint32_t connect_ms, stall_ms, quantum, budget;
-    uint64_t now, next_id;
-    bool clock_set;
-    char *ca_bundle;
-    size_t global_selected, fair_next, service_next;
-};
 
 #define NO_SELECTION SIZE_MAX
 
@@ -75,6 +34,67 @@ static net_request_t *find_request(const cog_net_ctx_t *ctx, cog_request_id_t id
     for (i = 0U; i < ctx->max_connections; ++i)
         if (ctx->requests[i].id == id && id != 0U) return &ctx->requests[i];
     return NULL;
+}
+static bool observation_enabled(const cog_net_ctx_t *ctx)
+{
+    return ctx->observer != NULL && ctx->observer_result == COG_OK;
+}
+static void observation_error(cog_net_ctx_t *ctx, cog_result_t error)
+{
+    if (observation_enabled(ctx)) ctx->observer_result = error;
+}
+static void observe(net_request_t *r, cog_net_observation_kind_t kind)
+{
+    cog_net_ctx_t *ctx = r->ctx;
+    if (!observation_enabled(ctx)) return;
+    if (r->observation_sequence == UINT64_MAX) {
+        observation_error(ctx, COG_ERROR_LIMIT); return;
+    }
+    cog_net_observation_t value = {0};
+    value.kind = kind; value.request_id = r->id;
+    value.sequence = ++r->observation_sequence;
+    value.bytes_in_total = r->bytes_in; value.bytes_out_total = r->bytes_out;
+    value.http_status = r->status;
+    if (kind == COG_NET_OBSERVATION_PROGRESS) {
+        value.bytes_in_delta = r->bytes_in - r->reported_in;
+        value.bytes_out_delta = r->bytes_out - r->reported_out;
+        r->reported_in = r->bytes_in; r->reported_out = r->bytes_out;
+    }
+    if (kind == COG_NET_OBSERVATION_CLOSED || kind == COG_NET_OBSERVATION_FAILED) {
+        value.outcome = r->wire_result; value.error_kind = r->wire_kind;
+    }
+    assert(!ctx->observing);
+    ctx->observing = true;
+    cog_result_t result = ctx->observer(ctx->observer_user, ctx, &value);
+    ctx->observing = false;
+    if (result != COG_OK) observation_error(ctx, result);
+}
+/* Query entity-body bytes actually uploaded, never the submitted body size.
+ * Observer accounting failure is independent of the real transfer outcome. */
+static void flush_observation(net_request_t *r)
+{
+    cog_net_ctx_t *ctx = r->ctx;
+    if (!observation_enabled(ctx) || r->id == 0U || r->observation_done) return;
+    curl_off_t uploaded = 0;
+    if (curl_easy_getinfo(r->easy, CURLINFO_SIZE_UPLOAD_T, &uploaded) != CURLE_OK ||
+        uploaded < 0 || (uintmax_t)uploaded < r->bytes_out) {
+        observation_error(ctx, COG_ERROR_IO); return;
+    }
+    if ((uintmax_t)uploaded > UINT64_MAX) {
+        observation_error(ctx, COG_ERROR_LIMIT); return;
+    }
+    r->bytes_out = (uint64_t)uploaded;
+    if (r->bytes_in != r->reported_in || r->bytes_out != r->reported_out)
+        observe(r, COG_NET_OBSERVATION_PROGRESS);
+    if (!r->wire_done) return;
+    if (r->observation_stalled) observe(r, COG_NET_OBSERVATION_STALLED);
+    observe(r, r->wire_result == COG_OK ? COG_NET_OBSERVATION_CLOSED : COG_NET_OBSERVATION_FAILED);
+    r->observation_done = true;
+}
+static void flush_observations(cog_net_ctx_t *ctx)
+{
+    for (size_t i = 0U; i < ctx->max_connections; ++i)
+        flush_observation(&ctx->requests[i]);
 }
 static void detach(net_request_t *r)
 {
@@ -127,6 +147,8 @@ static void terminal(net_request_t *r, cog_result_t outcome,
                      cog_net_error_kind_t kind, const char *message)
 {
     if (r->terminal) return;
+    r->wire_done = true; r->wire_result = outcome; r->wire_kind = kind;
+    flush_observation(r);
     detach(r);
     r->terminal = true;
     push_item(r, NULL, 0U, true, outcome, kind, message);
@@ -141,6 +163,7 @@ static int connection_ready(void *data, char *primary_ip, char *local_ip,
     /* An unexpected library-level retry must never transmit again. */
     if (r->connected) return CURL_PREREQFUNC_ABORT;
     r->connected = true;
+    observe(r, COG_NET_OBSERVATION_CONNECTED);
     if (r->ctx->budget != 0U) --r->ctx->budget;
     return CURL_PREREQFUNC_OK;
 }
@@ -168,6 +191,10 @@ static size_t receive_body(char *ptr, size_t size, size_t nmemb, void *data)
         push_item(r, ptr + offset, part, false, COG_OK, COG_NET_ERROR_NONE, NULL);
         remaining -= part;
         offset += part;
+    }
+    if (observation_enabled(ctx)) {
+        if (n > UINT64_MAX - r->bytes_in) observation_error(ctx, COG_ERROR_LIMIT);
+        else r->bytes_in += (uint64_t)n;
     }
     return n;
 }
@@ -327,6 +354,7 @@ cog_result_t cog_net_new(cog_net_ctx_t **out, const cog_net_config_t *config)
     ctx->stall_ms = config->stall_timeout_ms != 0U ? config->stall_timeout_ms : 30000U;
     ctx->quantum = config->service_quantum != 0U ? config->service_quantum : 16U;
     ctx->global_selected = NO_SELECTION;
+    ctx->observer = config->observer; ctx->observer_user = config->observer_user;
     if (ctx->chunks == SIZE_MAX || ctx->header_bytes == SIZE_MAX ||
         !mul_ok(ctx->max_connections, sizeof(*ctx->requests), &total) ||
         !mul_ok(ctx->chunks + 1U, sizeof(net_item_t), &total) ||
@@ -366,6 +394,7 @@ nomem:
 
 void cog_net_free(cog_net_ctx_t *ctx)
 {
+    assert(ctx == NULL || !ctx->observing);
     size_t i;
     if (ctx == NULL) return;
     if (ctx->requests != NULL)
@@ -423,6 +452,7 @@ cog_result_t cog_net_request(cog_net_ctx_t *ctx, const char *method, const char 
                              const char *headers, const char *body, size_t body_len,
                              cog_request_id_t *out_id)
 {
+    assert(ctx == NULL || !ctx->observing);
     net_request_t *r = NULL;
     size_t i, ml, ul, hl, used;
     char *m, *u, *h, *b, *line;
@@ -495,6 +525,7 @@ cog_result_t cog_net_request(cog_net_ctx_t *ctx, const char *method, const char 
     if (curl_multi_add_handle(r->multi, r->easy) != CURLM_OK) goto setup_failed;
     r->id = ++ctx->next_id; r->active = true; r->ctx = ctx;
     *out_id = r->id;
+    observe(r, COG_NET_OBSERVATION_OPEN);
     return COG_OK;
 setup_failed:
     if (r->easy != NULL) curl_easy_cleanup(r->easy);
@@ -505,6 +536,7 @@ setup_failed:
 
 cog_result_t cog_net_cancel(cog_net_ctx_t *ctx, cog_request_id_t id)
 {
+    assert(ctx == NULL || !ctx->observing);
     net_request_t *r;
     if (ctx == NULL) return COG_ERROR_NULL_PTR;
     r = find_request(ctx, id);
@@ -518,6 +550,7 @@ cog_result_t cog_net_cancel(cog_net_ctx_t *ctx, cog_request_id_t id)
 }
 cog_result_t cog_net_request_release(cog_net_ctx_t *ctx, cog_request_id_t id)
 {
+    assert(ctx == NULL || !ctx->observing);
     net_request_t *r;
     size_t index;
     char *input, *headers, *bodies, *item_headers;
@@ -526,6 +559,11 @@ cog_result_t cog_net_request_release(cog_net_ctx_t *ctx, cog_request_id_t id)
     if (ctx == NULL) return COG_ERROR_NULL_PTR;
     r = find_request(ctx, id);
     if (r == NULL) return COG_ERROR_NOT_FOUND;
+    if (r->pending_terminal) {
+        terminal(r, r->pending_result, r->pending_kind, r->pending_message);
+        r->pending_terminal = false;
+    }
+    terminal(r, COG_ERROR_ABORTED, COG_NET_ERROR_CANCELLED, "cancelled");
     index = (size_t)(r - ctx->requests);
     if (ctx->global_selected == index) ctx->global_selected = NO_SELECTION;
     input = r->input; headers = r->header_buf; items = r->items; multi = r->multi;
@@ -573,10 +611,14 @@ static void capture_completion(net_request_t *r, CURLcode code)
         r->pending_message = "transport failed";
     }
     r->pending_terminal = true;
+    r->wire_done = true; r->wire_result = r->pending_result; r->wire_kind = r->pending_kind;
+    r->observation_stalled = code == CURLE_OPERATION_TIMEDOUT && r->response_started && !r->paused;
+    flush_observation(r);
     detach(r);
 }
 cog_result_t cog_net_service(cog_net_ctx_t *ctx, uint64_t now_ms, uint64_t *out_next_deadline_ms)
 {
+    assert(ctx == NULL || !ctx->observing);
     size_t i;
     uint32_t drivers = 0U;
     uint64_t next = UINT64_MAX;
@@ -604,6 +646,7 @@ cog_result_t cog_net_service(cog_net_ctx_t *ctx, uint64_t now_ms, uint64_t *out_
             (r->connected ? UINT64_MAX : deadline(r->start_ms, ctx->connect_ms));
         if (d != UINT64_MAX && now_ms >= d && !r->paused) {
             if (ctx->budget == 0U) { next = now_ms; continue; }
+            r->observation_stalled = r->response_started;
             terminal(r, COG_ERROR_TIMEOUT, COG_NET_ERROR_TIMEOUT, "transport timed out");
             --ctx->budget;
             continue;
@@ -623,6 +666,8 @@ cog_result_t cog_net_service(cog_net_ctx_t *ctx, uint64_t now_ms, uint64_t *out_
                 r->pending_kind = r->callback_error == COG_ERROR_LIMIT ? COG_NET_ERROR_CAPACITY : COG_NET_ERROR_DEPENDENCY;
                 r->pending_message = r->callback_error == COG_ERROR_LIMIT ? "response capacity exceeded" : "transport resume failed";
                 r->pending_terminal = true;
+                r->wire_done = true; r->wire_result = r->pending_result;
+                r->wire_kind = r->pending_kind;
                 detach(r);
                 next = now_ms;
                 continue;
@@ -630,7 +675,10 @@ cog_result_t cog_net_service(cog_net_ctx_t *ctx, uint64_t now_ms, uint64_t *out_
         }
         if (ctx->budget == 0U) { next = now_ms; continue; }
         mc = curl_multi_perform(r->multi, &running);
-        if (mc != CURLM_OK) return mc == CURLM_OUT_OF_MEMORY ? COG_ERROR_NOMEM : COG_ERROR_IO;
+        if (mc != CURLM_OK) {
+            flush_observations(ctx);
+            return mc == CURLM_OUT_OF_MEMORY ? COG_ERROR_NOMEM : COG_ERROR_IO;
+        }
         /* One easy handle per multi: at most one DONE needs capture. */
         msg = curl_multi_info_read(r->multi, &messages);
         if (msg != NULL && msg->msg == CURLMSG_DONE && r->active) {
@@ -642,7 +690,9 @@ cog_result_t cog_net_service(cog_net_ctx_t *ctx, uint64_t now_ms, uint64_t *out_
             } else next = now_ms;
         }
         if (!r->active) continue;
-        if (curl_multi_timeout(r->multi, &curl_timeout) != CURLM_OK) return COG_ERROR_IO;
+        if (curl_multi_timeout(r->multi, &curl_timeout) != CURLM_OK) {
+            flush_observations(ctx); return COG_ERROR_IO;
+        }
         if (!r->paused) {
             d = r->response_started ? deadline(r->last_byte_ms, ctx->stall_ms) :
                 (r->connected ? UINT64_MAX : deadline(r->start_ms, ctx->connect_ms));
@@ -653,6 +703,7 @@ cog_result_t cog_net_service(cog_net_ctx_t *ctx, uint64_t now_ms, uint64_t *out_
             }
         }
     }
+    flush_observations(ctx);
     ctx->service_next = (ctx->service_next + 1U) % ctx->max_connections;
     if (ctx->budget == 0U) next = now_ms;
     *out_next_deadline_ms = next;
@@ -660,6 +711,7 @@ cog_result_t cog_net_service(cog_net_ctx_t *ctx, uint64_t now_ms, uint64_t *out_
 }
 cog_result_t cog_net_peek_request(cog_net_ctx_t *ctx, cog_request_id_t id, cog_net_response_t *out_response)
 {
+    assert(ctx == NULL || !ctx->observing);
     net_request_t *r;
     net_item_t *item;
     if (ctx == NULL || out_response == NULL) return COG_ERROR_NULL_PTR;
@@ -671,6 +723,7 @@ cog_result_t cog_net_peek_request(cog_net_ctx_t *ctx, cog_request_id_t id, cog_n
 }
 cog_result_t cog_net_peek(cog_net_ctx_t *ctx, cog_net_response_t *out_response)
 {
+    assert(ctx == NULL || !ctx->observing);
     size_t i;
     if (ctx == NULL || out_response == NULL) return COG_ERROR_NULL_PTR;
     if (ctx->global_selected != NO_SELECTION)
@@ -686,6 +739,7 @@ cog_result_t cog_net_peek(cog_net_ctx_t *ctx, cog_net_response_t *out_response)
 }
 cog_result_t cog_net_ack(cog_net_ctx_t *ctx, cog_request_id_t id, uint64_t sequence)
 {
+    assert(ctx == NULL || !ctx->observing);
     net_request_t *r;
     size_t index;
     net_item_t *item;
@@ -708,9 +762,10 @@ cog_result_t cog_net_poll(cog_net_ctx_t *ctx, cog_net_response_t *out_response)
 {
     return cog_net_peek(ctx, out_response);
 }
-int cog_net_fd(const cog_net_ctx_t *ctx) { (void)ctx; return -1; }
+int cog_net_fd(const cog_net_ctx_t *ctx) { assert(ctx == NULL || !ctx->observing); (void)ctx; return -1; }
 size_t cog_net_active_count(const cog_net_ctx_t *ctx)
 {
+    assert(ctx == NULL || !ctx->observing);
     size_t i, count = 0U;
     if (ctx == NULL) return 0U;
     for (i = 0U; i < ctx->max_connections; ++i) if (ctx->requests[i].active) ++count;
@@ -718,6 +773,7 @@ size_t cog_net_active_count(const cog_net_ctx_t *ctx)
 }
 cog_result_t cog_net_active_ids(const cog_net_ctx_t *ctx, cog_request_id_t *out_ids, size_t max_ids, size_t *out_count)
 {
+    assert(ctx == NULL || !ctx->observing);
     size_t i, n = 0U;
     if (ctx == NULL || out_count == NULL || (out_ids == NULL && max_ids != 0U)) return COG_ERROR_NULL_PTR;
     *out_count = cog_net_active_count(ctx);
@@ -727,10 +783,17 @@ cog_result_t cog_net_active_ids(const cog_net_ctx_t *ctx, cog_request_id_t *out_
 }
 cog_result_t cog_net_request_status(const cog_net_ctx_t *ctx, cog_request_id_t id, bool *out_active)
 {
+    assert(ctx == NULL || !ctx->observing);
     net_request_t *r;
     if (ctx == NULL || out_active == NULL) return COG_ERROR_NULL_PTR;
     r = find_request(ctx, id);
     if (r == NULL) return COG_ERROR_NOT_FOUND;
     *out_active = r->active;
     return COG_OK;
+}
+
+cog_result_t cog_net_observer_status(const cog_net_ctx_t *ctx)
+{
+    assert(ctx == NULL || !ctx->observing);
+    return ctx == NULL ? COG_ERROR_NULL_PTR : ctx->observer_result;
 }

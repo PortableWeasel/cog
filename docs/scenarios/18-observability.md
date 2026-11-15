@@ -63,3 +63,49 @@ Future conformance requirements: Typed mismatch/overflow/sink failure, span nest
 Header tracing is complete only where the gap analysis says so. Production
 implementation and executable scenario migration remain gated by pass 3 and the
 independent final review; no passing runtime result is inferred from these tables.
+
+## Runtime observability amendment, pass 1
+
+Design `d32fafd` starts from main8c68b4a after K/L. Generic obs APIs are
+implemented but the scenario tests still manually emit observations. The
+[dedicated runtime contract](../REAL_CLIENT_OBSERVABILITY_CONTRACTS.md) defines
+the minimal production bridge; net.h supplies a numeric constructor-borrowed
+observer and checked latched status, with no payload/URL/secret pointers.
+Implementation and actual-path oracles are delivery `b64ee7c`, serialized after
+R12. No runtime passing claim follows from this header amendment.
+
+## Runtime pass 2: typed application facts
+
+The app brackets actual admitted provider/tool work with existing span APIs or
+typed duration/status records; sequential CLI work follows stack nesting.
+Reported usage has explicit availability and omitted unknown values. Numeric
+request/configuration-generation and assistant/ordinal identities survive label
+omission. Optional labels use bounded safe copies and availability, so valid
+long configuration strings cannot overflow logging or be silently truncated.
+Arguments, commands, paths, output, model text, opaque continuation and secrets
+never become fields. Sink/clock/format failures are checked and latched; normal
+owned drain/persistence precedes failure reporting, without replaying an effect
+to regenerate telemetry. The concurrent R12 generations share app/host obs
+lifetime but never borrow diagnostic strings from retired configuration storage.
+The dedicated contract pins this composition; no new public obs API is needed.
+
+## Runtime pass 3: error and privacy boundary
+
+Timing/log failures stop later app admission through normal owned cleanup, never
+make an already completed effect replayable. Diagnostic strings are bridge-owned
+copies, separate from replaceable config/secret lifetime. Config-private label
+screening exposes only safe bounded labels/availability, never secret storage.
+No shared obs stack is used for nonnested simultaneous providers. All callbacks
+remain on the owner thread, with reserved storage and checked downstream errors.
+Header-only validation establishes contracts/compilation, not runtime conformance.
+
+## Independent-review clarification: existing single-result reporting
+
+Provider/tool logging and owner-drained transport records check sink errors
+outside net callbacks. The first observation failure is retained privately to
+stop later admission and finish cleanup; app_run returns it only if no earlier
+work error is primary. app_shutdown reports enqueue status; later shutdown/drain
+errors are reported by app_run. No public secondary app-error getter is promised.
+A sanitized secondary host diagnostic is best-effort outside callback, never a
+replacement for the primary error. Net status covers callback failures; deferred
+obs sink failure is separate bridge/app state checked after the operation/drain.

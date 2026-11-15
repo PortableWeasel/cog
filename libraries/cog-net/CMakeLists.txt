@@ -63,6 +63,25 @@ if(BUILD_TESTING)
         add_executable(test_net_regressions ${PROJECT_SOURCE_DIR}/tests/unit/test_net_regressions.c)
         target_link_libraries(test_net_regressions PRIVATE cog::net)
         target_enable_warnings(test_net_regressions)
+        add_executable(test_net_observer ${PROJECT_SOURCE_DIR}/tests/unit/test_net_observer.c)
+        target_link_libraries(test_net_observer PRIVATE cog::net)
+        target_include_directories(test_net_observer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_options(test_net_observer PRIVATE
+            -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=curl_easy_getinfo)
+        target_compile_options(test_net_observer PRIVATE
+            -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc)
+        target_enable_warnings(test_net_observer)
+        add_test(NAME unit-net-observer COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_observer.py $<TARGET_FILE:test_net_observer>)
+        set_tests_properties(unit-net-observer PROPERTIES TIMEOUT 30)
+        add_executable(test_net_observer_critic ${PROJECT_SOURCE_DIR}/tests/unit/test_net_observer_critic.c)
+        target_link_libraries(test_net_observer_critic PRIVATE cog::net)
+        target_include_directories(test_net_observer_critic PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_options(test_net_observer_critic PRIVATE -Wl,--wrap=curl_multi_timeout)
+        target_enable_warnings(test_net_observer_critic)
+        add_test(NAME unit-net-observer-critic COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_observer_critic.py $<TARGET_FILE:test_net_observer_critic>)
+        set_tests_properties(unit-net-observer-critic PROPERTIES TIMEOUT 30)
         foreach(_regression completion completion-cancel error-cancel replay auth redirect proxy)
             add_test(NAME unit-net-${_regression}-regression COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_regressions.py
