@@ -202,6 +202,8 @@ typedef enum cog_toolkit_policy_decision {
  * @param[in] config Explicit nonzero runtime/output bounds and borrowed user.
  * @return COG_OK; NULL_PTR; INVALID_ARG for malformed arguments/schema; NOT_FOUND;
  * UNSUPPORTED for no async vtable or schema keyword; LIMIT/NOMEM for capacity.
+ * INVALID_ARG if any required async callback is NULL. Validate all six before
+ * invoking new_ or any implementation callback; never publish a partial handle.
  * @note If the core store requires ownership, config.owner_guard is mandatory
  * and must match this session. Constructor borrows it; start validates it before
  * effects; free returns it only after terminal cleanup. Missing/stale guard
@@ -234,7 +236,9 @@ cog_result_t cog_toolkit_execution_new(cog_toolkit_execution_t **out,
  * @param[in] decision ALLOW executes; DENY creates terminal DENIED result;
  * UNDECIDED returns AGAIN without effects.
  * @param[in] now_ms Monotonic clock shared with poll/cancel.
- * @return COG_OK; AGAIN; NULL_PTR; INVALID_ARG; INVALID_STATE if already started.
+ * @return COG_OK; AGAIN; NULL_PTR; INVALID_ARG; INVALID_STATE if already started
+ * or the current session has become INDETERMINATE/unsafe. Revalidate at ALLOW
+ * start, not only constructor/guard acquisition. No new effect after uncertainty.
  * @pre Before ALLOW, application durably saved the corresponding STARTED ledger
  * and applied its workspace/command policy. An interactive prompt occurs in the
  * app while this handle remains prepared, never inside a blocking callback.

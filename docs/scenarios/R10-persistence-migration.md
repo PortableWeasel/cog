@@ -85,3 +85,55 @@ crash retains uncertainty; it never repeats execution. Releasing recovery guard
 does not itself grant execution: a new durable epoch and normal guard are required.
 Future G/L tests must cover rejected execution borrows, wrong call IDs, capacity
 failure atomicity, failed final save and crash after every recovery boundary.
+
+## Independent final-review revision: committed identity (E08)
+
+Discard/reset cannot remove identified/admitted/effect-bearing/fork-shared state.
+Safe disposal remains limited to uncommitted text drafts, without rewinding node
+IDs. Save/append compare the locked committed generation even if the caller
+constructs an empty replacement with the same session ID: committed call/assistant/
+ancestor identity, arguments, opaque data, results and prior audit evidence cannot
+be removed/rebound or rolled backward. Only documented monotonic ledger progress
+is permitted; final results are immutable and INDETERMINATE closes only through
+explicit recovery. Newly indeterminate work halts new admission under an already
+held guard as well as during acquisition. Failed/uncertain save never makes prior
+intent erasable. Test discard/reset/replacement-save against a saved STARTED leaf
+with no result, and against a completed result/audit; expect refusal and zero reruns.
+
+## Independent final-review revision: active path and unstarted work (E09/E11)
+
+While any call/result is unresolved, `cog_session_fork` and arbitrary-parent
+`cog_session_add_message` cannot switch to a safe sibling or ancestor. Only a
+matching TOOL result at the active leaf, or atomic reconcile_tool, may extend
+that path. REPLAY load rejects off-active unresolved state; no recovery target
+can be stranded. An incomplete text-only turn without tool ledger still permits
+an explicit fork from its safe ancestor. Crash oracle: create a safe sibling,
+then save active STARTED; attempted sibling switch must fail before the crash,
+and restored INDETERMINATE remains reachable for reconciliation.
+
+PROPOSED is unresolved lifecycle state but proves no STARTED admission happened:
+normal guard acquisition may resume that current policy/denial phase. It cannot
+start unrelated model/user/branch work. Crashed STARTED becomes INDETERMINATE and
+requires recovery. Cancelled unstarted proposals receive identified no-effect
+DENIED results; they are never mistaken for uncertain executed effects. Test the
+crash before STARTED save and cancel-after-proposal boundaries with zero effects.
+
+## Independent final-review revision: public exact restore (E10)
+
+Custom save callbacks obtain complete records with `cog_session_snapshot_view`;
+load callbacks return a session through `cog_session_restore`, without private
+layout, ID setters or dummy-node burning. This includes sparse IDs, parent/sibling
+order, selected active leaf, node/audit high-water, exact identified ledger and
+audit/evidence bytes. STARTED conservatively normalizes to INDETERMINATE.
+
+| Public persistence boundary | Exact declaration | Declaring header |
+|---|---|---|
+| Complete bounded records | `cog_session_snapshot_t`; `cog_tool_ledger_record_t`; `cog_tool_audit_record_t`; `cog_session_snapshot_view` | [session.h](../../libraries/cog-core/include/cog/session.h) |
+| Explicit identity restore | `cog_session_restore`; `cog_session_snapshot_t.active_node_id`; `cog_session_snapshot_t.node_id_high_water`; `cog_session_snapshot_t.audit_high_water` | [session.h](../../libraries/cog-core/include/cog/session.h) |
+
+Snapshot arrays are borrowed and must be encoded/copied before mutation; restore
+transitively copies them into explicit constructor reservations. A larger restore
+may retry recovery LIMIT without changing identity/history or growing in place;
+keep the old object until construction succeeds. Test sparse IDs/active branch,
+wrong high-water, duplicate IDs, malformed audit chain, custom-context round trip
+and a last-node STARTED snapshot restored with enough room to append recovery.

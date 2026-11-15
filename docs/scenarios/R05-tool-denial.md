@@ -65,3 +65,21 @@ keeps subreaper/signal changes inside an owned helper, never the embedding host;
 the cancellation profile requires descendants remain in the owned group. Test
 ordinary inherited-group grandchildren outliving the shell, exact parser/depth
 limits, unsupported numeric ranges and result resize with one effect.
+
+## Independent final-review revision: active path and unstarted work (E09/E11)
+
+While any call/result is unresolved, `cog_session_fork` and arbitrary-parent
+`cog_session_add_message` cannot switch to a safe sibling or ancestor. Only a
+matching TOOL result at the active leaf, or atomic reconcile_tool, may extend
+that path. REPLAY load rejects off-active unresolved state; no recovery target
+can be stranded. An incomplete text-only turn without tool ledger still permits
+an explicit fork from its safe ancestor. Crash oracle: create a safe sibling,
+then save active STARTED; attempted sibling switch must fail before the crash,
+and restored INDETERMINATE remains reachable for reconciliation.
+
+PROPOSED is unresolved lifecycle state but proves no STARTED admission happened:
+normal guard acquisition may resume that current policy/denial phase. It cannot
+start unrelated model/user/branch work. Crashed STARTED becomes INDETERMINATE and
+requires recovery. Cancelled unstarted proposals receive identified no-effect
+DENIED results; they are never mistaken for uncertain executed effects. Test the
+crash before STARTED save and cancel-after-proposal boundaries with zero effects.

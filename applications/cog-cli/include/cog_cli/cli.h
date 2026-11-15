@@ -352,7 +352,11 @@ const char *cog_cli_result_name(cog_result_t rc);
  * recovery guard; no provider/tool/input work is admitted. In interactive run,
  * an operator must choose evidence-backed reconciliation or acknowledge unknown
  * effects; ALLOW policy never substitutes for that decision. Noninteractive run
- * returns INDETERMINATE without effects. After successful reconciliation save,
+ * returns INDETERMINATE without effects. Persisted PROPOSED calls instead
+ * resume the current explicit policy/denial phase under normal ownership;
+ * they are proven unstarted, never confused with crashed STARTED uncertainty.
+ * Cancellation/aborted turns close any unstarted proposals with identified
+ * no-effect DENIED results before safe continuation. After successful reconciliation save,
  * release recovery guard and admit/acquire a new normal epoch before work.
  * Missing usable location returns NOT_FOUND; creation/open errors
  * return IO, never silently disable persistence. MOCK defaults DISABLED.
@@ -414,6 +418,9 @@ void cog_cli_app_free(cog_cli_app_t *app);
  * is assembled per turn; complete tool call IDs, opaque continuation and usage
  * are saved. No tool starts before terminal validation, schema and policy.
  * Persist STARTED before side effects; result+ledger before next model request.
+ * New INDETERMINATE state immediately halts model/tool/child/input admission
+ * even while the normal guard remains held. Drain existing work, retain evidence
+ * and require explicit recovery; a previously acquired guard is no bypass.
  * Retry only before accepted output/effects, within attempt and elapsed limits;
  * transport never retries. Partial failures persist INCOMPLETE and require an
  * explicit user continuation; no replay of executed or indeterminate tools.

@@ -83,3 +83,17 @@ the original backing text until its handler returns (or copies into another
 reserved owner); successful enqueue alone is not permission to overwrite it.
 Future tests enqueue a second prompt before dispatching the first and verify
 unchanged text, plus explicit continuation/cancel branch isolation.
+
+## Independent final-review revision: committed identity (E08)
+
+Discard/reset cannot remove identified/admitted/effect-bearing/fork-shared state.
+Safe disposal remains limited to uncommitted text drafts, without rewinding node
+IDs. Save/append compare the locked committed generation even if the caller
+constructs an empty replacement with the same session ID: committed call/assistant/
+ancestor identity, arguments, opaque data, results and prior audit evidence cannot
+be removed/rebound or rolled backward. Only documented monotonic ledger progress
+is permitted; final results are immutable and INDETERMINATE closes only through
+explicit recovery. Newly indeterminate work halts new admission under an already
+held guard as well as during acquisition. Failed/uncertain save never makes prior
+intent erasable. Test discard/reset/replacement-save against a saved STARTED leaf
+with no result, and against a completed result/audit; expect refusal and zero reruns.

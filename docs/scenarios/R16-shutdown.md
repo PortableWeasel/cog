@@ -84,3 +84,17 @@ crash retains uncertainty; it never repeats execution. Releasing recovery guard
 does not itself grant execution: a new durable epoch and normal guard are required.
 Future G/L tests must cover rejected execution borrows, wrong call IDs, capacity
 failure atomicity, failed final save and crash after every recovery boundary.
+
+## Independent final-review revision: committed identity (E08)
+
+Discard/reset cannot remove identified/admitted/effect-bearing/fork-shared state.
+Safe disposal remains limited to uncommitted text drafts, without rewinding node
+IDs. Save/append compare the locked committed generation even if the caller
+constructs an empty replacement with the same session ID: committed call/assistant/
+ancestor identity, arguments, opaque data, results and prior audit evidence cannot
+be removed/rebound or rolled backward. Only documented monotonic ledger progress
+is permitted; final results are immutable and INDETERMINATE closes only through
+explicit recovery. Newly indeterminate work halts new admission under an already
+held guard as well as during acquisition. Failed/uncertain save never makes prior
+intent erasable. Test discard/reset/replacement-save against a saved STARTED leaf
+with no result, and against a completed result/audit; expect refusal and zero reruns.

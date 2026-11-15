@@ -9,7 +9,7 @@ CMake, runtime scenario, sanitizer result or paid provider request is delivered.
 
 All 38 required traces were reviewed against their declaring headers, including
 normal flow, cancellation, overflow, OOM, shutdown, replay, migration and
-source/ABI compatibility. Seven concrete contract gaps were corrected below;
+source/ABI compatibility. Eleven contract gap groups, including the independent-review revision below, were corrected;
 affected traces include explicit pass-3 retraces. No known required public API
 gap remains in the supported profile after these amendments. Independent final
 review can reject that conclusion; implementation must not begin before E closes.
@@ -118,6 +118,42 @@ writes serialize under the same ownership domain. Owned deletion/anchor replacem
 is UNSUPPORTED even after release, preventing inode/fencing reset. Uncertain fsync
 requires exact locked durable confirmation, never guessed rollback.
 
+## Independent final-review revision 1
+
+Final reviewer rejected four additional boundary groups; this revision is sent
+back for review and is **not** gate approval. Provider disconnect now explicitly
+consumes its handle even on cleanup error, and async tool construction validates
+all six callbacks before calling implementation code.
+
+- **E08, monotonic committed identity:** reset/discard cannot erase identified,
+  admitted, result/audit-bearing or fork-shared state. Draft text disposal remains
+  explicit, and counters never rewind. Normal save/append now checks the locked
+  committed generation; replacing a session object with the same ID cannot erase
+  or rebind a call, its assistant/ancestor context, results, audit or high-water.
+  Only legal monotonic transitions are allowed, and final outcomes stay immutable.
+  New INDETERMINATE halts admission under an already held normal guard. G/Q/K/L
+  must test this through both public mutation and replacement-object saves.
+- **E09, reachable recovery:** unresolved calls/results stay on one active path.
+  Fork or arbitrary-parent insertion cannot strand an uncertain sibling. Text-only
+  incomplete continuation remains supported. G/K/L/N test sibling-switch refusal
+  and reachable reconciliation after a crash.
+- **E10, public exact restore:** custom backends now export a bounded snapshot
+  view and use an explicit restore constructor for sparse IDs, active leaf,
+  identity high-water and complete ledger/audit records. No private layout or
+  dummy IDs. Restore permits larger constructor reservations so a valid full
+  snapshot can gain recovery-result space without in-place growth. G/P must test
+  public-only custom save/load, malformed identity/audit and capacity retries.
+
+- **E11, proven-unstarted eligibility:** coherent PROPOSED does not require
+  recovery: normal acquisition resumes only that current explicit policy/denial,
+  while crashed STARTED becomes INDETERMINATE. Cancel closes unstarted proposals
+  with identified no-effect denial. G/K/L test pre-STARTED crashes with zero effects.
+  No-store remains supported text-only; unsolicited calls are denied without a
+  durable-STARTED bypass, and safe text draft disposal remains available.
+
+Affected traces and the synthetic fixture carry these failure oracles. The final
+independent reviewer must recheck the revised normal-save/recovery/restore bounds.
+
 ## API, include and delivery migration
 
 The public include graph is acyclic: result is the shared value root; IPC/obs do
@@ -146,8 +182,10 @@ The final matrix compiles all **28 public headers** under strict GCC C11, G++17,
 Clang C11 and Clang++17 (**112 standalone objects**), plus a mixed consumer under
 each compiler that references every declared symbol/member in all 38 trace tables.
 The audit checks exact declaring-header references, typed fields by compiler,
-local links and an acyclic public include graph. The final audit covers **916 table references, 109 distinct typed fields and
-74 public include edges** after all amendments. Synthetic fixture identity assembly and exact opaque
+local links and an acyclic public include graph. The final audit covers **940 table references, 112 distinct typed fields and
+74 public include edges** after all amendments. Four additional strict C/C++
+custom-store consumers compile the public backend-context/snapshot/restore path
+without private headers (eight mixed/custom consumer objects total). Synthetic fixture identity assembly and exact opaque
 UTF-8 length/base64 equality pass; new data-only oracles cover recovery, unknown
 opaque members and constructor limits. Whitespace and no-production-C diffs pass.
 

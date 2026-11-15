@@ -62,3 +62,23 @@ then invokes its own matching destructor. Generic store_free never frees this
 borrowed state. Missing required callbacks or incomplete fenced/recovery groups
 fail before publication. Future G/P installed-consumer tests use two independent
 custom contexts and assert callback identity and destructor ordering.
+
+## Independent final-review revision: public exact restore (E10)
+
+Custom save callbacks obtain complete records with `cog_session_snapshot_view`;
+load callbacks return a session through `cog_session_restore`, without private
+layout, ID setters or dummy-node burning. This includes sparse IDs, parent/sibling
+order, selected active leaf, node/audit high-water, exact identified ledger and
+audit/evidence bytes. STARTED conservatively normalizes to INDETERMINATE.
+
+| Public persistence boundary | Exact declaration | Declaring header |
+|---|---|---|
+| Complete bounded records | `cog_session_snapshot_t`; `cog_tool_ledger_record_t`; `cog_tool_audit_record_t`; `cog_session_snapshot_view` | [session.h](../../libraries/cog-core/include/cog/session.h) |
+| Explicit identity restore | `cog_session_restore`; `cog_session_snapshot_t.active_node_id`; `cog_session_snapshot_t.node_id_high_water`; `cog_session_snapshot_t.audit_high_water` | [session.h](../../libraries/cog-core/include/cog/session.h) |
+
+Snapshot arrays are borrowed and must be encoded/copied before mutation; restore
+transitively copies them into explicit constructor reservations. A larger restore
+may retry recovery LIMIT without changing identity/history or growing in place;
+keep the old object until construction succeeds. Test sparse IDs/active branch,
+wrong high-water, duplicate IDs, malformed audit chain, custom-context round trip
+and a last-node STARTED snapshot restored with enough room to append recovery.
