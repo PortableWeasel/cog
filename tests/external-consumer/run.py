@@ -139,6 +139,10 @@ def main():
         for binary in (final / bindir / "installed_embedder", final / bindir / "cog-cli", actual_curl):
             runtime[binary.name] = loader(binary, final, env, [*forbidden, relocated])
         expected_cares = next(path for path in (final / libdir).glob("libcares.so.*") if path.is_file())
+        cares_prefix = pathlib.Path(cache(args.cares_build)["CMAKE_INSTALL_PREFIX"])
+        admitted_cares = next(path for path in (cares_prefix / libdir).glob("libcares.so.*") if path.is_file())
+        if digest(expected_cares) != digest(admitted_cares):
+            raise RuntimeError("normal installed c-ares bytes differ from the declared dependency profile")
         loader(expected_cares, final, env, [*forbidden, relocated])
         for program in ("installed_embedder", "cog-cli"):
             paths = runtime[program]
