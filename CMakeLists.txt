@@ -36,6 +36,9 @@ add_subdirectory(libraries/cog-provider)
 add_subdirectory(libraries/cog-toolkit)
 add_subdirectory(libraries/cog-ipc)
 add_subdirectory(libraries/cog-obs)
+add_subdirectory(libraries/cog-config)
+add_subdirectory(libraries/cog-net)
+add_subdirectory(libraries/cog-orchestrator)
 
 # -----------------------------------------------------------------------
 # Applications
