@@ -36,6 +36,7 @@
 #include "cog_cli/mock_provider.h"
 
 #include "agent_internal.h"
+#include "agent_test_helpers.h"
 
 #include <pthread.h>
 #include <stddef.h>
@@ -264,9 +265,9 @@ static void scenario_fan_out_fan_in(void)
 
     /* Run each to completion and collect the results in spawn order. */
     for (i = 0U; i < 3U; ++i) {
-        CHECK(cog_agent_internal_start(core, ids[i]) == COG_OK);
-        CHECK(cog_agent_internal_complete(core, ids[i], results[i],
-                                          result_lens[i]) == COG_OK);
+        CHECK(scenario_agent_step(core, ids[i], COG_AGENT_STATUS_RUNNING, COG_OK, "", 0U) == COG_OK);
+        CHECK(scenario_agent_step(core, ids[i], COG_AGENT_STATUS_COMPLETED, COG_OK, results[i],
+                                  result_lens[i]) == COG_OK);
         CHECK(cog_agent_status(core, ids[i], &st) == COG_OK);
         CHECK_EQ_INT((long long)st, (long long)COG_AGENT_STATUS_COMPLETED);
     }
@@ -394,22 +395,24 @@ static void scenario_broadcast_cancel(void)
             cfg.force_local = true;
             cfg.group_id = 7U;
             CHECK(cog_agent_spawn(core, &cfg, &id) == COG_OK);
-            CHECK(cog_agent_internal_start(core, id) == COG_OK);
+            CHECK(scenario_agent_step(core, id, COG_AGENT_STATUS_RUNNING, COG_OK, "", 0U) == COG_OK);
 
             /* Broadcast cancel semantics on the agent: cancel marks it
-             * CANCELLED and is_cancelled reports true. */
+             * admitted while RUNNING and is_cancelled reports true. */
             CHECK(cog_agent_cancel(core, id) == COG_OK);
             CHECK(cog_agent_status(core, id, &st) == COG_OK);
-            CHECK_EQ_INT((long long)st, (long long)COG_AGENT_STATUS_CANCELLED);
+            CHECK_EQ_INT((long long)st, (long long)COG_AGENT_STATUS_RUNNING);
             CHECK(cog_agent_is_cancelled(core, id, &cancelled) == COG_OK);
             CHECK(cancelled);
 
             /* A late result from a cancelled fan-out agent is rejected. */
-            CHECK(cog_agent_internal_complete(core, id, "late", 4U)
+            CHECK(scenario_agent_step(core, id, COG_AGENT_STATUS_COMPLETED, COG_OK, "late", 4U)
                   == COG_ERROR_INVALID_STATE);
             CHECK(cog_agent_result(core, id, rbuf, sizeof(rbuf), &rlen)
                   == COG_ERROR_INVALID_STATE);
 
+            CHECK(scenario_agent_step(core, id, COG_AGENT_STATUS_CANCELLED, COG_ERROR_ABORTED, "", 0U) == COG_OK);
+            CHECK(cog_agent_result(core, id, rbuf, sizeof(rbuf), &rlen) == COG_OK);
             cog_cli_app_free(app);
         }
     }

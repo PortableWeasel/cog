@@ -285,6 +285,7 @@ static void agent_reservations(void)
     char task[] = "task", status[] = "ok";
     char result[8];
     size_t length;
+    cog_agent_update_t update;
     create(&f, &cfg);
     agent.task = task;
     agent.force_local = true;
@@ -299,9 +300,12 @@ static void agent_reservations(void)
     assert(strcmp(entry->status_msg, "ok") == 0);
     assert(cog_agent_notify_parent(f.core, first, "long") == COG_ERROR_LIMIT);
     assert(strcmp(entry->status_msg, "ok") == 0);
-    assert(cog_agent_internal_start(f.core, first) == COG_OK);
-    assert(cog_agent_internal_complete(f.core, first, "long", 4U) == COG_ERROR_LIMIT);
-    assert(cog_agent_internal_complete(f.core, first, "yes", 3U) == COG_OK);
+    assert(cog_agent_ack_update(f.core, first, first, 1U) == COG_OK);
+    update = (cog_agent_update_t){0U, first, 2U, COG_AGENT_STATUS_COMPLETED,
+                                  COG_OK, "long", 4U};
+    assert(cog_agent_apply_update(f.core, first, &update) == COG_ERROR_LIMIT);
+    update.data = "yes"; update.data_len = 3U;
+    assert(cog_agent_apply_update(f.core, first, &update) == COG_OK);
     assert(cog_agent_result(f.core, first, result, sizeof(result), &length) == COG_OK);
     assert(length == 3U && strcmp(result, "yes") == 0);
     assert(cog_agent_spawn(f.core, &agent, &second) == COG_OK);

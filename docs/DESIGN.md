@@ -328,6 +328,17 @@ construction-only credential resolution/clearing. No implicit mock fallback or
 runtime dependency on pi/pass is introduced. H/K still own provider dispatch,
 durable guard admission and complete application-loop migration.
 
+## Bounded agent lifecycle
+
+The core reserves agent records and copied strings at construction. Spawn and
+cancel admit leased intent events atomically to the core queue; application
+dispatch owns execution or forwarding. The handler copies configuration and
+intent before deferring work, and release cannot reclaim a queued or dispatching
+intent. A current owner/epoch/sequence update retains one notification until
+explicit copy and acknowledgement; terminal results remain readable until
+release. Process placement, transport authentication, and remote effects stay
+in the application and orchestrator integration (Stage 14.O).
+
 ## Provider & Endpoint Registry
 
 The Provider & Endpoint Registry is the boundary between the agent core
