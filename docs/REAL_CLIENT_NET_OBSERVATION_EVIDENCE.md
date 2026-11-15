@@ -84,3 +84,10 @@ All use `/tmp/cog-net-maintained/build`, its matching admitted c-ares-only share
 curl and installed headers. Diff whitespace checks pass. No paid/live request or
 full release validation claim is included; the next independent verdict must
 assess this complete checkpoint.
+
+The final critic-driven fixture correction removes a late `/stall` body write:
+HTTP/1.1 now leaves the five declared remaining bytes permanently withheld until
+client cancellation. This avoids a delayed-client race with body completion.
+The changed observer fixture passes again under all three optimized/sanitized
+profiles; production source and the previously passing sixteen-test set are
+unchanged.

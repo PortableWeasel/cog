@@ -7,7 +7,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 
 with tempfile.TemporaryDirectory(prefix="cog-net-observer-") as directory:
     cert, key = (os.path.join(directory, name) for name in ("cert.pem", "key.pem"))
@@ -29,9 +28,9 @@ with tempfile.TemporaryDirectory(prefix="cog-net-observer-") as directory:
             try:
                 self.wfile.write(body)
                 self.wfile.flush()
-                if self.path == "/stall":
-                    time.sleep(0.3)
-                    self.wfile.write(b"later")
+                # /stall deliberately leaves five declared bytes unsent.
+                # HTTP/1.1 stays open until client cancellation, so a delayed
+                # client cannot race with a later write and complete the body.
             except (BrokenPipeError, ConnectionResetError, ssl.SSLError):
                 pass
 
