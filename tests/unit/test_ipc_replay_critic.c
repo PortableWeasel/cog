@@ -15,7 +15,8 @@ static uint32_t random_next(void)
     random_state ^= random_state << 5;
     return random_state;
 }
-static size_t allocation_calls, fail_at, live;
+/* Observe linker-wrapper effects across builtin/libc leaf assumptions. */
+static volatile size_t allocation_calls, fail_at, live;
 void *__real_malloc(size_t size);
 void *__real_calloc(size_t count, size_t size);
 void __real_free(void *ptr);
@@ -307,8 +308,38 @@ static void stable_copy_tests(void)
     assert(copied.sequence == 1 && copied.type == 7 && copied.payload_len == 3 && memcmp(copied.payload, "abc", 3) == 0);
 }
 
+/* Positive control: optimized direct allocator calls must reach wrappers,
+ * update the real oracle, and honor its fault injection before use. */
+static void allocation_oracle_control(void)
+{
+    size_t before = allocation_calls;
+    unsigned char *bytes = malloc(8U);
+    assert(bytes != NULL && allocation_calls == before + 1U);
+    bytes[0] = 0x5aU;
+    assert(live == 1U);
+    free(bytes);
+    assert(live == 0U);
+    before = allocation_calls;
+    bytes = calloc(8U, 1U);
+    assert(bytes != NULL && allocation_calls == before + 1U);
+    assert(bytes[0] == 0U && bytes[7] == 0U);
+    free(bytes);
+    assert(live == 0U);
+    before = allocation_calls;
+    bytes = malloc(8U);
+    free(bytes);
+    assert(allocation_calls == before + 1U); /* Detect optimized-away allocator pairs. */
+    before = allocation_calls;
+    fail_at = allocation_calls + 1U;
+    bytes = malloc(8U);
+    assert(bytes == NULL && allocation_calls == before + 1U);
+    fail_at = 0U;
+    allocation_calls = 0U;
+}
+
 int main(void)
 {
+    allocation_oracle_control();
     constructor_tests(); model_tests(); mutation_tests(); scalar_contract_tests(); utf8_contract_tests(); stable_copy_tests(); assert(live == 0);
     puts("independent replay model, mutation and allocation checks passed");
     return 0;

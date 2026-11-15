@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <assert.h>
 #include <string.h>
 
 #define CHECK(expr) do { if (!(expr)) { \
@@ -35,8 +36,43 @@ void *__wrap_calloc(size_t count, size_t size) { return fail() ? NULL : __real_c
 void *__wrap_realloc(void *ptr, size_t size) { return fail() ? NULL : __real_realloc(ptr, size); }
 char *__wrap_strdup(const char *text) { return fail() ? NULL : __real_strdup(text); }
 
+/* Positive control: optimized direct allocator calls must reach wrappers,
+ * update the real oracle, and honor its fault injection before use. */
+static void allocation_oracle_control(void)
+{
+    size_t before = attempts;
+    unsigned char *bytes = malloc(8U);
+    assert(bytes != NULL && attempts == before + 1U);
+    bytes[0] = 0x5aU;
+    before = attempts;
+    unsigned char *grown = realloc(bytes, 16U);
+    assert(grown != NULL && attempts == before + 1U && grown[0] == 0x5aU);
+    bytes = grown;
+    free(bytes);
+    before = attempts;
+    bytes = calloc(8U, 1U);
+    assert(bytes != NULL && attempts == before + 1U);
+    assert(bytes[0] == 0U && bytes[7] == 0U);
+    free(bytes);
+    before = attempts;
+    char *text = strdup("oracle");
+    assert(text != NULL && attempts == before + 1U && strcmp(text, "oracle") == 0);
+    free(text);
+    before = attempts;
+    bytes = malloc(8U);
+    free(bytes);
+    assert(attempts == before + 1U); /* Detect optimized-away allocator pairs. */
+    before = attempts;
+    failure_at = attempts + 1U;
+    bytes = malloc(8U);
+    assert(bytes == NULL && attempts == before + 1U);
+    failure_at = 0U;
+    attempts = 0U;
+}
+
 int main(void)
 {
+    allocation_oracle_control();
     cog_session_t *s = NULL;
     const cog_session_config_t cfg = {.id = "alloc", .max_nodes = 16U,
         .max_payload_bytes = 16384U, .max_tool_calls_per_message = 2U};

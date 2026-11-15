@@ -5,6 +5,7 @@
 #include <cog/config.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <assert.h>
 #include <string.h>
 #define CHECK(x)                                                                       \
     do {                                                                               \
@@ -19,7 +20,8 @@ void __real_free(void *ptr);
 void *__wrap_malloc(size_t size);
 void *__wrap_calloc(size_t count, size_t size);
 void __wrap_free(void *ptr);
-static size_t calls, fail_at, live;
+/* Observe linker-wrapper effects across builtin/libc leaf assumptions. */
+static volatile size_t calls, fail_at, live;
 static void *watched;
 static size_t watched_bytes;
 static bool watch_next, uncleared;
@@ -82,8 +84,38 @@ static cog_result_t secret_fail(void *arg, const char *ref, char *out, size_t ca
     out[15] = '\0';
     return COG_ERROR_DENIED;
 }
+/* Positive control: optimized direct allocator calls must reach wrappers,
+ * update the real oracle, and honor its fault injection before use. */
+static void allocation_oracle_control(void)
+{
+    size_t before = calls;
+    unsigned char *bytes = malloc(8U);
+    assert(bytes != NULL && calls == before + 1U);
+    bytes[0] = 0x5aU;
+    assert(live == 1U);
+    free(bytes);
+    assert(live == 0U);
+    before = calls;
+    bytes = calloc(8U, 1U);
+    assert(bytes != NULL && calls == before + 1U);
+    assert(bytes[0] == 0U && bytes[7] == 0U);
+    free(bytes);
+    assert(live == 0U);
+    before = calls;
+    bytes = malloc(8U);
+    free(bytes);
+    assert(calls == before + 1U); /* Detect optimized-away allocator pairs. */
+    before = calls;
+    fail_at = calls + 1U;
+    bytes = malloc(8U);
+    assert(bytes == NULL && calls == before + 1U);
+    fail_at = 0U;
+    calls = 0U;
+}
+
 int main(void)
 {
+    allocation_oracle_control();
     cog_config_limits_t limits = {32U, 256U, 16U, 2U};
     cog_config_tree_t *tree = NULL;
     cog_config_txn_t *a = NULL, *b = NULL;

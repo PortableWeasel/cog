@@ -6,8 +6,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static size_t allocation_calls;
-static size_t fail_at;
+/* Observe linker-wrapper effects across builtin/libc leaf assumptions. */
+static volatile size_t allocation_calls;
+/* Observe linker-wrapper effects across builtin/libc leaf assumptions. */
+static volatile size_t fail_at;
 void *__real_malloc(size_t size);
 void *__real_calloc(size_t count, size_t size);
 void *__real_realloc(void *ptr, size_t size);
@@ -118,4 +120,34 @@ static void allocation_tests(void)
     assert(allocation_calls == prior);
     cog_ipc_replay_free(r);
 }
-int main(void) { ring_tests(); codec_tests(); allocation_tests(); puts("replay tests passed"); return 0; }
+/* Positive control: optimized direct allocator calls must reach wrappers,
+ * update the real oracle, and honor its fault injection before use. */
+static void allocation_oracle_control(void)
+{
+    size_t before = allocation_calls;
+    unsigned char *bytes = malloc(8U);
+    assert(bytes != NULL && allocation_calls == before + 1U);
+    bytes[0] = 0x5aU;
+    before = allocation_calls;
+    unsigned char *grown = realloc(bytes, 16U);
+    assert(grown != NULL && allocation_calls == before + 1U && grown[0] == 0x5aU);
+    bytes = grown;
+    free(bytes);
+    before = allocation_calls;
+    bytes = calloc(8U, 1U);
+    assert(bytes != NULL && allocation_calls == before + 1U);
+    assert(bytes[0] == 0U && bytes[7] == 0U);
+    free(bytes);
+    before = allocation_calls;
+    bytes = malloc(8U);
+    free(bytes);
+    assert(allocation_calls == before + 1U); /* Detect optimized-away allocator pairs. */
+    before = allocation_calls;
+    fail_at = allocation_calls + 1U;
+    bytes = malloc(8U);
+    assert(bytes == NULL && allocation_calls == before + 1U);
+    fail_at = 0U;
+    allocation_calls = 0U;
+}
+
+int main(void) { allocation_oracle_control(); ring_tests(); codec_tests(); allocation_tests(); puts("replay tests passed"); return 0; }
