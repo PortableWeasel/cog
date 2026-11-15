@@ -246,6 +246,11 @@ typedef struct client_ctx {
     char path[128];
 } client_ctx_t;
 
+typedef struct bulk_ctx {
+    char path[128];
+    int count;
+} bulk_ctx_t;
+
 /** Connect to the core's listener, send one message, then close. */
 static void *client_thread(void *arg)
 {
@@ -268,6 +273,36 @@ static void *client_thread(void *arg)
     /* Give the core time to accept and receive before we close. */
     ts.tv_sec = 0;
     ts.tv_nsec = 200000000L; /* 200 ms */
+    (void)nanosleep(&ts, NULL);
+
+    (void)cog_ipc_endpoint_free(ep);
+    return NULL;
+}
+
+/** Connect to the core's listener, send @p count messages, then close. */
+static void *bulk_client_thread(void *arg)
+{
+    bulk_ctx_t *b = (bulk_ctx_t *)arg;
+    cog_ipc_endpoint_t *ep = NULL;
+    cog_ipc_message_t msg;
+    struct timespec ts;
+    int i;
+
+    (void)cog_ipc_endpoint_new(&ep);
+    if (cog_ipc_endpoint_connect(ep, b->path, NULL) != COG_OK) {
+        (void)cog_ipc_endpoint_free(ep);
+        return NULL;
+    }
+    (void)cog_ipc_message_new(&msg, 16U);
+    for (i = 0; i < b->count; ++i) {
+        msg.data[0] = (uint8_t)('0' + i);
+        msg.len = 1U;
+        (void)cog_ipc_endpoint_send(ep, &msg);
+    }
+    (void)cog_ipc_message_free(&msg);
+
+    ts.tv_sec = 0;
+    ts.tv_nsec = 300000000L; /* 300 ms */
     (void)nanosleep(&ts, NULL);
 
     (void)cog_ipc_endpoint_free(ep);
@@ -444,6 +479,56 @@ static void test_connected_endpoint(void)
     cog_session_free(session);
 }
 
+/** A full event queue backpressures the drain without deadlock or loss. */
+static void test_full_queue_backpressure(void)
+{
+    char path[128];
+    cog_ipc_endpoint_t *listener = NULL;
+    cog_session_t *session = NULL;
+    cog_core_t *core = NULL;
+    cog_core_config_t cfg;
+    wait_ctx_t ctx;
+    bulk_ctx_t bctx;
+    pthread_t tid;
+
+    CHECK(make_socket_path(path, sizeof(path)) == 0);
+    CHECK(cog_ipc_endpoint_new(&listener) == COG_OK);
+    CHECK(cog_ipc_endpoint_listen(listener, path) == COG_OK);
+
+    CHECK(cog_session_new(&session, NULL) == COG_OK);
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.session = session;
+    cfg.dispatch_table = dispatch_table;
+    cfg.dispatch_table_size = sizeof(dispatch_table) / sizeof(dispatch_table[0]);
+    cfg.ipc_endpoint = listener;
+    cfg.event_queue_capacity = 2U; /* force backpressure across drain passes */
+    cfg.wait_fn = ipc_wait_fn;
+    cfg.wait_arg = &ctx;
+
+    CHECK(cog_core_new(&core, &cfg) == COG_OK);
+
+    memset(&g_state, 0, sizeof(g_state));
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.core = core;
+    (void)snprintf(bctx.path, sizeof(bctx.path), "%s", path);
+    bctx.count = 5;
+
+    CHECK(pthread_create(&tid, NULL, bulk_client_thread, &bctx) == 0);
+    CHECK(cog_core_run(core) == COG_OK);
+    CHECK(pthread_join(tid, NULL) == 0);
+
+    /* All five messages arrived across multiple drain passes despite the
+     * tiny event queue; the peer's close is then reported as a disconnect. */
+    CHECK_EQ_INT(g_state.message_count, 5);
+    CHECK_EQ_INT(g_state.message_len, 1U);
+    CHECK(g_state.message_buf[0] == '4'); /* last message received */
+    CHECK_EQ_INT(g_state.disconnected_count, 1);
+
+    cog_core_free(core);
+    cog_session_free(session);
+}
+
 /** A malformed (oversized) frame closes the connection without deadlock. */
 static void test_malformed_frame(void)
 {
@@ -497,6 +582,7 @@ int main(void)
     test_listener_endpoint();
     test_connected_endpoint();
     test_malformed_frame();
+    test_full_queue_backpressure();
 
     if (failures != 0) {
         fprintf(stderr, "test_core_ipc: %d failure(s)\n", failures);
