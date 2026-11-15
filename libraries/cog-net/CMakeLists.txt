@@ -36,6 +36,9 @@ add_executable(test_net
 )
 target_link_libraries(test_net PRIVATE cog::net)
 target_enable_warnings(test_net)
+# Deterministic allocation-failure regression: wrap strdup only in this
+# test executable, leaving the production library and other tests unchanged.
+target_link_options(test_net PRIVATE "-Wl,--wrap=strdup")
 
 add_test(NAME unit-net
     COMMAND test_net

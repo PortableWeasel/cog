@@ -22,6 +22,7 @@
  * queuing is performed here — this library only speaks HTTP.
  */
 
+/* eventfd and MSG_NOSIGNAL both require _GNU_SOURCE on Linux/glibc. */
 #define _GNU_SOURCE
 
 #include "cog/net.h"
@@ -624,7 +625,7 @@ static int req_send_step(cog_net_req_t *req)
 {
     while (req->send_off < req->send_len) {
         ssize_t w = send(req->fd, req->send_buf + req->send_off,
-                         req->send_len - req->send_off, 0);
+                         req->send_len - req->send_off, MSG_NOSIGNAL);
         if (w < 0) {
             if (errno == EINTR) {
                 continue;
@@ -635,6 +636,7 @@ static int req_send_step(cog_net_req_t *req)
             return -1;
         }
         req->send_off += (size_t)w;
+        req->last_activity_ms = now_ms();
     }
     return 1;
 }
@@ -682,6 +684,7 @@ static int req_rbuf_fill(cog_net_req_t *req)
         return -1; /* EOF */
     }
     req->rbuf_end += (size_t)n;
+    req->last_activity_ms = now_ms();
     return 1;
 }
 
@@ -820,6 +823,7 @@ static int req_head_step(cog_net_req_t *req)
             return -2; /* head too long */
         }
         req->head[req->head_len++] = c;
+        req->last_activity_ms = now_ms();
     }
 }
 
@@ -1272,6 +1276,10 @@ cog_result_t cog_net_request(cog_net_ctx_t *ctx, const char *method,
     }
 
     (void)memset(req, 0, sizeof *req);
+    /* The failure paths below call req_free_data(), which closes req->fd.
+     * Initialise it before the first allocation so stdin/fd 0 is never
+     * closed when an allocation fails. */
+    req->fd = -1;
     req->method = strdup(method);
     req->url = strdup(url);
     if (req->method == NULL || req->url == NULL) {
@@ -1294,7 +1302,6 @@ cog_result_t cog_net_request(cog_net_ctx_t *ctx, const char *method,
         (void)memcpy(req->body, body, body_len);
     }
     req->body_len = body_len;
-    req->fd = -1;
     req->id = ctx->next_id++;
     req->state = REQ_QUEUED;
 

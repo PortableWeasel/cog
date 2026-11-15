@@ -22,6 +22,7 @@
 #include "cog/net.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -38,6 +39,23 @@
 
 static int g_failures = 0;
 static int g_checks = 0;
+
+/* cog-net is linked with --wrap=strdup for this test binary so the
+ * allocation-failure cleanup path can be exercised deterministically. */
+static bool g_fail_next_strdup = false;
+
+char *__real_strdup(const char *s);
+char *__wrap_strdup(const char *s);
+
+char *__wrap_strdup(const char *s)
+{
+    if (g_fail_next_strdup) {
+        g_fail_next_strdup = false;
+        errno = ENOMEM;
+        return NULL;
+    }
+    return __real_strdup(s);
+}
 
 #define CHECK(cond)                                                          \
     do {                                                                     \
@@ -694,6 +712,23 @@ static void test_lifecycle_and_validation(void)
     cog_net_free(NULL); /* must not crash */
 }
 
+static void test_alloc_failure_preserves_stdin(void)
+{
+    /* req_free_data() must never close fd 0 when the first request
+     * allocation fails. This is the regression for review ffb1ae0. */
+    CHECK(fcntl(STDIN_FILENO, F_GETFD) >= 0);
+    cog_net_ctx_t *ctx = make_ctx(NULL);
+    CHECK(ctx != NULL);
+    cog_request_id_t id = 0U;
+    g_fail_next_strdup = true;
+    CHECK(cog_net_request(ctx, "GET", "http://127.0.0.1/", NULL, NULL, 0U,
+                          &id) == COG_ERROR_NOMEM);
+    CHECK(!g_fail_next_strdup); /* the injected failure was consumed */
+    CHECK(fcntl(STDIN_FILENO, F_GETFD) >= 0);
+    CHECK(cog_net_active_count(ctx) == 0U);
+    cog_net_free(ctx);
+}
+
 static void test_overflow(void)
 {
     cog_net_config_t cfg;
@@ -1182,6 +1217,7 @@ int main(void)
     }
 
     test_lifecycle_and_validation();
+    test_alloc_failure_preserves_stdin();
     test_overflow();
     test_streaming_completion(port);
     test_fragmented(port);
