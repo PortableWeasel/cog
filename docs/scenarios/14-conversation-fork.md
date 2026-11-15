@@ -94,3 +94,16 @@ snapshot invariants; (2) trace nonleaf fork -> snapshot -> explicit child ->
 branch history, plus completed assistant-call fork with zero repeated effects;
 (3) consistency review against active-leaf restore, unresolved branch refusal and
 allocation-free constructor capacities. Independent G review remains required.
+
+## G.1 review consistency clarification: divergent draft cancellation
+
+For a text root A with existing child B, explicit fork/add under A may create
+draft C. Discarding active C refuses INVALID_STATE atomically while A retains
+B; otherwise the documented parent-on-success selection would make active A a
+nonleaf. The draft, selected leaf, siblings and node high-water stay unchanged.
+No sibling history is selected implicitly.
+
+Targeted passes: (1) header clarification of the extra refusal condition before
+implementation; (2) trace A -> B, fork A -> C, discard C -> unchanged active C;
+(3) check parent-on-success, snapshot active-leaf, draft-only removal and identity
+monotonicity together. Independent G.1 revision review remains required.
