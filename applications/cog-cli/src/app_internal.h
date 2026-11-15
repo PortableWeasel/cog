@@ -45,6 +45,7 @@ struct cog_cli_app {
     uint64_t configuration_generation, future_configuration_generation;
     unsigned reload_attempts;
     bool reload_in_progress, reload_notice_pending, reload_notice_queued;
+    cog_result_t reload_cleanup_error; /* first cleanup error; not provider error */
     uint64_t reload_notice_generation;
     cog_session_t *session;
     cog_provider_t *provider;
@@ -123,12 +124,17 @@ cog_result_t cog_cli_reload_init(cog_cli_app_t *app);
  * in owner service/idle hooks, including immediately after terminal reload.
  * Uses cog_core_set_provider on a valid core (infallible), updates aliases before
  * old disconnect then secret free. Move old resources to explicit retiring
- * fields until disconnect succeeds. Only current+future or current+retiring can
- * coexist; never a third constructed owner. No allocation, arbitrary app/resolver/
+ * fields only until the destructor call: detach/NULL all provider aliases before
+ * disconnect, which consumes its handle on EVERY return. Clear/free matching
+ * config after return even on cleanup error; never retain/retry the old handle.
+ * Only current+future or current+retiring can coexist; never a third constructed
+ * owner. No allocation, arbitrary app/resolver/
  * tool callback, wire or session mutation; provider disconnect is the destructor.
  * @return OK if no future or successfully activated; NULL_PTR; AGAIN while
- * future is blocked; unexpected disconnect contract violation freezes admission and
- * retains any still-borrowed generation, surfaced as the original error. */
+ * future is blocked; consuming disconnect cleanup error records first separate
+ * reload_cleanup_error, freezes admission and requests cancel/drain shutdown,
+ * then returns that driver error. Commit/new publication are not rolled back;
+ * new current/core references remain valid but may not start work. */
 cog_result_t cog_cli_reload_activate(cog_cli_app_t *app);
 /** Fair service of one retained CONFIG_CHANGED notice.
  * @param[in,out] app Normal owner app; no arbitrary callback recursion.
@@ -141,21 +147,30 @@ cog_result_t cog_cli_reload_activate(cog_cli_app_t *app);
 cog_result_t cog_cli_reload_service(cog_cli_app_t *app);
 /** Destroy future/current/retiring owners after core and turn work drain.
  * @param[in,out] app Owner app; NULL is a no-op.
- * Disconnect every provider before clearing its config. Safe on partial init;
- * no callback/context ownership transfer; tree_free after all transactions end. */
-void cog_cli_reload_free(cog_cli_app_t *app);
+ * Detach/NULL every provider alias before its one consuming disconnect; clear
+ * corresponding config after EVERY return. Continue disposing remaining owners
+ * on error; no consumed pointer is retried. Safe on partial init; no callback/
+ * context ownership transfer; tree_free after transactions end. app_free reports
+ * returned cleanup failure in sanitized form without changing this consumption.
+ * @return OK or first cleanup error after all owned resources are released. */
+cog_result_t cog_cli_reload_free(cog_cli_app_t *app);
 /** Handle only /reload model VALUE, /reload base-url VALUE and
  * /reload credential-ref VALUE, preserving the whole suffix as one field.
  * @param[in,out] app Owner app; @param[in] text Complete UTF-8 line;
  * @param[out] handled Whether this is a /reload command, even on refusal.
  * Recognize all /reload-prefixed commands as handled even on refusal. Terminal
  * input prints only sanitized status/generation and keeps old work running on
- * candidate errors (including NOMEM/IO/LIMIT); a failed output write is fatal IO.
+ * ordinary candidate errors (including NOMEM/IO/LIMIT) when cleanup succeeded.
+ * A recorded discard/retirement cleanup error instead reaches the driver/frozen
+ * cancel-drain exit; inspect reload_cleanup_error independently of overlapping
+ * result codes before ordinary refusal conversion, never conceal that freeze.
+ * A failed output write is fatal IO.
  * Reload commands are checked before policy answers; never reinterpret them as
  * ALLOW/DENY, user prompts or model tool instructions. No secret/value echo.
  * @return OK for handled success or sanitized candidate refusal, including
- * unknown key/missing value; NULL_PTR for invalid helper pointers; IO for checked
- * output failure. Non-reload input leaves handled=false and returns OK. Owner
+ * unknown key/missing value; NULL_PTR for invalid helper pointers; consuming
+ * cleanup error as a fatal driver result; IO for checked output failure.
+ * Non-reload input leaves handled=false and returns OK. Owner
  * thread between dispatches; only explicit reload constructor may call resolver. */
 cog_result_t cog_cli_reload_command(cog_cli_app_t *app, const char *text,
     bool *handled);

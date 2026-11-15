@@ -9,7 +9,8 @@ independent final review must pass before any `.c` implementation.
 Goals are to prepare a replacement without wire effects, atomically commit and
 publish it, finish existing model/tool work with its original settings, select
 the replacement only for the next idle turn, and retire every old secret only
-after provider disconnect. Rollback must preserve the old usable generation.
+after provider disconnect returns. Ordinary rollback preserves the old usable
+configuration; exceptional discard-cleanup errors separately freeze admission.
 Keep the public core/app provider views consistent and enforce compatibility
 before effects; never confuse display incarnation with configuration identity.
 
@@ -56,7 +57,7 @@ Startup configuration ID is1;
 attempts consume IDs2..65 without reuse, even on failure. Display/owner epochs
 and request serials keep their existing independent meanings.
 
-A retiring slot keeps old ownership explicit until disconnect succeeds; current+
+A retiring slot keeps old ownership explicit until its consuming disconnect call; current+
 future or current+retiring are the only two-live-owner layouts. No third candidate
 is allowed. The current owner supplies `app->opts`, `app->provider` and its immutable generation.
 A committed future owner is separately published for next idle work; while it
@@ -79,16 +80,23 @@ an effect. Inactive siblings are not candidate wire history.
    Unsupported/malformed opaque and configured limits fail before publication.
 4. Commit the app-owned config candidate. If preparation or commit fails, rollback
    (unless commit finalized a rejected-reset LIMIT), disconnect candidate before
-   clearing its secret, and retain the original error. Old config/provider/turn,
-   retained output, input, policy and session/guard are unchanged.
+   clearing its secret, and retain the original preparation/commit return code.
+   Detach provider aliases before the one destructor call; the handle is consumed
+   on every return. Clear its matching secret/config after return even on cleanup
+   error. Cleanup success leaves old config/provider/turn, retained output, input,
+   policy and session/guard unchanged. A discard-cleanup error is recorded
+   separately, freezes admission and requests existing cancel/drain shutdown; it
+   does not overwrite the old provider error/clock/delta snapshot.
 5. Commit success has only infallible pointer publication remaining. Return its
    configuration ID. No postcommit constructor, allocation or fallible enqueue.
 6. Deferred from the reload call, at a safe idle boundary before next input, install future aliases and update
    the core reference without calling user code in between. Disconnect old before
    freeing/clearing its generation. Background service/activation allocate nothing;
    explicit reload constructors may be invoked at the terminal owner input boundary.
-   Unexpected destructor failure freezes admission and retains the retiring owner;
-   it is a driver failure after a committed publication, never a fake rollback.
+   A destructor cleanup error still consumes the detached handle and releases
+   its borrows; clear the corresponding old config even then. Record that error,
+   freeze new admission and surface a driver failure. Never retain/retry consumed
+   pointers or pretend this rolls back a committed publication.
 
 Preflight checks only known bytes. An old active turn can still produce new opaque
 or output after publication. Its old provider finishes normally. Later COMPLETE
@@ -129,7 +137,7 @@ sequenceDiagram
   alt any prepare/commit error
     App->>Config: rollback if transaction still live
     App->>ProviderNew: disconnect before candidate secret clear
-    App-->>Host: original error; old provider/turn unchanged
+    App-->>Host: original error; old usable unless cleanup error freezes admission
   else commit succeeds
     App->>Config: commit
     App->>App: infallibly publish future + retained notice flag
@@ -162,7 +170,7 @@ sequenceDiagram
 | 16. Stop/EOF while future pending | no activation/admission; cancel/drain old, discard idle future, core detached/freed before providers | cli.h free/stop; app_internal.h reload_free |
 | 17. Repeated attempts/capacity exhaustion | ID1 startup, attempts2..65 burned on failure/success, 65th eligible call LIMIT; output untouched on failure | cli.h reload + config.h finite tombstones |
 | 18. NULL/mode/reentrancy errors | required NULL first; metadata/shutdown/cancel/recursive refusal before callbacks; no resource/identity burn | cli.h reload |
-| 19. Getter/retirement lifetime | stable old getter during turn; switch app/core before old disconnect; retain old secret on unexpected destructor failure | core.h setter/getter; cli.h provider getter |
+| 19. Getter/retirement lifetime | stable old getter during turn; switch app/core, detach old aliases, disconnect once and clear its config on every return; error freezes new admission | core.h setter/getter; cli.h provider getter |
 | 20. Explicit unchanged/unknown fields | no all-NULL no-op, no hidden settings reread; callback without explicit reference invalid; MOCK URL/key unsupported | cli.h reload_options |
 
 Each row uses the exact linked public/private declarations in pass1's coverage
@@ -182,12 +190,15 @@ This pass found four real contract gaps and amended the headers:
   notification never shares the model event_queued flag or changes turn serials.
 - Publication and activation are distinct. reload always returns after pointer
   publication without disconnecting current. Activation uses explicit retiring
-  fields so an unexpected destructor failure cannot lose its secret owner. An
-  idle input boundary performs only infallible alias/core updates then destruction;
-  any destructor contract violation freezes subsequent admission, not rollback.
+  fields until the one consuming destructor call. An idle input boundary performs
+  only infallible alias/core updates then destruction; detach aliases before that
+  call and clear config after every return. Cleanup error freezes subsequent
+  admission and surfaces as driver failure, never transaction rollback.
 - A reload refusal in terminal input must not abort/drain the old active turn.
-  All candidate errors produce only a checked sanitized refusal, whereas output
-  write failure retains its existing fatal IO/cleanup behavior. This routing is
+  Ordinary candidate errors with successful cleanup produce only a checked
+  sanitized refusal. Exceptional discard cleanup error must instead reach the
+  frozen driver/cancel-drain exit; output write failure keeps fatal IO behavior.
+  This routing is
   recognized even at an old policy prompt and never grants an effect decision.
 
 ### Original01–20 consistency retrace
@@ -221,7 +232,9 @@ mapping and public/private ownership/error declarations. Amendments in this pass
   resolved secret necessarily remains in its new owner until disconnect/free.
 - Terminal helper return semantics distinguish a handled sanitized candidate
   refusal (OK, continue old work) from output IO. The public API still returns
-  the original candidate error with its output generation untouched.
+  the original candidate error with its output generation untouched. A separate
+  candidate-discard cleanup error is exceptional: freeze admission and surface
+  that driver error rather than treating the refusal as safely retryable.
 - Known selected history uses the pending fork point when present, otherwise
   the selected active path. A genuinely unsafe currently selected prefix refuses;
   no sibling inspection, fabricated result, opaque dropping or history rewrite.
@@ -241,8 +254,12 @@ INVALID_ARG/LIMIT there consumes an attempt. Once reserved its ID is burned even
 if candidate work fails. Candidate
 resolution/provider/preflight/config errors return directly after safe rollback.
 No failed call changes active/published config, input lease, current options,
-policy decision, old request/error/clock/delta or session/guard state; only its
-bounded attempt/transaction tombstone counters advance. On success
+policy decision, old request/error/clock/delta or session/guard state; its bounded
+attempt/tombstone counters advance, and only an exceptional cleanup error also
+records the first separate reload_cleanup_error and freezes normal admission/
+requests existing cancel-drain shutdown. The original preparation/commit result
+still returns; an old provider terminal error is never repurposed for cleanup.
+On success
 out_generation changes once and the candidate is published; activation is later.
 
 The three control keys mirror the exact published reload subset, seeded from
@@ -265,9 +282,16 @@ vtable/model pointers belong to their own immutable config owner. The new core
 setter neither validates providers nor gains a provider implementation link;
 caller proves its serialized borrow/retirement boundary. Provider getters expose
 active state, not the future pending pointer, and must be reacquired after app
-mutation/drive. Valid supported provider disconnect is infallible by its existing
-contract; an unexpected violation freezes admission and must not falsely free
-still-borrowed secret storage or claim transactional rollback.
+mutation/drive. Existing provider disconnect consumes a non-NULL handle on EVERY
+return, including backend cleanup error after releasing resources. Detach and
+NULL its aliases before the call; never retain or retry the consumed pointer.
+Its config/secret may be cleared after return because those borrows are released.
+Precommit candidate-discard cleanup error preserves the original candidate return
+and separately freezes admission; postcommit retirement error is a driver failure
+with the new config publication intact. Existing cancel/drain/stop handles that
+freeze without new tool/provider/input admission; already-owned terminal results
+and diagnostic snapshots are preserved. Teardown consumes every remaining handle
+once, continues cleanup after errors and reports its first error sanitarily.
 
 ### Mandatory executable oracles after independent header approval
 
@@ -276,7 +300,10 @@ still-borrowed secret storage or claim transactional rollback.
   original prompt/queue identities; core and app getter equality around switch.
 - Credential callback lifetime/one-call resolution, unchanged omitted secret,
   mutation/free of caller source buffers after return, rollback secret clearing
-  after candidate disconnect and old clear only after old disconnect.
+  after candidate disconnect returns and old clear only after old disconnect
+  returns, including consuming cleanup errors: no use/retry/double-disconnect,
+  no retained consumed pointer, original candidate error precedence, separate
+  frozen cleanup status and no concealed terminal-refusal continuation.
 - Constructor OOM and real config validator/commit rejection including reset-LIMIT;
   no publication on failure, exact previous running tree/provider still usable,
   neither wire request nor durable STARTED/session save from reload itself.
@@ -324,3 +351,22 @@ App linkage adds `cog::config` and preserves installed static consumer closure.
 CONFIG_CHANGED rows are static const self handlers in every normal app state;
 no dynamic registration. Root M/P gates retain their full applicable checks;
 scoped R12 oracles do not waive remote/headless O or final all38 coverage.
+
+
+## Independent final review amendment — consumed destructor handles
+
+The independent final reviewer found one grouped ownership contradiction in
+candidate0fb1570: the existing provider destructor consumes its handle on every
+return, but reload retirement prose assumed successful/infallible cleanup and
+retained a failed handle. The corrected headers honor the existing provider
+contract without changing its API. Candidate discard, committed retirement and
+final app teardown all detach provider aliases before one disconnect, clear the
+matching generation after return even on error, and never use/retry a consumed
+handle. Precommit preparation/commit failure remains the direct return code;
+cleanup error has a separate first-error field, freezes further admission and
+requests existing cancel/drain shutdown without changing old provider snapshots.
+Postcommit retirement cleanup error surfaces as driver failure and does not undo
+new publication. Terminal refusal handling cannot conceal either cleanup freeze.
+The final reviewer requested no other blocking contract change after completing
+the remaining traces. Runtime implementation is still gated on revised independent
+PASS; this amendment contains no `.c` change.

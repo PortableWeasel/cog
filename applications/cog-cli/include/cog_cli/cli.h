@@ -502,7 +502,11 @@ cog_result_t cog_cli_app_new(cog_cli_app_t **out,
  * shutdown must cancel/poll/reap before this nonblocking destructor.
  * @post All owned resources are released in the documented order. Borrowed
  * net and host dependency runtime remain the caller's responsibility.  The
- *       app must not be used after this call.
+ *       app must not be used after this call. Provider aliases are detached
+ * before each consuming disconnect, with matching config cleared after return
+ * even on cleanup error. Cleanup errors are reported in sanitized form; a consumed
+ * handle is never retried or retained. The void destructor still releases every
+ * owned generation; callers must not infer an unreported reusable provider.
  */
 void cog_cli_app_free(cog_cli_app_t *app);
 
@@ -526,8 +530,13 @@ void cog_cli_app_free(cog_cli_app_t *app);
  * @post Complete copied config/secret/endpoint and an idle provider are prepared
  * and generically preflighted against the known selected prefix BEFORE the real
  * app-owned cog_config transaction commits. Failure rolls back/discards only the
- * candidate, leaves old published/active state usable, and clears candidate
- * secrets after disconnect. After successful commit, publication is infallible.
+ * candidate and leaves old published/active state usable when cleanup succeeds.
+ * Every disconnect consumes its handle even on cleanup error: detach its aliases
+ * first, call once, then clear/free that config after return. Candidate discard
+ * retains the original preparation/commit return code; a separate cleanup error
+ * freezes admission and requests existing cancel/drain shutdown, without changing
+ * the old provider error/clock/delta snapshot during this call. That exception is
+ * not an ordinary usable-loop refusal. Publication after commit is infallible.
  * @note Construction is explicit here: replacement config/provider constructors
  * may allocate within unchanged per-generation limits, with matching discard or
  * app_free; background service/activation never allocates. Explicit terminal
@@ -563,9 +572,13 @@ void cog_cli_app_free(cog_cli_app_t *app);
  * it may fail without rolling back a committed config or replaying old effects.
  * An old failed/cancelled turn must drain before activation; it never grants
  * fresh-input authorization. A frozen result retains both owners until safe
- * cleanup, without activating or replaying future work. Unexpected destructor
- * failure after commit is an admission-freezing driver error, not a transaction
- * rollback; retain the old owner/secret until disconnect can be established.
+ * cleanup, without activating or replaying future work. Postcommit retirement
+ * cleanup error freezes admission and is surfaced as a driver failure, not a
+ * transaction rollback. The old handle is consumed on that return, never retained
+ * or retried; after its aliases are detached its released borrows permit clearing
+ * the old secret/config on either success or error. The new core/app references
+ * remain valid but cannot admit new work. Terminal refusal handling must surface
+ * cleanup-error shutdown rather than conceal it behind a sanitized retry message.
  * Provider accessors are borrowed until the next activation/app_free; callers
  * must not retain those pointers across mutating app/loop calls. Owner-thread,
  * not signal-safe. No effect-policy/store/workspace mutation is expressible.
