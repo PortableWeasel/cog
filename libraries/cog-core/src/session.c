@@ -25,7 +25,8 @@
  * - max_nodes is a soft cap: after each insertion the oldest leaf nodes
  *   (smallest node_id, excluding the root and the active node) are pruned
  *   until the count fits.  If only the root/active remain, the cap is
- *   exceeded rather than corrupting the tree.
+ *   exceeded rather than corrupting the tree.  A prunable-leaf counter
+ *   avoids scanning the tree on chains where no pruning can occur.
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -46,12 +47,16 @@
 
 struct cog_session_node {
     cog_node_data_t data;          /* public read-only view; owns strings */
+    cog_session_t *session;        /* owning session: O(1) containment */
     struct cog_session_node *parent;
     struct cog_session_node *first_child;
     struct cog_session_node *last_child;
     struct cog_session_node *prev_sibling;
     struct cog_session_node *next_sibling;
     size_t child_count;
+    size_t tool_args_len;          /* byte length, including embedded NULs */
+    size_t tool_result_len;        /* byte length, including embedded NULs */
+    bool prunable_counted;         /* counted in session.prunable_leaf_count */
 };
 
 struct cog_session {
@@ -62,6 +67,7 @@ struct cog_session {
     uint64_t next_node_id;
     struct cog_session_node *root;
     struct cog_session_node *active;
+    size_t prunable_leaf_count;    /* leaves other than root and active */
     bool attached;                 /* set by the core integration layer only */
     cog_message_t *history;        /* owned cache for cog_session_get_history */
     size_t history_count;
@@ -138,21 +144,37 @@ static void node_free_deep(struct cog_session_node *n)
     free(n);
 }
 
-/** True if @p n is reachable from the session root (i.e. belongs here). */
+/** True if @p n is a leaf that max_nodes pruning may remove. */
+static bool node_is_prunable(const cog_session_t *s,
+                             const struct cog_session_node *n)
+{
+    return n != NULL && n != s->root && n != s->active &&
+           n->child_count == 0U;
+}
+
+/** Keep the prunable-leaf counter exact after a local tree/active change. */
+static void session_sync_prunable(cog_session_t *s,
+                                  struct cog_session_node *n)
+{
+    const bool prunable = node_is_prunable(s, n);
+
+    if (n == NULL || prunable == n->prunable_counted) {
+        return;
+    }
+    if (prunable) {
+        s->prunable_leaf_count++;
+        n->prunable_counted = true;
+    } else {
+        s->prunable_leaf_count--;
+        n->prunable_counted = false;
+    }
+}
+
+/** O(1) ownership check; a node belongs to exactly one session. */
 static bool session_contains(const cog_session_t *s,
                              const cog_session_node_t *n)
 {
-    const struct cog_session_node *cur;
-
-    if (s == NULL || n == NULL || s->root == NULL) {
-        return false;
-    }
-    for (cur = n; cur != NULL; cur = cur->parent) {
-        if (cur == s->root) {
-            return true;
-        }
-    }
-    return false;
+    return s != NULL && n != NULL && n->session == s;
 }
 
 /** Drop the cached history array contents (the buffer itself is kept). */
@@ -168,6 +190,9 @@ static void session_invalidate_history(cog_session_t *s)
 static void node_link(cog_session_t *s, struct cog_session_node *parent,
                       struct cog_session_node *n)
 {
+    struct cog_session_node *old_active = s->active;
+
+    n->session = s;
     n->parent = parent;
     n->data.parent_id = (parent != NULL) ? parent->data.node_id : 0U;
     if (parent == NULL) {
@@ -184,6 +209,9 @@ static void node_link(cog_session_t *s, struct cog_session_node *parent,
     }
     s->node_count++;
     s->active = n;
+    session_sync_prunable(s, parent);
+    session_sync_prunable(s, old_active);
+    session_sync_prunable(s, n);
     session_invalidate_history(s);
 }
 
@@ -196,7 +224,9 @@ static void node_link_after(cog_session_t *s,
                             struct cog_session_node *n)
 {
     struct cog_session_node *p = anchor->parent;
+    struct cog_session_node *old_active = s->active;
 
+    n->session = s;
     n->parent = p;
     n->data.parent_id = p->data.node_id;
     n->prev_sibling = anchor;
@@ -211,6 +241,9 @@ static void node_link_after(cog_session_t *s,
     p->child_count++;
     s->node_count++;
     s->active = n;
+    session_sync_prunable(s, p);
+    session_sync_prunable(s, old_active);
+    session_sync_prunable(s, n);
     session_invalidate_history(s);
 }
 
@@ -219,6 +252,10 @@ static void node_unlink(cog_session_t *s, struct cog_session_node *n)
 {
     struct cog_session_node *p = n->parent;
 
+    if (n->prunable_counted) {
+        s->prunable_leaf_count--;
+        n->prunable_counted = false;
+    }
     if (p == NULL) {
         s->root = NULL;
     } else {
@@ -236,10 +273,12 @@ static void node_unlink(cog_session_t *s, struct cog_session_node *n)
         }
         p->child_count--;
     }
+    n->session = NULL;
     n->parent = NULL;
     n->prev_sibling = NULL;
     n->next_sibling = NULL;
     s->node_count--;
+    session_sync_prunable(s, p);
     session_invalidate_history(s);
 }
 
@@ -271,7 +310,7 @@ static void find_oldest_leaf(struct cog_session_node *n,
  */
 static void session_prune(cog_session_t *s)
 {
-    while (s->node_count > s->max_nodes) {
+    while (s->node_count > s->max_nodes && s->prunable_leaf_count > 0U) {
         struct cog_session_node *oldest = NULL;
         uint64_t oldest_id = 0U;
 
@@ -304,6 +343,7 @@ static cog_result_t node_init_from_message(struct cog_session_node *n,
         n->data.role = COG_NODE_TOOL_RESULT;
         n->data.tool_name = dup_str(msg->name);
         n->data.tool_result = dup_bytes(msg->content, msg->content_len);
+        n->tool_result_len = msg->content_len;
         if ((msg->name != NULL && n->data.tool_name == NULL) ||
             (msg->content != NULL && n->data.tool_result == NULL)) {
             return COG_ERROR_NOMEM;
@@ -357,17 +397,13 @@ static cog_message_t node_to_message(const struct cog_session_node *n)
         /* Tool identity is preserved via name; args become the payload. */
         m.role = COG_MESSAGE_ROLE_TOOL;
         m.content = n->data.tool_args;
-        m.content_len = (n->data.tool_args != NULL)
-                            ? strlen(n->data.tool_args)
-                            : 0U;
+        m.content_len = n->tool_args_len;
         m.name = n->data.tool_name;
         break;
     case COG_NODE_TOOL_RESULT:
         m.role = COG_MESSAGE_ROLE_TOOL;
         m.content = n->data.tool_result;
-        m.content_len = (n->data.tool_result != NULL)
-                            ? strlen(n->data.tool_result)
-                            : 0U;
+        m.content_len = n->tool_result_len;
         m.name = n->data.tool_name;
         break;
     default:
@@ -449,6 +485,7 @@ cog_result_t cog_session_reset(cog_session_t *session)
     }
     session->active = NULL;
     session->node_count = 0U;
+    session->prunable_leaf_count = 0U;
     session->next_node_id = 1U;
     session_invalidate_history(session);
     return COG_OK;
@@ -576,7 +613,8 @@ cog_result_t cog_session_add_tool_call(cog_session_t *session,
     n->data.node_id = session->next_node_id++;
     n->data.role = COG_NODE_TOOL_CALL;
     n->data.tool_name = strdup(tool_name);
-    n->data.tool_args = strdup(tool_args);
+    n->tool_args_len = strlen(tool_args);
+    n->data.tool_args = dup_bytes(tool_args, n->tool_args_len);
     if (n->data.tool_name == NULL || n->data.tool_args == NULL) {
         node_free_strings(n);
         free(n);
@@ -614,7 +652,8 @@ cog_result_t cog_session_add_tool_result(cog_session_t *session,
     }
     n->data.node_id = session->next_node_id++;
     n->data.role = COG_NODE_TOOL_RESULT;
-    n->data.tool_result = strdup(tool_result);
+    n->tool_result_len = strlen(tool_result);
+    n->data.tool_result = dup_bytes(tool_result, n->tool_result_len);
     if (n->data.tool_result == NULL) {
         free(n);
         return COG_ERROR_NOMEM;
@@ -656,6 +695,8 @@ cog_result_t cog_session_fork(cog_session_t *session,
     copy->data = src->data; /* copy scalars and pointers first */
     copy->data.node_id = session->next_node_id++;
     copy->data.parent_id = src->data.parent_id;
+    copy->tool_args_len = src->tool_args_len;
+    copy->tool_result_len = src->tool_result_len;
     /* Null out the borrowed pointers, then deep-copy each owned string. */
     copy->data.content = NULL;
     copy->data.tool_name = NULL;
@@ -667,8 +708,10 @@ cog_result_t cog_session_fork(cog_session_t *session,
     copy->data.provider = NULL;
     copy->data.content = dup_bytes(src->data.content, src->data.content_len);
     copy->data.tool_name = dup_str(src->data.tool_name);
-    copy->data.tool_args = dup_str(src->data.tool_args);
-    copy->data.tool_result = dup_str(src->data.tool_result);
+    copy->data.tool_args = dup_bytes(src->data.tool_args,
+                                     src->tool_args_len);
+    copy->data.tool_result = dup_bytes(src->data.tool_result,
+                                       src->tool_result_len);
     copy->data.raw_request = dup_str(src->data.raw_request);
     copy->data.raw_response = dup_str(src->data.raw_response);
     copy->data.model = dup_str(src->data.model);
@@ -867,6 +910,7 @@ cog_result_t cog_session_discard_node(cog_session_t *session,
     node_unlink(session, node);
     if (session->active == node) {
         session->active = parent;
+        session_sync_prunable(session, parent);
     }
     node_free_strings(node);
     free(node);

@@ -1999,19 +1999,33 @@ static int test_fork_tool_nul_preserved(void)
         CRIT_FAIL(s);
     }
     d = cog_node_data(tr);
-    if (d == NULL || d->tool_result == NULL || strlen(d->tool_result) != 4U) {
+    if (d == NULL || d->tool_result == NULL ||
+        memcmp(d->tool_result, payload, sizeof(payload)) != 0) {
         CRIT_FAIL(s); /* source must retain the full 4-byte payload */
     }
     if (cog_session_fork(s, tr, &copy) != COG_OK) {
         CRIT_FAIL(s);
     }
     dc = cog_node_data(copy);
-    if (dc == NULL || dc->tool_result == NULL || strlen(dc->tool_result) != 4U) {
+    if (dc == NULL || dc->tool_result == NULL ||
+        memcmp(dc->tool_result, payload, sizeof(payload)) != 0) {
         CRIT_FAIL(s); /* deep copy must be byte-faithful */
     }
     if (dc->tool_result[0] != 'o' || dc->tool_result[1] != 'k' ||
         dc->tool_result[2] != '\0' || dc->tool_result[3] != 'x') {
         CRIT_FAIL(s);
+    }
+    /* The private length must survive the fork as well as the bytes. */
+    {
+        const cog_message_t *msgs = NULL;
+        size_t count = 0U;
+
+        if (cog_session_get_history(s, copy, &msgs, &count) != COG_OK ||
+            count != 1U || msgs[0].content_len != sizeof(payload) ||
+            msgs[0].content == NULL ||
+            memcmp(msgs[0].content, payload, sizeof(payload)) != 0) {
+            CRIT_FAIL(s);
+        }
     }
     cog_session_free(s);
     return 0;
@@ -2050,6 +2064,44 @@ static int test_history_tool_nul_len(void)
         msgs[0].content[1] != 'k' || msgs[0].content[2] != '\0' ||
         msgs[0].content[3] != 'x') {
         CRIT_FAIL(s);
+    }
+    cog_session_free(s);
+    return 0;
+}
+
+/* Revision 1: the private tool-argument length must be initialized on
+ * insertion, copied by fork, and used by history for both ordinary and
+ * empty payloads (the Critic's binary-payload tests cover tool results). */
+static int test_tool_call_history_len_after_fork(void)
+{
+    static const char args[] = "{\"city\":\"Kyoto\"}";
+    cog_session_t *s = NULL;
+    cog_session_node_t *root = NULL;
+    cog_session_node_t *call = NULL;
+    cog_session_node_t *copy = NULL;
+    cog_session_node_t *empty = NULL;
+    const cog_message_t *msgs = NULL;
+    size_t count = 0U;
+
+    if (cog_session_new(&s, NULL) != COG_OK) {
+        return 1;
+    }
+    if (cog_session_add_message(s, NULL, MSG_USER("q"), &root) != COG_OK ||
+        cog_session_add_tool_call(s, root, "weather", args, &call) != COG_OK ||
+        cog_session_fork(s, call, &copy) != COG_OK) {
+        return 1;
+    }
+    if (cog_session_get_history(s, copy, &msgs, &count) != COG_OK ||
+        count != 2U || msgs[1].content_len != strlen(args) ||
+        msgs[1].content == NULL ||
+        memcmp(msgs[1].content, args, sizeof(args)) != 0) {
+        return 1;
+    }
+    if (cog_session_add_tool_call(s, copy, "noop", "", &empty) != COG_OK ||
+        cog_session_get_history(s, empty, &msgs, &count) != COG_OK ||
+        count != 3U || msgs[2].content_len != 0U ||
+        msgs[2].content == NULL || msgs[2].content[0] != '\0') {
+        return 1;
     }
     cog_session_free(s);
     return 0;
@@ -2402,6 +2454,10 @@ int main(void)
     CHECK("discard then prune new leaf", test_discard_then_prune_new_leaf());
     CHECK("fork over cap no corruption", test_fork_over_cap_no_corruption());
     CHECK("mixed stress invariants", test_mixed_stress_invariants());
+
+    /* Writer revision 1 additions (review 14519f8) */
+    CHECK("tool call history len after fork",
+          test_tool_call_history_len_after_fork());
 
 #undef CHECK
 

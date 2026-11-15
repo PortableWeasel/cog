@@ -104,6 +104,34 @@ failure hook), so it is documented but not exercised by the tests.
   NUL bytes are payload. A NULL content with zero length is preserved as
   NULL; a non-NULL content with zero length is preserved as an empty
   string.
+- Tool arguments and tool results are also length-prefixed internally.
+  Private `tool_args_len` and `tool_result_len` byte counts are set at
+  insertion, copied on fork, and used for history messages; copy and
+  history never re-derive a stored payload length with `strlen`. A
+  trailing terminator is allocated for convenience, but embedded NUL
+  bytes remain payload.
+
+## Complexity
+
+- Every node has a private owning-session back-pointer. Containment and
+  foreign-node checks are **O(1)**, independent of tree depth.
+- Navigation, discard, and tree insertion use **O(1)** pointer/counter
+  updates, excluding allocation and payload copying. Fork deep-copying is
+  **O(payload bytes)**.
+- The session maintains an exact count of leaves eligible for pruning
+  (excluding root and active). When over `max_nodes` with no eligible leaf,
+  pruning exits in **O(1)**. Thus a single-chain append is **O(1)** plus
+  allocation, even when the chain exceeds the soft cap.
+- When pruning is required, finding the oldest eligible leaf is **O(N)**
+  per removed node; pruning `k` leaves is **O(kN)**. This preserves the
+  documented oldest-first choice without adding another index.
+- History construction and cumulative cost/timing are **O(depth)**.
+  Reset/free are **O(N)**.
+- **Single-chain limitation:** `max_nodes` does not bound a linear
+  conversation. Its only leaf is active (and the root is also protected),
+  so no node is eligible for pruning. Such a chain grows to **O(N)**
+  memory by design, but appending is now linear overall rather than
+  quadratic.
 
 ## Design decisions (interpretations of the header)
 
@@ -117,8 +145,9 @@ picks one reading and pins it with tests.
    the header's empty-session contract supersedes it.)
 
 2. **Fork copies the fork-point node.** `cog_session_fork` deep-copies the
-   fork-point node's data (role, content, tool fields, timing, cost) into a
-   new node inserted as the next sibling of the source, with no children.
+   fork-point node's data (role, content, tool fields and their private
+   byte lengths, timing, cost) into a new node inserted as the next sibling
+   of the source, with no children.
    The new branch therefore shares all ancestors by reference and owns its
    own children, matching the header's "shares all ancestor nodes but has
    its own children". Forking the root is a no-op that returns the root
@@ -127,21 +156,25 @@ picks one reading and pins it with tests.
 3. **History tool mapping.** `COG_NODE_TOOL_CALL` and
    `COG_NODE_TOOL_RESULT` both map to `COG_MESSAGE_ROLE_TOOL` in the
    history: the call contributes `tool_args` as content with `tool_name`
-   as name; the result contributes `tool_result` as content. A result node
-   created via `cog_session_add_tool_result` (which takes no name) has a
-   NULL `tool_name`, so its history message name is NULL. A result created
-   via `cog_session_add_message` with `COG_MESSAGE_ROLE_TOOL` carries the
-   message's `name`.
+   as name; the result contributes `tool_result` as content. Both history
+   messages use the stored private byte length, so payloads containing
+   embedded NUL bytes round-trip with their original `content_len`. A
+   result node created via `cog_session_add_tool_result` (which takes no
+   name) has a NULL `tool_name`, so its history message name is NULL. A
+   result created via `cog_session_add_message` with
+   `COG_MESSAGE_ROLE_TOOL` carries the message's `name`.
 
 4. **History cache.** The returned message array is a per-session buffer
    rebuilt on demand; the implementation updates it through the
    const-qualified session pointer (the const is a caller-side view).
 
 5. **max_nodes is a soft cap.** Zero selects the default of 1024. After
-   each insertion, the oldest leaf nodes (smallest `node_id`, excluding
-   the root and the active node) are pruned until the count fits. If only
-   the root/active remain, the cap is exceeded rather than corrupting the
-   tree.
+   each insertion, if at least one eligible leaf exists, the oldest leaf
+   nodes (smallest `node_id`, excluding the root and the active node) are
+   pruned until the count fits or no eligible leaf remains. If only the
+   root/active remain, the cap is exceeded rather than corrupting the
+   tree. In particular, a single-chain conversation is unbounded: its one
+   leaf is active, so there is nothing safe to prune.
 
 6. **Reset semantics.** `cog_session_reset` frees all nodes, empties the
    tree, restarts node ids at 1, and retains the session id **and** the
@@ -212,6 +245,12 @@ gcc <same flags> -fsanitize=address,undefined -fno-omit-frame-pointer -g \
 gcc -fsanitize=address,undefined -fno-omit-frame-pointer \
     /tmp/test_session_asan.o /tmp/session_asan.o -lm -o /tmp/test_session_asan
 ASAN_OPTIONS=detect_leaks=1 /tmp/test_session_asan   # -> ok, no leaks
+
+# Repeatable append scaling benchmark (three samples per size/cap)
+gcc -std=c11 -O2 -DNDEBUG -I libraries/cog-core/include \
+    -I libraries/cog-ipc/include libraries/cog-core/src/session.c \
+    tests/unit/bench_session_append.c -o /tmp/bench_session_append
+/tmp/bench_session_append
 ```
 
 `tests/unit/test_session.c` covers: lifecycle and NULL contracts; add
@@ -222,4 +261,11 @@ fork (leaf, mid-tree, root, NULLs, foreign, branch divergence, timing/cost
 preservation); history (single, chain, tool mapping, NULLs, foreign,
 rebuild-overwrites); timing/cost set and cumulative sums; parent id
 get/set/clear; discard (leaf, active, non-leaf, foreign, NULLs, root,
-history-after-discard); max_nodes pruning and default; stable node ids.
+history-after-discard); max_nodes pruning, default, and the unbounded
+single-chain case; stable node ids; fork/discard/prune sibling ordering;
+and mixed-stress invariants. Embedded-NUL regression tests cover both the
+fork copy and history byte length for tool results; an additional test
+covers tool-argument lengths after fork and empty arguments.
+`tests/unit/bench_session_append.c` reports repeatable 10k/20k/40k append
+timings at the default cap and a small cap to guard against reintroducing
+quadratic append behavior.
