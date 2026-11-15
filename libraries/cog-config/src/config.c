@@ -78,8 +78,8 @@ static size_t take(cog_config_tree_t *t, size_t owner)
             ++t->used;
             return i;
         }
-    assert(!"node admission invariant");
-    return NONE; /* admission checked before mutation */
+    assert(false); /* node admission invariant */
+    return NONE;   /* admission checked before mutation */
 }
 static char *copy(char *bank, size_t *pos, const char *s, size_t len)
 {

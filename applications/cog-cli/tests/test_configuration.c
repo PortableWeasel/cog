@@ -140,16 +140,27 @@ static int field_matrix(void)
         CHECK(setenv(f->environment, value, 1) == 0);
         CHECK(cog_cli_configuration_new(&c, &o, 10U + i) == COG_OK);
         field = (const unsigned char *)cog_cli_configuration_options(c) + f->offset;
-        if (f->kind == CLI_STRING)
-            CHECK(strcmp(*(const char *const *)field, value) == 0);
-        else if (f->kind == CLI_U32)
-            CHECK(*(const uint32_t *)field == 23U);
-        else if (f->kind == CLI_SIZE)
-            CHECK(*(const size_t *)field == 23U);
-        else if (f->kind == CLI_POLICY)
-            CHECK(*(const cog_cli_tool_policy_t *)field == COG_CLI_TOOL_POLICY_DENY);
-        else if (f->kind == CLI_STORE)
-            CHECK(*(const cog_cli_store_mode_t *)field == COG_CLI_STORE_DISABLED);
+        if (f->kind == CLI_STRING) {
+            const char *string;
+            memcpy(&string, field, sizeof(string));
+            CHECK(strcmp(string, value) == 0);
+        } else if (f->kind == CLI_U32) {
+            uint32_t n;
+            memcpy(&n, field, sizeof(n));
+            CHECK(n == 23U);
+        } else if (f->kind == CLI_SIZE) {
+            size_t n;
+            memcpy(&n, field, sizeof(n));
+            CHECK(n == 23U);
+        } else if (f->kind == CLI_POLICY) {
+            cog_cli_tool_policy_t n;
+            memcpy(&n, field, sizeof(n));
+            CHECK(n == COG_CLI_TOOL_POLICY_DENY);
+        } else if (f->kind == CLI_STORE) {
+            cog_cli_store_mode_t n;
+            memcpy(&n, field, sizeof(n));
+            CHECK(n == COG_CLI_STORE_DISABLED);
+        }
         cog_cli_configuration_free(c);
         CHECK(setenv(f->environment, "", 1) == 0);
         CHECK(cog_cli_configuration_new(&c, &o, 100U + i) == COG_ERROR_INVALID_ARG &&

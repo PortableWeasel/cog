@@ -87,37 +87,44 @@ cog_result_t cog_cli_field_set(cog_cli_options_t *o, const cli_field_t *f,
     unsigned char *field = (unsigned char *)o + f->offset;
     size_t n;
     cog_result_t rc;
+    cog_cli_backend_t backend;
+    cog_cli_tool_policy_t policy;
+    cog_cli_store_mode_t store;
+    uint32_t u32;
     if (s == NULL || *s == '\0')
         return COG_ERROR_INVALID_ARG;
     switch (f->kind) {
     case CLI_STRING:
-        *(const char **)field = s;
+        memcpy(field, &s, sizeof(s));
         return COG_OK;
     case CLI_BACKEND:
         if (strcmp(s, "real") == 0)
-            *(cog_cli_backend_t *)field = COG_CLI_BACKEND_REAL;
+            backend = COG_CLI_BACKEND_REAL;
         else if (strcmp(s, "mock") == 0)
-            *(cog_cli_backend_t *)field = COG_CLI_BACKEND_MOCK;
+            backend = COG_CLI_BACKEND_MOCK;
         else
             return COG_ERROR_INVALID_ARG;
+        memcpy(field, &backend, sizeof(backend));
         return COG_OK;
     case CLI_POLICY:
         if (strcmp(s, "ask") == 0)
-            *(cog_cli_tool_policy_t *)field = COG_CLI_TOOL_POLICY_ASK;
+            policy = COG_CLI_TOOL_POLICY_ASK;
         else if (strcmp(s, "deny") == 0)
-            *(cog_cli_tool_policy_t *)field = COG_CLI_TOOL_POLICY_DENY;
+            policy = COG_CLI_TOOL_POLICY_DENY;
         else if (strcmp(s, "allow") == 0)
-            *(cog_cli_tool_policy_t *)field = COG_CLI_TOOL_POLICY_ALLOW;
+            policy = COG_CLI_TOOL_POLICY_ALLOW;
         else
             return COG_ERROR_INVALID_ARG;
+        memcpy(field, &policy, sizeof(policy));
         return COG_OK;
     case CLI_STORE:
         if (strcmp(s, "durable") == 0)
-            *(cog_cli_store_mode_t *)field = COG_CLI_STORE_DURABLE;
+            store = COG_CLI_STORE_DURABLE;
         else if (strcmp(s, "disabled") == 0)
-            *(cog_cli_store_mode_t *)field = COG_CLI_STORE_DISABLED;
+            store = COG_CLI_STORE_DISABLED;
         else
             return COG_ERROR_INVALID_ARG;
+        memcpy(field, &store, sizeof(store));
         return COG_OK;
     case CLI_U32:
     case CLI_SIZE:
@@ -126,10 +133,11 @@ cog_result_t cog_cli_field_set(cog_cli_options_t *o, const cli_field_t *f,
             return rc;
         if (n == 0U && !f->zero)
             return COG_ERROR_LIMIT;
-        if (f->kind == CLI_U32)
-            *(uint32_t *)field = (uint32_t)n;
-        else
-            *(size_t *)field = n;
+        if (f->kind == CLI_U32) {
+            u32 = (uint32_t)n;
+            memcpy(field, &u32, sizeof(u32));
+        } else
+            memcpy(field, &n, sizeof(n));
         return COG_OK;
     }
     return COG_ERROR_INVALID_ARG;

@@ -126,26 +126,28 @@ static cog_result_t overlay(cog_cli_options_t *o, const cog_cli_options_t *input
         const unsigned char *source = (const unsigned char *)input + f->offset;
         const char *env = f->environment != NULL ? getenv(f->environment) : NULL;
         if ((input->explicit_options & f->bit) != 0U) {
+            size_t bytes = 0U;
             switch (f->kind) {
             case CLI_STRING:
-                *(const char **)dest = *(const char *const *)source;
+                bytes = sizeof(const char *);
                 break;
             case CLI_BACKEND:
-                *(cog_cli_backend_t *)dest = *(const cog_cli_backend_t *)source;
+                bytes = sizeof(cog_cli_backend_t);
                 break;
             case CLI_POLICY:
-                *(cog_cli_tool_policy_t *)dest = *(const cog_cli_tool_policy_t *)source;
+                bytes = sizeof(cog_cli_tool_policy_t);
                 break;
             case CLI_STORE:
-                *(cog_cli_store_mode_t *)dest = *(const cog_cli_store_mode_t *)source;
+                bytes = sizeof(cog_cli_store_mode_t);
                 break;
             case CLI_U32:
-                *(uint32_t *)dest = *(const uint32_t *)source;
+                bytes = sizeof(uint32_t);
                 break;
             case CLI_SIZE:
-                *(size_t *)dest = *(const size_t *)source;
+                bytes = sizeof(size_t);
                 break;
             }
+            memcpy(dest, source, bytes);
         } else if (env != NULL) {
             cog_result_t rc = cog_cli_field_set(o, f, env);
             if (rc != COG_OK)
@@ -199,15 +201,22 @@ static cog_result_t validate(cog_cli_configuration_t *c)
     for (i = 0U; i < cog_cli_field_count; ++i) {
         const cli_field_t *f = &cog_cli_fields[i];
         const unsigned char *p = (const unsigned char *)o + f->offset;
-        if (f->kind == CLI_U32 && !f->zero && *(const uint32_t *)p == 0U)
+        uint32_t u32 = 0U;
+        size_t bytes = 0U;
+        const char *string = NULL;
+        if (f->kind == CLI_U32)
+            memcpy(&u32, p, sizeof(u32));
+        if (f->kind == CLI_SIZE)
+            memcpy(&bytes, p, sizeof(bytes));
+        if (f->kind == CLI_STRING)
+            memcpy(&string, p, sizeof(string));
+        if (!f->zero &&
+            ((f->kind == CLI_U32 && u32 == 0U) || (f->kind == CLI_SIZE && bytes == 0U)))
             return COG_ERROR_LIMIT;
-        if (f->kind == CLI_SIZE && !f->zero && *(const size_t *)p == 0U)
-            return COG_ERROR_LIMIT;
-        if (f->kind == CLI_STRING && *(const char *const *)p != NULL &&
-            **(const char *const *)p == '\0')
+        if (f->kind == CLI_STRING && string != NULL && *string == '\0')
             return COG_ERROR_INVALID_ARG;
         if (f->kind == CLI_STRING && (o->explicit_options & f->bit) != 0U &&
-            *(const char *const *)p == NULL)
+            string == NULL)
             return COG_ERROR_INVALID_ARG;
     }
     if (o->backend == COG_CLI_BACKEND_MOCK) {
@@ -353,13 +362,16 @@ cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
         goto fail;
     for (i = 0U; i < cog_cli_field_count; ++i)
         if (cog_cli_fields[i].kind == CLI_STRING) {
-            const char **field = (const char **)((unsigned char *)&c->options +
-                                                 cog_cli_fields[i].offset);
+            unsigned char *field =
+                (unsigned char *)&c->options + cog_cli_fields[i].offset;
+            const char *string;
+            memcpy(&string, field, sizeof(string));
             /* Default store path was already copied into this arena. */
             if (cog_cli_fields[i].bit == COG_CLI_OPT_STORE_DIR &&
                 c->options.store_dir == c->strings)
                 continue;
-            rc = owned(c, field);
+            rc = owned(c, &string);
+            memcpy(field, &string, sizeof(string));
             if (rc != COG_OK)
                 goto fail;
         }

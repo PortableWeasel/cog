@@ -71,3 +71,13 @@ may return LIMIT and finalize only its candidate if reset cannot fit; running
 configuration and the already published provider generation stay unchanged.
 Every config operation, including reads, stays on its owner thread. Delivery J
 must test exact pool/identity limits and retain the old generation on each failure.
+
+## Delivery J writer evidence
+
+[J evidence](../REAL_CLIENT_J_EVIDENCE.md) records executable aggregate capacity,
+rejected-reset LIMIT, stale-handle and snapshot-pointer tests. The private CLI
+generation test constructs two independent in-memory endpoint/secret owners,
+changes caller strings, rejects a third credential resolution, frees the newer
+generation and confirms the older borrowed generation remains unchanged. No
+provider is dispatched by that test. Actual provider request-generation mismatch,
+active transport reload and app publication remain H/K integration obligations.

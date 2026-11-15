@@ -78,3 +78,13 @@ start unrelated model/user/branch work. Crashed STARTED becomes INDETERMINATE an
 requires recovery. Cancelled unstarted proposals receive identified no-effect
 DENIED results; they are never mistaken for uncertain executed effects. Test the
 crash before STARTED save and cancel-after-proposal boundaries with zero effects.
+
+## Delivery J writer evidence
+
+[J evidence](../REAL_CLIENT_J_EVIDENCE.md) records strict GCC/Clang and separate
+ASan/UBSan passes for the bounded tree, option parser, private effective-config
+constructor and allocation/clearing audits. Synthetic tests verify precedence,
+explicit zero/ASK/no-store, exact environment fields, missing credentials/model,
+malformed bounded file input, durable path defaults and diagnostic redaction.
+H/K still own provider/store construction and actual no-store tool denial; this
+is not an executed complete real-startup scenario or independent review acceptance.
