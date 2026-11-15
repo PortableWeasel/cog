@@ -101,7 +101,15 @@ doxygen docs/Doxyfile
 
 The generated HTML includes:
 - All public headers with full API reference
+- A module guide for each library and the CLI, with high-level introductions
+  and getting-started examples ([modules/](modules/index.md))
 - Call graphs and caller graphs (via Graphviz)
 - Include dependency diagrams
 - Design documents, scenario traces, and contracts
 - Source browser with cross-references
+
+The C examples embedded in the module guides are compile-checked:
+
+```bash
+python3 scripts/check-doc-examples.py
+```

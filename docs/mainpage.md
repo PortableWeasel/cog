@@ -7,16 +7,20 @@ Think `pi` / `opencode`, but compiled and embeddable.
 
 ## Libraries
 
-| Library | Header | Purpose |
-|---------|--------|---------|
-| cog-core | @ref core.h | Agent loop, session tree, event queue, state machine |
-| cog-provider | @ref provider.h | LLM endpoint registry, provider vtable, model/capability |
-| cog-toolkit | @ref toolkit.h | Tool call/exec/result API |
-| cog-ipc | @ref ipc.h | Unix domain socket fabric, session routing, broadcast |
-| cog-config | @ref config.h | Hierarchical config tree with commit/rollback |
-| cog-net | @ref net.h | HTTP client, streaming, stall detection, retry |
-| cog-obs | @ref obs.h | Logging, tracing, diagnostics |
-| cog-orchestrator | @ref orchestrator.h | Process lifecycle, health, placement |
+Each module has a guide with a high-level introduction and a compilable
+getting-started example. Start at @ref page_modules.
+
+| Library | Header | Guide | Purpose |
+|---------|--------|-------|---------|
+| cog-core | @ref core.h | @ref page_cog_core | Agent loop, session tree, event queue, state machine |
+| cog-provider | @ref provider.h | @ref page_cog_provider | LLM endpoint registry, provider vtable, model/capability |
+| cog-toolkit | @ref toolkit.h | @ref page_cog_toolkit | Tool call/exec/result API |
+| cog-ipc | @ref ipc.h | @ref page_cog_ipc | Unix domain socket fabric, session routing, broadcast |
+| cog-config | @ref config.h | @ref page_cog_config | Hierarchical config tree with commit/rollback |
+| cog-net | @ref net.h | @ref page_cog_net | HTTP client, streaming, stall detection, retry |
+| cog-obs | @ref obs.h | @ref page_cog_obs | Logging, tracing, diagnostics |
+| cog-orchestrator | @ref orchestrator.h | @ref page_cog_orchestrator | Process lifecycle, health, placement |
+| cog-cli | @ref cli.h | @ref page_cog_cli | Command-line application and testable app core |
 
 ## Design constraints (non-negotiable)
 
