@@ -20,6 +20,9 @@ set(COG_UNIT_TESTS
     test_tool
     test_session_store
     test_store_adversarial
+    test_obs
+    test_obs_types
+    test_obs_critic
 )
 
 foreach(test ${COG_UNIT_TESTS})
@@ -99,6 +102,18 @@ add_test(NAME unit-session-store
 
 add_test(NAME unit-store-adversarial
     COMMAND test_store_adversarial
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME unit-obs
+    COMMAND test_obs
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME unit-obs-types
+    COMMAND test_obs_types
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME unit-obs-critic
+    COMMAND test_obs_critic
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
 # -----------------------------------------------------------------------
