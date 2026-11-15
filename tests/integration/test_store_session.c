@@ -46,12 +46,15 @@
 enum {
     ST_IDLE = 0,
     ST_RUNNING = 1,
+    ST_DONE = 2,
 };
 
 enum {
     EV_USER_INPUT = COG_EVENT_USER_INPUT,
     EV_LLM_COMPLETE = COG_EVENT_LLM_COMPLETE,
     EV_LLM_CHUNK = COG_EVENT_LLM_CHUNK,
+    EV_CANCEL = COG_EVENT_CANCEL,
+    EV_SHUTDOWN = COG_EVENT_SHUTDOWN,
 };
 
 static cog_handler_result_t on_user_input(cog_core_t *core,
@@ -148,6 +151,74 @@ static const cog_dispatch_entry_t autosave_table[] = {
     COG_DISPATCH_ENTRY(ST_RUNNING, EV_LLM_CHUNK, as_on_chunk,
                        running_transitions),
     COG_DISPATCH_ENTRY(ST_RUNNING, EV_LLM_COMPLETE, as_on_llm_complete,
+                       running_transitions),
+};
+
+/* ------------------------------------------------------------------ */
+/* Dispatch-failure / non-LLM_COMPLETE event tables for the no-save    */
+/* regression: these prove the auto-save trigger cannot fire unless    */
+/* the LLM_COMPLETE handler returns COG_OK and its transition is       */
+/* allowed.                                                            */
+/* ------------------------------------------------------------------ */
+
+/* ST_IDLE + EV_USER_INPUT: plain transition to RUNNING (no tree build). */
+static cog_handler_result_t as_on_user_ok(cog_core_t *core,
+                                          const cog_event_t *event)
+{
+    (void)core;
+    (void)event;
+    return (cog_handler_result_t){ST_RUNNING, COG_OK};
+}
+
+/* ST_RUNNING + EV_LLM_COMPLETE: handler fails (status non-COG_OK). */
+static cog_handler_result_t as_on_complete_fail(cog_core_t *core,
+                                                const cog_event_t *event)
+{
+    (void)core;
+    (void)event;
+    return (cog_handler_result_t){ST_IDLE, COG_ERROR_IO};
+}
+
+/* ST_RUNNING + EV_LLM_COMPLETE: handler is fine but requests a
+ * transition (ST_DONE) that is not in the row's allowed list
+ * (running_transitions = {ST_IDLE, SELF}). */
+static cog_handler_result_t as_on_complete_denied(cog_core_t *core,
+                                                   const cog_event_t *event)
+{
+    (void)core;
+    (void)event;
+    return (cog_handler_result_t){ST_DONE, COG_OK};
+}
+
+/* Generic self-transition handler for CANCEL / SHUTDOWN rows. */
+static cog_handler_result_t as_on_self(cog_core_t *core,
+                                       const cog_event_t *event)
+{
+    (void)core;
+    (void)event;
+    return (cog_handler_result_t){COG_TRANSITION_SELF, COG_OK};
+}
+
+static const cog_dispatch_entry_t fail_table[] = {
+    COG_DISPATCH_ENTRY(ST_IDLE, EV_USER_INPUT, as_on_user_ok,
+                       idle_transitions),
+    COG_DISPATCH_ENTRY(ST_RUNNING, EV_LLM_COMPLETE, as_on_complete_fail,
+                       running_transitions),
+};
+
+static const cog_dispatch_entry_t denied_table[] = {
+    COG_DISPATCH_ENTRY(ST_IDLE, EV_USER_INPUT, as_on_user_ok,
+                       idle_transitions),
+    COG_DISPATCH_ENTRY(ST_RUNNING, EV_LLM_COMPLETE, as_on_complete_denied,
+                       running_transitions),
+};
+
+static const cog_dispatch_entry_t cancel_shutdown_table[] = {
+    COG_DISPATCH_ENTRY(ST_IDLE, EV_USER_INPUT, as_on_user_ok,
+                       idle_transitions),
+    COG_DISPATCH_ENTRY(ST_RUNNING, EV_CANCEL, as_on_self,
+                       running_transitions),
+    COG_DISPATCH_ENTRY(ST_RUNNING, EV_SHUTDOWN, as_on_self,
                        running_transitions),
 };
 
@@ -727,6 +798,128 @@ static void test_core_chunks_do_not_save(void)
     free(base);
 }
 
+/* auto_save=true, but dispatch never completes an allowed LLM_COMPLETE
+ * exchange: no save may occur.  Pins the documented negatives: a
+ * handler failure and a denied transition abort dispatch before the
+ * auto-save point, and CANCEL/SHUTDOWN (non-LLM_COMPLETE events) never
+ * reach it either. */
+static void test_core_no_save_on_dispatch_failure(void)
+{
+    char *base = make_tmp();
+    cog_store_config_t cfg;
+    cog_store_t *store = NULL;
+    cog_core_t *core = NULL;
+    cog_session_t *session = NULL;
+    autosave_wait_ctx_t wctx;
+    cog_core_config_t ccfg;
+    cog_event_t ev;
+    char **ids = NULL;
+    size_t count = 0U;
+
+    if (base == NULL) {
+        ++failures;
+        return;
+    }
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.base_dir = base;
+    cfg.auto_save = true;
+
+    /* --- Scenario 1: LLM_COMPLETE handler returns a non-OK status. --- */
+    CHECK(cog_store_new(&store, &cfg) == COG_OK);
+    CHECK(cog_session_new(&session, NULL) == COG_OK);
+    memset(&wctx, 0, sizeof(wctx));
+    memset(&ccfg, 0, sizeof(ccfg));
+    ccfg.session = session;
+    ccfg.dispatch_table = fail_table;
+    ccfg.dispatch_table_size =
+        sizeof(fail_table) / sizeof(fail_table[0]);
+    ccfg.store = store;
+    ccfg.wait_fn = autosave_stop_wait;
+    ccfg.wait_arg = &wctx;
+    CHECK(cog_core_new(&core, &ccfg) == COG_OK);
+    wctx.core = core;
+    enqueue_turn(core);
+    CHECK(cog_core_run(core) == COG_ERROR_IO);
+    CHECK(cog_store_list(store, &ids, &count) == COG_OK);
+    CHECK(count == 0U);
+    free_ids(ids, count);
+    ids = NULL;
+    cog_core_free(core);
+    core = NULL;
+    cog_session_free(session);
+    session = NULL;
+    cog_store_free(store);
+    store = NULL;
+
+    /* --- Scenario 2: allowed-transition list rejects the request. --- */
+    CHECK(cog_store_new(&store, &cfg) == COG_OK);
+    CHECK(cog_session_new(&session, NULL) == COG_OK);
+    memset(&wctx, 0, sizeof(wctx));
+    memset(&ccfg, 0, sizeof(ccfg));
+    ccfg.session = session;
+    ccfg.dispatch_table = denied_table;
+    ccfg.dispatch_table_size =
+        sizeof(denied_table) / sizeof(denied_table[0]);
+    ccfg.store = store;
+    ccfg.wait_fn = autosave_stop_wait;
+    ccfg.wait_arg = &wctx;
+    CHECK(cog_core_new(&core, &ccfg) == COG_OK);
+    wctx.core = core;
+    enqueue_turn(core);
+    CHECK(cog_core_run(core) == COG_ERROR_TRANSITION_DENIED);
+    CHECK(cog_store_list(store, &ids, &count) == COG_OK);
+    CHECK(count == 0U);
+    free_ids(ids, count);
+    ids = NULL;
+    cog_core_free(core);
+    core = NULL;
+    cog_session_free(session);
+    session = NULL;
+    cog_store_free(store);
+    store = NULL;
+
+    /* --- Scenario 3: CANCEL and SHUTDOWN dispatch cleanly, no save. --- */
+    CHECK(cog_store_new(&store, &cfg) == COG_OK);
+    CHECK(cog_session_new(&session, NULL) == COG_OK);
+    memset(&wctx, 0, sizeof(wctx));
+    memset(&ccfg, 0, sizeof(ccfg));
+    ccfg.session = session;
+    ccfg.dispatch_table = cancel_shutdown_table;
+    ccfg.dispatch_table_size =
+        sizeof(cancel_shutdown_table) / sizeof(cancel_shutdown_table[0]);
+    ccfg.store = store;
+    ccfg.wait_fn = autosave_stop_wait;
+    ccfg.wait_arg = &wctx;
+    CHECK(cog_core_new(&core, &ccfg) == COG_OK);
+    wctx.core = core;
+    memset(&ev, 0, sizeof(ev));
+    ev.id = (cog_event_id_t)EV_USER_INPUT;
+    ev.kind = COG_EVENT_USER_INPUT;
+    CHECK(cog_core_enqueue(core, &ev) == COG_OK);
+    memset(&ev, 0, sizeof(ev));
+    ev.id = (cog_event_id_t)EV_CANCEL;
+    ev.kind = COG_EVENT_CANCEL;
+    CHECK(cog_core_enqueue(core, &ev) == COG_OK);
+    memset(&ev, 0, sizeof(ev));
+    ev.id = (cog_event_id_t)EV_SHUTDOWN;
+    ev.kind = COG_EVENT_SHUTDOWN;
+    CHECK(cog_core_enqueue(core, &ev) == COG_OK);
+    CHECK(cog_core_run(core) == COG_OK);
+    CHECK(cog_store_list(store, &ids, &count) == COG_OK);
+    CHECK(count == 0U);
+    free_ids(ids, count);
+    ids = NULL;
+    cog_core_free(core);
+    core = NULL;
+    cog_session_free(session);
+    session = NULL;
+    cog_store_free(store);
+    store = NULL;
+
+    rmtree(base);
+    free(base);
+}
+
 /* auto_save=true: the borrowed store outlives the core and stays usable. */
 static void test_core_store_outlives_core(void)
 {
@@ -830,6 +1023,7 @@ int main(void)
     test_core_auto_save_saves();
     test_core_auto_save_failure();
     test_core_chunks_do_not_save();
+    test_core_no_save_on_dispatch_failure();
     test_core_store_outlives_core();
 
     if (failures == 0U) {
