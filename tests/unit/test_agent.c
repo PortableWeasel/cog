@@ -8,7 +8,7 @@
  * This test verifies at run time:
  *
  *   - spawn validation (NULL core/config/out_id, NULL/empty task,
- *     UNAVAILABLE when the registry is full)
+ *     LIMIT when the reserved registry is full)
  *   - spawn happy path: unique non-zero ids, PENDING status, child
  *     session created and linked to the parent session, group id and
  *     timeout recorded
@@ -118,7 +118,8 @@ static int failures = 0;
 
 /** Create a core with a fresh session; the session is returned through
  *  @p out_session (may be NULL) and must be freed by the caller. */
-static cog_core_t *make_core(cog_session_t **out_session)
+static cog_core_t *make_core_with_capacity(cog_session_t **out_session,
+                                           size_t max_agents)
 {
     cog_core_t *core = NULL;
     cog_session_t *session = NULL;
@@ -129,6 +130,7 @@ static cog_core_t *make_core(cog_session_t **out_session)
     }
     memset(&cfg, 0, sizeof(cfg));
     cfg.session = session;
+    cfg.max_agents = max_agents;
     cfg.dispatch_table = dummy_table;
     cfg.dispatch_table_size = 1U;
     if (cog_core_new(&core, &cfg) != COG_OK) {
@@ -139,6 +141,11 @@ static cog_core_t *make_core(cog_session_t **out_session)
         *out_session = session;
     }
     return core;
+}
+
+static cog_core_t *make_core(cog_session_t **out_session)
+{
+    return make_core_with_capacity(out_session, 0U);
 }
 
 /* ------------------------------------------------------------------ */
@@ -216,7 +223,8 @@ static void test_spawn_happy_path(void)
     CHECK_EQ_INT((long long)rec->timeout_ms, 5000LL);
     CHECK(rec->force_local == true);
     CHECK(rec->cancelled == false);
-    CHECK(rec->result == NULL);
+    CHECK(rec->result != NULL);
+    CHECK_EQ_STR(rec->result, "");
 
     cog_core_free(core);
     cog_session_free(session);
@@ -280,17 +288,20 @@ static void test_spawn_registry_full(void)
     memset(&cfg, 0, sizeof(cfg));
     cfg.task = "x";
 
-    for (i = 0U; i < COG_AGENT_MAX_PER_CORE; ++i) {
+    for (i = 0U; i < 16U; ++i) {
         rc = cog_agent_spawn(core, &cfg, &id);
         if (rc != COG_OK) {
             break;
         }
     }
-    CHECK_EQ_INT((long long)i, (long long)COG_AGENT_MAX_PER_CORE);
+    CHECK_EQ_INT((long long)i, 16LL);
     CHECK_EQ_INT(rc, COG_OK);
 
-    /* No core has capacity: the registry is full. */
-    CHECK_EQ_INT(cog_agent_spawn(core, &cfg, &id), COG_ERROR_UNAVAILABLE);
+    /* Zero max_agents reserves the documented default of 16 records.
+     * A rejected spawn leaves the output identity unchanged. */
+    id = 999U;
+    CHECK_EQ_INT(cog_agent_spawn(core, &cfg, &id), COG_ERROR_LIMIT);
+    CHECK_EQ_INT(id, 999U);
 
     cog_core_free(core);
     cog_session_free(session);
@@ -472,10 +483,10 @@ static void test_notify_parent(void)
     CHECK(rec != NULL);
     CHECK_EQ_STR(rec->status_msg, "thinking");
 
-    /* A later message replaces the earlier one. */
-    CHECK_EQ_INT(cog_agent_notify_parent(core, id, "writing"), COG_OK);
+    /* A distinct update must wait until the earlier notification is acked. */
+    CHECK_EQ_INT(cog_agent_notify_parent(core, id, "writing"), COG_ERROR_AGAIN);
     rec = cog_agent_internal_get(core, id);
-    CHECK_EQ_STR(rec->status_msg, "writing");
+    CHECK_EQ_STR(rec->status_msg, "thinking");
 
     cog_core_free(core);
     cog_session_free(session);
@@ -541,12 +552,13 @@ static void test_result(void)
     /* A zero-capacity buffer cannot hold even the terminator. */
     CHECK_EQ_INT(cog_agent_result(core, id, buf, 0U, &len), COG_ERROR_OVERFLOW);
 
-    /* Result on a failed agent: INVALID_STATE. */
+    /* Failed terminal results remain readable, including an empty result. */
     CHECK_EQ_INT(cog_agent_spawn(core, &cfg, &id), COG_OK);
     CHECK_EQ_INT(cog_agent_internal_start(core, id), COG_OK);
     CHECK_EQ_INT(cog_agent_internal_fail(core, id), COG_OK);
-    CHECK_EQ_INT(cog_agent_result(core, id, buf, sizeof(buf), &len),
-                 COG_ERROR_INVALID_STATE);
+    CHECK_EQ_INT(cog_agent_result(core, id, buf, sizeof(buf), &len), COG_OK);
+    CHECK_EQ_INT(len, 0U);
+    CHECK_EQ_STR(buf, "");
 
     cog_core_free(core);
     cog_session_free(session);
@@ -624,7 +636,7 @@ static void test_internal_transitions(void)
     CHECK_EQ_INT(cog_agent_internal_complete(core, id, NULL, 1U),
                  COG_ERROR_INVALID_ARG);
     CHECK_EQ_INT(cog_agent_internal_complete(core, id, "x", SIZE_MAX),
-                 COG_ERROR_NOMEM);
+                 COG_ERROR_LIMIT);
 
     cog_core_free(core);
     cog_session_free(session);
@@ -655,7 +667,7 @@ static void test_cancellation_cooperation(void)
                  COG_ERROR_INVALID_STATE);
     CHECK_EQ_INT(cog_agent_status(core, id, &st), COG_OK);
     CHECK_EQ_INT((int)st, (int)COG_AGENT_STATUS_CANCELLED);
-    CHECK(cog_agent_internal_get(core, id)->result == NULL);
+    CHECK_EQ_STR(cog_agent_internal_get(core, id)->result, "");
 
     cog_core_free(core);
     cog_session_free(session);
@@ -735,7 +747,7 @@ static void test_stress_cleanup(void)
     size_t len = 0U;
     cog_agent_status_t st;
 
-    core = make_core(&session);
+    core = make_core_with_capacity(&session, 200U);
     CHECK(core != NULL);
 
     memset(&cfg, 0, sizeof(cfg));
@@ -822,9 +834,8 @@ static void test_result_null_len(void)
 
 static void test_notify_parent_terminal(void)
 {
-    /* notify_parent is not gated on status: a cancelled (terminal) agent
-     * may still record a final status message.  The message is owned and
-     * released with the record. */
+    /* notify_parent makes a RUNNING update, which cannot follow a terminal
+     * cancellation. The rejected update must not change the record. */
     cog_core_t *core;
     cog_session_t *session;
     cog_agent_config_t cfg;
@@ -840,28 +851,27 @@ static void test_notify_parent_terminal(void)
     CHECK_EQ_INT(cog_agent_cancel(core, id), COG_OK);
 
     CHECK_EQ_INT(cog_agent_notify_parent(core, id, "cancelled by user"),
-                 COG_OK);
+                 COG_ERROR_INVALID_STATE);
     rec = cog_agent_internal_get(core, id);
     CHECK(rec != NULL);
-    CHECK_EQ_STR(rec->status_msg, "cancelled by user");
+    CHECK_EQ_STR(rec->status_msg, "");
     CHECK_EQ_INT((int)rec->status, (int)COG_AGENT_STATUS_CANCELLED);
 
     cog_core_free(core);
     cog_session_free(session);
 }
 
-static void test_registry_growth_boundaries(void)
+static void test_registry_capacity_boundary(void)
 {
-    /* The registry grows lazily (initial capacity 8, doubling up to the
-     * 256 maximum).  Verify ids stay contiguous and correct across every
-     * growth boundary, and that the registry-full boundary is exact. */
+    /* An explicit reservation permits 256 retained records. Verify the
+     * exact full boundary and identities across the entire reservation. */
     cog_core_t *core;
     cog_session_t *session;
     cog_agent_config_t cfg;
     cog_agent_id_t id = 0U;
     size_t i;
 
-    core = make_core(&session);
+    core = make_core_with_capacity(&session, COG_AGENT_MAX_PER_CORE);
     CHECK(core != NULL);
 
     memset(&cfg, 0, sizeof(cfg));
@@ -873,8 +883,10 @@ static void test_registry_growth_boundaries(void)
         CHECK_EQ_INT((long long)id, (long long)(i + 1U));
     }
 
-    /* Exactly at the boundary the registry is full. */
-    CHECK_EQ_INT(cog_agent_spawn(core, &cfg, &id), COG_ERROR_UNAVAILABLE);
+    /* Exactly at the boundary the registry is full; no ID is assigned. */
+    id = 999U;
+    CHECK_EQ_INT(cog_agent_spawn(core, &cfg, &id), COG_ERROR_LIMIT);
+    CHECK_EQ_INT(id, 999U);
 
     cog_core_free(core);
     cog_session_free(session);
@@ -902,7 +914,7 @@ int main(void)
     test_stress_cleanup();
     test_result_null_len();
     test_notify_parent_terminal();
-    test_registry_growth_boundaries();
+    test_registry_capacity_boundary();
 
     if (failures != 0) {
         fprintf(stderr, "test_agent: %d failure(s)\n", failures);
