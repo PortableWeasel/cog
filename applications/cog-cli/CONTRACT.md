@@ -64,7 +64,7 @@ The dispatch table is `static const` in `cli.c`:
 | AWAITING_LLM | `LLM_CHUNK` | receive next chunk, append + print, continue or finish |
 | AWAITING_LLM | `LLM_COMPLETE` | close the turn, return to IDLE |
 | AWAITING_LLM | `CANCEL` | arm provider cancellation; next receive aborts and the partial turn is discarded |
-| AWAITING_LLM | `SHUTDOWN` | stop the run loop |
+| AWAITING_LLM | `SHUTDOWN` | cancel the in-flight request (arm provider cancellation, drain the abort), discard the partial assistant turn, return to IDLE, stop the run loop |
 
 Error handling: a retryable provider error (e.g. rate limit) is retried
 once after a bounded backoff derived from the error's `retry_after_ms`

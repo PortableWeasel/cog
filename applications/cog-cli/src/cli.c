@@ -401,7 +401,53 @@ static cog_handler_result_t cli_on_cancel_idle(cog_core_t *core,
     return r;
 }
 
-/** Any state + SHUTDOWN: request the run loop to stop. */
+/**
+ * @brief Cancel the in-flight provider request and discard the partial
+ *        assistant turn.
+ *
+ * Arms a one-shot provider cancellation (mirroring @c cli_on_cancel),
+ * drains the resulting abort with a receive so the provider's in-flight
+ * state is closed, and discards every trailing assistant node so the
+ * session is back to the last user message.  Used by the SHUTDOWN
+ * handler so the state machine returns to IDLE before the run loop
+ * stops instead of abandoning the request mid-turn.
+ *
+ * @return COG_OK when the receive aborted as expected; an error code
+ *         when the provider did not honour the cancel (the partial turn
+ *         is still discarded either way, so shutdown stays bounded).
+ */
+static cog_result_t cli_cancel_inflight(cog_core_t *core)
+{
+    cog_provider_t *provider = cog_core_provider(core);
+    cog_session_t *session = cog_core_session(core);
+    cog_provider_response_t resp;
+    char content[4096];
+    cog_result_t rc;
+
+    if (provider == NULL || session == NULL) {
+        return COG_ERROR_INVALID_STATE;
+    }
+
+    /* Arm the one-shot cancel so the next receive aborts. */
+    (void)cog_mock_provider_request_cancel(provider);
+
+    /* Drain the abort.  The mock returns COG_ERROR_ABORTED immediately
+     * once the cancel is armed; the receive also closes the provider's
+     * in-flight state. */
+    (void)memset(&resp, 0, sizeof(resp));
+    resp.content = content;
+    resp.content_capacity = sizeof(content);
+    rc = cog_provider_receive(provider, &resp);
+
+    /* Whatever the receive returned, the turn is being shut down: drop
+     * the partial assistant nodes and close the turn. */
+    cli_discard_partial_turn(session);
+
+    return (rc == COG_ERROR_ABORTED) ? COG_OK : COG_ERROR_INVALID_STATE;
+}
+
+/** Any state + SHUTDOWN: cancel in-flight provider work, close the turn
+ * back to IDLE, and stop the run loop. */
 static cog_handler_result_t cli_on_shutdown(cog_core_t *core,
                                             const cog_event_t *event)
 {
@@ -411,6 +457,15 @@ static cog_handler_result_t cli_on_shutdown(cog_core_t *core,
         r.status = COG_ERROR_NULL_PTR;
         return r;
     }
+
+    if (cog_core_state(core) == (cog_state_t)CLI_STATE_AWAITING_LLM) {
+        /* An assistant turn is in flight: cancel the provider request,
+         * drain the abort, and discard the partial turn so the state
+         * machine returns to IDLE before the loop stops. */
+        (void)cli_cancel_inflight(core);
+        r.transition = CLI_STATE_IDLE;
+    }
+
     cog_core_stop(core);
     return r;
 }
