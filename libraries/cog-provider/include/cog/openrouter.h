@@ -58,6 +58,10 @@ typedef struct cog_openrouter_config {
  * A signature, when supported by this pinned profile, is a non-null string;
  * explicit null signature remains UNSUPPORTED, not malformed JSON. No nullable
  * signature merge/closure semantics are inferred or implicitly enabled.
+ * These rules are shared by inbound reconstruction and outbound/preflight
+ * validation. They impose no base64 decoding, integer/nonnegative index bound,
+ * format-value registry or new mandatory member. Type-specific payload names
+ * on a different supported entry kind remain unknown members and are preserved.
  * No other top-level key is accepted in v1; unknown required continuation fields
  * fail UNSUPPORTED before a tool executes or continuation sends. The codec
  * accumulates reasoning_details in wire order. Consecutive reasoning.text
