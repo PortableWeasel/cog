@@ -150,3 +150,13 @@ The narrow [H mock contract](../REAL_CLIENT_H_MOCK_AMENDMENT.md) adds
 TOOL_BEGIN/ARGUMENTS/END/OPAQUE/FINISH fixtures through the same generic callbacks
 as the real adapter. K can exercise its tool admission loop without wire calls;
 this constructor itself executes no tool and grants no durable admission.
+
+## K typed application fixture admission
+
+The application options `mock_deltas`/`mock_delta_count` borrow a bounded typed
+script through app destruction. MOCK uses `cog_mock_provider_new_deltas`; REAL
+refuses fixture inputs, and legacy `script` is mutually exclusive. Each turn
+ends with FINISH before policy, durable STARTED, tool execution, identified
+result and continuation. This exercises application composition without wire
+traffic or relaxing durable tool admission. Pass 3 checks pointer/count pairs,
+4096-entry ceiling, fixture lifetime and REAL rejection.
