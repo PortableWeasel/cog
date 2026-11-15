@@ -235,3 +235,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang
     add_test(NAME cli-session-recovery-faults COMMAND test_session_recovery_faults)
     set_tests_properties(cli-session-recovery-faults PROPERTIES TIMEOUT 20)
 endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    add_executable(test_app_reload_critic test_app_reload_critic.c)
+    target_include_directories(test_app_reload_critic PRIVATE ../src)
+    target_link_libraries(test_app_reload_critic PRIVATE cog::cli)
+    target_link_options(test_app_reload_critic PRIVATE
+        -Wl,--wrap=cog_cli_service -Wl,--wrap=cog_provider_connect
+        -Wl,--wrap=cog_provider_disconnect)
+    target_enable_warnings(test_app_reload_critic)
+    add_test(NAME cli-app-reload-critic COMMAND test_app_reload_critic)
+    set_tests_properties(cli-app-reload-critic PROPERTIES TIMEOUT 10)
+endif()
