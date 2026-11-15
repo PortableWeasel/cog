@@ -5,8 +5,10 @@
 > describes the original engine/mock-CLI baseline, not real-client release
 > completion. Stage 14 uses technical gates under delegated design authority.
 > [Transport research](research/https-lifecycle.md) is accepted as conditional
-> evidence only: allocation semantics and DNS backend acceptance remain header
-> gates, and the installed threaded resolver does not meet bounded cancellation.
+> evidence only: allocation semantics and transport lifecycle remain header
+> gates; accepted DNS follow-up requires a verified c-ares primary resolver with
+> threaded resolution disabled, empirical shipped-profile validation and explicit
+> rejection of unsupported builds. Threaded/QUICK_EXIT alternatives fail cleanup.
 > Core fairness delivery Q must precede the real conversation-loop delivery K.
 > [Protocol research](research/provider-wire.md) selects private yyjson with
 > explicit pools and records two synthetic live requests; opaque continuation

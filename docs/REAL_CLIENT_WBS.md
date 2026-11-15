@@ -57,10 +57,14 @@ contents in logs, shell arguments, tickets, fixtures or source control.
 Accepted transport evidence and reproduction commands are in the
 [HTTPS lifecycle report](research/https-lifecycle.md). A passes as research:
 it does not approve libcurl allocation semantics or bounded DNS shutdown.
-The installed threaded resolver is excluded from bounded cancellation after
-a controlled stall blocked removal for about 1.9 seconds; the reproducible
-follow-up and alternative resolver investigation remain pending. Header gate
-E must resolve DNS backend/latency and third-party allocation/OOM/memory-limit
+The accepted [DNS follow-up](../pocs/https-lifecycle/dns/README.md), child
+`23ae6c8`, resolves backend selection: require a verified c-ares primary resolver
+with threaded resolver disabled; reject the installed threaded and hybrid
+profiles rather than relying only on ASYNCHDNS. The controlled c-ares local-DNS
+cancel/timeout/cleanup suite passes without leftover threads or descriptors;
+QUICK_EXIT leaves a thread alive after cleanup. Measured ceilings are empirical,
+and maintained shipped profiles must rerun the probes. Header gate E must still
+specify feature rejection/lifecycle and third-party allocation/OOM/memory-limit
 contracts before delivery adoption. Q must prove timer, IPC and cancellation
 progress while the core event queue remains nonempty; the PoC only uses a
 synthetic queue.

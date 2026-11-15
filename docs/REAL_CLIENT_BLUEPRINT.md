@@ -36,17 +36,22 @@ provider matrix. These are follow-on scope, not silent release requirements.
    descriptor table or dynamically register provider implementations.
    In-flight instances retain their generation until teardown.
 3. Keep libcurl multi a conditional transport candidate, subject to the
-   [lifecycle research](research/https-lifecycle.md) and backend adoption gates. Its
+   [lifecycle and DNS research](research/https-lifecycle.md) and allocation gate. Its
    process-global initialization must be explicit and host-owned, with no
    Cog global reference counter or lazy initialization. The host initializes
    the dependency before contexts and cleans up after all contexts. If this
    cannot meet the embedding contract, select a different backend at the
    header gate rather than quietly weakening the no-global-state rule.
-   The installed threaded-resolver build is excluded from bounded DNS
-   cancellation/shutdown acceptance: a follow-up controlled resolver stall
-   blocked handle removal for about 1.9 seconds. A reproducible follow-up
-   report and an alternative such as c-ares remain required; ASYNCHDNS alone
-   does not establish bounded cancellation.
+   The initial supported profile requires c-ares as the primary resolver:
+   ENABLE_ARES=ON and ENABLE_THREADED_RESOLVER=OFF, recorded build provenance,
+   runtime ASYNCHDNS and ares metadata, c-ares-only DNS_SERVERS support, and
+   rejection of hybrid threaded-primary/asyn-rr builds. Fail construction
+   clearly when that profile cannot be established. The installed threaded
+   resolver is excluded: a controlled stall blocked removal for about 1.9s.
+   QUICK_EXIT leaves a resolver thread alive after cleanup and is not an
+   embedding solution. Use maintained security-patched dependencies and rerun
+   the controlled cancellation suite for the actual shipped profile; empirical
+   latency ceilings are not universal scheduling/allocator guarantees.
 4. Keep JSON behind a private provider boundary. The accepted
    [protocol research](research/provider-wire.md) selects yyjson 0.12.0 over
    pinned jsmn, using explicit caller pools, strict parsing and separate
@@ -133,10 +138,17 @@ Transport research A (`c5671b5`) is integrated and independently reviewed:
 [standalone reproduction](../pocs/https-lifecycle/README.md). Strict builds and
 normal plus ASan/UBSan/LSan runs each passed 12 transport cases and 80 injected
 curl allocation failures. This accepts research evidence, not a production
-backend or the public-header gate. The report records the original local
-fixture limits; subsequent controlled DNS evidence excludes the installed
-threaded resolver from bounded cancellation. DNS backend selection and
-third-party allocation semantics remain explicit header-gate decisions.
+backend or the public-header gate. The independently reviewed
+[DNS follow-up](research/https-lifecycle.md#dns-followup-c-ares-required-for-the-supported-profile)
+(`23ae6c8`, [offline runner](../pocs/https-lifecycle/dns/README.md)) resolves
+resolver selection with the c-ares-only supported-profile requirement above.
+Local blackhole queries cancelled without residual threads or descriptors;
+independent review and integration runs measured sub-millisecond removal,
+with the configured 800ms timeout completing near 800ms. The threaded-resolver counterexample and
+QUICK_EXIT residual-thread result exclude those alternatives. Tests are
+empirical and profile-specific; constructor feature checks and shipped-profile
+validation still require implementation. Third-party allocation/OOM/memory-limit
+semantics remain unresolved at the public-header gate.
 Core scheduling delivery Q is separate from the synthetic fairness PoC.
 
 Protocol research B (`2e1cddf`) is also integrated and independently reviewed:
