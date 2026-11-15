@@ -388,6 +388,7 @@ static cog_result_t input_add(cog_cli_app_t *app, const char *text, size_t lengt
         cli_input_t *slot = &app->inputs[i];
         memcpy(slot->text, text, length); slot->text[length] = '\0';
         slot->length = length; slot->used = true; slot->queued = queue;
+        slot->continuation_authorized = !queue && !app->active && app->continuation_required;
         slot->order = ++app->input_order;
         if (queue) return COG_OK;
         cog_event_t event = {.id = COG_EVENT_USER_INPUT, .kind = COG_EVENT_USER_INPUT,

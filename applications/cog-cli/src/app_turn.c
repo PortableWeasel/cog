@@ -93,7 +93,7 @@ cog_result_t cog_cli_finish_partial(cog_cli_app_t *app, cog_result_t reason)
     if (!app->active) return COG_OK;
     cog_result_t rc = append_turn(app, reason == COG_ERROR_ABORTED ? COG_MESSAGE_CANCELLED :
         COG_MESSAGE_INCOMPLETE, false);
-    app->active = false; app->provider_active = false;
+    app->active = false; app->provider_active = false; app->continuation_required = true;
     if (fputc('\n', app->out) == EOF || fflush(app->out) != 0) return COG_ERROR_IO;
     return rc;
 }
@@ -237,6 +237,11 @@ static cog_handler_result_t input(cog_core_t *core, const cog_event_t *event)
         .content_len = event->payload_len};
     cog_session_node_t *active = cog_session_active(app->session);
     if (active != NULL && cog_node_data(active)->message->status != COG_MESSAGE_COMPLETE) {
+        if (slot == NULL || !slot->continuation_authorized) {
+            if (slot != NULL) slot->queued = true;
+            else r.status = cog_cli_app_queue(app, event->payload, event->payload_len);
+            return r;
+        }
         cog_session_node_t *safe = cog_node_parent(active), *fork = NULL;
         if (safe == NULL) { r.status = COG_ERROR_INVALID_STATE; return r; }
         r.status = cog_session_fork(app->session, safe, &fork);
@@ -245,6 +250,7 @@ static cog_handler_result_t input(cog_core_t *core, const cog_event_t *event)
     if (slot != NULL) slot->used = false;
     if (r.status != COG_OK) return r;
     app->display_sequence++;
+    app->continuation_required = false;
     app->active = true; app->accepted = false; app->effects = false;
     app->cancelling = false; app->retries = 0U; app->rounds = 0U;
     app->deferred_error = COG_OK; app->started_at = app->now;
@@ -384,10 +390,11 @@ cog_result_t cog_cli_service(void *arg, uint64_t now, uint64_t *deadline)
     }
     if (!app->active && !app->event_queued && !app->shutdown) {
         cli_input_t *oldest = NULL;
-        bool outstanding = false;
+        bool outstanding = false, authorized = false;
         for (size_t i = 0U; i < CLI_INPUTS; i++) if (app->inputs[i].used) {
             outstanding = true;
-            if (app->inputs[i].queued && (oldest == NULL || app->inputs[i].order < oldest->order))
+            if (app->inputs[i].continuation_authorized) authorized = true;
+            if (app->inputs[i].queued && (!app->continuation_required || app->inputs[i].continuation_authorized) && (oldest == NULL || app->inputs[i].order < oldest->order))
                 oldest = &app->inputs[i];
         }
         if (oldest != NULL) {
@@ -400,7 +407,8 @@ cog_result_t cog_cli_service(void *arg, uint64_t now, uint64_t *deadline)
         size_t pending = 0U;
         rc = cog_core_pending_count(app->core, cog_session_id(app->session), &pending);
         if (rc != COG_OK) return rc;
-        if (!outstanding && pending == 0U && (!app->opts.interactive || app->stdin_eof))
+        if ((!outstanding && pending == 0U && (!app->opts.interactive || app->stdin_eof)) ||
+            (app->continuation_required && !authorized && (!app->opts.interactive || app->stdin_eof)))
             cog_core_stop(app->core);
     }
     if (app->shutdown && !app->active) cog_core_stop(app->core);

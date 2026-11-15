@@ -23,7 +23,7 @@ typedef struct cli_input {
     char *text;
     size_t length;
     uint64_t order;
-    bool used, queued;
+    bool used, queued, continuation_authorized;
 } cli_input_t;
 struct cog_cli_app {
     cog_cli_configuration_t *configuration;
@@ -46,7 +46,7 @@ struct cog_cli_app {
     cog_obs_sink_table_t sink_table;
     bool prompt_submitted, shutdown, cancelling, active, provider_active;
     bool delta_ready, event_queued, tool_done, effects, accepted, policy_prompt;
-    bool recovery, stdin_eof;
+    bool recovery, stdin_eof, continuation_required;
     int signal_fd;
     cog_result_t deferred_error;
     cog_toolkit_policy_decision_t policy_decision;
