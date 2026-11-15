@@ -308,6 +308,41 @@ static void test_store_flow(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Handler context via cog_core_user (no global app pointer)           */
+/* ------------------------------------------------------------------ */
+
+static void test_handler_context(void)
+{
+    cog_cli_options_t opts;
+    cog_cli_app_t *app = NULL;
+    cog_mock_state_t st;
+
+    (void)memset(&opts, 0, sizeof(opts));
+    opts.prompt = "hello";
+    opts.chunks = "ctx";
+    opts.model_id = "ctx-model-7"; /* distinctive: proves the handler read
+                                      the app context, not a default */
+    app = make_app(&opts);
+    CHECK(app != NULL);
+
+    /* The app context is threaded through the core's borrowed user
+     * pointer, not a module global. */
+    CHECK(cog_core_user(cog_cli_app_core(app)) == (void *)app);
+
+    CHECK(cog_cli_app_run(app) == COG_OK);
+
+    /* The USER_INPUT handler built the request from app->opts.model_id
+     * retrieved via cog_core_user; a stale or missing context would have
+     * fallen back to the default model id. */
+    CHECK(cog_mock_provider_state(cog_cli_app_provider(app), &st) == COG_OK);
+    CHECK(st.last_request != NULL);
+    CHECK(st.last_request->model_id != NULL &&
+          strcmp(st.last_request->model_id, "ctx-model-7") == 0);
+
+    cog_cli_app_free(app);
+}
+
+/* ------------------------------------------------------------------ */
 /* Unknown endpoint error                                              */
 /* ------------------------------------------------------------------ */
 
@@ -331,6 +366,7 @@ int main(void)
     test_error_retry_flow();
     test_shutdown_flow();
     test_store_flow();
+    test_handler_context();
     test_unknown_endpoint();
 
     if (failures != 0) {

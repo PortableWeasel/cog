@@ -43,6 +43,7 @@ Guard: `COG_CORE_H`. The header includes the other cog-core public headers
 | `tool_table` | no | borrowed | May be NULL. |
 | `event_queue_capacity` | no | — | Zero selects a sensible default (64). |
 | `wait_fn` / `wait_arg` | no | borrowed | May be NULL (busy-wait with a short yield). |
+| `user` | no | borrowed | Caller-owned context; stored verbatim, never freed, dereferenced, or mutated by the core. May be NULL (zero-init yields NULL). The pointed-to object must remain valid for the core's lifetime. |
 | `ipc_endpoint` | no | owned | May be NULL (single-process). If non-NULL, the core takes ownership: it drains the endpoint during `cog_core_run` (accepting peers and receiving messages as `COG_EVENT_IPC_*` events) and destroys it in `cog_core_free`. The endpoint must be bound (listening or connected); an unbound endpoint is accepted but never drained. The caller must not use or free the endpoint after `cog_core_new`. |
 | `local_peer_id` | no | — | Zero = unidentified. |
 | `provider` | no | borrowed | Optional; may be NULL for tests / no-provider operation. Stored as-is. |
@@ -198,6 +199,7 @@ cog_result_t cog_core_enqueue(cog_core_t *core, const cog_event_t *event);
 | `cog_core_provider` | NULL | the provider (or NULL if not configured) |
 | `cog_core_obs` | NULL | the obs context (or NULL if not configured) |
 | `cog_core_store` | NULL | the store (or NULL if not configured) |
+| `cog_core_user` | NULL | the borrowed caller context exactly as supplied (or NULL if not configured) |
 
 ### Pending message FIFO
 

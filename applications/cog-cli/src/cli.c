@@ -18,10 +18,10 @@
  *    propagate out of @c cog_core_run (fail loudly).
  *
  * The handlers need the app context (output stream, options) but the
- * handler signature only receives the core.  The module-private
- * @c g_active_app pointer bridges that gap: it is set around
- * @c cog_core_run and cleared afterwards, so it is never live outside a
- * run.  The dispatch table itself remains static const.
+ * handler signature only receives the core.  The app context is threaded
+ * through the core's borrowed @c cog_core_config_t::user pointer and
+ * retrieved with @c cog_core_user, so the dispatch table stays static
+ * const and no global mutable state exists.
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -47,11 +47,24 @@ enum {
 };
 
 /* ------------------------------------------------------------------ */
-/* Module-private app context bridge                                   */
+/* App context bridge                                                  */
 /* ------------------------------------------------------------------ */
 
-/** Active app during @c cog_core_run; NULL outside a run. */
-static cog_cli_app_t *g_active_app = NULL;
+/**
+ * @brief Retrieve the app context threaded through the core's borrowed
+ *        user pointer (see @c cog_core_user).
+ *
+ * The app is supplied as @c cog_core_config_t::user at construction and
+ * is never owned or mutated by the core; handlers read it back verbatim.
+ *
+ * @param[in] core Core to query; may be NULL.
+ * @return The app pointer, or NULL if @p core is NULL or no user context
+ *         was configured.
+ */
+static cog_cli_app_t *cli_app_from_core(cog_core_t *core)
+{
+    return (cog_cli_app_t *)cog_core_user(core);
+}
 
 /* ------------------------------------------------------------------ */
 /* App layout                                                          */
@@ -141,6 +154,7 @@ static cog_result_t cli_handle_provider_error(cog_core_t *core,
 {
     cog_provider_t *provider = cog_core_provider(core);
     cog_session_t *session = cog_core_session(core);
+    cog_cli_app_t *app = cli_app_from_core(core);
     cog_mock_state_t ms;
     cog_provider_request_t req;
     cog_event_t next;
@@ -153,7 +167,7 @@ static cog_result_t cli_handle_provider_error(cog_core_t *core,
     (void)cog_mock_provider_state(provider, &ms);
 
     if (!ms.last_error.retryable) {
-        if (g_active_app != NULL) {
+        if (app != NULL) {
             (void)fprintf(stderr,
                           "cog-cli: provider error: %s (%s)\n",
                           cog_cli_result_name(rc),
@@ -171,7 +185,7 @@ static cog_result_t cli_handle_provider_error(cog_core_t *core,
     if (backoff > 5000U) {
         backoff = 5000U; /* cap */
     }
-    if (g_active_app != NULL) {
+    if (app != NULL) {
         (void)fprintf(stderr,
                       "cog-cli: provider error: %s (http %d, retryable, "
                       "retrying in %u ms): %s\n",
@@ -192,8 +206,7 @@ static cog_result_t cli_handle_provider_error(cog_core_t *core,
         return COG_ERROR_IO;
     }
     (void)memset(&req, 0, sizeof(req));
-    req.model_id = (g_active_app != NULL) ? g_active_app->opts.model_id
-                                          : "mock-model";
+    req.model_id = (app != NULL) ? app->opts.model_id : "mock-model";
     req.messages = history;
     req.message_count = history_count;
     req.stream = true;
@@ -219,6 +232,7 @@ static cog_handler_result_t cli_on_user_input(cog_core_t *core,
 {
     cog_session_t *session = cog_core_session(core);
     cog_provider_t *provider = cog_core_provider(core);
+    cog_cli_app_t *app = cli_app_from_core(core);
     cog_message_t msg;
     cog_provider_request_t req;
     cog_event_t next;
@@ -247,8 +261,7 @@ static cog_handler_result_t cli_on_user_input(cog_core_t *core,
     }
 
     (void)memset(&req, 0, sizeof(req));
-    req.model_id = (g_active_app != NULL) ? g_active_app->opts.model_id
-                                          : "mock-model";
+    req.model_id = (app != NULL) ? app->opts.model_id : "mock-model";
     req.messages = history;
     req.message_count = history_count;
     req.stream = true;
@@ -279,6 +292,7 @@ static cog_handler_result_t cli_on_llm_chunk(cog_core_t *core,
 {
     cog_provider_t *provider = cog_core_provider(core);
     cog_session_t *session = cog_core_session(core);
+    cog_cli_app_t *app = cli_app_from_core(core);
     cog_provider_response_t resp;
     char content[4096];
     cog_message_t msg;
@@ -322,9 +336,9 @@ static cog_handler_result_t cli_on_llm_chunk(cog_core_t *core,
         return r;
     }
 
-    if (g_active_app != NULL && resp.content_len > 0U) {
-        (void)fwrite(content, 1U, resp.content_len, g_active_app->out);
-        (void)fflush(g_active_app->out);
+    if (app != NULL && resp.content_len > 0U) {
+        (void)fwrite(content, 1U, resp.content_len, app->out);
+        (void)fflush(app->out);
     }
 
     next.id = (cog_event_id_t)(resp.is_complete ? COG_EVENT_LLM_COMPLETE
@@ -345,15 +359,16 @@ static cog_handler_result_t cli_on_llm_chunk(cog_core_t *core,
 static cog_handler_result_t cli_on_llm_complete(cog_core_t *core,
                                                 const cog_event_t *event)
 {
+    cog_cli_app_t *app = cli_app_from_core(core);
     cog_handler_result_t r = {CLI_STATE_IDLE, COG_OK};
 
     if (core == NULL || event == NULL) {
         r.status = COG_ERROR_NULL_PTR;
         return r;
     }
-    if (g_active_app != NULL) {
-        (void)fputc('\n', g_active_app->out);
-        (void)fflush(g_active_app->out);
+    if (app != NULL) {
+        (void)fputc('\n', app->out);
+        (void)fflush(app->out);
     }
     return r;
 }
@@ -1069,6 +1084,9 @@ cog_result_t cog_cli_app_new(cog_cli_app_t **out,
     core_cfg.ipc_endpoint = app->ipc;
     core_cfg.wait_fn = cli_wait_fn;
     core_cfg.wait_arg = app;
+    /* Borrowed caller context: handlers retrieve the app through
+     * cog_core_user; the core never owns or mutates it. */
+    core_cfg.user = app;
     rc = cog_core_new(&app->core, &core_cfg);
     if (rc != COG_OK) {
         goto fail;
@@ -1143,9 +1161,7 @@ cog_result_t cog_cli_app_run(cog_cli_app_t *app)
         }
     }
 
-    g_active_app = app;
     rc = cog_core_run(app->core);
-    g_active_app = NULL;
     return rc;
 }
 

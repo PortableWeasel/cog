@@ -99,6 +99,7 @@ directly or `cog_cli_app_cancel(app)` while streaming.
 | `cog_cli_app_obs(app)` + `cog_obs_diag_*` | connection diagnostics table (scenario 19) |
 | `cog_cli_app_store(app)` + `cog_store_*` | persistence round-trips (scenario 13) |
 | `cog_cli_app_core(app)` | the core, for `cog_core_*` accessors and `cog_agent_*` subagent APIs (scenarios 03, 09, 10) |
+| `cog_core_user(cog_cli_app_core(app))` | the app pointer threaded through the core's borrowed user context (handlers reach the app this way; no global) |
 
 ## Scenario notes
 

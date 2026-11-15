@@ -368,6 +368,52 @@ static void test_accessors(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Borrowed caller context (cog_core_user)                             */
+/* ------------------------------------------------------------------ */
+
+static void test_user_context(void)
+{
+    cog_session_t *session = NULL;
+    cog_core_t *core = NULL;
+    cog_core_config_t cfg;
+    static int user_object; /* caller-owned; must outlive the core */
+
+    CHECK(cog_session_new(&session, NULL) == COG_OK);
+
+    /* Default: a zero-initialised config yields NULL. */
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.session = session;
+    cfg.dispatch_table = dispatch_table;
+    cfg.dispatch_table_size = sizeof(dispatch_table) / sizeof(dispatch_table[0]);
+    CHECK(cog_core_new(&core, &cfg) == COG_OK);
+    CHECK(cog_core_user(core) == NULL);
+    cog_core_free(core);
+    core = NULL;
+
+    /* Arbitrary pointer round-trip: the core returns the pointer exactly
+     * as supplied. */
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.session = session;
+    cfg.dispatch_table = dispatch_table;
+    cfg.dispatch_table_size = sizeof(dispatch_table) / sizeof(dispatch_table[0]);
+    cfg.user = &user_object;
+    CHECK(cog_core_new(&core, &cfg) == COG_OK);
+    CHECK(cog_core_user(core) == (void *)&user_object);
+
+    /* No ownership transfer: freeing the core leaves the caller's object
+     * alive and untouched. */
+    user_object = 42;
+    cog_core_free(core);
+    CHECK(user_object == 42);
+    core = NULL;
+
+    /* NULL core returns NULL. */
+    CHECK(cog_core_user(NULL) == NULL);
+
+    cog_session_free(session);
+}
+
+/* ------------------------------------------------------------------ */
 /* IPC endpoint acceptance                                             */
 /* ------------------------------------------------------------------ */
 
@@ -1107,6 +1153,7 @@ int main(void)
     test_new_validation();
     test_free_null();
     test_accessors();
+    test_user_context();
     test_enqueue();
     test_run_basic();
     test_run_null_and_reentrant();

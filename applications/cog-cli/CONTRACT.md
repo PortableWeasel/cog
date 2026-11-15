@@ -81,9 +81,12 @@ session → IPC (only if `cog_core_new` failed) → owned script storage →
 log file.
 
 The handlers need the app context (output stream, options) but the
-handler signature only receives the core; the module-private
-`g_active_app` pointer bridges that gap and is set only around
-`cog_core_run`.  The dispatch table itself remains static const.
+handler signature only receives the core.  The app is threaded through
+the core's borrowed `cog_core_config_t::user` pointer at construction
+and retrieved in handlers with `cog_core_user(core)` (see
+`cli_app_from_core` in cli.c).  The core never owns or mutates the
+pointer, and the dispatch table itself remains static const — there is
+no global mutable state.
 
 ## Mock provider
 
