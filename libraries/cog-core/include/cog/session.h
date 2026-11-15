@@ -879,6 +879,9 @@ cog_result_t cog_session_set_parent(cog_session_t *session,
  * @return COG_ERROR_NULL_PTR if @p session or @p node is NULL.
  * @return COG_ERROR_INVALID_STATE if non-leaf, fork-shared, identified-call/
  * result/ledger/audit-bearing, or otherwise not an uncommitted text draft.
+ * An active draft also refuses INVALID_STATE if its parent would retain another
+ * child: successful discard selects the parent, which must remain an active leaf.
+ * Refusal preserves the draft, active leaf, sibling order and all identities.
  * An assistant with a saved STARTED call cannot be discarded even if no result
  * child exists. Reset/discard must never erase execution identity or evidence.
  * @return COG_ERROR_NOT_FOUND if @p node is not in this session.
