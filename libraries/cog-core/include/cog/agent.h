@@ -53,7 +53,8 @@ typedef struct cog_agent_config {
     /** Task description / prompt for the subagent. */
     const char *task;
 
-    /** Parent session id.  The subagent's session is a child of this. */
+    /** Optional parent session ID, copied verbatim. NULL leaves the child
+     * unlinked; no hidden parent/session identity is generated for routing. */
     const char *parent_session_id;
 
     /** Maximum execution time in milliseconds.  Zero = no limit. */
@@ -68,7 +69,10 @@ typedef struct cog_agent_config {
     uint64_t group_id;
     cog_peer_id_t owner_peer; /**< Explicit placement; 0 means local. Immutable. */
     uint64_t execution_epoch; /**< Nonzero caller attempt identity for remote
-       execution; never reused across restart. Local zero selects a core ID. */
+       execution; never reused across restart. For local owner_peer=0, zero
+       resolves to the assigned agent ID in this core; discover it through the
+       queued intent or copy_config before the first update. Local generated
+       identity is scoped to this core lifetime, never a remote/restart token. */
     size_t max_status_bytes; /**< Including NUL; zero uses core reservation. */
     size_t max_result_bytes; /**< Including NUL; zero uses core reservation. */
 } cog_agent_config_t;
@@ -76,13 +80,20 @@ typedef struct cog_agent_config {
 /**
  * @brief Spawn a subagent.
  *
- * Reserves one bounded core-owned record/child session and queues spawn intent.
+ * Reserves one bounded core-owned record/child session and atomically queues
+ * COG_EVENT_SUBAGENT_SPAWN with cog_event_agent_intent_t under the lease in
+ * event.h. Nothing executes until the application's static dispatch handles it.
  * The application selects owner_peer using the orchestrator before this call;
  * force_local requires owner_peer=0. No connection wait or nested agent loop.
  * Remote work uses the copied nonzero execution_epoch in every control message.
  * Only an authenticated current-owner update can change the record. Spawn
  * copies task/parent ID into reserved storage; failure dispatches nothing.
- * match each successful terminal agent with cog_agent_release (or core_free).
+ * Match each successful terminal agent with cog_agent_release (or core_free).
+ * The handler uses copy_config to retrieve owned task/parent/placement/epoch
+ * and checks is_cancelled before starting effects, including cancel admitted
+ * while spawn was still queued. For owner_peer!=0, the application forwards its
+ * validated bounded remote protocol; core does not know or silently send it.
+ * Core gains no provider/orchestrator implementation dependency.
  *
  * @param[in,out] core   Core instance that owns the parent session.
  * @param[in]     config Subagent configuration; must be non-NULL.
@@ -94,9 +105,12 @@ typedef struct cog_agent_config {
  * @return COG_ERROR_LIMIT if record/task/status/result reservation is full;
  * requested per-agent byte limits cannot exceed core constructor reservations.
  * @return COG_ERROR_UNAVAILABLE if no core has capacity.
+ * @return COG_ERROR_OVERFLOW if the core event queue has no admission slot.
+ * On any failure, no new record/child session/event/lease is retained, *out_id
+ * is unchanged and no local or remote task is sent. Retry is a fresh admission.
  *
- * @post On success, a child session exists with parent_session_id set
- *       and the subagent is queued for execution.
+ * @post On success, the child session retains the optional supplied parent ID
+ * and the subagent has exactly one queued spawn intent. No work has executed.
  *
  * Threading: not thread-safe.
  */
@@ -105,11 +119,39 @@ cog_result_t cog_agent_spawn(cog_core_t *core,
                               cog_agent_id_t *out_id);
 
 /**
+ * @brief Copy the immutable resolved spawn configuration without consuming intent.
+ * @param[in] core Owner core, one thread; no service/dispatch side effects.
+ * @param[in] agent_id Known retained record, including before first update.
+ * @param[out] out_config Full copied scalar config; task/parent point into storage.
+ * @param[out] storage Caller UTF-8 bytes for task+NUL and optional parent+NUL;
+ * NULL iff capacity=0. No copied string points into an agent/queue/session slot.
+ * @param[in] capacity Writable bytes including terminators.
+ * @param[out] out_required Exact total storage bytes on OK/OVERFLOW.
+ * @return OK; NULL_PTR; NOT_FOUND after release/unknown ID; OVERFLOW changes only
+ * required, writes neither config nor storage and preserves the same record.
+ * @post On OK, actual owner/assigned nonzero epoch and resolved nonzero status/
+ * result capacities are returned. Optional NULL parent remains NULL. All caller
+ * input strings were copied at spawn; returned bytes survive dispatch/update/
+ * release/core_free. Caller owns and may retain them for deferred local/remote work.
+ * @note No allocation or implicit acknowledgment; repeated copies are safe.
+ */
+cog_result_t cog_agent_copy_config(const cog_core_t *core, cog_agent_id_t agent_id,
+                                    cog_agent_config_t *out_config,
+                                    char *storage, size_t capacity,
+                                    size_t *out_required);
+
+/**
  * @brief Cancel a running subagent.
  *
- * Sends a cancellation request to the subagent.  If the subagent is
- * remote, the cancellation is forwarded via IPC.  The subagent may
- * not stop immediately; poll cog_agent_status for terminal state.
+ * Atomically marks cancellation admitted and queues COG_EVENT_SUBAGENT_CANCEL
+ * with the same typed/leased payload and event-ID convention as spawn. It does
+ * not set terminal status or execute/send cancellation itself. The application
+ * cancels/drains its local runtime or forwards the correlated remote intent,
+ * then applies one drained/reaped terminal update through apply_update.
+ * Before terminal, repeated admitted cancel is OK without another event/lease
+ * or extended deadline. A terminal already accepted wins and returns INVALID_STATE.
+ * Queue-full first cancellation is OVERFLOW and changes no cancellation flag,
+ * status, notification, event, lease or external work; caller may retry later.
  *
  * @param[in,out] core     Core instance.
  * @param[in]     agent_id Agent to cancel.
@@ -118,8 +160,8 @@ cog_result_t cog_agent_spawn(cog_core_t *core,
  * @return COG_ERROR_NOT_FOUND if @p agent_id does not exist.
  * @return COG_ERROR_INVALID_STATE if the agent is already in a
  *         terminal state.
- *
- * Threading: not thread-safe.
+ * @return COG_ERROR_OVERFLOW if first cancel intent cannot enter the core queue.
+ * Threading: owner-thread only, never signal-safe; no allocation or peer wait.
  */
 cog_result_t cog_agent_cancel(cog_core_t *core, cog_agent_id_t agent_id);
 
@@ -318,8 +360,11 @@ cog_result_t cog_agent_ack_update(cog_core_t *core, cog_agent_id_t agent_id,
                                    uint64_t execution_epoch, uint64_t sequence);
 /**
  * @brief Release a terminal agent's reserved record; never abandons execution.
- * @param[in,out] core Owner. @param[in] agent_id Terminal, notification acked.
- * @return OK; NULL_PTR; NOT_FOUND; INVALID_STATE if active/pending notification.
+ * @param[in,out] core Owner. @param[in] agent_id Terminal, notification acked,
+ * with no queued/in-dispatch spawn/cancel intent lease.
+ * @return OK; NULL_PTR; NOT_FOUND; INVALID_STATE if active, pending notification
+ * or any intent lease remains (including inside its own handler). No change on
+ * failure; retry after handler return. Queued payload storage cannot be freed.
  * @note Owner thread. IDs are never reused; invalidates query views, not copied
  * event payloads. core_free requires remote/local owned work fenced/drained.
  */
