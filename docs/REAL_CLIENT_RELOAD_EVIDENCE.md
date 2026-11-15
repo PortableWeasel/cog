@@ -101,3 +101,61 @@ from this component install.
 Independent final package review and authorized integration remain required.
 M/P keep their applicable acceptance/full-suite/trace requirements; remote agent,
 headless routing and the application observation bridge retain their own tickets.
+
+
+## Independent package review and main integration
+
+Independent critic `faaf1ea` approved exact coherent checkpoint `4dc4731`
+(executable fixtures `92b25f1`) after reviewing the full twenty-row contract,
+consuming cleanup/freeze ordering and the corrected EOF boundary. The independent
+pipe repro failed at `254f713`, then passed after `3ff7980`; its permanent test
+and the independent 64-success/two-owner oracle are retained in the final branch.
+No further production defect was found. Core/config prerequisites remain their
+separately reviewed implementations, and the app adds no provider-specific
+protocol branch or mutable provider registry.
+
+| Independent check | Result |
+|---|---|
+| GCC14 Release/WERROR complete target build and selected tests | 49/49 passed |
+| Clang19 RelWithDebInfo/WERROR ASan+UBSan complete target build; leak detection and halt-on-error | 8/8 focused tests passed |
+| Separate GCC14 Debug/WERROR TSan, halt-on-error | 3/3 stop/reload/reload-critic passed |
+| Full install, prefix relocation and public C consumer linked only to `cog::cli` after existing target imports/Threads | Reload and core/app provider reference checks passed |
+
+The exact independent Release selection was:
+
+```sh
+ctest --test-dir build-critic-release --output-on-failure -j4 \
+  -R '^(cli-|unit-(core|config|config-bounded|provider|provider-critic|openrouter|mock-provider)|scenario-test_(01|02|04|05|05b|06|08|12|13|14|15|16|20)_|build-test-)'
+```
+
+The separate ASan selection was
+`^(cli-app-(reload|reload-critic|memory|loop|limits)|cli-session-(ux|recovery-faults)|scenario-test_08_config_reload)$`;
+the TSan selection was `^cli-app-(reload|reload-critic|stop)$`. These counts are
+selected checks, not all 38 scenario traces or a full CTest/release pass.
+
+The three admitted-profile settings from the reproduction recipe must stay
+together: `COG_NET_CURL_BUILD_DIR=/tmp/cog-net-maintained/build`,
+`COG_NET_CURL_LIBRARY=/tmp/cog-net-maintained/build/lib/libcurl.so` and
+`CURL_LIBRARY=/tmp/cog-net-maintained/build/lib/libcurl.so`. The review initially
+omitted the third setting; three real net-construction tests correctly rejected
+the mismatched system curl. This was a setup-negative, not a product failure.
+That initial FindCURL lookup also cached system `CURL_LIBRARY_RELEASE`/`DEBUG`;
+the review explicitly reset both to the same admitted library before all claimed
+final checks. Fresh main integration used the complete recipe from its first
+configure, and actual net construction confirmed admission.
+
+Root-authorized no-fast-forward merge `7bc172d` integrated the reviewed branch
+without conflicts, preserving header/core/config/app/oracle/net history and both
+DESIGN sections. Fresh main `build-review-reload` compiled every target under
+Release/WERROR, repeated the exact 49-test selection (49/49), then installed and
+relocated the prefix. A newly configured external public-header consumer linked
+only `cog::cli`, exercised reload/run and checked core/app provider agreement.
+This proves the scoped static CLI/config export closure, not shipped transport
+artifact packaging or all-component release acceptance. Independent logs and
+consumer source were retained under `build-review-reload/independent-evidence`
+before managed worktree cleanup; postmerge logs remain in that main build root.
+
+Only R12 delivery/review/integration closes here. M, the application observability
+bridge, test-joins, N/O and P/all-38/full-suite gates remain separate. No paid/live
+generation or credential access occurred, and the pre-existing `build_user/`
+directory was preserved.
