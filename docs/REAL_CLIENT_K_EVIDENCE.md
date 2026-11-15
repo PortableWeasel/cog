@@ -134,3 +134,60 @@ the orchestrator/remote IPC families retain the broader runtime requirements
 tracked for O; assertions were not skipped or replaced by fake application
 handlers. Parent-owned M records bounded actual application acceptance, and P
 still requires all original/R scenarios and full runtime/packaging evidence.
+
+## Independent critic acceptance
+
+Review `e3bcf02` accepts K's scoped delivery at
+`5f9890a091227a508bad5fdae2ff0278e84b42df`, after one grouped correction cycle
+(review attempt 2/4). Final production source is `074c463`; the final checkpoint
+adds tests/documentation. All four production findings above were independently
+reproduced before correction, then checked after correction. A real exhausted
+1024-node reservation also preserves the rendered pending aggregate, with no
+provider replay or further input admission. The critic supplied the independent
+CGD1 golden/mutation/transactional regression now in the submission. No new
+public-header amendment or production edit was made by the critic.
+
+Independent checks used the supported curl recipe above in the separate managed
+`review-application-k` worktree. Full target compilation succeeded under strict
+GCC, strict Clang and Clang ASan/UBSan. At the final checkpoint the exact 28-test
+K selection above passed 28/28 in each profile; sanitizer runs enabled leak
+checking and halt-on-error. The public CLI header also compiled standalone under
+both strict compilers. Four concurrency selections passed under a separate GCC
+TSan build at `074c463`:
+
+```sh
+TSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-k-critic-tsan \
+  -R '^(cli-app-stop|cli-app-limits|integration-core-toolkit|scenario-test_06_parallel_tools)$' \
+  --output-on-failure
+```
+
+Broader checks selected 90 registered tests using this explicit exclusion:
+
+```sh
+ctest --test-dir build-k-critic \
+  -E '^(unit-orchestrator|integration-orchestrator-(ipc|stress)|scenario-test_(07_aux_crash|09_subagent_messaging|10_fan_out_fan_in))$' \
+  --output-on-failure -j4
+```
+
+That selection passed 90/90 under GCC at `074c463`. Earlier complete 90-test
+Clang and ASan runs at `f085d69` also passed. During concurrent final GCC/Clang/
+ASan validation, Clang and ASan each passed 89/90: the former aborted at
+`test_toolkit_review_faults.c:168` expecting no KILL attempt within a 150 ms TERM
+grace, and the latter at `test_workspace.c:212` expecting a grandchild PID after
+a 40 ms startup timeout or a 15 ms pre-cancel sleep. Both unchanged fixture tests
+subsequently passed five serial repetitions; those reruns do not erase the
+observed failures or establish deterministic release validation. P follow-up
+`b4c9ca3` requires bounded fixture handshakes and retained cleanup assertions
+under concurrent load. No memory, undefined-behavior or race diagnostic occurred
+in these checks.
+
+The six excluded executables were run and failed, not assumed irrelevant. O
+follow-up `d5280b7` records their concrete causes: self-connected/auxiliary
+fixtures expect synchronous connect OK although approved IPC connect returns
+AGAIN, and production orchestrator accept/health/receive/shutdown paths contain
+no `cog_ipc_endpoint_service` calls. The built helper exists; this requires
+bounded runtime and fixture migration, not a missing executable/path fix. Full
+M/P all-unit and runtime acceptance remains dependent on that work. K's scoped
+PASS does not close O, the timing follow-up, L, M or the full release gate.
+All review requests used deterministic local fixtures and disposable processes;
+no paid/provider calls or credentials were used.
