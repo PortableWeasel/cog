@@ -105,8 +105,9 @@ block.
 
 - **Event ingestion** — stdin reader, internal event queue for tool/signal
   messages, and an IPC message receiver.
-- **Session state** — in-memory context struct per session; persistence
-  deferred.
+- **Session state** — hierarchical conversation tree with forking, timing,
+  and billing. Each node is a message exchange; branches share immutable
+  ancestors. Persistence via pluggable backend (file, SQLite, custom).
 - **State machine & routing** — static const `(state, event) → handler`
   table.
 - **Processing / handlers** — provider call, tool execution, and file I/O
@@ -535,12 +536,82 @@ discards open spans rather than emitting them.
 
 ---
 
+## Session Tree
+
+The session is a tree of conversation nodes, not a flat list. Each node
+represents a single message exchange with full context:
+
+- **Role**: system, user, assistant, tool_call, tool_result
+- **Content**: message text, tool arguments, tool results
+- **Raw data**: provider request/response JSON, chunk count
+- **Timing**: request_sent, first_token, last_token, duration, ttft, tokens/sec
+- **Billing**: input/output tokens, cost per token, total cost
+- **Identity**: node_id, parent_id for persistence
+
+### Forking
+
+`cog_session_fork()` creates a new branch from any node. The forked branch
+shares all ancestor nodes (immutable) but has its own children. This makes
+parallel exploration, subagent spawning, and fan-out/fan-in patterns trivial.
+
+### History building
+
+`cog_session_get_history()` walks from root to a given node and returns the
+message array for LLM context. The active path defines the current
+conversation; other branches are preserved but not sent.
+
+### Cumulative metrics
+
+`cog_session_cumulative_cost()` and `cog_session_cumulative_timing()` sum
+values up the tree, giving total cost and latency for any conversation path.
+
+---
+
+## Session Persistence
+
+Sessions are persisted via a pluggable backend (`cog_store_vtable_t`):
+
+- **File backend** (default): JSONL node log + binary index per session
+- **Null backend**: no-op for testing
+- **Custom backends**: implement the vtable for SQLite, RocksDB, etc.
+
+The store supports incremental saves (`append`), full saves, loads, deletes,
+and listing. Auto-save after each exchange is configurable.
+
+---
+
+## Network Transport
+
+cog-net provides HTTP client functionality per process:
+
+- **Request lifecycle**: request IDs, cancellation, active count
+- **Streaming**: SSE/chunked response handling
+- **Stall detection**: `COG_EVENT_NETWORK_STALL` after `stall_timeout_ms`
+- **Retry**: automatic with configurable max_retries and backoff
+- **Recovery**: `COG_EVENT_NETWORK_RECOVERED` on reconnect
+- **Rate limiting**: `cog_provider_error_t` with retryable flag and retry_after_ms
+
+---
+
+## Orchestrator
+
+The Process Orchestrator manages auxiliary core lifecycle:
+
+- **Spawn**: create new aux core processes
+- **Health**: monitor via health reports
+- **Placement**: decide which core hosts a subagent
+- **Shutdown**: graceful stop with timeout
+- **Recovery**: `cog_orchestrator_sessions()` lists sessions on a crashed core
+- **Auto-replace**: optional automatic replacement of dead cores
+
+---
+
 ## Next steps
 
-Stage 5 — Research & PoCs. The main unknowns to test:
+Stage 6 — Headers first. Design all public APIs as headers before any
+implementation. Three iterations:
+1. Initial headers from this design
+2. Scenario traces to find gaps
+3. Full review for consistency and edge cases
 
-1. IPC mechanism for the fabric (Unix domain sockets, named pipes, shared
-   memory, etc.).
-2. Process spawning model on Linux (`fork`/`exec`, `posix_spawn`, etc.).
-3. HTTP client + streaming for LLM providers.
-4. Hierarchical config commit/rollback data structure.
+Stage 7 — Implementation. See `docs/IMPLEMENTATION_STRATEGY.md`.
