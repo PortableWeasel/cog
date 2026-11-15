@@ -25,6 +25,7 @@ is included in app error messages.
 
 The private implementation is split into `cli.c` (ownership/construction),
 `app_turn.c` (static dispatch, service and input), `app_tools.c` (durable tools),
+`app_sessions.c` (selection, guarded restore and terminal recovery),
 `app_display.c` (snapshots/CGD1), and `main.c` (host composition). J's immutable
 configuration generation and secret remain alive until provider disconnect.
 All contexts are explicit; dispatch and tool descriptors are static const.

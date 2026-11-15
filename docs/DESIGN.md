@@ -744,3 +744,26 @@ members lossless. Official nullable signatures remain outside this profile and
 return UNSUPPORTED; accepting them requires a separate merge/closure design.
 [Targeted profile passes](REAL_CLIENT_OPAQUE_FIELD_PROFILE.md) gate runtime
 correction and independent final review without adding an API or wire shape.
+
+### Stage 14.L session and terminal composition
+
+The application selects NEW/LIST/RESUME/FORK/RECOVER explicitly. LIST and
+RECOVER construct no provider, transport, workspace or core; they remain usable
+without a model or credential. Exact checkpoint restoration precedes checked
+epoch admission and a live guard, with explicit operator fencing required for
+unowned adoption or offline effect recovery. The fencing assertion never claims
+that the application verified or stopped prior processes. Recovery resolves one
+identified uncertain call at a time with evidence and a durable audit/result;
+failed saves freeze further reconciliation, and no recovery input executes tools.
+Same-session forks preserve existing immutable branches and require fresh input
+to create a divergent child. Pending proposals receive generic no-wire provider
+preflight over the selected prefix before policy or effects. Terminal commands
+validate whole input lines, report only visible history and known usage, and
+use stable original call ordinals to reach arbitrary IDs without changing literal
+ID meaning. [L contracts](REAL_CLIENT_L_CONTRACTS.md) and
+[delivery evidence](REAL_CLIENT_L_EVIDENCE.md) record the bounded scope.
+
+L retains J/K's one immutable configuration/provider generation per application;
+requests and restored-prefix preflight use generation 1. Live reload, generation
+publication/retirement and the core's observable provider lifetime are a separate
+header-first follow-up (`dffc59e`/`af6956a`), not part of session UX acceptance.
