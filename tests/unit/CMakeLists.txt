@@ -15,6 +15,7 @@ set(COG_UNIT_TESTS
     test_event
     test_state
     test_handler
+    test_core
 )
 
 foreach(test ${COG_UNIT_TESTS})
@@ -48,6 +49,10 @@ add_test(NAME unit-state
 
 add_test(NAME unit-handler
     COMMAND test_handler
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME unit-core
+    COMMAND test_core
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
 # -----------------------------------------------------------------------

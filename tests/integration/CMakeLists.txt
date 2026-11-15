@@ -13,9 +13,20 @@ add_executable(test_core_primitives
 target_link_libraries(test_core_primitives PRIVATE cog::core)
 target_enable_warnings(test_core_primitives)
 
+add_executable(test_core_session
+    test_core_session.c
+)
+
+target_link_libraries(test_core_session PRIVATE cog::core)
+target_enable_warnings(test_core_session)
+
 # -----------------------------------------------------------------------
 # CTest registration
 # -----------------------------------------------------------------------
 add_test(NAME integration-core-primitives
     COMMAND test_core_primitives
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME integration-core-session
+    COMMAND test_core_session
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
