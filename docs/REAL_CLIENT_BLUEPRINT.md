@@ -9,6 +9,10 @@
 > connections with pooling/HTTP2 disabled. Full project installation and shipped
 > dependency closure remain gate P requirements.
 
+> [Stage 14.Q scheduler delivery](REAL_CLIENT_Q_EVIDENCE.md) is independently
+> reviewed and integrated. Real-library Q/G integration remains check `b8a6fc1`
+> after persistence migration and before gate P; N/O protocol work remains open.
+
 Status: planning baseline, 2026-11-15. Parent ticket: `2b9d0ea`.
 The user authorized autonomous design decisions and testing. This supersedes
 Stage 14's earlier scope-confirmation requirement. Header and implementation

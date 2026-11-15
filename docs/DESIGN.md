@@ -1,11 +1,11 @@
 # Cog — System Design Blueprint
 
-> Stage 14.Q runtime implementation is available for independent review;
+> Stage 14.Q runtime implementation passed independent revision review and is integrated;
 > [Q evidence](REAL_CLIENT_Q_EVIDENCE.md) records bounded nonblocking IPC,
 > fixed core reservations and fair rotating local/IPC dispatch. External event
 > capacity stays configured; separate IPC ingress descriptors derive from the
-> configured IPC service quantum to prevent saturation starvation. This is
-> implementation evidence, not delivery/release gate approval.
+> configured IPC service quantum to prevent saturation starvation. Combined
+> real G-library validation remains tracked before full release gate approval.
 
 
 > [Stage 14.E final review](REAL_CLIENT_PASS3.md) passed after the additional

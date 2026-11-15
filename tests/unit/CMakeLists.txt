@@ -46,6 +46,17 @@ add_executable(test_ipc_critic test_ipc_critic.c)
 target_link_libraries(test_ipc_critic PRIVATE cog::ipc)
 target_enable_warnings(test_ipc_critic)
 
+# Stage 14.Q registrations are separate from the pending G persistence tests.
+# These normal targets link real libraries; the isolated Q script's aborting
+# store double is deliberately excluded from CMake/library integration.
+add_executable(test_ipc_nonblocking test_ipc_nonblocking.c)
+target_link_libraries(test_ipc_nonblocking PRIVATE cog::ipc)
+target_enable_warnings(test_ipc_nonblocking)
+
+add_executable(test_core_service test_core_service.c)
+target_link_libraries(test_core_service PRIVATE cog::core)
+target_enable_warnings(test_core_service)
+
 # test_orchestrator is a white-box test: it drives the private hooks
 # declared in orchestrator_internal.h (accept, poll, register_session,
 # clock override, timeout overrides), so it includes the cog-orchestrator
@@ -151,6 +162,14 @@ add_test(NAME unit-ipc
 
 add_test(NAME unit-ipc-critic
     COMMAND test_ipc_critic
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME unit-ipc-nonblocking
+    COMMAND test_ipc_nonblocking
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME unit-core-service
+    COMMAND test_core_service
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
 add_test(NAME unit-orchestrator

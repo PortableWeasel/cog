@@ -1,13 +1,16 @@
-# Stage 14.Q writer evidence
+# Stage 14.Q delivery evidence
 
 Ticket `bcd9c0a`; approved E base `b1bd6093ba47330b52efaba0ae82cc900eaf0c6f`.
 Managed worktree `impl-scheduler`, branch `codex/impl-scheduler`.
-Writer implementation is ready for independent review; Q is not closed.
+Revision `769c6d584932f890d30c8d9064b0d63f8ec24dde` passed independent review
+on cycle 2 after one revision. It was merged into main without conflicts as
+`6b49e0486b812b71697f1a43a3f14cec0fb974cc`, preserving the approved F transport.
+Integration ticket: `273a7f9`. Full combined G validation remains `b8a6fc1`.
 
 Children: Q1 `7b15c53` nonblocking IPC; Q2 `467ffb9` fixed core reservations;
 Q3 `c1331d9` fair scheduler; independent review `fc23bfd`; integration `76325f3`;
-finalize `4bac201`. Review/integration/finalize remain open until their evidence
-is complete. Remote agent/replay/handoff application integration remains N/O.
+finalize `4bac201`. Q implementation, independent review and scoped integration
+are complete. Remote agent/replay/handoff application integration remains N/O.
 
 ## Implemented behavior
 
@@ -58,12 +61,14 @@ this tests no persistence behavior and adds no production success stub.
 
 ## Limits and remaining integration
 
-The full baseline cog-core target fails strict compilation in the separately
+The full baseline cog-core target still fails strict compilation in the separately
 owned pre-migration session_store.c positional vtables, whose new load_ex fields
 are missing. Q does not suppress warnings or edit that module. After G lands,
-register the two new normal tests against real libraries and rerun core/store
-integration without the isolation double. Root/shared tests CMake remains with
-the coordinator; scripts/test-q-runtime is the current reproducible fallback.
+run the two registered normal tests against real libraries and rerun core/store
+integration without the isolation double. The normal `test_core_service` and
+`test_ipc_nonblocking` CMake targets/CTest entries are now registered separately
+from pending G additions. Neither target includes the isolation double.
+`scripts/test-q-runtime` is the current reproducible scheduler isolation check.
 
 Existing orchestrator and scenario peer drivers still need N/O's nonblocking
 migration. Public remote agent update/query/ack/release functions are still
@@ -79,7 +84,7 @@ Identity-scope gap `ee411f9` corrects obsolete process-wide uniqueness prose:
 peer IDs are monotonic within one listener lifetime; cross-fabric identity is
 (owning endpoint/fabric, peer_id). The scenario09 amendment and direct two-fabric
 ID1 routing fixture accompany this coordinator-approved documentation correction.
-Independent Q review must confirm their consistency before integration.
+Independent Q review accepted this identity correction and fixture.
 
 Final writer run: all six executables pass strict GCC and strict Clang, and
 separate ASan+UBSan (leak detection/halt enabled) and TSan (halt enabled) builds.
@@ -117,3 +122,23 @@ Revision validation: the six executables including the permanent critic and
 extended mutation/reconnect regressions pass strict GCC, strict Clang, separate
 ASan+UBSan with leak/error halt, and TSan with error halt. `git diff --check`
 passes. This is writer evidence for rereview, not an independent PASS or merge.
+
+## Independent review and main integration
+
+The independent critic inspected both fixes and ran all six executables under
+strict GCC, strict Clang, ASan+UBSan with leak/error halt, and TSan with error
+halt: 24 passes including both permanent critic regressions and expanded
+lease/reuse tests. Public dequeue/count exclude the injected copy, its pinned
+owner reserves restoration capacity, and stop/error restores exact copied bytes
+ahead of replacements without touching a mutable FIFO head. Reused endpoints
+clear prior connection clocks/deadlines and support an earlier new clock origin.
+
+After merging into main, all six isolated suites passed again under GCC and
+ASan+UBSan. Normal strict CMake IPC targets `test_ipc`, `test_ipc_critic` and
+`test_ipc_nonblocking` built and their three registered tests passed. All 11
+audited-profile F transport tests also passed. Building real `test_core_service`
+still fails in baseline `session_store.c` on the two missing `load_ex` vtable
+initializers; no warning was suppressed and no session/store source changed.
+Check `b8a6fc1`, after G and before P, must validate real-library core/IPC/store
+integration and preserve both G and Q test registrations. This delivery does not
+claim full project/runtime/release conformance. No paid/provider calls ran.
