@@ -552,8 +552,27 @@ auto_replace(cog_orchestrator_t *o)
         struct cog_core_record *c = &o->cores[i];
         pid_t pid;
 
-        if ((!c->reaped && !c->disconnected) || c->binary_path == NULL) {
+        if (c->binary_path == NULL) {
             continue;
+        }
+        /* Replacement eligibility depends on process lifetime, not on
+         * acknowledgement.  A core is only a candidate once it is no longer
+         * live (reaped or disconnected). */
+        if (!c->reaped && !c->disconnected) {
+            continue;
+        }
+        /* A spawned core must have its process reaped before its slot is
+         * reused; otherwise accept_into_slot would memset the record and
+         * orphan the still-running child.  A crashed child is already
+         * reaped by reap_children.  An acked-but-alive child (disconnected,
+         * still running) is being replaced, so terminate it and reap it
+         * (SIGKILL + waitpid, bounded) rather than orphaning it.  Never
+         * signal a non-spawned/self-connected core. */
+        if (c->spawned && !c->reaped) {
+            if (!c->disconnected) {
+                continue;
+            }
+            force_kill_core(o, c);
         }
         if (c->replacing) {
             continue;
