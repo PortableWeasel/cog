@@ -1,328 +1,299 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1400" font-family="Menlo, Consolas, monospace" font-size="12">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1690" font-family="Menlo, Consolas, monospace" font-size="12">
   <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M0,0 L10,5 L0,10 Z" fill="#888"/>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#2f8f46"/>
     </marker>
-    <marker id="arrow-down" viewBox="0 0 10 10" refX="5" refY="10" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M0,0 L5,10 L10,0 Z" fill="#888"/>
+    <marker id="arrow-plan" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#b07d00"/>
     </marker>
-    <!-- All headers done -->
-    <linearGradient id="g-done" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#d4edda"/>
-      <stop offset="100%" stop-color="#c3e6cb"/>
-    </linearGradient>
-    <!-- Process backgrounds -->
-    <linearGradient id="g-ui" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#e8eaf6"/>
-      <stop offset="100%" stop-color="#c5cae9"/>
-    </linearGradient>
-    <linearGradient id="g-main" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#e3f2fd"/>
-      <stop offset="100%" stop-color="#bbdefb"/>
-    </linearGradient>
-    <linearGradient id="g-aux" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#f3e5f5"/>
-      <stop offset="100%" stop-color="#e1bee7"/>
-    </linearGradient>
-    <linearGradient id="g-ipc" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#fff8e1"/>
-      <stop offset="100%" stop-color="#ffecb3"/>
-    </linearGradient>
   </defs>
 
-  <!-- ==================== TITLE ==================== -->
-  <text x="640" y="26" text-anchor="middle" font-size="19" font-weight="bold" fill="#222">Cog — System Architecture</text>
-  <text x="640" y="44" text-anchor="middle" font-size="11" fill="#888">Stage 6+7+8 complete — 23 headers across 8 libraries — all gaps fixed</text>
+  <!-- Title and status legend -->
+  <text x="800" y="30" text-anchor="middle" font-size="22" font-weight="bold" fill="#20262b">Cog — Implemented Engine and Real-Client Roadmap</text>
+  <text x="800" y="53" text-anchor="middle" font-size="12" fill="#5c6670">Stage 12 complete · main 77e8fb4 · Stage 14 real-client scope is proposed, not yet approved</text>
 
-  <!-- ==================== KEY ==================== -->
-  <rect x="30" y="54" width="14" height="14" rx="3" fill="url(#g-done)" stroke="#28a745" stroke-width="1.5"/>
-  <text x="50" y="65" fill="#555" font-size="10">Headers complete (23 headers, 8 libraries)</text>
-  <rect x="330" y="54" width="14" height="14" rx="3" fill="none" stroke="#999" stroke-width="1" stroke-dasharray="4,3"/>
-  <text x="350" y="65" fill="#555" font-size="10">Process boundary</text>
+  <rect x="40" y="70" width="16" height="16" rx="3" fill="#d9efdd" stroke="#2f8f46" stroke-width="1.5"/>
+  <text x="64" y="83" font-size="11" fill="#3d4942">Implemented and verified</text>
+  <rect x="330" y="70" width="16" height="16" rx="3" fill="#fff0bd" stroke="#c18b00" stroke-width="1.5"/>
+  <text x="354" y="83" font-size="11" fill="#3d4942">Remaining / proposed</text>
+  <rect x="620" y="70" width="16" height="16" rx="3" fill="#e3f1fb" stroke="#1976d2" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <text x="644" y="83" font-size="11" fill="#3d4942">Main process / current path</text>
+  <rect x="960" y="70" width="16" height="16" rx="3" fill="#eee1f2" stroke="#8e44ad" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <text x="984" y="83" font-size="11" fill="#3d4942">Auxiliary process fixtures</text>
+  <line x1="1320" y1="78" x2="1360" y2="78" stroke="#8a949c" stroke-width="2" stroke-dasharray="5,4"/>
+  <text x="1368" y="83" font-size="11" fill="#3d4942">Dependency / IPC</text>
 
-  <!-- ================================================================= -->
-  <!-- UI / CLIENT PROCESS                                               -->
-  <!-- ================================================================= -->
-  <rect x="340" y="78" width="600" height="140" rx="8" fill="url(#g-ui)" stroke="#7986cb" stroke-width="2" opacity="0.4"/>
-  <rect x="340" y="78" width="600" height="20" rx="8" fill="#7986cb"/>
-  <rect x="340" y="90" width="600" height="8" fill="#7986cb"/>
-  <text x="640" y="92" text-anchor="middle" fill="#fff" font-size="11" font-weight="bold">UI / Client Process</text>
+  <!-- Current executable path -->
+  <rect x="40" y="105" width="1520" height="180" rx="10" fill="#e3f1fb" fill-opacity="0.65" stroke="#1976d2" stroke-width="2" stroke-dasharray="7,4"/>
+  <text x="800" y="131" text-anchor="middle" font-size="14" font-weight="bold" fill="#145a9c">CURRENT EXECUTABLE PATH — SINGLE-PROCESS MOCK CHAT CLIENT</text>
 
-  <!-- cog-ipc (UI side) -->
-  <rect x="362" y="108" width="280" height="96" rx="5" fill="url(#g-done)" stroke="#28a745" stroke-width="1.5"/>
-  <rect x="362" y="108" width="280" height="14" rx="5" fill="#28a745"/>
-  <rect x="362" y="116" width="280" height="6" fill="#28a745"/>
-  <text x="502" y="118" text-anchor="middle" fill="#fff" font-size="9" font-weight="bold">cog-ipc</text>
-  <text x="374" y="136" font-size="9" fill="#155724" font-weight="bold">ipc.h</text>
-  <text x="374" y="150" font-size="8" fill="#155724">  cog_ipc_endpoint_listen / connect</text>
-  <text x="374" y="162" font-size="8" fill="#155724">  cog_ipc_endpoint_send / recv</text>
-  <text x="374" y="174" font-size="8" fill="#155724">  cog_ipc_broadcast / send_to_session</text>
-  <text x="374" y="186" font-size="8" fill="#155724">  cog_ipc_register_session</text>
-  <text x="374" y="198" font-size="8" fill="#999">cog_ipc_endpoint_t, cog_peer_id_t</text>
+  <rect x="70" y="155" width="220" height="75" rx="6" fill="#d9efdd" stroke="#2f8f46" stroke-width="1.5"/>
+  <text x="180" y="179" text-anchor="middle" font-size="12" font-weight="bold" fill="#195c2a">Terminal</text>
+  <text x="180" y="199" text-anchor="middle" font-size="10" fill="#195c2a">stdin / stdout REPL</text>
+  <text x="180" y="216" text-anchor="middle" font-size="9" fill="#195c2a">quit · exit · Ctrl+C / Ctrl+D</text>
 
-  <!-- UI application -->
-  <rect x="660" y="108" width="260" height="96" rx="5" fill="url(#g-done)" stroke="#28a745" stroke-width="1.5"/>
-  <rect x="660" y="108" width="260" height="14" rx="5" fill="#28a745"/>
-  <rect x="660" y="116" width="260" height="6" fill="#28a745"/>
-  <text x="790" y="118" text-anchor="middle" fill="#fff" font-size="9" font-weight="bold">UI Application</text>
-  <text x="672" y="136" font-size="9" fill="#155724" font-weight="bold">cog-cli / external</text>
-  <text x="672" y="150" font-size="8" fill="#155724">  stdin/out reader</text>
-  <text x="672" y="162" font-size="8" fill="#155724">  response renderer</text>
-  <text x="672" y="174" font-size="8" fill="#155724">  websocket / TUI</text>
-  <text x="672" y="186" font-size="8" fill="#155724">  IPC client (connect)</text>
-  <text x="672" y="198" font-size="8" fill="#999">application code</text>
+  <rect x="350" y="155" width="270" height="75" rx="6" fill="#d9efdd" stroke="#2f8f46" stroke-width="1.5"/>
+  <text x="485" y="179" text-anchor="middle" font-size="12" font-weight="bold" fill="#195c2a">cog-cli application</text>
+  <text x="485" y="199" text-anchor="middle" font-size="10" fill="#195c2a">one-shot + interactive mock chat</text>
+  <text x="485" y="216" text-anchor="middle" font-size="9" fill="#195c2a">stream · queue · cancel · logs</text>
 
-  <!-- Arrow: UI → IPC -->
-  <line x1="502" y1="204" x2="502" y2="240" stroke="#28a745" stroke-width="1.5" marker-end="url(#arrow-down)" stroke-dasharray="4,3"/>
-  <line x1="790" y1="204" x2="790" y2="240" stroke="#28a745" stroke-width="1.5" marker-end="url(#arrow-down)" stroke-dasharray="4,3"/>
+  <rect x="680" y="155" width="290" height="75" rx="6" fill="#d9efdd" stroke="#2f8f46" stroke-width="1.5"/>
+  <text x="825" y="179" text-anchor="middle" font-size="12" font-weight="bold" fill="#195c2a">cog-core + session/store</text>
+  <text x="825" y="199" text-anchor="middle" font-size="10" fill="#195c2a">events · history · auto-save</text>
+  <text x="825" y="216" text-anchor="middle" font-size="9" fill="#195c2a">optional obs / IPC / toolkit</text>
 
-  <!-- ================================================================= -->
-  <!-- IPC FABRIC                                                        -->
-  <!-- ================================================================= -->
-  <rect x="300" y="240" width="680" height="48" rx="6" fill="url(#g-ipc)" stroke="#e6a817" stroke-width="2"/>
-  <text x="640" y="260" text-anchor="middle" font-size="13" font-weight="bold" fill="#856404">IPC Fabric — Unix Domain Sockets</text>
-  <text x="640" y="278" text-anchor="middle" font-size="10" fill="#856404">cog_ipc_endpoint_t · framed messages · peer discovery · session routing · broadcast</text>
+  <rect x="1030" y="155" width="230" height="75" rx="6" fill="#d9efdd" stroke="#2f8f46" stroke-width="1.5"/>
+  <text x="1145" y="179" text-anchor="middle" font-size="12" font-weight="bold" fill="#195c2a">Provider abstraction</text>
+  <text x="1145" y="199" text-anchor="middle" font-size="10" fill="#195c2a">static endpoint / model tables</text>
+  <text x="1145" y="216" text-anchor="middle" font-size="9" fill="#195c2a">connect · send · receive</text>
 
-  <!-- ================================================================= -->
-  <!-- MAIN CORE PROCESS                                                 -->
-  <!-- ================================================================= -->
-  <rect x="100" y="298" width="1080" height="400" rx="8" fill="url(#g-main)" stroke="#1976d2" stroke-width="2" opacity="0.35"/>
-  <rect x="100" y="298" width="1080" height="20" rx="8" fill="#1976d2"/>
-  <rect x="100" y="310" width="1080" height="8" fill="#1976d2"/>
-  <text x="640" y="312" text-anchor="middle" fill="#fff" font-size="11" font-weight="bold">Main Core Process</text>
+  <rect x="1320" y="155" width="210" height="75" rx="6" fill="#d9efdd" stroke="#2f8f46" stroke-width="1.5"/>
+  <text x="1425" y="179" text-anchor="middle" font-size="12" font-weight="bold" fill="#195c2a">Mock provider</text>
+  <text x="1425" y="199" text-anchor="middle" font-size="10" fill="#195c2a">scripted deterministic I/O</text>
+  <text x="1425" y="216" text-anchor="middle" font-size="9" fill="#195c2a">no network or credentials</text>
+
+  <line x1="290" y1="192" x2="350" y2="192" stroke="#2f8f46" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <line x1="620" y1="192" x2="680" y2="192" stroke="#2f8f46" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <line x1="970" y1="192" x2="1030" y2="192" stroke="#2f8f46" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <line x1="1260" y1="192" x2="1320" y2="192" stroke="#2f8f46" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <text x="800" y="254" text-anchor="middle" font-size="10" fill="#31637f">Responses stream back through the same path; completed turns update the session tree and optional file store.</text>
+  <text x="800" y="273" text-anchor="middle" font-size="10" fill="#31637f">The current cog-cli process can also expose a Unix-socket IPC listener; rich external UI processes are not shipped.</text>
+
+  <!-- Implemented engine panel -->
+  <rect x="40" y="310" width="900" height="900" rx="10" fill="#e3f1fb" fill-opacity="0.45" stroke="#1976d2" stroke-width="2" stroke-dasharray="7,4"/>
+  <rect x="40" y="310" width="900" height="30" rx="10" fill="#1976d2"/>
+  <rect x="40" y="330" width="900" height="10" fill="#1976d2"/>
+  <text x="490" y="331" text-anchor="middle" font-size="13" font-weight="bold" fill="#ffffff">IMPLEMENTED AND VERIFIED — STAGES 12.0–12.6 / ALL GATES DONE</text>
+
+  <!-- CLI application -->
+  <rect x="70" y="360" width="400" height="160" rx="6" fill="#d9efdd" stroke="#2f8f46" stroke-width="1.5"/>
+  <rect x="70" y="360" width="400" height="28" rx="6" fill="#2f8f46"/>
+  <rect x="70" y="378" width="400" height="10" fill="#2f8f46"/>
+  <text x="270" y="379" text-anchor="middle" font-size="12" font-weight="bold" fill="#ffffff">cog-cli + deterministic mock</text>
+  <text x="88" y="410" font-size="10" fill="#195c2a">Basic REPL and one-shot prompts</text>
+  <text x="88" y="430" font-size="10" fill="#195c2a">Streaming, queueing, cancellation, retry</text>
+  <text x="88" y="450" font-size="10" fill="#195c2a">Auto-save, structured logs, optional IPC listener</text>
+  <text x="88" y="470" font-size="10" fill="#195c2a">Installed binary + exported cog::cli target</text>
+  <text x="88" y="497" font-size="10" font-weight="bold" fill="#195c2a">Boundary: mock endpoint only; no CLI resume yet</text>
+
+  <!-- Core -->
+  <rect x="500" y="360" width="410" height="160" rx="6" fill="#d9efdd" stroke="#2f8f46" stroke-width="1.5"/>
+  <rect x="500" y="360" width="410" height="28" rx="6" fill="#2f8f46"/>
+  <rect x="500" y="378" width="410" height="10" fill="#2f8f46"/>
+  <text x="705" y="379" text-anchor="middle" font-size="12" font-weight="bold" fill="#ffffff">cog-core</text>
+  <text x="518" y="410" font-size="10" fill="#195c2a">Event queue + static state/handler dispatch</text>
+  <text x="518" y="430" font-size="10" fill="#195c2a">Session tree, forking, history, timing, billing</text>
+  <text x="518" y="450" font-size="10" fill="#195c2a">Store API: save / load / append / list / delete</text>
+  <text x="518" y="470" font-size="10" fill="#195c2a">Agent lifecycle, queued turns, tool-result identity</text>
+  <text x="518" y="497" font-size="10" fill="#195c2a">Headers: core · event · state · session · store · agent</text>
+
+  <!-- Provider and toolkit -->
+  <rect x="70" y="540" width="400" height="170" rx="6" fill="#d9efdd" stroke="#2f8f46" stroke-width="1.5"/>
+  <rect x="70" y="540" width="400" height="28" rx="6" fill="#2f8f46"/>
+  <rect x="70" y="558" width="400" height="10" fill="#2f8f46"/>
+  <text x="270" y="559" text-anchor="middle" font-size="12" font-weight="bold" fill="#ffffff">cog-provider + cog-toolkit</text>
+  <text x="88" y="590" font-size="10" fill="#195c2a">Provider vtable + endpoint/model registry</text>
+  <text x="88" y="610" font-size="10" fill="#195c2a">Text requests/responses + tools_json input</text>
+  <text x="88" y="630" font-size="10" fill="#195c2a">Toolkit: static tools, timeouts, cancellation</text>
+  <text x="88" y="650" font-size="10" fill="#195c2a">Bounded parallel execution + ordered results</text>
+  <text x="88" y="678" font-size="10" font-weight="bold" fill="#195c2a">Boundary: no real wire adapter or streamed tool calls</text>
+
+  <!-- Infrastructure -->
+  <rect x="500" y="540" width="410" height="170" rx="6" fill="#d9efdd" stroke="#2f8f46" stroke-width="1.5"/>
+  <rect x="500" y="540" width="410" height="28" rx="6" fill="#2f8f46"/>
+  <rect x="500" y="558" width="410" height="10" fill="#2f8f46"/>
+  <text x="705" y="559" text-anchor="middle" font-size="12" font-weight="bold" fill="#ffffff">Infrastructure libraries</text>
+  <text x="518" y="590" font-size="10" fill="#195c2a">cog-ipc: Unix sockets, routing, broadcast</text>
+  <text x="518" y="610" font-size="10" fill="#195c2a">cog-obs: logs, traces, connection diagnostics</text>
+  <text x="518" y="630" font-size="10" fill="#195c2a">cog-config: candidate / commit / rollback tree</text>
+  <text x="518" y="650" font-size="10" fill="#195c2a">cog-net: HTTP/1.1 streaming, stalls, retry, cancel</text>
+  <text x="518" y="678" font-size="10" font-weight="bold" fill="#9a5310">Explicit boundary: cog-net parses http:// only</text>
 
   <!-- Orchestrator -->
-  <rect x="380" y="330" width="520" height="58" rx="5" fill="url(#g-done)" stroke="#28a745" stroke-width="1.5"/>
-  <rect x="380" y="330" width="520" height="14" rx="5" fill="#28a745"/>
-  <rect x="380" y="338" width="520" height="6" fill="#28a745"/>
-  <text x="640" y="340" text-anchor="middle" fill="#fff" font-size="10" font-weight="bold">cog-orchestrator</text>
-  <text x="392" y="358" font-size="9" fill="#155724" font-weight="bold">orchestrator.h</text>
-  <text x="392" y="372" font-size="8" fill="#155724">  spawn · stop · kill · health · place · shutdown · sessions</text>
-  <text x="392" y="384" font-size="8" fill="#155724">  cog_orchestrator_t · cog_health_t · auto_replace</text>
+  <rect x="70" y="730" width="400" height="150" rx="6" fill="#d9efdd" stroke="#2f8f46" stroke-width="1.5"/>
+  <rect x="70" y="730" width="400" height="28" rx="6" fill="#2f8f46"/>
+  <rect x="70" y="748" width="400" height="10" fill="#2f8f46"/>
+  <text x="270" y="749" text-anchor="middle" font-size="12" font-weight="bold" fill="#ffffff">cog-orchestrator</text>
+  <text x="88" y="780" font-size="10" fill="#195c2a">Spawn, stop, kill, health, placement, shutdown</text>
+  <text x="88" y="800" font-size="10" fill="#195c2a">Session retention and automatic replacement</text>
+  <text x="88" y="820" font-size="10" fill="#195c2a">Real crash/reap and cross-core IPC scenarios</text>
+  <text x="88" y="847" font-size="10" fill="#195c2a">Implemented library + owned aux_core test fixtures</text>
 
-  <!-- Orchestrator → components arrows -->
-  <line x1="480" y1="388" x2="260" y2="412" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
-  <line x1="640" y1="388" x2="640" y2="412" stroke="#888" stroke-width="1" marker-end="url(#arrow-down)"/>
-  <line x1="800" y1="388" x2="1020" y2="412" stroke="#888" stroke-width="1" marker-end="url(#arrow)"/>
+  <!-- Validation -->
+  <rect x="500" y="730" width="410" height="150" rx="6" fill="#d9efdd" stroke="#2f8f46" stroke-width="1.5"/>
+  <rect x="500" y="730" width="410" height="28" rx="6" fill="#2f8f46"/>
+  <rect x="500" y="748" width="410" height="10" fill="#2f8f46"/>
+  <text x="705" y="749" text-anchor="middle" font-size="12" font-weight="bold" fill="#ffffff">Merged verification</text>
+  <text x="518" y="780" font-size="10" fill="#195c2a">61/61 tests: 40 base + 20 scenarios + 05b</text>
+  <text x="518" y="800" font-size="10" fill="#195c2a">GCC + Clang strict Werror</text>
+  <text x="518" y="820" font-size="10" fill="#195c2a">ASan / UBSan / LSan + separate TSan</text>
+  <text x="518" y="847" font-size="10" fill="#195c2a">Standalone headers + installed CLI/consumer smoke</text>
 
-  <!-- Three columns: Agent Core | Handler Engine | Provider Registry -->
-  <!-- Column 1: Agent Core -->
-  <rect x="120" y="412" width="310" height="150" rx="5" fill="url(#g-done)" stroke="#28a745" stroke-width="1.5"/>
-  <rect x="120" y="412" width="310" height="14" rx="5" fill="#28a745"/>
-  <rect x="120" y="420" width="310" height="6" fill="#28a745"/>
-  <text x="275" y="422" text-anchor="middle" fill="#fff" font-size="10" font-weight="bold">Agent Core</text>
-  <text x="132" y="440" font-size="9" fill="#155724" font-weight="bold">core.h</text>
-  <text x="132" y="453" font-size="8" fill="#155724">  cog_core_new / run / stop / enqueue</text>
-  <text x="132" y="465" font-size="8" fill="#155724">  cog_core_ipc / cog_core_provider / cog_core_obs</text>
-  <text x="132" y="477" font-size="8" fill="#155724">  + ipc_endpoint + local_peer_id + provider + obs</text>
-  <text x="132" y="492" font-size="9" fill="#155724" font-weight="bold">event.h</text>
-  <text x="132" y="505" font-size="8" fill="#155724">  COG_EVENT_LLM_CHUNK / COMPLETE / PROVIDER_ERROR</text>
-  <text x="132" y="517" font-size="8" fill="#155724">  COG_EVENT_NETWORK_STALL / RECOVERED</text>
-  <text x="132" y="529" font-size="8" fill="#155724">  COG_EVENT_IPC_* / CONFIG_CHANGED / SUBAGENT_*</text>
-  <text x="132" y="544" font-size="9" fill="#155724" font-weight="bold">agent.h · session.h · state.h · handler.h · result.h</text>
-  <text x="132" y="557" font-size="8" fill="#155724">  cog_agent_spawn / cancel / status / notify_parent</text>
-  <text x="132" y="569" font-size="8" fill="#155724">  cog_session_add_message / get_history / parent_id</text>
+  <!-- Auxiliary process fixtures -->
+  <rect x="70" y="900" width="840" height="270" rx="8" fill="#eee1f2" fill-opacity="0.75" stroke="#8e44ad" stroke-width="2" stroke-dasharray="7,4"/>
+  <rect x="70" y="900" width="840" height="28" rx="8" fill="#8e44ad"/>
+  <rect x="70" y="918" width="840" height="10" fill="#8e44ad"/>
+  <text x="490" y="919" text-anchor="middle" font-size="12" font-weight="bold" fill="#ffffff">IMPLEMENTED MULTI-PROCESS FIXTURE TOPOLOGY</text>
+  <text x="490" y="954" text-anchor="middle" font-size="11" fill="#622876">cog-orchestrator owns fixture PIDs; IPC fabric uses real Unix domain sockets</text>
 
-  <!-- Column 2: Handler Engine -->
-  <rect x="445" y="412" width="350" height="150" rx="5" fill="url(#g-done)" stroke="#28a745" stroke-width="1.5"/>
-  <rect x="445" y="412" width="350" height="14" rx="5" fill="#28a745"/>
-  <rect x="445" y="420" width="350" height="6" fill="#28a745"/>
-  <text x="620" y="422" text-anchor="middle" fill="#fff" font-size="10" font-weight="bold">Handler Engine</text>
-  <text x="457" y="440" font-size="9" fill="#155724" font-weight="bold">tool.h</text>
-  <text x="457" y="453" font-size="8" fill="#155724">  cog_tool_fn · cog_tool_table_t</text>
-  <text x="457" y="468" font-size="9" fill="#155724" font-weight="bold">toolkit.h · toolkit_call.h</text>
-  <text x="457" y="481" font-size="8" fill="#155724">  cog_toolkit_call_t (timeout, cancel)</text>
-  <text x="457" y="494" font-size="9" fill="#155724" font-weight="bold">toolkit_exec.h · toolkit_result.h</text>
-  <text x="457" y="507" font-size="8" fill="#155724">  cog_toolkit_execute / _all</text>
-  <text x="457" y="520" font-size="8" fill="#155724">  cog_toolkit_result_collection_t</text>
-  <text x="457" y="535" font-size="8" fill="#999">✅ cog-core + cog-toolkit</text>
+  <rect x="100" y="990" width="220" height="70" rx="6" fill="#f8effa" stroke="#8e44ad" stroke-width="1.5"/>
+  <text x="210" y="1018" text-anchor="middle" font-size="11" font-weight="bold" fill="#622876">aux_core fixture 1</text>
+  <text x="210" y="1039" text-anchor="middle" font-size="9" fill="#622876">core + IPC + routing</text>
 
-  <!-- Column 3: Provider Registry -->
-  <rect x="810" y="412" width="350" height="150" rx="5" fill="url(#g-done)" stroke="#28a745" stroke-width="1.5"/>
-  <rect x="810" y="412" width="350" height="14" rx="5" fill="#28a745"/>
-  <rect x="810" y="420" width="350" height="6" fill="#28a745"/>
-  <text x="985" y="422" text-anchor="middle" fill="#fff" font-size="10" font-weight="bold">Provider Registry</text>
-  <text x="822" y="440" font-size="9" fill="#155724" font-weight="bold">provider_vtable.h</text>
-  <text x="822" y="453" font-size="8" fill="#155724">  connect · send · receive · disconnect</text>
-  <text x="822" y="468" font-size="9" fill="#155724" font-weight="bold">provider_request.h · message.h</text>
-  <text x="822" y="481" font-size="8" fill="#155724">  cog_provider_request_t / response_t</text>
-  <text x="822" y="494" font-size="8" fill="#155724">  cog_provider_error_t (retryable, retry_after_ms)</text>
-  <text x="822" y="507" font-size="9" fill="#155724" font-weight="bold">endpoint.h</text>
-  <text x="822" y="520" font-size="8" fill="#155724">  cog_endpoint_table_t · cog_model_table_t</text>
-  <text x="822" y="535" font-size="8" fill="#999">✅ cog-provider</text>
+  <rect x="360" y="990" width="220" height="70" rx="6" fill="#f8effa" stroke="#8e44ad" stroke-width="1.5"/>
+  <text x="470" y="1018" text-anchor="middle" font-size="11" font-weight="bold" fill="#622876">aux_core fixture 2</text>
+  <text x="470" y="1039" text-anchor="middle" font-size="9" fill="#622876">core + IPC + routing</text>
 
-  <!-- Bottom row: Infrastructure modules -->
-  <!-- Network Transport -->
-  <rect x="120" y="574" width="340" height="110" rx="5" fill="url(#g-done)" stroke="#28a745" stroke-width="1.5"/>
-  <rect x="120" y="574" width="340" height="14" rx="5" fill="#28a745"/>
-  <rect x="120" y="582" width="340" height="6" fill="#28a745"/>
-  <text x="290" y="584" text-anchor="middle" fill="#fff" font-size="10" font-weight="bold">cog-net</text>
-  <text x="132" y="602" font-size="9" fill="#155724" font-weight="bold">net.h</text>
-  <text x="132" y="615" font-size="8" fill="#155724">  cog_net_request / poll / cancel</text>
-  <text x="132" y="627" font-size="8" fill="#155724">  cog_net_active_ids (bulk cancel)</text>
-  <text x="132" y="639" font-size="8" fill="#155724">  cog_net_response_t (headers, Retry-After)</text>
-  <text x="132" y="651" font-size="8" fill="#155724">  streaming · stall detection · retry</text>
-  <text x="132" y="668" font-size="8" fill="#999">HTTP client · per-process</text>
+  <rect x="620" y="990" width="220" height="70" rx="6" fill="#f8effa" stroke="#8e44ad" stroke-width="1.5"/>
+  <text x="730" y="1018" text-anchor="middle" font-size="11" font-weight="bold" fill="#622876">aux_core fixture N</text>
+  <text x="730" y="1039" text-anchor="middle" font-size="9" fill="#622876">same engine stack</text>
 
-  <!-- Config System -->
-  <rect x="475" y="574" width="340" height="110" rx="5" fill="url(#g-done)" stroke="#28a745" stroke-width="1.5"/>
-  <rect x="475" y="574" width="340" height="14" rx="5" fill="#28a745"/>
-  <rect x="475" y="582" width="340" height="6" fill="#28a745"/>
-  <text x="645" y="584" text-anchor="middle" fill="#fff" font-size="10" font-weight="bold">cog-config</text>
-  <text x="487" y="602" font-size="9" fill="#155724" font-weight="bold">config.h</text>
-  <text x="487" y="615" font-size="8" fill="#155724">  cog_config_tree_new / free</text>
-  <text x="487" y="627" font-size="8" fill="#155724">  begin · get · set · delete · list</text>
-  <text x="487" y="639" font-size="8" fill="#155724">  commit · rollback</text>
-  <text x="487" y="651" font-size="8" fill="#155724">  register_validator</text>
-  <text x="487" y="668" font-size="8" fill="#999">hierarchical · candidate/running</text>
+  <line x1="320" y1="1025" x2="360" y2="1025" stroke="#8e44ad" stroke-width="2" stroke-dasharray="5,3"/>
+  <line x1="580" y1="1025" x2="620" y2="1025" stroke="#8e44ad" stroke-width="2" stroke-dasharray="5,3"/>
+  <text x="490" y="1095" text-anchor="middle" font-size="10" fill="#622876">Verified: crash/reap · recovery primitives · session routing · fan-out/fan-in · bounded shutdown</text>
+  <text x="490" y="1120" text-anchor="middle" font-size="10" fill="#622876">These are executable test fixtures, not a separate shipped multi-process chat product.</text>
+  <text x="490" y="1145" text-anchor="middle" font-size="10" fill="#622876">Real-provider work must preserve the single-threaded core and caller-owned lifecycle contracts.</text>
 
-  <!-- Observability -->
-  <rect x="830" y="574" width="330" height="110" rx="5" fill="url(#g-done)" stroke="#28a745" stroke-width="1.5"/>
-  <rect x="830" y="574" width="330" height="14" rx="5" fill="#28a745"/>
-  <rect x="830" y="582" width="330" height="6" fill="#28a745"/>
-  <text x="995" y="584" text-anchor="middle" fill="#fff" font-size="10" font-weight="bold">cog-obs</text>
-  <text x="842" y="602" font-size="9" fill="#155724" font-weight="bold">obs.h · obs_types.h</text>
-  <text x="842" y="615" font-size="8" fill="#155724">  cog_obs_log / log_to</text>
-  <text x="842" y="627" font-size="8" fill="#155724">  trace_begin / trace_end</text>
-  <text x="842" y="639" font-size="8" fill="#155724">  diag_publish / diag_clear / diag_count</text>
-  <text x="842" y="651" font-size="8" fill="#155724">  static field tables · sink tables</text>
-  <text x="842" y="668" font-size="8" fill="#999">logging · tracing · diagnostics</text>
+  <!-- Remaining real-client panel -->
+  <rect x="970" y="310" width="590" height="900" rx="10" fill="#fff0bd" fill-opacity="0.35" stroke="#c18b00" stroke-width="2" stroke-dasharray="7,4"/>
+  <rect x="970" y="310" width="590" height="30" rx="10" fill="#c18b00"/>
+  <rect x="970" y="330" width="590" height="10" fill="#c18b00"/>
+  <text x="1265" y="331" text-anchor="middle" font-size="13" font-weight="bold" fill="#ffffff">REMAINING REAL-MODEL CLIENT — PROPOSED STAGE 14+</text>
 
-  <!-- Arrow: IPC down to main core -->
-  <line x1="640" y1="288" x2="640" y2="298" stroke="#e6a817" stroke-width="2" marker-end="url(#arrow-down)"/>
+  <!-- A: Blueprint and PoCs -->
+  <rect x="1000" y="360" width="530" height="100" rx="6" fill="#fff0bd" stroke="#c18b00" stroke-width="1.5"/>
+  <rect x="1000" y="360" width="530" height="26" rx="6" fill="#d29a12"/>
+  <rect x="1000" y="376" width="530" height="10" fill="#d29a12"/>
+  <text x="1265" y="378" text-anchor="middle" font-size="12" font-weight="bold" fill="#ffffff">A · Scope confirmation + risk-reduction PoCs</text>
+  <text x="1018" y="408" font-size="10" fill="#70500a">Choose TLS/HTTP and JSON integration through measured PoCs</text>
+  <text x="1018" y="428" font-size="10" fill="#70500a">Test fragmented SSE, cancellation, and sanitized wire fixtures</text>
+  <text x="1018" y="448" font-size="10" fill="#70500a">Then amend headers and trace real-client scenarios before code</text>
 
-  <!-- ================================================================= -->
-  <!-- AUXILIARY CORE PROCESSES                                          -->
-  <!-- ================================================================= -->
-  <line x1="640" y1="698" x2="640" y2="726" stroke="#888" stroke-width="2" marker-end="url(#arrow-down)"/>
-  <text x="652" y="716" font-size="9" fill="#888" font-style="italic">spawns / manages</text>
+  <!-- B: HTTPS -->
+  <rect x="1000" y="475" width="530" height="110" rx="6" fill="#fff0bd" stroke="#c18b00" stroke-width="1.5"/>
+  <rect x="1000" y="475" width="530" height="26" rx="6" fill="#d29a12"/>
+  <rect x="1000" y="491" width="530" height="10" fill="#d29a12"/>
+  <text x="1265" y="493" text-anchor="middle" font-size="12" font-weight="bold" fill="#ffffff">B · Secure HTTPS transport + secret handling</text>
+  <text x="1018" y="523" font-size="10" fill="#70500a">TLS certificate, hostname, and SNI verification</text>
+  <text x="1018" y="543" font-size="10" fill="#70500a">Authentication headers, connect/stall timeouts, cancellation</text>
+  <text x="1018" y="563" font-size="10" fill="#70500a">Secret redaction across logs, errors, diagnostics, and sessions</text>
 
-  <!-- Connector -->
-  <line x1="100" y1="734" x2="1180" y2="734" stroke="#888" stroke-width="1.5"/>
-  <line x1="260" y1="734" x2="260" y2="748" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-down)"/>
-  <line x1="640" y1="734" x2="640" y2="748" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-down)"/>
-  <line x1="1020" y1="734" x2="1020" y2="748" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-down)"/>
+  <!-- C: Neutral provider contracts -->
+  <rect x="1000" y="600" width="530" height="110" rx="6" fill="#fff0bd" stroke="#c18b00" stroke-width="1.5"/>
+  <rect x="1000" y="600" width="530" height="26" rx="6" fill="#d29a12"/>
+  <rect x="1000" y="616" width="530" height="10" fill="#d29a12"/>
+  <text x="1265" y="618" text-anchor="middle" font-size="12" font-weight="bold" fill="#ffffff">C · Provider-neutral real-model contracts</text>
+  <text x="1018" y="648" font-size="10" fill="#70500a">Generic error metadata instead of mock-specific CLI inspection</text>
+  <text x="1018" y="668" font-size="10" fill="#70500a">Usage / finish metadata and structured content deltas</text>
+  <text x="1018" y="688" font-size="10" fill="#70500a">Stable tool-call identities, cancellation, and ownership rules</text>
 
-  <!-- Aux Core 1 (detailed) -->
-  <rect x="110" y="748" width="300" height="230" rx="8" fill="url(#g-aux)" stroke="#9c27b0" stroke-width="1.5" opacity="0.3"/>
-  <rect x="110" y="748" width="300" height="16" rx="8" fill="#9c27b0"/>
-  <rect x="110" y="758" width="300" height="6" fill="#9c27b0"/>
-  <text x="260" y="760" text-anchor="middle" fill="#fff" font-size="10" font-weight="bold">Auxiliary Core Process 1</text>
+  <!-- D: Real adapter -->
+  <rect x="1000" y="725" width="530" height="110" rx="6" fill="#fff0bd" stroke="#c18b00" stroke-width="1.5"/>
+  <rect x="1000" y="725" width="530" height="26" rx="6" fill="#d29a12"/>
+  <rect x="1000" y="741" width="530" height="10" fill="#d29a12"/>
+  <text x="1265" y="743" text-anchor="middle" font-size="12" font-weight="bold" fill="#ffffff">D · Real provider adapter + JSON / SSE codec</text>
+  <text x="1018" y="773" font-size="10" fill="#70500a">OpenAI-compatible HTTPS API proposed as the first protocol</text>
+  <text x="1018" y="793" font-size="10" fill="#70500a">Request serialization + incremental SSE response decoding</text>
+  <text x="1018" y="813" font-size="10" fill="#70500a">External LLM service: model errors, rate limits, usage, streaming</text>
 
-  <rect x="128" y="772" width="264" height="22" rx="3" fill="url(#g-done)" stroke="#28a745" stroke-width="1"/>
-  <text x="260" y="787" text-anchor="middle" font-size="9" fill="#155724">Agent Core — core.h + agent.h</text>
+  <!-- E: Everyday client -->
+  <rect x="1000" y="850" width="530" height="110" rx="6" fill="#fff0bd" stroke="#c18b00" stroke-width="1.5"/>
+  <rect x="1000" y="850" width="530" height="26" rx="6" fill="#d29a12"/>
+  <rect x="1000" y="866" width="530" height="10" fill="#d29a12"/>
+  <text x="1265" y="868" text-anchor="middle" font-size="12" font-weight="bold" fill="#ffffff">E · Daily-usable real chat client</text>
+  <text x="1018" y="898" font-size="10" fill="#70500a">CLI / environment / config-file loading with clear precedence</text>
+  <text x="1018" y="918" font-size="10" fill="#70500a">Session resume / list / fork / delete and provider/model selection</text>
+  <text x="1018" y="938" font-size="10" fill="#70500a">Interactive slash commands, actionable errors, safe shutdown</text>
 
-  <rect x="128" y="798" width="264" height="22" rx="3" fill="url(#g-done)" stroke="#28a745" stroke-width="1"/>
-  <text x="260" y="813" text-anchor="middle" font-size="9" fill="#155724">Handler Engine — toolkit_exec.h</text>
+  <!-- F: Tool loop -->
+  <rect x="1000" y="975" width="530" height="110" rx="6" fill="#fff0bd" stroke="#c18b00" stroke-width="1.5"/>
+  <rect x="1000" y="975" width="530" height="26" rx="6" fill="#d29a12"/>
+  <rect x="1000" y="991" width="530" height="10" fill="#d29a12"/>
+  <text x="1265" y="993" text-anchor="middle" font-size="12" font-weight="bold" fill="#ffffff">F · Safe tool-conversation loop — following release</text>
+  <text x="1018" y="1023" font-size="10" fill="#70500a">Accumulate streamed calls and return stable tool results</text>
+  <text x="1018" y="1043" font-size="10" fill="#70500a">Confirmation, allowlists, output limits, and bounded model rounds</text>
+  <text x="1018" y="1063" font-size="10" fill="#70500a">Preserve complete tool-call/result history in the session tree</text>
 
-  <rect x="128" y="824" width="264" height="22" rx="3" fill="url(#g-done)" stroke="#28a745" stroke-width="1"/>
-  <text x="260" y="839" text-anchor="middle" font-size="9" fill="#155724">Provider Registry — provider_vtable.h</text>
+  <!-- G: Qualification -->
+  <rect x="1000" y="1100" width="530" height="85" rx="6" fill="#fff0bd" stroke="#c18b00" stroke-width="1.5"/>
+  <rect x="1000" y="1100" width="530" height="26" rx="6" fill="#d29a12"/>
+  <rect x="1000" y="1116" width="530" height="10" fill="#d29a12"/>
+  <text x="1265" y="1118" text-anchor="middle" font-size="12" font-weight="bold" fill="#ffffff">G · Release qualification</text>
+  <text x="1018" y="1148" font-size="10" fill="#70500a">Local TLS/wire tests by default; opt-in live-provider matrix</text>
+  <text x="1018" y="1168" font-size="10" fill="#70500a">Sanitizers, credential-safety audit, install and user documentation</text>
 
-  <rect x="128" y="850" width="264" height="22" rx="3" fill="url(#g-done)" stroke="#28a745" stroke-width="1"/>
-  <text x="260" y="865" text-anchor="middle" font-size="9" fill="#155724">Network Transport — net.h</text>
+  <!-- Dependency arrows between remaining blocks -->
+  <line x1="1265" y1="460" x2="1265" y2="475" stroke="#b07d00" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow-plan)"/>
+  <line x1="1265" y1="585" x2="1265" y2="600" stroke="#b07d00" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow-plan)"/>
+  <line x1="1265" y1="710" x2="1265" y2="725" stroke="#b07d00" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow-plan)"/>
+  <line x1="1265" y1="835" x2="1265" y2="850" stroke="#b07d00" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow-plan)"/>
+  <line x1="1265" y1="960" x2="1265" y2="975" stroke="#b07d00" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow-plan)"/>
+  <line x1="1265" y1="1085" x2="1265" y2="1100" stroke="#b07d00" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow-plan)"/>
 
-  <rect x="128" y="876" width="264" height="22" rx="3" fill="url(#g-done)" stroke="#28a745" stroke-width="1"/>
-  <text x="260" y="891" text-anchor="middle" font-size="9" fill="#155724">Config System — config.h</text>
+  <!-- Summary table -->
+  <rect x="40" y="1235" width="1520" height="405" rx="8" fill="#f8f9fa" stroke="#c8ced3" stroke-width="1"/>
+  <rect x="40" y="1235" width="1520" height="32" rx="8" fill="#e4e9ed"/>
+  <rect x="40" y="1257" width="1520" height="10" fill="#e4e9ed"/>
+  <text x="60" y="1257" font-size="11" font-weight="bold" fill="#27313a">Component</text>
+  <text x="250" y="1257" font-size="11" font-weight="bold" fill="#27313a">Public headers</text>
+  <text x="820" y="1257" font-size="11" font-weight="bold" fill="#27313a">Key types / boundary</text>
+  <text x="1380" y="1257" font-size="11" font-weight="bold" fill="#27313a">Status</text>
 
-  <rect x="128" y="902" width="264" height="22" rx="3" fill="url(#g-done)" stroke="#28a745" stroke-width="1"/>
-  <text x="260" y="917" text-anchor="middle" font-size="9" fill="#155724">Observability — obs.h</text>
+  <rect x="40" y="1267" width="1520" height="34" fill="#dff1e3"/>
+  <text x="60" y="1289" font-size="10" font-weight="bold" fill="#195c2a">cog-core</text>
+  <text x="250" y="1289" font-size="9" fill="#195c2a">core.h, event.h, session.h, session_store.h, agent.h, tool.h, …</text>
+  <text x="820" y="1289" font-size="9" fill="#195c2a">cog_core_t · cog_session_t · cog_agent_t · cog_store_t</text>
+  <text x="1380" y="1289" font-size="10" fill="#195c2a">Implemented</text>
 
-  <rect x="128" y="928" width="264" height="22" rx="3" fill="url(#g-done)" stroke="#28a745" stroke-width="1"/>
-  <text x="260" y="943" text-anchor="middle" font-size="9" fill="#155724">IPC Client — ipc.h (connect)</text>
+  <rect x="40" y="1301" width="1520" height="34" fill="#fff0bf"/>
+  <text x="60" y="1323" font-size="10" font-weight="bold" fill="#70500a">cog-provider</text>
+  <text x="250" y="1323" font-size="9" fill="#70500a">provider.h, provider_vtable.h, provider_request.h, endpoint.h</text>
+  <text x="820" y="1323" font-size="9" fill="#70500a">cog_provider_vtable_t · cog_endpoint_t · cog_provider_response_t</text>
+  <text x="1380" y="1323" font-size="10" fill="#70500a">API done; real adapter needed</text>
 
-  <!-- Aux Core 2 (compact) -->
-  <rect x="430" y="748" width="380" height="230" rx="8" fill="url(#g-aux)" stroke="#9c27b0" stroke-width="1.5" opacity="0.15"/>
-  <rect x="430" y="748" width="380" height="16" rx="8" fill="#9c27b0"/>
-  <rect x="430" y="758" width="380" height="6" fill="#9c27b0"/>
-  <text x="620" y="760" text-anchor="middle" fill="#fff" font-size="10" font-weight="bold">Auxiliary Core Process 2</text>
-  <text x="620" y="850" text-anchor="middle" font-size="10" fill="#9c27b0">Same Core Engine stack</text>
-  <text x="620" y="870" text-anchor="middle" font-size="10" fill="#9c27b0">as aux core 1</text>
+  <rect x="40" y="1335" width="1520" height="34" fill="#dff1e3"/>
+  <text x="60" y="1357" font-size="10" font-weight="bold" fill="#195c2a">cog-toolkit</text>
+  <text x="250" y="1357" font-size="9" fill="#195c2a">toolkit.h, toolkit_call.h, toolkit_exec.h, toolkit_result.h</text>
+  <text x="820" y="1357" font-size="9" fill="#195c2a">cog_toolkit_call_t · cog_toolkit_result_collection_t</text>
+  <text x="1380" y="1357" font-size="10" fill="#195c2a">Implemented; model loop next</text>
 
-  <!-- Aux Core N (compact) -->
-  <rect x="830" y="748" width="330" height="230" rx="8" fill="url(#g-aux)" stroke="#9c27b0" stroke-width="1.5" opacity="0.15"/>
-  <rect x="830" y="748" width="330" height="16" rx="8" fill="#9c27b0"/>
-  <rect x="830" y="758" width="330" height="6" fill="#9c27b0"/>
-  <text x="995" y="760" text-anchor="middle" fill="#fff" font-size="10" font-weight="bold">Auxiliary Core Process N</text>
-  <text x="995" y="850" text-anchor="middle" font-size="10" fill="#9c27b0">Same Core Engine stack</text>
-  <text x="995" y="870" text-anchor="middle" font-size="10" fill="#9c27b0">as aux core 1</text>
+  <rect x="40" y="1369" width="1520" height="34" fill="#dff1e3"/>
+  <text x="60" y="1391" font-size="10" font-weight="bold" fill="#195c2a">cog-ipc</text>
+  <text x="250" y="1391" font-size="9" fill="#195c2a">ipc.h</text>
+  <text x="820" y="1391" font-size="9" fill="#195c2a">cog_ipc_endpoint_t · cog_peer_id_t · cog_ipc_message_t</text>
+  <text x="1380" y="1391" font-size="10" fill="#195c2a">Implemented</text>
 
-  <!-- IPC Fabric side connections to aux cores -->
-  <line x1="300" y1="264" x2="260" y2="264" stroke="#e6a817" stroke-width="1.5" stroke-dasharray="4,3"/>
-  <line x1="260" y1="264" x2="260" y2="748" stroke="#e6a817" stroke-width="1.5" stroke-dasharray="4,3"/>
-  <line x1="980" y1="264" x2="995" y2="264" stroke="#e6a817" stroke-width="1.5" stroke-dasharray="4,3"/>
-  <line x1="995" y1="264" x2="995" y2="748" stroke="#e6a817" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <rect x="40" y="1403" width="1520" height="34" fill="#fff0bf"/>
+  <text x="60" y="1425" font-size="10" font-weight="bold" fill="#70500a">cog-config</text>
+  <text x="250" y="1425" font-size="9" fill="#70500a">config.h</text>
+  <text x="820" y="1425" font-size="9" fill="#70500a">cog_config_tree_t · cog_config_txn_t</text>
+  <text x="1380" y="1425" font-size="10" fill="#70500a">Tree done; user loaders needed</text>
 
-  <!-- ================================================================= -->
-  <!-- SUMMARY TABLE                                                     -->
-  <!-- ================================================================= -->
-  <rect x="30" y="1000" width="1220" height="380" rx="6" fill="#f8f9fa" stroke="#ddd" stroke-width="1"/>
+  <rect x="40" y="1437" width="1520" height="34" fill="#fff0bf"/>
+  <text x="60" y="1459" font-size="10" font-weight="bold" fill="#70500a">cog-net</text>
+  <text x="250" y="1459" font-size="9" fill="#70500a">net.h</text>
+  <text x="820" y="1459" font-size="9" fill="#70500a">cog_net_ctx_t · cog_net_response_t · HTTP/1.1 only</text>
+  <text x="1380" y="1459" font-size="10" fill="#70500a">HTTP done; HTTPS needed</text>
 
-  <!-- Column headers -->
-  <rect x="30" y="1000" width="1220" height="24" rx="6" fill="#e9ecef"/>
-  <rect x="30" y="1016" width="1220" height="8" fill="#e9ecef"/>
-  <text x="50" y="1016" font-size="11" font-weight="bold" fill="#333">Library</text>
-  <text x="220" y="1016" font-size="11" font-weight="bold" fill="#333">Headers</text>
-  <text x="640" y="1016" font-size="11" font-weight="bold" fill="#333">Key Types</text>
-  <text x="1080" y="1016" font-size="11" font-weight="bold" fill="#333">Status</text>
+  <rect x="40" y="1471" width="1520" height="34" fill="#dff1e3"/>
+  <text x="60" y="1493" font-size="10" font-weight="bold" fill="#195c2a">cog-obs</text>
+  <text x="250" y="1493" font-size="9" fill="#195c2a">obs.h, obs_types.h</text>
+  <text x="820" y="1493" font-size="9" fill="#195c2a">cog_obs_t · static field/sink tables · connection diagnostics</text>
+  <text x="1380" y="1493" font-size="10" fill="#195c2a">Implemented; redaction audit next</text>
 
-  <!-- Row 1: cog-core -->
-  <rect x="30" y="1028" width="1220" height="40" fill="#d4edda"/>
-  <text x="50" y="1044" font-size="10" fill="#155724" font-weight="bold">cog-core</text>
-  <text x="220" y="1044" font-size="9" fill="#155724">core.h, event.h, session.h, session_store.h, state.h, handler.h, tool.h, result.h, agent.h, message.h</text>
-  <text x="220" y="1058" font-size="8" fill="#155724">(10 headers — most amended)</text>
-  <text x="640" y="1044" font-size="9" fill="#155724">cog_core_t, cog_event_t, cog_session_t, cog_agent_t, cog_dispatch_entry_t</text>
-  <text x="1080" y="1044" font-size="10" fill="#155724">✅ done</text>
+  <rect x="40" y="1505" width="1520" height="34" fill="#dff1e3"/>
+  <text x="60" y="1527" font-size="10" font-weight="bold" fill="#195c2a">cog-orchestrator</text>
+  <text x="250" y="1527" font-size="9" fill="#195c2a">orchestrator.h</text>
+  <text x="820" y="1527" font-size="9" fill="#195c2a">cog_orchestrator_t · cog_health_t · owned aux_core fixtures</text>
+  <text x="1380" y="1527" font-size="10" fill="#195c2a">Implemented</text>
 
-  <!-- Row 2: cog-provider -->
-  <rect x="30" y="1068" width="1220" height="30" fill="#d4edda"/>
-  <text x="50" y="1088" font-size="10" fill="#155724" font-weight="bold">cog-provider</text>
-  <text x="220" y="1088" font-size="9" fill="#155724">provider.h, provider_vtable.h, provider_request.h, endpoint.h</text>
-  <text x="640" y="1088" font-size="9" fill="#155724">cog_provider_vtable_t, cog_endpoint_table_t, cog_provider_error_t</text>
-  <text x="1080" y="1088" font-size="10" fill="#155724">✅ done</text>
+  <rect x="40" y="1539" width="1520" height="34" fill="#fff0bf"/>
+  <text x="60" y="1561" font-size="10" font-weight="bold" fill="#70500a">cog-cli</text>
+  <text x="250" y="1561" font-size="9" fill="#70500a">cli.h, mock_provider.h</text>
+  <text x="820" y="1561" font-size="9" fill="#70500a">cog_cli_app_t · cog_cli_options_t · deterministic mock only</text>
+  <text x="1380" y="1561" font-size="10" fill="#70500a">Mock REPL done; real UX needed</text>
 
-  <!-- Row 3: cog-toolkit -->
-  <rect x="30" y="1098" width="1220" height="30" fill="#d4edda"/>
-  <text x="50" y="1118" font-size="10" fill="#155724" font-weight="bold">cog-toolkit</text>
-  <text x="220" y="1118" font-size="9" fill="#155724">toolkit.h, toolkit_call.h, toolkit_exec.h, toolkit_result.h</text>
-  <text x="640" y="1118" font-size="9" fill="#155724">cog_toolkit_call_t, cog_toolkit_result_t, cog_toolkit_exec_opts_t</text>
-  <text x="1080" y="1118" font-size="10" fill="#155724">✅ done</text>
-
-  <!-- Row 4: cog-ipc -->
-  <rect x="30" y="1128" width="1220" height="30" fill="#d4edda"/>
-  <text x="50" y="1148" font-size="10" fill="#155724" font-weight="bold">cog-ipc</text>
-  <text x="220" y="1148" font-size="9" fill="#155724">ipc.h</text>
-  <text x="640" y="1148" font-size="9" fill="#155724">cog_ipc_endpoint_t, cog_peer_id_t, cog_ipc_message_t</text>
-  <text x="1080" y="1148" font-size="10" fill="#155724">✅ done</text>
-
-  <!-- Row 5: cog-config -->
-  <rect x="30" y="1158" width="1220" height="30" fill="#d4edda"/>
-  <text x="50" y="1178" font-size="10" fill="#155724" font-weight="bold">cog-config</text>
-  <text x="220" y="1178" font-size="9" fill="#155724">config.h</text>
-  <text x="640" y="1178" font-size="9" fill="#155724">cog_config_tree_t, cog_config_txn_t</text>
-  <text x="1080" y="1178" font-size="10" fill="#155724">✅ done</text>
-
-  <!-- Row 6: cog-net -->
-  <rect x="30" y="1188" width="1220" height="30" fill="#d4edda"/>
-  <text x="50" y="1208" font-size="10" fill="#155724" font-weight="bold">cog-net</text>
-  <text x="220" y="1208" font-size="9" fill="#155724">net.h</text>
-  <text x="640" y="1208" font-size="9" fill="#155724">cog_net_ctx_t, cog_request_id_t, cog_net_response_t</text>
-  <text x="1080" y="1208" font-size="10" fill="#155724">✅ done</text>
-
-  <!-- Row 7: cog-obs -->
-  <rect x="30" y="1218" width="1220" height="30" fill="#d4edda"/>
-  <text x="50" y="1238" font-size="10" fill="#155724" font-weight="bold">cog-obs</text>
-  <text x="220" y="1238" font-size="9" fill="#155724">obs.h, obs_types.h</text>
-  <text x="640" y="1238" font-size="9" fill="#155724">cog_obs_t, cog_obs_span_t, cog_obs_field_table_t</text>
-  <text x="1080" y="1238" font-size="10" fill="#155724">✅ done</text>
-
-  <!-- Row 8: cog-orchestrator -->
-  <rect x="30" y="1248" width="1220" height="30" fill="#d4edda"/>
-  <text x="50" y="1268" font-size="10" fill="#155724" font-weight="bold">cog-orchestrator</text>
-  <text x="220" y="1268" font-size="9" fill="#155724">orchestrator.h</text>
-  <text x="640" y="1268" font-size="9" fill="#155724">cog_orchestrator_t, cog_health_t, cog_core_info_t</text>
-  <text x="1080" y="1268" font-size="10" fill="#155724">✅ done</text>
-
-  <!-- Footer -->
-  <text x="50" y="1310" font-size="10" fill="#888" font-style="italic">23 headers · 8 libraries · 12 scenario traces · all gaps fixed · ready for implementation</text>
-  <text x="50" y="1330" font-size="10" fill="#888" font-style="italic">Stage 9 gate ticket: 912f5e1 — tracks readiness verification</text>
+  <text x="60" y="1602" font-size="10" fill="#4e5962">Evidence: 61/61 tests · 21/21 scenario-labeled tests · GCC + Clang Werror · ASan/UBSan/LSan · separate TSan · install/export smoke</text>
+  <text x="60" y="1623" font-size="10" fill="#4e5962">Green describes merged functionality, not production readiness for real providers. Yellow blocks require blueprint confirmation, contracts, scenarios, implementation, and review.</text>
+  <text x="800" y="1670" text-anchor="middle" font-size="10" fill="#68737c">Source of truth: docs/DESIGN.md · docs/IMPLEMENTATION_STRATEGY.md · docs/IMPLEMENTATION_WBS.md · merged Stage 12 tickets and verification</text>
 </svg>
