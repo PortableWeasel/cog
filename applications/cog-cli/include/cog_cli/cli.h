@@ -447,8 +447,8 @@ cog_result_t cog_cli_app_run(cog_cli_app_t *app);
 /**
  * @brief Request the run loop to exit.
  *
- * Signal-safe: forwards to @c cog_core_stop and records the request so
- * the wait hook returns promptly.
+ * Signal-safe: forwards to @c cog_core_stop; app_run drains owned work
+ * after the core exits.
  *
  * @param[in,out] app App to stop; may be NULL (no-op).
  */

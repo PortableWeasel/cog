@@ -1,150 +1,81 @@
-# Scenario Harness Contract
+# Application scenario harness
 
-This document is the contract for the four scenario batches integrated by
-Stage 12.6f:
+Tests link `cog::cli` and drive the real application, core, session, provider
+callbacks, toolkit and durable store. MOCK supplies deterministic provider
+output; it does not replace tool execution or permit effects. The actual
+adapter/net composition has an offline TLS test (`cli-app-https`).
 
-| Ticket | Scenarios |
-|--------|-----------|
-| `fe958ce` (12.6b) | 01 user-prompt, 02 network-recovery, 03 subagent-lifecycle, 04 cold-start, 05 graceful-shutdown |
-| `0d8ff50` (12.6c) | 06 parallel-tools, 07 aux-crash, 08 config-reload, 09 subagent-messaging, 10 fan-out-fan-in |
-| `e69a38a` (12.6d) | 11 ui-reconnect, 12 rate-limit, 13 session-persistence, 14 conversation-fork, 15 multi-turn-tools |
-| `c12c392` (12.6e) | 16 error-propagation, 17 session-migration, 18 observability, 19 connection-events, 20 interrupt-and-queue |
-
-CLI-driven scenario tests link `cog::cli` and drive the app
-**programmatically**; library-focused scenarios link only the libraries they
-exercise. None spawn the CLI binary. `tests/test_cli_harness.c` is a working
-template: copy a scenario function from it and extend.
-
-Scenarios 01–10 and the 05b shutdown regression are registered from
-`tests/scenarios/CMakeLists.txt`; scenarios 11–20 are registered beside this
-guide in `tests/CMakeLists.txt`. All use the `scenario` CTest label and a
-30-second timeout. Run the complete set with:
-
-```bash
-ctest --test-dir build -L scenario --output-on-failure
-```
-
-That command runs 21 executables: the 20 numbered scenarios plus 05b.
-
-## The fixture pattern
-
-CLI-driven scenarios follow this five-step fixture pattern:
+Start every options/message/config value at zero. Programmatic options must
+set presence bits; an endpoint string alone does not select the mock backend:
 
 ```c
-/* 1. Script the mock provider (chunks / errors / rate limits / cancel). */
-static const cog_mock_step_t steps[] = {
-    {COG_MOCK_STEP_CHUNK, "The", COG_OK, 0, false, 0U, NULL},
-    {COG_MOCK_STEP_CHUNK, " answer", COG_OK, 0, false, 0U, NULL},
+cog_cli_options_t opts = {
+    .backend = COG_CLI_BACKEND_MOCK,
+    .explicit_options = COG_CLI_OPT_BACKEND,
+    .prompt = "hello",
 };
-static const cog_mock_script_t script = { steps, 2U, 0U, COG_OK, 0U };
-
-/* 2. Build options and create the app. */
-cog_cli_options_t opts;
 cog_cli_app_t *app = NULL;
-memset(&opts, 0, sizeof(opts));
-opts.prompt = "What is the answer?";   /* or leave NULL and submit manually */
-opts.script = &script;                 /* overrides chunks/mock_mode */
-opts.model_id = "mock-model";          /* defaults parse would supply */
-opts.endpoint_name = "mock";
-opts.interactive = false;              /* single-prompt mode */
 CHECK(cog_cli_app_new(&app, &opts) == COG_OK);
-
-/* 3. Inject prompts (optional; opts.prompt is submitted by run). */
-CHECK(cog_cli_app_submit(app, "extra prompt", 12U) == COG_OK);
-
-/* 4. Run. */
 CHECK(cog_cli_app_run(app) == COG_OK);
-
-/* 5. Observe. */
-const cog_message_t *msgs = NULL; size_t n = 0;
-cog_session_get_history(cog_cli_app_session(app),
-                        cog_session_active(cog_cli_app_session(app)),
-                        &msgs, &n);
-cog_mock_state_t st;
-cog_mock_provider_state(cog_cli_app_provider(app), &st);
+cog_cli_app_free(app);
 ```
 
-## Injecting input
+Legacy `script` supplies CHUNK/ERROR/CANCEL/COMPLETE steps, consumed across sends.
+An error followed by a chunk proves a retry only when the error precedes accepted
+output. Two retryable errors exhaust the default single retry. Generic error
+snapshots are valid until the next send; do not assert stale metadata after a
+successful retry. Exact send/error counters remain observable.
 
-| API | Purpose |
-|-----|---------|
-| `opts.prompt` | one prompt submitted automatically by `cog_cli_app_run` |
-| `cog_cli_app_submit(app, text, len)` | enqueue a `COG_EVENT_USER_INPUT` (payload borrowed; keep `text` alive until dispatch) |
-| `cog_cli_app_queue(app, text, len)` | queue a message for the turn **after** the current one (core auto-injects it) |
-| `cog_cli_app_cancel(app)` | enqueue `COG_EVENT_CANCEL` (arms provider cancellation while streaming) |
-| `cog_cli_app_shutdown(app)` | enqueue `COG_EVENT_SHUTDOWN` (graceful stop) |
-| `cog_cli_app_stop(app)` | signal-safe immediate stop request |
+For structured turns, use `opts.mock_deltas` and `mock_delta_count` (at most 4096
+borrowed entries). They are MOCK-only and mutually exclusive with legacy script.
+Keep all nested strings/deltas alive until app destruction. The app uses the
+public `cog_mock_provider_new_deltas` constructor. Each fixture turn ends in a
+FINISH. A complete tool turn is BEGIN, ARGUMENTS, END, FINISH/TOOL_CALLS; subsequent
+TEXT + FINISH/STOP supplies the model continuation. Use strict built-in schemas.
+`test_app_loop.c` and scenario15 are working full-round examples.
 
-Ordering matters for cancellation: submit the prompt **before** the
-cancel so the `CANCEL` event is dispatched while the turn is in
-`AWAITING_LLM` (see `scenario_cancel` in `test_cli_harness.c`).
+For effect tests, create a disposable `mkdtemp` workspace and durable store;
+set WORKSPACE, STORE_MODE, STORE_DIR and POLICY presence bits. Explicit ALLOW is
+preapproved only within those fixture roots. Assert the actual file/process
+result and durable identified ledger, including the matching result in the next
+provider request. DENY and no-store tests assert absence of the effect. Never
+use a legacy synchronous tool as a shortcut around durable async admission.
 
-## Scripting the provider
+| Injection | Contract |
+|---|---|
+| `app_submit` | Copies UTF-8 text into a bounded slot through handler completion |
+| `app_queue` | Retains copied input for a later safe turn; cannot authorize failed-turn continuation |
+| `app_cancel` | Enqueues owner-thread cancellation and retains explicit cancelled display state |
+| `app_shutdown` | Stops admission, cancels/drains/reaps, saves outcomes, then stops |
+| `app_stop` | Only cross-thread/signal-safe operation; run drains after core exits |
 
-| Field | Effect |
-|-------|--------|
-| `COG_MOCK_STEP_CHUNK` | emit `chunk` as a streaming delta |
-| `COG_MOCK_STEP_ERROR` | receive fails with `error_code` + `http_status` / `retryable` / `retry_after_ms` / `error_message` |
-| `COG_MOCK_STEP_CANCEL` | receive returns `COG_ERROR_ABORTED` |
-| `COG_MOCK_STEP_COMPLETE` | receive returns an empty STOP completion |
-| `script.repeat` | replay the script for multi-turn sessions (`SIZE_MAX` = forever) |
-| `script.send_error` | make every send fail with this code |
-| `script.chunk_delay_ms` | simulated latency between chunks |
+One completed assistant message contains all text chunks. Inspect complete
+provider history with `cog_session_copy_history`; incomplete or unresolved
+history must refuse replay. Use `app_display_snapshot` to inspect cancelled,
+partial or unresolved visible state. The application snapshot never exposes
+opaque continuation. For retained failed branches use `cog_session_snapshot_view`
+and verify the old node still exists after a freshly authorized continuation.
+Prequeued input must not cause that continuation automatically.
 
-Steps are consumed monotonically across the provider's lifetime, so
-`[ERROR(429, retryable), CHUNK("recovered")]` makes the first receive
-fail and the retry's first receive succeed (scenario 12).  The CLI
-retries retryable errors once with a bounded backoff.
+Failure-injection tests wrap allocation, user/STARTED/result saves and TOOL
+insertion. They verify zero effects before durable STARTED, a retained terminal
+result after recording failure, no second provider send and immediate freeze
+following uncertain persistence. Tool tests also cover schema refusal, finite
+round/turn deadlines, explicit truncation, sanitized command environment,
+cancellation and child reap. Every temporary directory has a unique prefix;
+cleanup only operates on its owned root/PIDs.
 
-For a scripted provider-side abort, use a `CANCEL` step; for a
-user-side cancel, call `cog_mock_provider_request_cancel(provider)`
-directly or `cog_cli_app_cancel(app)` while streaming.
+The scoped K selection is:
 
-## Observing state
+```sh
+ctest --test-dir build-k \
+  -R '^(cli-|scenario-test_(01|02|04|05|06|12|15|16|17|20))' \
+  --output-on-failure
+```
 
-| API | What it reveals |
-|-----|-----------------|
-| `cog_session_get_history(session, active, &msgs, &n)` | conversation tree: roles, content, lengths |
-| `cog_session_active(session)` / `cog_node_data(node)` | current leaf node and its metadata |
-| `cog_mock_provider_state(provider, &st)` | `send_count`, `receive_count`, `chunk_count`, `error_count`, `cancel_count`, `last_request` (struct copy), `last_error` (retry metadata) |
-| `cog_cli_app_state(app)` / `cog_core_state(core)` | current state-machine state (0 = IDLE, 1 = AWAITING_LLM) |
-| `cog_cli_app_obs(app)` + `cog_obs_diag_*` | connection diagnostics table (scenario 19) |
-| `cog_cli_app_store(app)` + `cog_store_*` | persistence round-trips (scenario 13) |
-| `cog_cli_app_core(app)` | the core, for `cog_core_*` accessors and `cog_agent_*` subagent APIs (scenarios 03, 09, 10) |
-| `cog_core_user(cog_cli_app_core(app))` | the app pointer threaded through the core's borrowed user context (handlers reach the app this way; no global) |
-
-## Scenario notes
-
-- **01 user-prompt**: stream chunks, assert history = user + N assistant
-  nodes and `st.chunk_count == N`.
-- **02 network-recovery / 12 rate-limit**: script `ERROR` with
-  `retryable = true` and `retry_after_ms`; assert `st.error_count == 1`,
-  `st.send_count == 2`, and the recovered chunk in history.
-- **05 graceful-shutdown**: `cog_cli_app_shutdown` then run; expect
-  `COG_OK` and a clean teardown (ASan-clean).
-- **13 session-persistence**: drive the file-backed `cog_store_*` API
-  directly and verify save/load/append/list/delete tree fidelity. The CLI's
-  `opts.store_dir` auto-save path is exercised by scenario 17.
-- **20 interrupt-and-queue**: path A = submit then cancel, assert only
-  the user message remains; path B = `cog_cli_app_queue` while a turn is
-  pending, assert both turns appear in history.
-
-## Ownership and teardown
-
-The app owns everything it creates; `cog_cli_app_free(app)` releases it
-in the documented order (core → provider → obs → store → session →
-script storage). Scripts and their strings are borrowed by the provider
-(struct copied at connect), so keep them alive until the app is freed.
-
-## Shared fixtures and process safety
-
-Temporary files, stores, and sockets use `mkstemp`/`mkdtemp` templates with
-scenario-specific prefixes, so independent tests can run in parallel.
-Scenarios 07 and 10 reuse the `aux_core` target from
-`tests/integration/fixtures/aux_core.c`; CMake supplies its absolute path
-with `COG_AUX_CORE_BIN` and adds an explicit target dependency. Only PIDs
-returned by orchestrators owned by a scenario are killed or reaped. Tests
-must never signal processes by name or use broad process kills.
-
-For strict and sanitizer verification commands, see `docs/README.md`.
-ThreadSanitizer and AddressSanitizer builds must be separate.
+This selects 25 checks with the audited transport profile. Original03/07/09/10
+are broader agent/IPC/orchestrator scenarios; app fixture migrations preserve
+those assertions while O supplies their remaining runtime composition. The full
+release gate still runs every original scenario plus R01–R18; this selection is
+not that gate. Sanitizers use separate build directories. The focused TSan run
+covers `cli-app-stop` and `cli-app-limits` with real cross-thread stop calls.
