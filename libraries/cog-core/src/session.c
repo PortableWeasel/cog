@@ -215,10 +215,15 @@ static size_t path_results(const cog_session_node_t *leaf,
 }
 
 /* A result on a sibling branch never completes the selected provider context. */
-static bool path_complete(const cog_session_t *s, const cog_session_node_t *leaf)
+static bool path_complete(const cog_session_t *s, const cog_session_node_t *leaf,
+    bool legacy_inspection)
 {
-    for (const cog_session_node_t *n = leaf; n != NULL; n = n->parent)
-        if (n->data.message == NULL || n->message.status != COG_MESSAGE_COMPLETE) return false;
+    for (const cog_session_node_t *n = leaf; n != NULL; n = n->parent) {
+        if (n->data.message == NULL) {
+            if (!legacy_inspection || (n->data.role != COG_NODE_TOOL_CALL && n->data.role != COG_NODE_TOOL_RESULT))
+                return false;
+        } else if (n->message.status != COG_MESSAGE_COMPLETE) return false;
+    }
     for (size_t i = 0U; i < s->ledger_count; ++i) {
         const cog_tool_ledger_record_t *l = &s->ledger[i];
         const cog_session_node_t *assistant = find_node(s, l->assistant_node_id);
@@ -258,9 +263,16 @@ static void link_node(cog_session_t *s, cog_session_node_t *parent,
     s->history_count = 0U;
 }
 
+typedef enum insertion_mode {
+    INSERT_MESSAGE,
+    INSERT_RECONCILIATION,
+    INSERT_LEGACY_INSPECTION
+} insertion_mode_t;
+
 static cog_result_t insert(cog_session_t *s, cog_session_node_t *parent,
-    const cog_message_t *m, cog_session_node_t **out, bool reconciliation)
+    const cog_message_t *m, cog_session_node_t **out, insertion_mode_t mode)
 {
+    const bool reconciliation = mode == INSERT_RECONCILIATION;
     pack_t measure = {0};
     cog_session_node_t *n = NULL;
     cog_tool_ledger_record_t *associated = NULL;
@@ -275,7 +287,7 @@ static cog_result_t insert(cog_session_t *s, cog_session_node_t *parent,
         m->opaque_count > SIZE_MAX / sizeof(cog_message_opaque_t)) return COG_ERROR_LIMIT;
     if (unresolved(s) && (m->role != COG_MESSAGE_ROLE_TOOL || parent != s->active))
         return COG_ERROR_INVALID_STATE;
-    if (m->role != COG_MESSAGE_ROLE_TOOL && !path_complete(s, parent))
+    if (m->role != COG_MESSAGE_ROLE_TOOL && !path_complete(s, parent, mode == INSERT_LEGACY_INSPECTION))
         return COG_ERROR_INVALID_STATE;
     if (m->role == COG_MESSAGE_ROLE_TOOL) {
         cog_session_node_t *a = parent;
@@ -392,12 +404,12 @@ cog_result_t cog_session_add_message(cog_session_t *s, cog_session_node_t *paren
     const cog_message_t *m, cog_session_node_t **out)
 {
     if (s == NULL || m == NULL) return COG_ERROR_NULL_PTR;
-    return insert(s, parent, m, out, false);
+    return insert(s, parent, m, out, INSERT_MESSAGE);
 }
 cog_result_t cog_session_append(cog_session_t *s, const cog_message_t *m, cog_session_node_t **out)
 {
     if (s == NULL || m == NULL) return COG_ERROR_NULL_PTR;
-    return insert(s, s->active, m, out, false);
+    return insert(s, s->active, m, out, INSERT_MESSAGE);
 }
 
 static cog_result_t legacy(cog_session_t *s, cog_session_node_t *parent,
@@ -409,7 +421,7 @@ static cog_result_t legacy(cog_session_t *s, cog_session_node_t *parent,
     if (s == NULL || text == NULL) return COG_ERROR_NULL_PTR;
     if (unresolved(s)) return COG_ERROR_INVALID_STATE;
     m.role = COG_MESSAGE_ROLE_ASSISTANT; m.content = text; m.content_len = strlen(text); m.name = name;
-    rc = insert(s, parent, &m, &n, false);
+    rc = insert(s, parent, &m, &n, INSERT_LEGACY_INSPECTION);
     if (rc != COG_OK) return rc;
     n->data.role = role; n->data.message = NULL;
     n->data.tool_name = n->message.name;
@@ -438,7 +450,7 @@ cog_result_t cog_session_copy_history(const cog_session_t *s, const cog_session_
     if (s == NULL || count == NULL || (messages == NULL && cap != 0U)) return COG_ERROR_NULL_PTR;
     if (n == NULL) n = s->active;
     if (n != NULL && !contains(s, n)) return COG_ERROR_INVALID_ARG;
-    if (s->inspection_only || unresolved(s) || !path_complete(s, n)) return COG_ERROR_INVALID_STATE;
+    if (s->inspection_only || unresolved(s) || !path_complete(s, n, false)) return COG_ERROR_INVALID_STATE;
     for (const cog_session_node_t *a = n; a != NULL; a = a->parent) {
         if (a->data.message == NULL || a->message.status != COG_MESSAGE_COMPLETE) return COG_ERROR_INVALID_STATE;
         ++depth;
@@ -537,7 +549,7 @@ cog_result_t cog_session_reconcile_tool(cog_session_t *s, cog_session_node_t *n,
         strcmp(result->tool_call_id, id) != 0 || result->content_len == 0U || result->status != COG_MESSAGE_COMPLETE)
         return COG_ERROR_INVALID_ARG;
     if (l->audit_count == AUDITS_PER_CALL || s->audit_high_water == UINT64_MAX) return COG_ERROR_LIMIT;
-    rc = insert(s, s->active, result, &r, true);
+    rc = insert(s, s->active, result, &r, INSERT_RECONCILIATION);
     if (rc != COG_OK) return rc;
     rc = audit_add(s, l, resolution, true, r->message.content, r->message.content_len);
     if (out != NULL) *out = r;
