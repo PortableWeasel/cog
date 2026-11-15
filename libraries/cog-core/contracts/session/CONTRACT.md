@@ -159,10 +159,12 @@ picks one reading and pins it with tests.
    as name; the result contributes `tool_result` as content. Both history
    messages use the stored private byte length, so payloads containing
    embedded NUL bytes round-trip with their original `content_len`. A
-   result node created via `cog_session_add_tool_result` (which takes no
-   name) has a NULL `tool_name`, so its history message name is NULL. A
-   result created via `cog_session_add_message` with
-   `COG_MESSAGE_ROLE_TOOL` carries the message's `name`.
+   result node created via `cog_session_add_tool_result` deep-copies the
+   parent tool-call node's `tool_name`, so its history message name
+   matches the call. When the parent carries no tool name (e.g. a plain
+   message node), the result node's `tool_name` is NULL. A result created
+   via `cog_session_add_message` with `COG_MESSAGE_ROLE_TOOL` carries the
+   message's `name`.
 
 4. **History cache.** The returned message array is a per-session buffer
    rebuilt on demand; the implementation updates it through the

@@ -30,8 +30,9 @@
  *   bytes; every string payload is base64-encoded inside the JSON
  *   objects so byte lengths survive round-trips exactly.  tool_args /
  *   tool_result / tool_name are NUL-terminated by construction in
- *   session.c (their internal lengths derive from strlen), so their wire
- *   representation is lossless through the public API.
+ *   session.c.  tool_args / tool_result byte lengths are read from the
+ *   private node struct (not strlen), so payloads containing embedded
+ *   NUL bytes survive the round-trip exactly.
  * - The store includes the private session layout (session_internal.h)
  *   so a load can restore node ids, raw provider fields, chunk counts,
  *   the active node, next_node_id and max_nodes exactly.  This serves
@@ -783,9 +784,14 @@ static cog_result_t field_dbl(struct cbuf *b, const char *key, double v)
     return cbuf_puts(b, num);
 }
 
-/** Serialize one node as a single JSONL record (no trailing newline). */
+/** Serialize one node as a single JSONL record (no trailing newline).
+ *  The tool_args / tool_result byte lengths are passed explicitly so
+ *  payloads containing embedded NUL bytes survive the round-trip (their
+ *  lengths live on the private node struct, not in cog_node_data_t). */
 static cog_result_t node_record_write(struct cbuf *b,
-                                      const cog_node_data_t *d)
+                                      const cog_node_data_t *d,
+                                      size_t tool_args_len,
+                                      size_t tool_result_len)
 {
     cog_result_t rc;
 
@@ -835,7 +841,7 @@ static cog_result_t node_record_write(struct cbuf *b,
         return rc;
     }
     rc = field_cb64(b, "tool_args", d->tool_args,
-                    (d->tool_args != NULL) ? strlen(d->tool_args) : 0U);
+                    (d->tool_args != NULL) ? tool_args_len : 0U);
     if (rc != COG_OK) {
         return rc;
     }
@@ -844,7 +850,7 @@ static cog_result_t node_record_write(struct cbuf *b,
         return rc;
     }
     rc = field_cb64(b, "tool_result", d->tool_result,
-                    (d->tool_result != NULL) ? strlen(d->tool_result) : 0U);
+                    (d->tool_result != NULL) ? tool_result_len : 0U);
     if (rc != COG_OK) {
         return rc;
     }
@@ -1952,7 +1958,8 @@ static cog_result_t file_save(void *vstore, const cog_session_t *session)
         if (line.data != NULL) {
             line.data[0] = '\0';
         }
-        rc = node_record_write(&line, d);
+        rc = node_record_write(&line, d, n->tool_args_len,
+                               n->tool_result_len);
         if (rc != COG_OK) {
             goto out;
         }
@@ -2221,7 +2228,8 @@ static cog_result_t file_append(void *vstore, const cog_session_t *session,
         if (bootstrapped && snap.parent_id != 0U) {
             snap.parent_id = 0U;
         }
-        rc = node_record_write(&line, &snap);
+        rc = node_record_write(&line, &snap, n->tool_args_len,
+                               n->tool_result_len);
     }
     if (rc != COG_OK) {
         goto out;
@@ -2582,10 +2590,21 @@ static cog_result_t file_load(void *vstore, const char *id,
                 rc = COG_ERROR_IO;
                 goto fail;
             }
+            /* cog_session_add_tool_result inherits the parent tool call's
+             * tool name, so identity survives a round-trip even when the
+             * persisted record carries no direct tool_name field.  When a
+             * direct field is present (e.g. a result created via
+             * cog_session_add_message with COG_MESSAGE_ROLE_TOOL), it wins
+             * over the inherited value, symmetric with tool calls. */
             rc = cog_session_add_tool_result(s, parent, r->tool_result,
                                              &node);
             if (rc != COG_OK) {
                 goto fail;
+            }
+            if (r->tool_name != NULL) {
+                free((void *)node->data.tool_name);
+                node->data.tool_name = r->tool_name;
+                r->tool_name = NULL;
             }
             free((void *)node->data.tool_result);
             node->data.tool_result = r->tool_result;

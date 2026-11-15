@@ -1175,8 +1175,8 @@ static int test_history_tool_nodes(void)
         return 1;
     }
     /* The tool call maps to COG_MESSAGE_ROLE_TOOL with the tool name
-     * preserved.  The result node was created via add_tool_result, which
-     * takes no name, so its message carries no tool name (CONTRACT.md). */
+     * preserved.  The result node inherits the parent tool call's name,
+     * so its history message carries the same tool identity. */
     if (msgs[1].role != COG_MESSAGE_ROLE_TOOL ||
         msgs[1].name == NULL || strcmp(msgs[1].name, "get_weather") != 0 ||
         msgs[1].content == NULL ||
@@ -1184,8 +1184,86 @@ static int test_history_tool_nodes(void)
         return 1;
     }
     if (msgs[2].role != COG_MESSAGE_ROLE_TOOL ||
-        msgs[2].name != NULL ||
+        msgs[2].name == NULL || strcmp(msgs[2].name, "get_weather") != 0 ||
         msgs[2].content == NULL || strcmp(msgs[2].content, "18C") != 0) {
+        return 1;
+    }
+    cog_session_free(s);
+    return 0;
+}
+
+/* A tool result whose parent carries no tool name keeps a NULL name. */
+static int test_tool_result_missing_parent_name(void)
+{
+    cog_session_t *s = NULL;
+    cog_session_node_t *root = NULL;
+    cog_session_node_t *tr = NULL;
+    const cog_node_data_t *d;
+    const cog_message_t *msgs = NULL;
+    size_t count = 0U;
+
+    if (cog_session_new(&s, NULL) != COG_OK) {
+        return 1;
+    }
+    if (cog_session_add_message(s, NULL, MSG_USER("q"), &root) != COG_OK) {
+        return 1;
+    }
+    /* Parent is a plain user node: no tool_name to inherit. */
+    if (cog_session_add_tool_result(s, root, "18C", &tr) != COG_OK) {
+        return 1;
+    }
+    d = cog_node_data(tr);
+    if (d == NULL || d->tool_name != NULL) {
+        return 1;
+    }
+    if (cog_session_get_history(s, tr, &msgs, &count) != COG_OK) {
+        return 1;
+    }
+    if (count != 2U || msgs[1].role != COG_MESSAGE_ROLE_TOOL ||
+        msgs[1].name != NULL ||
+        msgs[1].content == NULL || strcmp(msgs[1].content, "18C") != 0) {
+        return 1;
+    }
+    cog_session_free(s);
+    return 0;
+}
+
+/* The inherited tool name is owned by the result node: freeing the
+ * session (cleanup) releases it without leaking or double-free. */
+static int test_tool_result_name_cleanup(void)
+{
+    cog_session_t *s = NULL;
+    cog_session_node_t *root = NULL;
+    cog_session_node_t *tc = NULL;
+    cog_session_node_t *tr = NULL;
+
+    if (cog_session_new(&s, NULL) != COG_OK) {
+        return 1;
+    }
+    if (cog_session_add_message(s, NULL, MSG_USER("q"), &root) != COG_OK) {
+        return 1;
+    }
+    if (cog_session_add_tool_call(s, root, "get_weather", "{}", &tc) !=
+        COG_OK) {
+        return 1;
+    }
+    if (cog_session_add_tool_result(s, tc, "18C", &tr) != COG_OK) {
+        return 1;
+    }
+    if (cog_node_data(tr)->tool_name == NULL ||
+        strcmp(cog_node_data(tr)->tool_name, "get_weather") != 0) {
+        return 1;
+    }
+    /* The result node's name must be a distinct copy, not a borrowed
+     * pointer into the tool-call node. */
+    if (cog_node_data(tr)->tool_name == cog_node_data(tc)->tool_name) {
+        return 1;
+    }
+    /* Reset frees every owned string (including the inherited name). */
+    if (cog_session_reset(s) != COG_OK) {
+        return 1;
+    }
+    if (!cog_session_is_empty(s)) {
         return 1;
     }
     cog_session_free(s);
@@ -2514,6 +2592,9 @@ int main(void)
     CHECK("add tool call nulls", test_add_tool_call_nulls());
     CHECK("add tool result", test_add_tool_result());
     CHECK("add tool result nulls", test_add_tool_result_nulls());
+    CHECK("tool result missing parent name",
+          test_tool_result_missing_parent_name());
+    CHECK("tool result name cleanup", test_tool_result_name_cleanup());
 
     /* Navigation */
     CHECK("navigation multi level", test_navigation_multi_level());

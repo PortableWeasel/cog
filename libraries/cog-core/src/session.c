@@ -623,7 +623,15 @@ cog_result_t cog_session_add_tool_result(cog_session_t *session,
     n->data.role = COG_NODE_TOOL_RESULT;
     n->tool_result_len = strlen(tool_result);
     n->data.tool_result = dup_bytes(tool_result, n->tool_result_len);
-    if (n->data.tool_result == NULL) {
+    /* Inherit the parent tool-call node's tool name so history messages
+     * retain tool identity.  Deep-copied under the same ownership rules
+     * as every other node string (owned by the node, released by
+     * node_free_strings).  When the parent carries no tool name (e.g. it
+     * is a plain message node), the result node's tool_name stays NULL. */
+    n->data.tool_name = dup_str(parent->data.tool_name);
+    if (n->data.tool_result == NULL ||
+        (parent->data.tool_name != NULL && n->data.tool_name == NULL)) {
+        node_free_strings(n);
         free(n);
         return COG_ERROR_NOMEM;
     }
