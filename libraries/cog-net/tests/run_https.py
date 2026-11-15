@@ -54,7 +54,7 @@ with tempfile.TemporaryDirectory(prefix="cog-net-test-") as d:
         env["COG_NET_TEST_URL"] = f"https://localhost:{server.server_port}/"
         subprocess.run([sys.argv[1]], env=env, check=True, timeout=20)
         assert Handler.requests == 10, f"unexpected replay count: {Handler.requests}"
-        assert Handler.peers["/"][0] == Handler.peers["/rate"][0] == Handler.peers["/delay"][0], "expected HTTP connection reuse"
+        assert Handler.peers["/"][0] != Handler.peers["/rate"][0] != Handler.peers["/delay"][0], "expected fresh connections"
     finally:
         server.shutdown()
         server.server_close()

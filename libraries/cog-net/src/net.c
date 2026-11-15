@@ -138,6 +138,8 @@ static int connection_ready(void *data, char *primary_ip, char *local_ip,
 {
     net_request_t *r = data;
     (void)primary_ip; (void)local_ip; (void)primary_port; (void)local_port;
+    /* An unexpected library-level retry must never transmit again. */
+    if (r->connected) return CURL_PREREQFUNC_ABORT;
     r->connected = true;
     if (r->ctx->budget != 0U) --r->ctx->budget;
     return CURL_PREREQFUNC_OK;
@@ -466,6 +468,13 @@ cog_result_t cog_net_request(cog_net_ctx_t *ctx, const char *method, const char 
     SETOPT(r, CURLOPT_HTTPHEADER, r->request_headers);
     SETOPT(r, CURLOPT_PROXY, "");
     SETOPT(r, CURLOPT_FOLLOWLOCATION, 0L);
+    SETOPT(r, CURLOPT_FRESH_CONNECT, 1L);
+    SETOPT(r, CURLOPT_FORBID_REUSE, 1L);
+    SETOPT(r, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    SETOPT(r, CURLOPT_SSL_ENABLE_ALPN, 0L);
+    SETOPT(r, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+    SETOPT(r, CURLOPT_NETRC, CURL_NETRC_IGNORED);
+    SETOPT(r, CURLOPT_UNRESTRICTED_AUTH, 0L);
     SETOPT(r, CURLOPT_PREREQFUNCTION, connection_ready);
     SETOPT(r, CURLOPT_PREREQDATA, r);
     SETOPT(r, CURLOPT_SSL_VERIFYPEER, 1L);
@@ -533,26 +542,38 @@ static uint64_t deadline(uint64_t start, uint32_t delta)
 {
     return UINT64_MAX - start < delta ? UINT64_MAX : start + delta;
 }
-static void complete_error(net_request_t *r, CURLcode code)
+/* Capture dependency completion as bookkeeping even if no publication budget
+ * remains. Detach immediately so a later timeout or cancel cannot replace it. */
+static void capture_completion(net_request_t *r, CURLcode code)
 {
     if (r->callback_error == COG_ERROR_LIMIT) {
-        terminal(r, COG_ERROR_LIMIT, COG_NET_ERROR_CAPACITY, "response capacity exceeded");
+        r->pending_result = COG_ERROR_LIMIT; r->pending_kind = COG_NET_ERROR_CAPACITY;
+        r->pending_message = "response capacity exceeded";
     } else if (code == CURLE_OK) {
-        terminal(r, COG_OK, COG_NET_ERROR_NONE, NULL);
+        r->pending_result = COG_OK; r->pending_kind = COG_NET_ERROR_NONE;
+        r->pending_message = NULL;
     } else if (code == CURLE_OUT_OF_MEMORY) {
-        terminal(r, COG_ERROR_NOMEM, COG_NET_ERROR_DEPENDENCY, "dependency allocation failed");
+        r->pending_result = COG_ERROR_NOMEM; r->pending_kind = COG_NET_ERROR_DEPENDENCY;
+        r->pending_message = "dependency allocation failed";
     } else if (code == CURLE_OPERATION_TIMEDOUT) {
-        terminal(r, COG_ERROR_TIMEOUT, COG_NET_ERROR_TIMEOUT, "transport timed out");
+        r->pending_result = COG_ERROR_TIMEOUT; r->pending_kind = COG_NET_ERROR_TIMEOUT;
+        r->pending_message = "transport timed out";
     } else if (code == CURLE_COULDNT_RESOLVE_HOST || code == CURLE_COULDNT_RESOLVE_PROXY) {
-        terminal(r, COG_ERROR_IO, COG_NET_ERROR_DNS, "DNS resolution failed");
+        r->pending_result = COG_ERROR_IO; r->pending_kind = COG_NET_ERROR_DNS;
+        r->pending_message = "DNS resolution failed";
     } else if (code == CURLE_SSL_CONNECT_ERROR || code == CURLE_PEER_FAILED_VERIFICATION ||
                code == CURLE_SSL_CERTPROBLEM || code == CURLE_SSL_CACERT_BADFILE) {
-        terminal(r, COG_ERROR_IO, COG_NET_ERROR_TLS, "TLS failed");
+        r->pending_result = COG_ERROR_IO; r->pending_kind = COG_NET_ERROR_TLS;
+        r->pending_message = "TLS failed";
     } else if (code == CURLE_COULDNT_CONNECT) {
-        terminal(r, COG_ERROR_IO, COG_NET_ERROR_CONNECT, "connection failed");
+        r->pending_result = COG_ERROR_IO; r->pending_kind = COG_NET_ERROR_CONNECT;
+        r->pending_message = "connection failed";
     } else {
-        terminal(r, COG_ERROR_IO, COG_NET_ERROR_DEPENDENCY, "transport failed");
+        r->pending_result = COG_ERROR_IO; r->pending_kind = COG_NET_ERROR_DEPENDENCY;
+        r->pending_message = "transport failed";
     }
+    r->pending_terminal = true;
+    detach(r);
 }
 cog_result_t cog_net_service(cog_net_ctx_t *ctx, uint64_t now_ms, uint64_t *out_next_deadline_ms)
 {
@@ -610,9 +631,15 @@ cog_result_t cog_net_service(cog_net_ctx_t *ctx, uint64_t now_ms, uint64_t *out_
         if (ctx->budget == 0U) { next = now_ms; continue; }
         mc = curl_multi_perform(r->multi, &running);
         if (mc != CURLM_OK) return mc == CURLM_OUT_OF_MEMORY ? COG_ERROR_NOMEM : COG_ERROR_IO;
-        while (ctx->budget != 0U && (msg = curl_multi_info_read(r->multi, &messages)) != NULL) {
-            if (msg->msg == CURLMSG_DONE && r->active) complete_error(r, msg->data.result);
-            --ctx->budget;
+        /* One easy handle per multi: at most one DONE needs capture. */
+        msg = curl_multi_info_read(r->multi, &messages);
+        if (msg != NULL && msg->msg == CURLMSG_DONE && r->active) {
+            capture_completion(r, msg->data.result);
+            if (ctx->budget != 0U) {
+                terminal(r, r->pending_result, r->pending_kind, r->pending_message);
+                r->pending_terminal = false;
+                --ctx->budget;
+            } else next = now_ms;
         }
         if (!r->active) continue;
         if (curl_multi_timeout(r->multi, &curl_timeout) != CURLM_OK) return COG_ERROR_IO;

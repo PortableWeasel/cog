@@ -58,7 +58,7 @@ if(BUILD_TESTING)
         add_executable(test_net_regressions ${PROJECT_SOURCE_DIR}/tests/unit/test_net_regressions.c)
         target_link_libraries(test_net_regressions PRIVATE cog::net)
         target_enable_warnings(test_net_regressions)
-        foreach(_regression completion replay)
+        foreach(_regression completion completion-cancel error-cancel replay auth redirect proxy)
             add_test(NAME unit-net-${_regression}-regression COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_regressions.py
                 $<TARGET_FILE:test_net_regressions> ${_regression})
