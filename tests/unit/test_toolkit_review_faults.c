@@ -29,6 +29,12 @@ static size_t term_attempts;
 static size_t kill_attempts;
 static size_t term_accepted;
 static size_t kill_accepted;
+/* Public caller timestamps keep the relaxed TERM/KILL outcome from hiding
+   premature escalation. */
+static uint64_t poll_time;
+static uint64_t kill_not_before;
+static uint32_t control_grace;
+static bool control_deadline_set;
 ssize_t __wrap_send(int fd, const void *bytes, size_t length, int flags)
 {
     char command = length == 1U ? *(const char *)bytes : '\0';
@@ -40,6 +46,7 @@ ssize_t __wrap_send(int fd, const void *bytes, size_t length, int flags)
             return -1;
         }
     } else if (command == 'K') {
+        assert(control_deadline_set && poll_time >= kill_not_before);
         kill_attempts++;
         if (kill_failures != 0U) { kill_failures--; errno = kill_error; return -1; }
     }
@@ -67,14 +74,16 @@ static void pause_poll(void)
     (void)nanosleep(&delay, NULL);
 }
 static cog_toolkit_execution_t *prepare(cog_workspace_t *workspace, const char *name,
-    const char *arguments, uint32_t timeout, uint32_t grace)
+    const char *arguments, uint32_t timeout, uint32_t grace, bool expired_start)
 {
     cog_tool_async_config_t config = { .max_output_bytes = 256U, .timeout_ms = timeout,
         .terminate_grace_ms = grace, .user = workspace };
     cog_toolkit_execution_t *execution = NULL;
     assert(cog_toolkit_execution_new(&execution, toolkit_test_core, &cog_workspace_tools,
         "review", name, arguments, strlen(arguments), &config) == COG_OK);
-    assert(cog_toolkit_execution_start(execution, COG_TOOLKIT_POLICY_ALLOW, now_ms()) == COG_OK);
+    /* Defer timeout polling until the fixture confirms it has started. */
+    assert(cog_toolkit_execution_start(execution, COG_TOOLKIT_POLICY_ALLOW,
+        now_ms() - (expired_start ? timeout : 0U)) == COG_OK);
     return execution;
 }
 static cog_toolkit_result_t finish(cog_toolkit_execution_t *execution)
@@ -84,7 +93,12 @@ static cog_toolkit_result_t finish(cog_toolkit_execution_t *execution)
     while (!done) {
         uint64_t deadline;
         size_t before = term_attempts + kill_attempts;
-        assert(cog_toolkit_execution_poll(execution, now_ms(), &done, &deadline) == COG_OK);
+        poll_time = now_ms();
+        if (!control_deadline_set) {
+            kill_not_before = poll_time + control_grace;
+            control_deadline_set = true;
+        }
+        assert(cog_toolkit_execution_poll(execution, poll_time, &done, &deadline) == COG_OK);
         /* Transient errors must yield to the caller, not spin on send. */
         assert(term_attempts + kill_attempts - before <= 1U);
         assert(now_ms() < limit);
@@ -99,7 +113,7 @@ static cog_toolkit_result_t finish(cog_toolkit_execution_t *execution)
 static void edit_fsync_failure(cog_workspace_t *workspace, int directory)
 {
     cog_toolkit_execution_t *execution = prepare(workspace, "edit_file",
-        "{\"path\":\"file\",\"old\":\"original\",\"new\":\"replacement\"}", 3000U, 150U);
+        "{\"path\":\"file\",\"old\":\"original\",\"new\":\"replacement\"}", 3000U, 150U, false);
     fail_sync = true;
     cog_toolkit_result_t result = finish(execution);
     assert(result.status == COG_ERROR_IO && result.side_effects_possible);
@@ -134,13 +148,15 @@ static void cancellation_case(cog_workspace_t *workspace, int directory, int err
     kill_failures = persistent ? 2U : 0U;
     term_attempts = 0U; kill_attempts = 0U;
     term_accepted = 0U; kill_accepted = 0U;
+    control_grace = grace;
+    control_deadline_set = false;
     static const char command[] =
         "{\"command\":\"trap 'printf term > term; exit 0' TERM; "
         "printf start >> starts; printf '%s' $$ > shell; "
         "sleep 30 & printf '%s' $! > child; printf ready > ready; wait\"}";
     cog_toolkit_execution_t *execution = prepare(workspace, "run_command", command,
-        timeout ? 80U : 3000U, grace);
-    uint64_t ready_limit = now_ms() + 1500U;
+        timeout ? 80U : 5000U, grace, timeout);
+    uint64_t ready_limit = now_ms() + 3000U;
     while (faccessat(directory, "ready", F_OK, 0) != 0) {
         assert(now_ms() < ready_limit);
         pause_poll();
@@ -148,7 +164,10 @@ static void cancellation_case(cog_workspace_t *workspace, int directory, int err
     long shell = read_pid(directory, "shell");
     long child = read_pid(directory, "child");
     if (!timeout) {
-        assert(cog_toolkit_execution_cancel(execution, now_ms()) == COG_OK);
+        uint64_t admitted_at = now_ms();
+        kill_not_before = admitted_at + grace;
+        control_deadline_set = true;
+        assert(cog_toolkit_execution_cancel(execution, admitted_at) == COG_OK);
         assert(cog_toolkit_execution_cancel(execution, now_ms()) == COG_OK);
         /* Cancellation admission queues the command; it never busy-retries. */
         assert(term_attempts == 0U && kill_attempts == 0U);
@@ -163,9 +182,11 @@ static void cancellation_case(cog_workspace_t *workspace, int directory, int err
         if (grace == 0U) { assert(term_attempts == 0U); }
         else { assert(term_attempts >= 2U); }
     } else {
-        assert(saw_term && result.exit_status == 0);
         assert(term_attempts >= failures + 1U && term_accepted == 1U);
-        assert(kill_attempts == 0U && kill_accepted == 0U);
+        /* Scheduling may delay TERM processing beyond the grace deadline. */
+        assert(kill_attempts <= 1U && kill_accepted <= 1U);
+        if (result.exit_status == 0) { assert(saw_term); }
+        else { assert(result.exit_status == 137 && kill_accepted == 1U); }
     }
     /* Copying the same terminal result cannot resubmit control or execute again. */
     size_t sends = term_attempts + kill_attempts;

@@ -187,19 +187,53 @@ static void command_cases(cog_workspace_t *workspace, const char *root)
     assert(access(path, F_OK) != 0 && errno == ENOENT);
     assert(unsetenv("COG_INHERITED_SECRET") == 0);
 }
-static void process_cleanup(cog_workspace_t *workspace)
+static void wait_ready(const char *root)
+{
+    char path[4096];
+    int n = snprintf(path, sizeof(path), "%s/ready", root);
+    assert(n > 0 && (size_t)n < sizeof(path));
+    uint64_t limit = monotonic_ms() + 3000U;
+    while (access(path, F_OK) != 0) {
+        assert(errno == ENOENT && monotonic_ms() < limit);
+        struct timespec delay = {0, 1000000};
+        (void)nanosleep(&delay, NULL);
+    }
+    assert(unlink(path) == 0);
+}
+static void wait_shell_reaped(const char *root)
+{
+    char path[4096];
+    int n = snprintf(path, sizeof(path), "%s/shell-pid", root);
+    assert(n > 0 && (size_t)n < sizeof(path));
+    int fd = open(path, O_RDONLY);
+    char text[64] = {0};
+    assert(fd >= 0 && read(fd, text, sizeof(text) - 1U) > 0 && close(fd) == 0);
+    long shell = strtol(text, NULL, 10);
+    assert(shell > 1L && unlink(path) == 0);
+    uint64_t limit = monotonic_ms() + 3000U;
+    while (kill((pid_t)shell, 0) == 0) {
+        assert(monotonic_ms() < limit);
+        struct timespec delay = {0, 1000000};
+        (void)nanosleep(&delay, NULL);
+    }
+    assert(errno == ESRCH);
+}
+static void process_cleanup(cog_workspace_t *workspace, const char *root)
 {
     /* The shell exits immediately, its inherited-group grandchild keeps running.
        The helper must adopt/reap it; parent must remain responsive and cancellable. */
-    static const char command[] = "{\"command\":\"sleep 30 & echo $!; exit 0\"}";
+    static const char command[] = "{\"command\":\"sleep 30 & echo $!; printf %s $$ > shell-pid; printf ready > ready; exit 0\"}";
     char output[4096];
     for (size_t mode = 0U; mode < 3U; mode++) {
-        cog_toolkit_execution_t *execution = prepare(workspace, "run_command", command, 128U, mode == 0U ? 40U : 1000U);
-        assert(cog_toolkit_execution_start(execution, COG_TOOLKIT_POLICY_ALLOW, monotonic_ms()) == COG_OK);
+        cog_toolkit_execution_t *execution = prepare(workspace, "run_command", command, 128U, mode == 0U ? 40U : 5000U);
+        /* Hold polling until readiness, then exercise an expired deadline. */
+        uint64_t start = monotonic_ms();
+        assert(cog_toolkit_execution_start(execution, COG_TOOLKIT_POLICY_ALLOW,
+            start - (mode == 0U ? 40U : 0U)) == COG_OK);
+        wait_ready(root);
+        wait_shell_reaped(root);
         bool done = false;
         if (mode != 0U) {
-            struct timespec delay = {0, 15000000};
-            (void)nanosleep(&delay, NULL);
             uint64_t deadline;
             assert(cog_toolkit_execution_poll(execution, monotonic_ms(), &done, &deadline) == COG_OK && !done);
             assert(cog_toolkit_execution_cancel(execution, monotonic_ms()) == COG_OK);
@@ -217,8 +251,9 @@ static void process_cleanup(cog_workspace_t *workspace)
     assert(waitpid(-1, &status, WNOHANG) == -1 && errno == ECHILD);
     /* TERM-resistant descendant forces the configured KILL deadline. */
     cog_toolkit_execution_t *execution = prepare(workspace, "run_command",
-        "{\"command\":\"trap '' TERM; while :; do sleep 1; done\"}", 64U, 30U);
+        "{\"command\":\"trap '' TERM; printf ready > ready; while :; do sleep 1; done\"}", 64U, 30U);
     assert(cog_toolkit_execution_start(execution, COG_TOOLKIT_POLICY_ALLOW, monotonic_ms()) == COG_OK);
+    wait_ready(root);
     cog_toolkit_result_t result = finish(execution, output, sizeof(output));
     assert(result.status == COG_ERROR_TIMEOUT && result.side_effects_possible);
     assert(cog_toolkit_execution_free(execution) == COG_OK);
@@ -264,7 +299,7 @@ int main(void)
     assert(cog_workspace_new(&workspace, &config) == COG_OK);
     memset(environment_value, 'x', sizeof(environment_value) - 1U);
     file_cases(workspace, root); refusal_cases(workspace, root); command_cases(workspace, root);
-    process_cleanup(workspace);
+    process_cleanup(workspace, root);
     assert(cog_workspace_free(workspace) == COG_OK);
     limit_cases(root);
     assert(nftw(root, remove_fixture, 16, FTW_DEPTH | FTW_PHYS) == 0);
