@@ -41,3 +41,7 @@ the curl counts. File-descriptor counts must return to their initial value.
 The 10ms wait budget and 150ms test ceiling measure this machine, not a hard
 real-time guarantee. The fairness case uses a zero-wait pump alongside an
 always-nonempty synthetic event queue. It does not exercise cog_core_run.
+
+The [DNS followup](dns/README.md) reproduces the threaded-resolver cleanup
+blocker and compares a c-ares-only build against a real local DNS blackhole.
+It has a separate offline runner and optional verified dependency setup.
