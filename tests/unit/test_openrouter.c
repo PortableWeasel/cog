@@ -17,7 +17,9 @@ static size_t net_calls;
 static int response_status = 200;
 static cog_result_t terminal_result = COG_OK;
 static char captured[131072];
-static size_t allocations, fail_after;
+/* Linker wrapping can update these TU-local fields behind libc leaf/builtin
+ * assumptions. Observe each wrapper write even in fully optimized tests. */
+static volatile size_t allocations, fail_after;
 static bool forbid_alloc;
 void *__real_malloc(size_t n);
 void *__real_calloc(size_t a, size_t b);
@@ -307,6 +309,31 @@ static void overflow_cancel(void)
     assert(strcmp(error.message, "provider turn cancelled") == 0);
     assert(cog_provider_poll(p, 0U, &deadline) == COG_ERROR_INVALID_ARG);
     stop(p);
+}
+/* Positive control for the allocation oracle itself, including Release/O3.
+ * Each pointer is observed and realloc must preserve its bytes. These calls
+ * must reach the linker wrappers; a stale counter baseline or removed builtin
+ * call must fail before no-allocation assertions can be trusted. */
+static void allocation_counter_control(void)
+{
+    size_t before = allocations;
+    unsigned char *bytes = malloc(8U);
+    assert(bytes != NULL && allocations == before + 1U);
+    bytes[0] = 0x5aU;
+    before = allocations;
+    unsigned char *grown = realloc(bytes, 16U);
+    assert(grown != NULL && allocations == before + 1U);
+    assert(grown[0] == 0x5aU);
+    free(grown);
+    before = allocations;
+    bytes = calloc(8U, 1U);
+    assert(bytes != NULL && allocations == before + 1U);
+    assert(bytes[0] == 0U && bytes[7] == 0U);
+    free(bytes);
+    before = allocations;
+    fail_after = 1U;
+    bytes = malloc(8U);
+    assert(bytes == NULL && fail_after == 0U && allocations == before + 1U);
 }
 static cog_result_t check(const char *s)
 {
@@ -999,6 +1026,7 @@ static void opaque_unknown_roundtrip_and_tool_gate(void)
 }
 int main(void)
 {
+    allocation_counter_control();
     opaque_recognized_fields();
     opaque_unknown_roundtrip_and_tool_gate();
     preflight_profile();

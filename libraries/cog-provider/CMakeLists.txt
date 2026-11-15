@@ -94,6 +94,12 @@ if(BUILD_TESTING)
         -Wl,--wrap=cog_net_request,--wrap=cog_net_service,--wrap=cog_net_peek_request
         -Wl,--wrap=cog_net_ack,--wrap=cog_net_request_release
         -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc)
+    # Linker wrapping changes allocator effects after compilation. Prevent
+    # builtin allocation attributes from hiding the wrappers' counter writes.
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(test_openrouter PRIVATE
+            -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc)
+    endif()
     target_enable_warnings(test_openrouter)
     add_test(NAME unit-openrouter COMMAND test_openrouter)
 endif()
