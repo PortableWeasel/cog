@@ -38,10 +38,13 @@ struct cog_cli_app {
        never used by active turn work. No third generation may be constructed. */
     cog_cli_configuration_t *future_configuration;
     cog_provider_t *future_provider;
+    cog_cli_configuration_t *retiring_configuration;
+    cog_provider_t *retiring_provider;
     cog_config_tree_t *reload_tree;
     uint64_t configuration_generation, future_configuration_generation;
     unsigned reload_attempts;
-    bool reload_in_progress;
+    bool reload_in_progress, reload_notice_pending, reload_notice_queued;
+    uint64_t reload_notice_generation;
     cog_session_t *session;
     cog_provider_t *provider;
     cog_obs_t *obs;
@@ -112,11 +115,23 @@ cog_result_t cog_cli_reload_init(cog_cli_app_t *app);
  * before input or restored proposal admission. Requires no active app/provider
  * turn, retained delta/event, execution, pending result/assistant, resuming policy,
  * cancellation, shutdown or frozen admission. Otherwise leave future untouched.
+ * May run at input-handler entry before acquiring any provider reference, or
+ * in owner service/idle hooks, including immediately after terminal reload.
  * Uses cog_core_set_provider on a valid core (infallible), updates aliases before
- * old disconnect then secret free. No allocation/callback/wire/session mutation.
+ * old disconnect then secret free. Move old resources to explicit retiring
+ * fields until disconnect succeeds. Only current+future or current+retiring can
+ * coexist; never a third constructed owner. No allocation, arbitrary app/resolver/
+ * tool callback, wire or session mutation; provider disconnect is the destructor.
  * @return OK; unexpected disconnect contract violation freezes admission and
  * retains any still-borrowed generation, surfaced as the original error. */
 cog_result_t cog_cli_reload_activate(cog_cli_app_t *app);
+/** Fair service of one retained CONFIG_CHANGED notice. Enqueue uses source_id
+ * copied by value, NULL payload, no allocation; OVERFLOW retains pending notice
+ * and returns OK for retry on later service. All app states have a self handler
+ * that acknowledges only matching generation and clears notice flags. It must
+ * not alter the ordinary request event_queued/sequence/policy state.
+ * @return OK; NULL_PTR; unexpected enqueue error is a driver failure. */
+cog_result_t cog_cli_reload_service(cog_cli_app_t *app);
 /** Destroy future/current generation resources after core and turn work drain.
  * Disconnect every provider before clearing its config. Safe on partial init;
  * no callback/context ownership transfer; tree_free after all transactions end. */
@@ -124,6 +139,9 @@ void cog_cli_reload_free(cog_cli_app_t *app);
 /** Handle only /reload model VALUE, /reload base-url VALUE and
  * /reload credential-ref VALUE, preserving the whole suffix as one field.
  * @param app Owner app; @param text Complete UTF-8 line; @param handled Output.
+ * Recognize all /reload-prefixed commands as handled even on refusal. Terminal
+ * input prints only sanitized status/generation and keeps old work running on
+ * candidate errors (including NOMEM/IO/LIMIT); a failed output write is fatal IO.
  * Reload commands are checked before policy answers; never reinterpret them as
  * ALLOW/DENY, user prompts or model tool instructions. No secret/value echo.
  * @return reload result; NOT_FOUND/INVALID_ARG for unknown key/missing value;

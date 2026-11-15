@@ -446,8 +446,9 @@ cog_provider_t *cog_core_provider(cog_core_t *core);
  * @return COG_OK; NULL_PTR if core is NULL. No other failure is possible.
  * @post provider() returns exactly the replacement. No allocation, callbacks,
  * provider calls, dispatch, clock/queue/session mutation or ownership transfer.
- * @pre Owner thread at a boundary with no handler/provider call in progress;
- * an owner service/idle hook between dispatches is permitted. The caller keeps
+ * @pre Owner thread with no provider call or other outstanding handler borrow
+ * of the old pointer. Service/idle hooks and a handler before acquiring its
+ * provider are permitted; the caller proves no old borrow will be reused. It keeps
  * each provider alive while any caller/handler still borrows it and disconnects
  * the old instance only after its work is drained and references are replaced.
  * Core cannot infer provider activity or validate its implementation. This does

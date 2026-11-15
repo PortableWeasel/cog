@@ -516,11 +516,12 @@ void cog_cli_app_free(cog_cli_app_t *app);
  * empty/all-absent/malformed replacement or resolver fields without credential_ref;
  * INVALID_STATE for LIST/RECOVER, shutdown/cancelling app or unsafe selected
  * history; INDETERMINATE for frozen normal admission; AGAIN while one published
- * replacement still awaits activation/retirement; LIMIT for bytes, constructor
+ * replacement or its change notification awaits activation/retirement/dispatch;
+ * LIMIT for bytes, constructor
  * capacity or the 64 eligible reload-attempt ceiling per app; NOMEM; NOT_FOUND,
  * DENIED, IO or UNSUPPORTED from candidate resolution/provider compatibility.
  * PROTOCOL for malformed provider data; no error commits a candidate generation.
- * @pre Outside handler/provider/tool/resolver callbacks; no recursive app drive.
+ * @pre Outside dispatch/provider/tool/resolver callbacks; no recursive app drive.
  * The terminal owner input path may call at a boundary between dispatches.
  * @post Complete copied config/secret/endpoint and an idle provider are prepared
  * and generically preflighted against the known selected prefix BEFORE the real
@@ -537,15 +538,26 @@ void cog_cli_app_free(cog_cli_app_t *app);
  * temporary source/secret bytes are not retained. No callback means no shell.
  * Omitted credential_ref copies the old resolved secret without a resolver call.
  * No model wire work, tool start, durable session save or input admission occurs.
+ * Calling reload never activates/disconnects the current provider. A committed
+ * change sets one reserved notification flag; fair service retries enqueue of
+ * CONFIG_CHANGED with source_id=configuration ID and no borrowed payload until
+ * dispatch succeeds. Queue saturation cannot undo commit or lose that notice;
+ * notice handling is self-transition only and does not advance a turn. Shutdown
+ * may discard an undelivered notice with the app; it never activates new work.
  *
  * An entire already-active application turn (retries, model/tool rounds, policy,
  * cancellation and retained output) stays pinned to its old options/provider.
  * Publication selects only future idle-turn work. At the first safe idle owner
  * boundary, before queued/fresh input, switch app options/provider and the core
  * reference together, then disconnect the old provider before clearing/freeing
- * its generation. Metadata/frozen/draining work cannot activate a replacement.
+ * its generation. This is deferred to owner loop/input admission boundaries,
+ * never the reload call; generation ID is publication, not activation completion. Metadata/frozen/draining work cannot activate a replacement.
  * A later send revalidates future output/opaque not known at preparation time;
  * it may fail without rolling back a committed config or replaying old effects.
+ * A failure in an old active turn or frozen result retains both owners until
+ * safe cleanup; it does not activate or replay future work. Unexpected destructor
+ * failure after commit is an admission-freezing driver error, not a transaction
+ * rollback; retain the old owner/secret until disconnect can be established.
  * Provider accessors are borrowed until the next activation/app_free; callers
  * must not retain those pointers across mutating app/loop calls. Owner-thread,
  * not signal-safe. No effect-policy/store/workspace mutation is expressible.
