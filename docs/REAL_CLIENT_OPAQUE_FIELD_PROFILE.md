@@ -82,3 +82,36 @@ preflight. A source fixture must demonstrate both paths, including invalid
 recognized fields never reaching tool readiness and a valid unknown member
 round-tripping unchanged. No new generic dispatch rule, request stage, storage
 codec, model feature, workspace operation or dependency allocation is needed.
+
+
+## Pass 3: consistency and independent-review handoff
+
+The final targeted pass checked the field table and eighteen traces against the
+existing public preflight and OpenRouter contracts. No function, struct field,
+callback or constructor limit is added. The dependency/ownership diagram stays
+unchanged. Both stages use the same known-member decisions; normal send remains
+COMPLETE-only, and store/guard/policy/ledger still govern any effect admission.
+
+The error taxonomy is explicit: malformed recognized member kinds are PROTOCOL;
+unknown discriminator/profile semantics and a null signature are UNSUPPORTED;
+existing constructor representation/depth exhaustion remains LIMIT. Absence is
+not the same as null for signature, format or payload members. A null id remains
+a permitted exact value. Accepted unknown members are neither normalized away
+nor reclassified as recognized fields. No cryptographic validation is claimed.
+
+A future nullable-signature extension must separately define streaming null ->
+string transitions, block closure and member-union/equality behavior, then follow
+the same header-first gate. This clarification does not grant that extension.
+The direct source defect remains the grouped first implementation-review cycle;
+these comments do not claim that source is already corrected.
+
+Required implementation oracles are bounded field-kind tables through both the
+actual no-wire encoder and incoming reconstruction, a supported opaque request
+still accepted, unknown-member JSON preservation, explicit null-signature
+UNSUPPORTED, and unchanged preflight state/allocation/net counters on rejection.
+Existing no-effect and terminal-ready ordering assertions remain intact.
+
+Strict standalone C11/C++11 header checks and diff validation precede handoff to
+a DIFFERENT independent final reviewer. Runtime correction starts only after
+that review passes. No production source or paid/network request was used here;
+reading the public protocol documentation was not a generation request.
