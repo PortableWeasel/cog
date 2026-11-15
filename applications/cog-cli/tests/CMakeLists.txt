@@ -30,6 +30,12 @@ add_executable(test_cli_harness test_cli_harness.c)
 target_link_libraries(test_cli_harness PRIVATE cog::cli)
 target_enable_warnings(test_cli_harness)
 
+# Critic regression tests: non-retryable error propagation, NULL handling,
+# and store auto-save on complete-vs-cancel.
+add_executable(test_cli_regression test_cli_regression.c)
+target_link_libraries(test_cli_regression PRIVATE cog::cli)
+target_enable_warnings(test_cli_regression)
+
 # Spawns the built cog-cli binary and checks its stdout/exit code for the
 # stream, error-retry, and cancel mock modes.
 add_executable(run_cli_smoke run_cli_smoke.c)
@@ -55,6 +61,10 @@ add_test(NAME cli-smoke
 
 add_test(NAME cli-harness
     COMMAND test_cli_harness
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+add_test(NAME cli-regression
+    COMMAND test_cli_regression
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
 add_test(NAME cli-binary-smoke
