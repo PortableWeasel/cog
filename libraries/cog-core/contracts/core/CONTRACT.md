@@ -259,6 +259,14 @@ Per header: a single `cog_core_t` is driven by one thread calling
 signal handler. `cog_core_enqueue` is single-producer with respect to the
 queue. The pending-message functions are not thread-safe.
 
+The stop request and the running flag are C11 `_Atomic bool` fields. The
+run loop reads the stop request with acquire ordering and `cog_core_stop`
+writes it with release ordering, so a concurrent stop is guaranteed to be
+observed before the loop dequeues or injects any pending message (the
+stop-before-inject guarantee holds under concurrency). The running flag is
+a relaxed status snapshot; `cog_core_is_running` may be called from any
+thread but the result is not a synchronisation point.
+
 ## Ownership
 
 - **Borrowed:** session, provider, obs, store, dispatch table, tool table,

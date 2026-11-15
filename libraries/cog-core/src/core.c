@@ -50,6 +50,7 @@
 #include "session_internal.h"
 
 #include <assert.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -113,8 +114,10 @@ struct cog_core {
     cog_obs_t *obs;
     cog_store_t *store;
     cog_state_t state;
-    bool running;
-    bool stop_requested;
+    _Atomic bool running;        /**< Set/cleared by cog_core_run; cleared
+                                      by cog_core_stop from another thread. */
+    _Atomic bool stop_requested; /**< Set by cog_core_stop (any thread),
+                                      read by the run loop. */
     cog_pending_msg_t *pending;   /**< Owned FIFO array. */
     size_t pending_capacity;      /**< Allocated entries in @p pending. */
     size_t pending_count;         /**< Live entries in @p pending. */
@@ -694,8 +697,8 @@ cog_result_t cog_core_new(cog_core_t **out, const cog_core_config_t *config)
     core->obs = config->obs;
     core->store = config->store;
     core->state = 0U;
-    core->running = false;
-    core->stop_requested = false;
+    atomic_init(&core->running, false);
+    atomic_init(&core->stop_requested, false);
     core->pending_capacity = COG_CORE_DEFAULT_PENDING_CAPACITY;
     core->pending_count = 0U;
     core->injected_payload = NULL;
@@ -775,12 +778,12 @@ cog_result_t cog_core_run(cog_core_t *core)
     if (core == NULL) {
         return COG_ERROR_NULL_PTR;
     }
-    if (core->running) {
+    if (atomic_load_explicit(&core->running, memory_order_relaxed)) {
         return COG_ERROR_INVALID_STATE;
     }
 
-    core->running = true;
-    core->stop_requested = false;
+    atomic_store_explicit(&core->running, true, memory_order_relaxed);
+    atomic_store_explicit(&core->stop_requested, false, memory_order_relaxed);
 
     if (core->obs != NULL) {
         (void)cog_obs_log(core->obs, COG_OBS_INFO, "core.run_start", NULL,
@@ -788,7 +791,8 @@ cog_result_t cog_core_run(cog_core_t *core)
     }
 
     rc = COG_OK;
-    while (!core->stop_requested) {
+    while (!atomic_load_explicit(&core->stop_requested,
+                                 memory_order_acquire)) {
         cog_event_t event;
         cog_result_t pop_rc;
 
@@ -797,7 +801,8 @@ cog_result_t cog_core_run(cog_core_t *core)
             /* Queue empty.  Honour a pending stop request before doing any
              * further work: injecting a pending message here would dequeue
              * it and then drop it unprocessed on shutdown. */
-            if (core->stop_requested) {
+            if (atomic_load_explicit(&core->stop_requested,
+                                     memory_order_acquire)) {
                 break;
             }
             /* Drain the IPC fabric: accept new peers and receive messages,
@@ -809,7 +814,8 @@ cog_result_t cog_core_run(cog_core_t *core)
             if (rc != COG_OK) {
                 break;
             }
-            if (core->stop_requested) {
+            if (atomic_load_explicit(&core->stop_requested,
+                                     memory_order_acquire)) {
                 break;
             }
             /* If IPC produced events, pop them before waiting. */
@@ -820,7 +826,8 @@ cog_result_t cog_core_run(cog_core_t *core)
             if (core_inject_pending(core) == COG_OK) {
                 continue;
             }
-            if (core->stop_requested) {
+            if (atomic_load_explicit(&core->stop_requested,
+                                     memory_order_acquire)) {
                 break;
             }
             if (core->wait_fn != NULL) {
@@ -851,7 +858,7 @@ cog_result_t cog_core_run(cog_core_t *core)
         }
     }
 
-    core->running = false;
+    atomic_store_explicit(&core->running, false, memory_order_relaxed);
     if (core->obs != NULL) {
         (void)cog_obs_log(core->obs,
                           rc == COG_OK ? COG_OBS_INFO : COG_OBS_ERROR,
@@ -866,8 +873,10 @@ void cog_core_stop(cog_core_t *core)
     if (core == NULL) {
         return;
     }
-    core->stop_requested = true;
-    core->running = false;
+    /* Release so the run loop's acquire loads observe the stop request and
+     * exit before dequeuing/injecting any pending message. */
+    atomic_store_explicit(&core->stop_requested, true, memory_order_release);
+    atomic_store_explicit(&core->running, false, memory_order_relaxed);
 }
 
 cog_result_t cog_core_enqueue(cog_core_t *core, const cog_event_t *event)
@@ -894,7 +903,8 @@ cog_state_t cog_core_state(const cog_core_t *core)
 
 bool cog_core_is_running(const cog_core_t *core)
 {
-    return (core != NULL) && core->running;
+    return (core != NULL) &&
+           atomic_load_explicit(&core->running, memory_order_relaxed);
 }
 
 cog_ipc_endpoint_t *cog_core_ipc(cog_core_t *core)

@@ -866,6 +866,112 @@ static void test_shutdown_preserves_pending(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Deterministic shutdown-preserves-pending (ticket ed77259).          */
+/* ------------------------------------------------------------------ */
+
+/* Context shared between the run thread (parked in the wait hook) and the
+ * test thread (which issues the concurrent stop).  The mutex/condvar make
+ * the stop land deterministically while the queue is empty and a pending
+ * message exists, with no timing sleeps. */
+typedef struct stop_ctx {
+    cog_core_t *core;
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+    int parked;      /**< Wait hook has queued the pending msg and blocked. */
+    int stop_called; /**< Test thread has called cog_core_stop. */
+} stop_ctx_t;
+
+/* Runs on the run thread.  The queue is empty and no pending message
+ * exists yet, so the loop calls this hook.  We queue a pending message for
+ * the core's own session (single-threaded use: we are on the run thread),
+ * then block until the test thread has issued a concurrent stop. */
+static void park_wait_fn(void *arg)
+{
+    stop_ctx_t *ctx = (stop_ctx_t *)arg;
+    const char *sid = cog_session_id(cog_core_session(ctx->core));
+
+    (void)cog_core_queue_message(ctx->core, sid, "hello", 5U);
+
+    pthread_mutex_lock(&ctx->lock);
+    ctx->parked = 1;
+    pthread_cond_signal(&ctx->cond);
+    while (!ctx->stop_called) {
+        pthread_cond_wait(&ctx->cond, &ctx->lock);
+    }
+    pthread_mutex_unlock(&ctx->lock);
+}
+
+static void *run_loop_thread(void *arg)
+{
+    cog_core_t *core = (cog_core_t *)arg;
+    return (void *)(intptr_t)cog_core_run(core);
+}
+
+static void test_shutdown_preserves_pending_deterministic(void)
+{
+    cog_session_t *session = NULL;
+    cog_core_t *core = NULL;
+    cog_core_config_t cfg;
+    stop_ctx_t ctx;
+    const char *sid;
+    size_t pc = 0U;
+    pthread_t th;
+    void *ret = NULL;
+
+    CHECK(cog_session_new(&session, NULL) == COG_OK);
+    sid = cog_session_id(session);
+    CHECK(sid != NULL);
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.session = session;
+    cfg.dispatch_table = dispatch_table;
+    cfg.dispatch_table_size = sizeof(dispatch_table) / sizeof(dispatch_table[0]);
+    cfg.wait_fn = park_wait_fn;
+    cfg.wait_arg = &ctx;
+
+    CHECK(cog_core_new(&core, &cfg) == COG_OK);
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.core = core;
+    CHECK(pthread_mutex_init(&ctx.lock, NULL) == 0);
+    CHECK(pthread_cond_init(&ctx.cond, NULL) == 0);
+
+    /* Run the loop on a separate thread.  It drains the empty queue and
+     * parks in the wait hook, which queues a pending message and blocks. */
+    CHECK(pthread_create(&th, NULL, run_loop_thread, core) == 0);
+
+    /* Wait until the wait hook has queued the pending message and is
+     * blocked: the queue is empty and a pending message exists. */
+    pthread_mutex_lock(&ctx.lock);
+    while (!ctx.parked) {
+        pthread_cond_wait(&ctx.cond, &ctx.lock);
+    }
+    pthread_mutex_unlock(&ctx.lock);
+
+    /* Concurrent stop from this thread while the queue is empty and a
+     * pending message exists.  The loop must exit without dequeuing and
+     * dropping the pending message. */
+    cog_core_stop(core);
+    pthread_mutex_lock(&ctx.lock);
+    ctx.stop_called = 1;
+    pthread_cond_signal(&ctx.cond);
+    pthread_mutex_unlock(&ctx.lock);
+
+    CHECK(pthread_join(th, &ret) == 0);
+    CHECK((cog_result_t)(intptr_t)ret == COG_OK);
+
+    /* The pending message must survive shutdown, not be dequeued and
+     * dropped. */
+    CHECK(cog_core_pending_count(core, sid, &pc) == COG_OK);
+    CHECK_EQ_INT(pc, 1);
+
+    pthread_cond_destroy(&ctx.cond);
+    pthread_mutex_destroy(&ctx.lock);
+    cog_core_free(core);
+    cog_session_free(session);
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -883,6 +989,7 @@ int main(void)
     test_pending_injection();
     test_queue_message_size_max();
     test_shutdown_preserves_pending();
+    test_shutdown_preserves_pending_deterministic();
     test_ipc_acceptance();
 
     if (failures != 0) {
