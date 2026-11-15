@@ -189,3 +189,7 @@ target_link_libraries(test_session_ux PRIVATE cog::cli)
 target_enable_warnings(test_session_ux)
 add_test(NAME cli-session-ux COMMAND test_session_ux)
 set_tests_properties(cli-session-ux PROPERTIES TIMEOUT 30)
+add_test(NAME cli-installed-session-ux COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_installed_session_ux.py ${PROJECT_BINARY_DIR}
+    $<TARGET_FILE:test_session_ux>)
+set_tests_properties(cli-installed-session-ux PROPERTIES TIMEOUT 45)

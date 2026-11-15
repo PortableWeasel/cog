@@ -26,7 +26,7 @@ static bool add_bytes(size_t *total, size_t length, size_t limit)
     if (length > limit - *total) return false;
     *total += length; return true;
 }
-static cog_result_t context_size(cog_cli_app_t *app, size_t count)
+cog_result_t cog_cli_context_check(cog_cli_app_t *app, size_t count)
 {
     size_t size = app->workspace != NULL ? app->tools_json_len : 0U;
     size_t limit = app->opts.max_context_bytes;
@@ -54,7 +54,7 @@ cog_result_t cog_cli_begin_request(cog_cli_app_t *app, bool reset)
     if (app->now - app->started_at >= app->opts.max_turn_ms) return COG_ERROR_TIMEOUT;
     size_t count = 0U;
     cog_result_t rc = cog_session_copy_history(app->session, NULL, app->history, CLI_NODES, &count);
-    if (rc == COG_OK) rc = context_size(app, count);
+    if (rc == COG_OK) rc = cog_cli_context_check(app, count);
     if (rc != COG_OK) return rc;
     cog_provider_request_t request = {.model_id = app->opts.model_id,
         .messages = app->history, .message_count = count, .stream = true,
@@ -316,6 +316,16 @@ static cog_handler_result_t cancel(cog_core_t *core, const cog_event_t *event)
     }
     return r;
 }
+static cog_handler_result_t resume_policy(cog_core_t *core, const cog_event_t *event)
+{
+    cog_cli_app_t *app = cog_core_user(core);
+    if (event->source_id != app->request_serial || !app->resuming_policy)
+        return (cog_handler_result_t){COG_TRANSITION_SELF, COG_OK};
+    if (!app->active || cog_core_state(core) != CLI_IDLE)
+        return (cog_handler_result_t){COG_TRANSITION_SELF, COG_ERROR_INVALID_STATE};
+    app->event_queued = false; app->resuming_policy = false;
+    return (cog_handler_result_t){CLI_POLICY, COG_OK};
+}
 static cog_handler_result_t stale(cog_core_t *core, const cog_event_t *event)
 {
     cog_cli_app_t *app = cog_core_user(core);
@@ -326,7 +336,7 @@ static cog_handler_result_t stale(cog_core_t *core, const cog_event_t *event)
 static const cog_state_t transitions[] = {CLI_IDLE, CLI_MODEL, CLI_BACKOFF, CLI_POLICY,
     CLI_TOOL, COG_TRANSITION_SELF, COG_TRANSITION_END};
 #define ROW(state, event, handler) COG_DISPATCH_ENTRY(state, event, handler, transitions)
-#define COMMON(state) ROW(state, COG_EVENT_USER_INPUT, input), ROW(state, COG_EVENT_CANCEL, cancel), ROW(state, COG_EVENT_SHUTDOWN, cancel)
+#define COMMON(state) ROW(state, COG_EVENT_USER_INPUT, input), ROW(state, COG_EVENT_CANCEL, cancel), ROW(state, COG_EVENT_SHUTDOWN, cancel), ROW(state, CLI_EVENT_RESUME_POLICY, resume_policy)
 static const cog_dispatch_entry_t cog_cli_dispatch[] = {
     COMMON(CLI_IDLE), COMMON(CLI_MODEL), COMMON(CLI_BACKOFF), COMMON(CLI_POLICY), COMMON(CLI_TOOL),
     ROW(CLI_MODEL, COG_EVENT_LLM_CHUNK, advance), ROW(CLI_BACKOFF, COG_EVENT_RETRY, advance),
@@ -486,6 +496,7 @@ cog_result_t cog_cli_drain(cog_cli_app_t *app)
         app->delta_ready = false; app->event_queued = false;
         return app->assistant_error;
     }
+    app->resuming_policy = false;
     if (!app->active && app->execution == NULL && !app->provider_active) return COG_OK;
     app->shutdown = true; app->cancelling = true;
     cog_result_t rc = cog_cli_clock(&app->now);

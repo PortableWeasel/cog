@@ -94,6 +94,8 @@ cog_result_t cog_cli_tools_step(cog_cli_app_t *app, cog_state_t *next)
         if (rc != COG_OK) return rc;
         if (released != COG_OK) return released;
     }
+    while (app->tool_index < app->call_count && app->calls[app->tool_index].resumed_closed)
+        app->tool_index++;
     if (app->tool_index == app->call_count) {
         if (app->cancelling || app->shutdown) {
             app->active = false; *next = CLI_IDLE; return COG_OK;

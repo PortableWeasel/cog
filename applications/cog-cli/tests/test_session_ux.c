@@ -162,11 +162,34 @@ static int metadata_edges(const char *base)
     CHECK(cog_store_load_ex(app->store,"legacy",COG_STORE_LOAD_REPLAY,&loaded,&report)==COG_OK && report.source_version==2U);
     cog_session_free(loaded);cog_cli_app_free(app);return 0;
 }
+static int output_and_limits(const char *store)
+{
+    cog_cli_options_t o=options(store);o.session_action=COG_CLI_SESSION_LIST;
+    o.max_context_bytes=8;o.explicit_options|=COG_CLI_OPT_CONTEXT;
+    cog_cli_app_t *app=NULL;CHECK(cog_cli_app_new(&app,&o)==COG_OK);
+    char output[2048];CHECK(capture(app,output,sizeof(output),COG_ERROR_LIMIT)==0 && output[0]=='\0');
+    cog_cli_app_free(app);
+    o=options(store);o.session_action=COG_CLI_SESSION_LIST;
+    CHECK(cog_cli_app_new(&app,&o)==COG_OK);FILE *full=fopen("/dev/full","w");CHECK(full!=NULL);
+    app->out=full;CHECK(cog_cli_app_run(app)==COG_ERROR_IO);app->out=stdout;(void)fclose(full);cog_cli_app_free(app);
+    o=options(store);o.session_id="output-error";o.prompt="fixture";o.chunks="retained";
+    CHECK(cog_cli_app_new(&app,&o)==COG_OK);full=fopen("/dev/full","w");CHECK(full!=NULL);
+    app->out=full;CHECK(cog_cli_app_run(app)==COG_ERROR_IO);app->out=stdout;(void)fclose(full);
+    cog_cli_display_snapshot_t display;CHECK(cog_cli_app_display_snapshot(app,&display)==COG_OK);
+    CHECK(display.item_count==2U && display.items[1].status==COG_MESSAGE_INCOMPLETE);
+    CHECK(display.items[1].text_len==8U && memcmp(display.items[1].text,"retained",8)==0);
+    cog_cli_app_free(app);
+    o=options(store);o.session_action=COG_CLI_SESSION_RESUME;o.source_session_id="usage";
+    CHECK(cog_cli_app_new(&app,&o)==COG_OK);FILE *file=tmpfile();CHECK(file!=NULL);app->out=file;bool handled=false;
+    CHECK(cog_cli_session_command(app,"/usage",&handled)==COG_OK && handled);rewind(file);
+    size_t n=fread(output,1,sizeof(output)-1U,file);output[n]='\0';CHECK(strstr(output,"input=17 output=3")!=NULL && strstr(output,"USD")!=NULL);
+    app->out=stdout;CHECK(fclose(file)==0);cog_cli_app_free(app);return 0;
+}
 int main(int argc,char **argv)
 {
     if(argc==3 && strcmp(argv[1],"seed")==0)return seed(argv[2]);
     char root[]="/tmp/cog-l-ux-XXXXXX";CHECK(mkdtemp(root)!=NULL);
     char store[512];CHECK(snprintf(store,sizeof(store),"%s/state",root)>0);
-    CHECK(basics(store)==0);CHECK(partial(store)==0);CHECK(recovery(store)==0);CHECK(metadata_edges(store)==0);
+    CHECK(basics(store)==0);CHECK(partial(store)==0);CHECK(recovery(store)==0);CHECK(metadata_edges(store)==0);CHECK(output_and_limits(store)==0);
     CHECK(clean(root)==0);return 0;
 }

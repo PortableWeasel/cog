@@ -265,6 +265,8 @@ cog_result_t cog_cli_app_new(cog_cli_app_t **out, const cog_cli_options_t *input
     rc = cog_core_new(&app->core, &core);
     if (rc != COG_OK) goto fail;
     app->ipc = NULL;
+    rc = cog_cli_sessions_prepare(app);
+    if (rc != COG_OK) goto fail;
     if (app->opts.session_action == COG_CLI_SESSION_FORK) {
         rc = cog_cli_app_fork(app, app->opts.fork_node_id);
         if (rc != COG_OK) goto fail;
@@ -312,6 +314,13 @@ cog_result_t cog_cli_app_run(cog_cli_app_t *app)
     atomic_store_explicit(&app->stop_requested, false, memory_order_release);
     app->shutdown = false;
     cog_result_t rc = COG_OK;
+    if (app->resuming_policy && app->active && !app->event_queued) {
+        cog_event_t event = {.id = CLI_EVENT_RESUME_POLICY, .kind = COG_EVENT_STATUS_UPDATE,
+            .source_id = app->request_serial};
+        rc = cog_core_enqueue(app->core, &event);
+        if (rc != COG_OK) return rc;
+        app->event_queued = true;
+    }
     if (!app->prompt_submitted) {
         if (app->opts.prompt != NULL) rc = cog_cli_app_submit(app, app->opts.prompt, strlen(app->opts.prompt));
         if (rc == COG_OK && app->opts.queue_text != NULL)

@@ -16,6 +16,7 @@
 #define CLI_EVIDENCE_BYTES 4096U
 
 enum { CLI_IDLE = 0, CLI_MODEL, CLI_BACKOFF, CLI_POLICY, CLI_TOOL };
+enum { CLI_EVENT_RESUME_POLICY = 0x7f00 };
 typedef struct cli_call {
     cog_message_tool_call_t view;
     char id[CLI_ID_BYTES], name[CLI_ID_BYTES];
@@ -84,6 +85,7 @@ cog_result_t cog_cli_service(void *arg, uint64_t now, uint64_t *deadline);
 cog_result_t cog_cli_idle(void *arg, uint32_t max_wait_ms);
 cog_result_t cog_cli_save(cog_cli_app_t *app);
 cog_result_t cog_cli_begin_request(cog_cli_app_t *app, bool reset);
+cog_result_t cog_cli_context_check(cog_cli_app_t *app, size_t count);
 cog_result_t cog_cli_finish_partial(cog_cli_app_t *app, cog_result_t reason);
 cog_result_t cog_cli_tools_step(cog_cli_app_t *app, cog_state_t *next);
 cog_result_t cog_cli_tools_cancel(cog_cli_app_t *app);

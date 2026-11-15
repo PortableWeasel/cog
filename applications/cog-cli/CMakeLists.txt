@@ -57,7 +57,7 @@ target_enable_warnings(cog-cli)
 # Install rules
 # -----------------------------------------------------------------------
 install(TARGETS cog-cli
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT cog-cli-runtime)
 
 install(TARGETS cog-cli-lib cog-cli-config
     EXPORT cog-cli-targets
