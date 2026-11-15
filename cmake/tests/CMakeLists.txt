@@ -11,3 +11,12 @@ add_test(NAME build-test-assertion-registration
         -P ${CMAKE_CURRENT_SOURCE_DIR}/assertion_registration.cmake)
 set_tests_properties(build-test-assertions build-test-assertion-failure
     build-test-assertion-registration PROPERTIES LABELS "build-policy")
+
+# A real nested registration reproduces the hidden -D wrapper false pass.
+add_test(NAME build-test-wrapped-classification
+    COMMAND ${CMAKE_COMMAND} -DCOG_SOURCE_ROOT=${PROJECT_SOURCE_DIR}
+        -DPROBE_ROOT=${CMAKE_CURRENT_BINARY_DIR}/wrapped probes/$<CONFIG>
+        -DPROBE_GENERATOR=${CMAKE_GENERATOR}
+        -DPROBE_C_COMPILER=${CMAKE_C_COMPILER} -DPROBE_CONFIG=$<CONFIG>
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/wrapped_registration_failure.cmake)
+set_tests_properties(build-test-wrapped-classification PROPERTIES LABELS "build-policy")

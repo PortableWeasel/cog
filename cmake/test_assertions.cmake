@@ -1,5 +1,5 @@
-# Apply after all subdirectories are defined. PRIVATE options affect test
-# executables only; installed libraries and ordinary demo programs keep NDEBUG.
+# Define helpers before target-owning subdirectories; finalize the inventory
+# after all targets exist. PRIVATE options affect test executables only.
 function(cog_enable_test_assertions target)
     get_target_property(type ${target} TYPE)
     if(NOT type STREQUAL "EXECUTABLE")

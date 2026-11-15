@@ -34,6 +34,10 @@ include(CTest)
 # -----------------------------------------------------------------------
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(compiler_warnings)
+if(BUILD_TESTING)
+    include(test_assertions)
+    add_subdirectory(cmake/tests/optin)
+endif()
 
 # -----------------------------------------------------------------------
 # Libraries
@@ -69,7 +73,6 @@ add_subdirectory(pocs)
 # Test-only assertions must remain active in every configuration. Finalize
 # after all targets exist; production compile flags are unchanged.
 if(BUILD_TESTING)
-    include(test_assertions)
     add_subdirectory(cmake/tests)
     cog_configure_test_assertions()
 endif()
