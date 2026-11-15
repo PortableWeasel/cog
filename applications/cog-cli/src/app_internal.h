@@ -47,6 +47,9 @@ struct cog_cli_app {
     bool prompt_submitted, shutdown, cancelling, active, provider_active;
     bool delta_ready, event_queued, tool_done, effects, accepted, policy_prompt;
     bool recovery, stdin_eof, continuation_required;
+    bool terminal_result_pending, result_node_added;
+    size_t pending_result_len;
+    cog_result_t tool_result_error;
     int signal_fd;
     cog_result_t deferred_error;
     cog_toolkit_policy_decision_t policy_decision;

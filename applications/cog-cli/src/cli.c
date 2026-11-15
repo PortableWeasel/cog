@@ -358,6 +358,7 @@ void cog_cli_app_free(cog_cli_app_t *app)
 cog_result_t cog_cli_app_run(cog_cli_app_t *app)
 {
     if (app == NULL) return COG_ERROR_NULL_PTR;
+    if (app->recovery) return COG_ERROR_INDETERMINATE;
     app->shutdown = false;
     cog_result_t rc = COG_OK;
     if (!app->prompt_submitted) {

@@ -37,6 +37,7 @@ static cog_result_t record_result(cog_cli_app_t *app, cog_result_t status,
         return COG_ERROR_LIMIT;
     memmove(app->result_storage + (size_t)n, output, length);
     app->result_storage[(size_t)n + length] = '\0';
+    app->pending_result_len = (size_t)n + length;
     cog_message_t message = {.role = COG_MESSAGE_ROLE_TOOL, .tool_call_id = call->id,
         .name = call->name, .content = app->result_storage, .content_len = (size_t)n + length};
     cog_tool_execution_state_t final = expected == COG_TOOL_EXECUTION_PROPOSED ? COG_TOOL_EXECUTION_DENIED :
@@ -50,6 +51,7 @@ static cog_result_t record_result(cog_cli_app_t *app, cog_result_t status,
     }
     rc = cog_session_append(app->session, &message, NULL);
     if (rc != COG_OK) return rc;
+    app->result_node_added = true;
     if (expected != COG_TOOL_EXECUTION_PROPOSED) {
         rc = cog_session_tool_transition(app->session, app->assistant, call->id, expected, final);
         if (rc != COG_OK) return rc;
@@ -60,6 +62,7 @@ static cog_result_t record_result(cog_cli_app_t *app, cog_result_t status,
     app->display_sequence++;
     if (final == COG_TOOL_EXECUTION_INDETERMINATE) { app->recovery = true; return COG_ERROR_INDETERMINATE; }
     app->tool_index++;
+    app->result_node_added = false;
     app->policy_prompt = false;
     app->policy_decision = COG_TOOLKIT_POLICY_UNDECIDED;
     return COG_OK;
@@ -67,6 +70,7 @@ static cog_result_t record_result(cog_cli_app_t *app, cog_result_t status,
 cog_result_t cog_cli_tools_step(cog_cli_app_t *app, cog_state_t *next)
 {
     *next = CLI_POLICY;
+    if (app->terminal_result_pending) return app->tool_result_error;
     if (app->execution != NULL && app->tool_done) {
         cog_toolkit_result_t result = {0};
         size_t required = 0U;
@@ -78,6 +82,12 @@ cog_result_t cog_cli_tools_step(cog_cli_app_t *app, cog_state_t *next)
         rc = record_result(app, result.status, capture, result.output_len, result.truncated,
             result.side_effects_possible, result.exit_status_known, result.exit_status,
             COG_TOOL_EXECUTION_STARTED);
+        if (rc != COG_OK) {
+            app->terminal_result_pending = true;
+            app->tool_result_error = rc;
+            app->recovery = true;
+            return rc;
+        }
         cog_result_t released = cog_toolkit_execution_free(app->execution);
         if (released == COG_OK) app->execution = NULL;
         app->tool_done = false;

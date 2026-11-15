@@ -457,6 +457,7 @@ cog_result_t cog_cli_idle(void *arg, uint32_t max_wait_ms)
 }
 cog_result_t cog_cli_drain(cog_cli_app_t *app)
 {
+    if (app->terminal_result_pending) return app->tool_result_error;
     if (!app->active && app->execution == NULL && !app->provider_active) return COG_OK;
     app->shutdown = true; app->cancelling = true;
     cog_result_t rc = cog_cli_clock(&app->now);

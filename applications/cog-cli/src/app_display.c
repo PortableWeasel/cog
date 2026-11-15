@@ -27,6 +27,12 @@ cog_result_t cog_cli_app_display_snapshot(cog_cli_app_t *app, cog_cli_display_sn
         app->display_items[count++] = (cog_cli_display_item_t){0U,
             COG_MESSAGE_ROLE_ASSISTANT, COG_MESSAGE_INCOMPLETE, app->text, app->text_len};
     }
+    if (app->terminal_result_pending && !app->result_node_added) {
+        if (count == CLI_NODES + 1U) return COG_ERROR_LIMIT;
+        app->display_items[count++] = (cog_cli_display_item_t){0U,
+            COG_MESSAGE_ROLE_TOOL, COG_MESSAGE_INCOMPLETE, app->result_storage,
+            app->pending_result_len};
+    }
     *out = (cog_cli_display_snapshot_t){cog_session_id(app->session), app->generation,
         app->display_sequence, app->display_items, count};
     return COG_OK;
