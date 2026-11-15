@@ -1,0 +1,43 @@
+{
+  "model": "deepseek/deepseek-v4-flash-0731",
+  "stream": true,
+  "max_tokens": 512,
+  "reasoning": {
+    "enabled": false
+  },
+  "provider": {
+    "require_parameters": true
+  },
+  "stream_options": {
+    "include_usage": true
+  },
+  "messages": [
+    {
+      "role": "user",
+      "content": "Call echo once with value equal to café \"wire\" followed by a newline and 😀. Do not explain."
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_37d504c5e3664c6da72b47f3",
+          "type": "function",
+          "function": {
+            "name": "echo",
+            "arguments": "{\"value\": \"café \\\"wire\\\"\\n😀\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_37d504c5e3664c6da72b47f3",
+      "content": "{\"value\": \"café \\\"wire\\\"\\n😀\"}"
+    },
+    {
+      "role": "user",
+      "content": "Reply with exactly WIRE_OK."
+    }
+  ]
+}
