@@ -57,7 +57,7 @@ typedef struct cog_net_config {
     size_t max_header_bytes; /**< Per-response header ceiling; default 64 KiB. */
     size_t chunk_bytes; /**< Retained body slice bytes; default 16 KiB. */
     size_t chunks_per_request; /**< Body ring entries; default 8 plus reserved terminal. */
-    uint32_t service_quantum; /**< Maximum callback/completion work per service; default 16. */
+    uint32_t service_quantum; /**< Max accepted framing/completion units and request slots driven per service; default 16. */
     const char *ca_bundle; /**< Optional copied trust path; NULL uses system trust. */
 } cog_net_config_t;
 
@@ -163,8 +163,11 @@ cog_result_t cog_net_request_release(cog_net_ctx_t *ctx, cog_request_id_t id);
  * the TOTAL reserved body-ring capacity cannot become writable and terminates
  * LIMIT instead of pausing forever; temporary lack of free slots pauses only
  * that request. Oversized headers or configured per-item ceilings terminate LIMIT. No silent truncation.
- * @note Owner thread. CPU/syscall/dependency work is bounded by quantum, but
- * cannot promise a hard elapsed-time bound under arbitrary OS/TLS allocation.
+ * @note Owner thread. The quantum bounds accepted framing/completion units and
+ * request slots driven per call. Slot bookkeeping is bounded by the configured
+ * slot count and callback input by the configured capacities. Dependency-internal
+ * CPU work and syscall counts are not bounded by the quantum; service never waits
+ * with a positive timeout and cannot promise a hard elapsed-time bound.
  */
 cog_result_t cog_net_service(cog_net_ctx_t *ctx, uint64_t now_ms,
                              uint64_t *out_next_deadline_ms);

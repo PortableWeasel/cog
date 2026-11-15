@@ -57,3 +57,27 @@ the library path against modification during process startup and construction;
 this local digest check is not a substitute for a trusted loader/filesystem.
 Installed exported targets contain no build-tree dependency paths and find the
 consumer's curl and OpenSSL; the runtime curl must match the audited digest.
+
+For the recorded candidate, the curl archive and signature can be acquired and
+verified as follows, using the signing key authenticated independently from
+[curl's verification page](https://curl.se/docs/verify.html):
+
+```sh
+curl -fL --proto '=https' https://curl.se/download/curl-8.23.0.tar.xz -o curl-8.23.0.tar.xz
+curl -fL --proto '=https' https://curl.se/download/curl-8.23.0.tar.xz.asc -o curl-8.23.0.tar.xz.asc
+printf '%s  %s\n' 8dadd7d2536a314f982ad05a651b713f426bf7d02cc2c76cffb9796f2218e6c5 curl-8.23.0.tar.xz | sha256sum -c -
+gpg --status-fd 1 --verify curl-8.23.0.tar.xz.asc curl-8.23.0.tar.xz > verify.status
+rg '^\[GNUPG:\] VALIDSIG 27EDEAF22F3ABCEB50DB9A125CC908FDB71E12C2 ' verify.status
+tar -xf curl-8.23.0.tar.xz
+```
+
+Use the authenticated Debian c-ares package and checksums in the DNS research
+recipe, or independently authenticate an updated package. Run the same DNS
+probe against the resulting curl and c-ares libraries. The probe passed for the
+recorded candidate on this host, including cancellation, timeout, descriptor
+and thread checks; it is not a guarantee for a different build or host.
+
+The standalone net export depends on the shared public `cog/result.h` installed
+by cog-core. Net-only staging for development must provide that header as well;
+it is not evidence of a full project install. Full packaging is validated once
+sibling packages are migrated.

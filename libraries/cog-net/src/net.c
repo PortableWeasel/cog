@@ -3,6 +3,7 @@
 #include <cog/net.h>
 #include <curl/curl.h>
 #include <dlfcn.h>
+#include <errno.h>
 #include <openssl/evp.h>
 #include <stdio.h>
 #include <ctype.h>
@@ -23,6 +24,7 @@ typedef struct net_request {
     struct cog_net_ctx *ctx;
     cog_request_id_t id;
     CURL *easy;
+    CURLM *multi;
     struct curl_slist *request_headers;
     char *input;
     char *header_buf;
@@ -36,11 +38,13 @@ typedef struct net_request {
     int status;
     uint32_t retry_after;
     bool retry_known, started, connected, response_started, active, paused, terminal;
-    cog_result_t callback_error;
+    cog_result_t callback_error, pending_result;
+    cog_net_error_kind_t pending_kind;
+    const char *pending_message;
+    bool pending_terminal;
 } net_request_t;
 
 struct cog_net_ctx {
-    CURLM *multi;
     net_request_t *requests;
     size_t max_connections, request_bytes, header_bytes, chunk_bytes, chunks;
     uint32_t connect_ms, stall_ms, quantum, budget;
@@ -75,7 +79,7 @@ static net_request_t *find_request(const cog_net_ctx_t *ctx, cog_request_id_t id
 static void detach(net_request_t *r)
 {
     if (r->active) {
-        (void)curl_multi_remove_handle(r->ctx->multi, r->easy);
+        (void)curl_multi_remove_handle(r->multi, r->easy);
         r->active = false;
     }
 }
@@ -83,6 +87,7 @@ static void clear_request(net_request_t *r)
 {
     detach(r);
     if (r->easy != NULL) curl_easy_cleanup(r->easy);
+    if (r->multi != NULL) curl_multi_cleanup(r->multi);
     curl_slist_free_all(r->request_headers);
     free(r->input);
     free(r->header_buf);
@@ -125,6 +130,17 @@ static void terminal(net_request_t *r, cog_result_t outcome,
     detach(r);
     r->terminal = true;
     push_item(r, NULL, 0U, true, outcome, kind, message);
+}
+/* libcurl invokes this after DNS, TCP and TLS have succeeded, including on
+ * reused connections, immediately before beginning the HTTP transfer. */
+static int connection_ready(void *data, char *primary_ip, char *local_ip,
+                            int primary_port, int local_port)
+{
+    net_request_t *r = data;
+    (void)primary_ip; (void)local_ip; (void)primary_port; (void)local_port;
+    r->connected = true;
+    if (r->ctx->budget != 0U) --r->ctx->budget;
+    return CURL_PREREQFUNC_OK;
 }
 static size_t receive_body(char *ptr, size_t size, size_t nmemb, void *data)
 {
@@ -182,7 +198,18 @@ static size_t receive_header(char *ptr, size_t size, size_t nmemb, void *data)
         push_item(r, NULL, 0U, false, COG_OK, COG_NET_ERROR_NONE, NULL);
     } else if (n > 2U) {
         size_t len = n;
+        size_t colon = 0U, k;
         while (len != 0U && (ptr[len-1U] == '\r' || ptr[len-1U] == '\n')) --len;
+        while (colon < len && ptr[colon] != ':') {
+            unsigned char c = (unsigned char)ptr[colon];
+            if (!isalnum(c) && strchr("!#$%&'*+-.^_`|~", c) == NULL) return 0U;
+            ++colon;
+        }
+        if (colon == 0U || colon == len) return 0U;
+        for (k = colon + 1U; k < len; ++k) {
+            unsigned char c = (unsigned char)ptr[k];
+            if ((c < 32U && c != '\t') || c == 127U) return 0U;
+        }
         if (len + 1U > ctx->header_bytes - r->header_len) {
             r->callback_error = COG_ERROR_LIMIT;
             return 0U;
@@ -223,7 +250,7 @@ static size_t receive_header(char *ptr, size_t size, size_t nmemb, void *data)
 /* Bind the audited CMake resolver profile to the actually loaded ELF object.
  * If either the loader identity or the digest cannot be established, fail
  * closed. The deployment must protect the library path against replacement. */
-static bool backend_proven(void)
+static cog_result_t verify_backend(void)
 {
 #ifdef COG_NET_CURL_SHA256
     curl_version_info_data *(*symbol)(CURLversion) = curl_version_info;
@@ -235,27 +262,28 @@ static bool backend_proven(void)
     unsigned int digest_len = 0U;
     size_t n, i;
     char hex[65];
-    bool ok = false;
-    if (sizeof(address) != sizeof(symbol)) return false;
+    cog_result_t result = COG_ERROR_UNSUPPORTED;
+    if (sizeof(address) != sizeof(symbol)) return COG_ERROR_UNSUPPORTED;
     memcpy(&address, &symbol, sizeof(address));
-    if (dladdr(address, &info) == 0 || info.dli_fname == NULL) return false;
+    if (dladdr(address, &info) == 0 || info.dli_fname == NULL) return COG_ERROR_UNSUPPORTED;
     file = fopen(info.dli_fname, "rb");
-    if (file == NULL) return false;
+    if (file == NULL) return errno == ENOMEM ? COG_ERROR_NOMEM : COG_ERROR_UNSUPPORTED;
     hash = EVP_MD_CTX_new();
+    if (hash == NULL) { (void)fclose(file); return COG_ERROR_NOMEM; }
     if (hash != NULL && EVP_DigestInit_ex(hash, EVP_sha256(), NULL) == 1) {
         while ((n = fread(buf, 1U, sizeof(buf), file)) != 0U)
             if (EVP_DigestUpdate(hash, buf, n) != 1) goto done;
         if (ferror(file) || EVP_DigestFinal_ex(hash, digest, &digest_len) != 1 || digest_len != 32U) goto done;
         for (i = 0U; i < 32U; ++i) (void)snprintf(hex + 2U*i, 3U, "%02x", digest[i]);
         hex[64] = '\0';
-        ok = strcmp(hex, COG_NET_CURL_SHA256) == 0;
+        if (strcmp(hex, COG_NET_CURL_SHA256) == 0) result = COG_OK;
     }
 done:
     EVP_MD_CTX_free(hash);
     (void)fclose(file);
-    return ok;
+    return result;
 #else
-    return false;
+    return COG_ERROR_UNSUPPORTED;
 #endif
 }
 
@@ -265,6 +293,7 @@ cog_result_t cog_net_new(cog_net_ctx_t **out, const cog_net_config_t *config)
     const curl_version_info_data *version;
     CURL *probe;
     CURLcode probe_status;
+    cog_result_t provenance_status;
     size_t total, i, j;
     if (out == NULL) return COG_ERROR_NULL_PTR;
     *out = NULL;
@@ -272,7 +301,8 @@ cog_result_t cog_net_new(cog_net_ctx_t **out, const cog_net_config_t *config)
     if (!config->host_runtime_initialized || config->dependency_memory != COG_NET_DEPENDENCY_MEMORY_DYNAMIC ||
         config->max_retries != 0U || config->retry_backoff_ms != 0U) return COG_ERROR_INVALID_ARG;
     if (config->dependency_memory_limit != 0U) return COG_ERROR_UNSUPPORTED;
-    if (!backend_proven()) return COG_ERROR_UNSUPPORTED;
+    provenance_status = verify_backend();
+    if (provenance_status != COG_OK) return provenance_status;
     version = curl_version_info(CURLVERSION_NOW);
     if (version == NULL || (version->features & CURL_VERSION_ASYNCHDNS) == 0 ||
         version->ares == NULL || version->ares[0] == '\0') return COG_ERROR_UNSUPPORTED;
@@ -305,21 +335,21 @@ cog_result_t cog_net_new(cog_net_ctx_t **out, const cog_net_config_t *config)
     }
     ctx->requests = calloc(ctx->max_connections, sizeof(*ctx->requests));
     if (config->ca_bundle != NULL) ctx->ca_bundle = copy_string(config->ca_bundle);
-    ctx->multi = curl_multi_init();
-    if (ctx->requests == NULL || ctx->multi == NULL ||
+    if (ctx->requests == NULL ||
         (config->ca_bundle != NULL && ctx->ca_bundle == NULL)) goto nomem;
-    if (curl_multi_setopt(ctx->multi, CURLMOPT_MAX_TOTAL_CONNECTIONS, (long)ctx->max_connections) != CURLM_OK ||
-        curl_multi_setopt(ctx->multi, CURLMOPT_MAXCONNECTS, (long)ctx->max_connections) != CURLM_OK) goto nomem;
     for (i = 0U; i < ctx->max_connections; ++i) {
         net_request_t *r = &ctx->requests[i];
         r->ctx = ctx;
+        r->multi = curl_multi_init();
         r->input = malloc(ctx->request_bytes);
         r->header_buf = malloc(ctx->header_bytes + 1U);
         r->items = calloc(ctx->chunks + 1U, sizeof(*r->items));
         r->item_body = malloc((ctx->chunks + 1U) * ctx->chunk_bytes);
         r->item_headers = malloc((ctx->chunks + 1U) * (ctx->header_bytes + 1U));
-        if (r->input == NULL || r->header_buf == NULL || r->items == NULL ||
+        if (r->multi == NULL || r->input == NULL || r->header_buf == NULL || r->items == NULL ||
             r->item_body == NULL || r->item_headers == NULL) goto nomem;
+        if (curl_multi_setopt(r->multi, CURLMOPT_MAX_TOTAL_CONNECTIONS, 1L) != CURLM_OK ||
+            curl_multi_setopt(r->multi, CURLMOPT_MAXCONNECTS, 1L) != CURLM_OK) goto nomem;
         for (j = 0U; j <= ctx->chunks; ++j) {
             r->items[j].body = r->item_body + j * ctx->chunk_bytes;
             r->items[j].headers = r->item_headers + j * (ctx->header_bytes + 1U);
@@ -338,7 +368,6 @@ void cog_net_free(cog_net_ctx_t *ctx)
     if (ctx == NULL) return;
     if (ctx->requests != NULL)
         for (i = 0U; i < ctx->max_connections; ++i) clear_request(&ctx->requests[i]);
-    if (ctx->multi != NULL) curl_multi_cleanup(ctx->multi);
     free(ctx->requests);
     free(ctx->ca_bundle);
     free(ctx);
@@ -437,6 +466,8 @@ cog_result_t cog_net_request(cog_net_ctx_t *ctx, const char *method, const char 
     SETOPT(r, CURLOPT_HTTPHEADER, r->request_headers);
     SETOPT(r, CURLOPT_PROXY, "");
     SETOPT(r, CURLOPT_FOLLOWLOCATION, 0L);
+    SETOPT(r, CURLOPT_PREREQFUNCTION, connection_ready);
+    SETOPT(r, CURLOPT_PREREQDATA, r);
     SETOPT(r, CURLOPT_SSL_VERIFYPEER, 1L);
     SETOPT(r, CURLOPT_SSL_VERIFYHOST, 2L);
     SETOPT(r, CURLOPT_NOSIGNAL, 1L);
@@ -452,7 +483,7 @@ cog_result_t cog_net_request(cog_net_ctx_t *ctx, const char *method, const char 
         SETOPT(r, CURLOPT_POSTFIELDS, b);
         SETOPT(r, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_len);
     }
-    if (curl_multi_add_handle(ctx->multi, r->easy) != CURLM_OK) goto setup_failed;
+    if (curl_multi_add_handle(r->multi, r->easy) != CURLM_OK) goto setup_failed;
     r->id = ++ctx->next_id; r->active = true; r->ctx = ctx;
     *out_id = r->id;
     return COG_OK;
@@ -469,6 +500,10 @@ cog_result_t cog_net_cancel(cog_net_ctx_t *ctx, cog_request_id_t id)
     if (ctx == NULL) return COG_ERROR_NULL_PTR;
     r = find_request(ctx, id);
     if (r == NULL) return COG_ERROR_NOT_FOUND;
+    if (r->pending_terminal) {
+        terminal(r, r->pending_result, r->pending_kind, r->pending_message);
+        r->pending_terminal = false;
+    }
     terminal(r, COG_ERROR_ABORTED, COG_NET_ERROR_CANCELLED, "cancelled");
     return COG_OK;
 }
@@ -478,18 +513,19 @@ cog_result_t cog_net_request_release(cog_net_ctx_t *ctx, cog_request_id_t id)
     size_t index;
     char *input, *headers, *bodies, *item_headers;
     net_item_t *items;
+    CURLM *multi;
     if (ctx == NULL) return COG_ERROR_NULL_PTR;
     r = find_request(ctx, id);
     if (r == NULL) return COG_ERROR_NOT_FOUND;
     index = (size_t)(r - ctx->requests);
     if (ctx->global_selected == index) ctx->global_selected = NO_SELECTION;
-    input = r->input; headers = r->header_buf; items = r->items;
+    input = r->input; headers = r->header_buf; items = r->items; multi = r->multi;
     bodies = r->item_body; item_headers = r->item_headers;
     detach(r);
     if (r->easy != NULL) curl_easy_cleanup(r->easy);
     curl_slist_free_all(r->request_headers);
     memset(r, 0, sizeof(*r));
-    r->ctx = ctx; r->input = input; r->header_buf = headers; r->items = items;
+    r->ctx = ctx; r->multi = multi; r->input = input; r->header_buf = headers; r->items = items;
     r->item_body = bodies; r->item_headers = item_headers;
     return COG_OK;
 }
@@ -521,10 +557,7 @@ static void complete_error(net_request_t *r, CURLcode code)
 cog_result_t cog_net_service(cog_net_ctx_t *ctx, uint64_t now_ms, uint64_t *out_next_deadline_ms)
 {
     size_t i;
-    int running, messages;
-    CURLMsg *msg;
-    CURLMcode mc;
-    long curl_timeout = -1L;
+    uint32_t drivers = 0U;
     uint64_t next = UINT64_MAX;
     if (ctx == NULL || out_next_deadline_ms == NULL) return COG_ERROR_NULL_PTR;
     if (ctx->clock_set && now_ms < ctx->now) return COG_ERROR_INVALID_ARG;
@@ -533,20 +566,31 @@ cog_result_t cog_net_service(cog_net_ctx_t *ctx, uint64_t now_ms, uint64_t *out_
         size_t index = (ctx->service_next + i) % ctx->max_connections;
         net_request_t *r = &ctx->requests[index];
         uint64_t d;
+        int running, messages;
+        CURLMcode mc;
+        CURLMsg *msg;
+        long curl_timeout = -1L;
+        if (r->pending_terminal) {
+            if (ctx->budget == 0U) { next = now_ms; continue; }
+            terminal(r, r->pending_result, r->pending_kind, r->pending_message);
+            r->pending_terminal = false;
+            --ctx->budget;
+            continue;
+        }
         if (!r->active) continue;
         if (!r->started) { r->start_ms = now_ms; r->started = true; }
-        if (!r->connected) {
-            curl_off_t connected_at = 0;
-            if (curl_easy_getinfo(r->easy, CURLINFO_APPCONNECT_TIME_T, &connected_at) == CURLE_OK && connected_at > 0)
-                r->connected = true;
-        }
         d = r->response_started ? deadline(r->last_byte_ms, ctx->stall_ms) :
             (r->connected ? UINT64_MAX : deadline(r->start_ms, ctx->connect_ms));
         if (d != UINT64_MAX && now_ms >= d && !r->paused) {
+            if (ctx->budget == 0U) { next = now_ms; continue; }
             terminal(r, COG_ERROR_TIMEOUT, COG_NET_ERROR_TIMEOUT, "transport timed out");
+            --ctx->budget;
             continue;
         }
-        if (r->paused && r->count < ctx->chunks && ctx->budget != 0U) {
+        if (r->paused && r->count >= ctx->chunks) continue;
+        if (drivers >= ctx->quantum || ctx->budget == 0U) { next = now_ms; continue; }
+        ++drivers;
+        if (r->paused && r->count < ctx->chunks) {
             uint64_t elapsed = now_ms - r->pause_ms;
             if (r->response_started)
                 r->last_byte_ms = UINT64_MAX - r->last_byte_ms < elapsed ? UINT64_MAX : r->last_byte_ms + elapsed;
@@ -554,44 +598,36 @@ cog_result_t cog_net_service(cog_net_ctx_t *ctx, uint64_t now_ms, uint64_t *out_
                 r->start_ms = UINT64_MAX - r->start_ms < elapsed ? UINT64_MAX : r->start_ms + elapsed;
             r->paused = false;
             if (curl_easy_pause(r->easy, CURLPAUSE_CONT) != CURLE_OK) {
-                if (r->callback_error == COG_ERROR_LIMIT)
-                    terminal(r, COG_ERROR_LIMIT, COG_NET_ERROR_CAPACITY, "response capacity exceeded");
-                else
-                    terminal(r, COG_ERROR_IO, COG_NET_ERROR_DEPENDENCY, "transport resume failed");
+                r->pending_result = r->callback_error == COG_ERROR_LIMIT ? COG_ERROR_LIMIT : COG_ERROR_IO;
+                r->pending_kind = r->callback_error == COG_ERROR_LIMIT ? COG_NET_ERROR_CAPACITY : COG_NET_ERROR_DEPENDENCY;
+                r->pending_message = r->callback_error == COG_ERROR_LIMIT ? "response capacity exceeded" : "transport resume failed";
+                r->pending_terminal = true;
+                detach(r);
+                next = now_ms;
                 continue;
             }
         }
-        if (!r->paused && d < next) next = d;
+        if (ctx->budget == 0U) { next = now_ms; continue; }
+        mc = curl_multi_perform(r->multi, &running);
+        if (mc != CURLM_OK) return mc == CURLM_OUT_OF_MEMORY ? COG_ERROR_NOMEM : COG_ERROR_IO;
+        while (ctx->budget != 0U && (msg = curl_multi_info_read(r->multi, &messages)) != NULL) {
+            if (msg->msg == CURLMSG_DONE && r->active) complete_error(r, msg->data.result);
+            --ctx->budget;
+        }
+        if (!r->active) continue;
+        if (curl_multi_timeout(r->multi, &curl_timeout) != CURLM_OK) return COG_ERROR_IO;
+        if (!r->paused) {
+            d = r->response_started ? deadline(r->last_byte_ms, ctx->stall_ms) :
+                (r->connected ? UINT64_MAX : deadline(r->start_ms, ctx->connect_ms));
+            if (d < next) next = d;
+            if (curl_timeout >= 0L) {
+                d = deadline(now_ms, curl_timeout > (long)UINT32_MAX ? UINT32_MAX : (uint32_t)curl_timeout);
+                if (d < next) next = d;
+            }
+        }
     }
     ctx->service_next = (ctx->service_next + 1U) % ctx->max_connections;
-    mc = curl_multi_perform(ctx->multi, &running);
-    if (mc != CURLM_OK) return mc == CURLM_OUT_OF_MEMORY ? COG_ERROR_NOMEM : COG_ERROR_IO;
-    while (ctx->budget != 0U && (msg = curl_multi_info_read(ctx->multi, &messages)) != NULL) {
-        if (msg->msg == CURLMSG_DONE) {
-            net_request_t *r = NULL;
-            (void)curl_easy_getinfo(msg->easy_handle, CURLINFO_PRIVATE, &r);
-            if (r != NULL && r->active) complete_error(r, msg->data.result);
-        }
-        --ctx->budget;
-    }
-    next = UINT64_MAX;
-    for (i = 0U; i < ctx->max_connections; ++i) {
-        net_request_t *r = &ctx->requests[i];
-        uint64_t d;
-        curl_off_t connected_at = 0;
-        if (!r->active || r->paused) continue;
-        if (!r->connected && curl_easy_getinfo(r->easy, CURLINFO_APPCONNECT_TIME_T, &connected_at) == CURLE_OK && connected_at > 0)
-            r->connected = true;
-        d = r->response_started ? deadline(r->last_byte_ms, ctx->stall_ms) :
-            (r->connected ? UINT64_MAX : deadline(r->start_ms, ctx->connect_ms));
-        if (d < next) next = d;
-    }
     if (ctx->budget == 0U) next = now_ms;
-    if (curl_multi_timeout(ctx->multi, &curl_timeout) != CURLM_OK) return COG_ERROR_IO;
-    if (curl_timeout >= 0L) {
-        uint64_t d = deadline(now_ms, curl_timeout > (long)UINT32_MAX ? UINT32_MAX : (uint32_t)curl_timeout);
-        if (d < next) next = d;
-    }
     *out_next_deadline_ms = next;
     return COG_OK;
 }

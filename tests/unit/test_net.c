@@ -32,6 +32,7 @@ int main(void)
     config.host_runtime_initialized = true;
     config.dependency_memory = COG_NET_DEPENDENCY_MEMORY_DYNAMIC;
     config.max_connections = 2U;
+    config.connect_timeout_ms = 200U;
     config.ca_bundle = ca;
     rc = cog_net_new(&ctx, &config);
     if (getenv("COG_NET_TEST_EXPECT_UNSUPPORTED") != NULL) {
@@ -106,12 +107,34 @@ int main(void)
             cog_net_free(small);
         }
         {
+            cog_net_ctx_t *small_header = NULL;
+            cog_net_config_t limited = config;
+            bool limit_seen = false;
+            limited.max_header_bytes = 8U;
+            assert(cog_net_new(&small_header, &limited) == COG_OK);
+            assert(cog_net_request(small_header, "GET", url, NULL, NULL, 0U, &b) == COG_OK);
+            for (i = 0U; i < 5000U && !limit_seen; ++i) {
+                struct timespec delay = {0, 1000000L};
+                assert(cog_net_service(small_header, now_ms(), &next) == COG_OK);
+                if (cog_net_peek_request(small_header, b, &v) == COG_OK) {
+                    assert(v.is_complete && v.outcome == COG_ERROR_LIMIT && v.error_kind == COG_NET_ERROR_CAPACITY);
+                    assert(cog_net_ack(small_header, b, v.sequence) == COG_OK);
+                    limit_seen = true;
+                }
+                (void)nanosleep(&delay, NULL);
+            }
+            assert(limit_seen);
+            assert(cog_net_request_release(small_header, b) == COG_OK);
+            cog_net_free(small_header);
+        }
+        {
             cog_net_ctx_t *shared = NULL;
             cog_net_config_t bounded = config;
             char large_url[1024];
             cog_net_response_t saved;
             bool ready = false, other_done = false;
             bounded.chunks_per_request = 1U;
+            bounded.service_quantum = 1U;
             assert(snprintf(large_url, sizeof(large_url), "%slarge", url) > 0);
             assert(cog_net_new(&shared, &bounded) == COG_OK);
             assert(cog_net_request(shared, "GET", large_url, NULL, NULL, 0U, &a) == COG_OK);
@@ -145,6 +168,32 @@ int main(void)
             cog_net_free(shared);
         }
         {
+            cog_net_ctx_t *fair = NULL;
+            cog_net_config_t one = config;
+            bool done_a = false, done_b = false;
+            one.service_quantum = 1U;
+            assert(cog_net_new(&fair, &one) == COG_OK);
+            assert(cog_net_request(fair, "GET", url, NULL, NULL, 0U, &a) == COG_OK);
+            assert(cog_net_request(fair, "GET", url, NULL, NULL, 0U, &b) == COG_OK);
+            for (i = 0U; i < 5000U && !(done_a && done_b); ++i) {
+                struct timespec delay = {0, 1000000L};
+                assert(cog_net_service(fair, now_ms(), &next) == COG_OK);
+                while (cog_net_peek(fair, &v) == COG_OK) {
+                    if (v.is_complete) {
+                        assert(v.outcome == COG_OK);
+                        if (v.request_id == a) done_a = true;
+                        if (v.request_id == b) done_b = true;
+                    }
+                    assert(cog_net_ack(fair, v.request_id, v.sequence) == COG_OK);
+                }
+                (void)nanosleep(&delay, NULL);
+            }
+            assert(done_a && done_b);
+            assert(cog_net_request_release(fair, a) == COG_OK);
+            assert(cog_net_request_release(fair, b) == COG_OK);
+            cog_net_free(fair);
+        }
+        {
             char rate_url[1024];
             bool done = false, saw_retry = false;
             assert(snprintf(rate_url, sizeof(rate_url), "%srate", url) > 0);
@@ -161,6 +210,40 @@ int main(void)
                 (void)nanosleep(&delay, NULL);
             }
             assert(done && saw_retry);
+            assert(cog_net_request_release(ctx, a) == COG_OK);
+        }
+        {
+            cog_net_ctx_t *delayed = ctx;
+            char delay_url[1024];
+            bool done = false;
+            assert(snprintf(delay_url, sizeof(delay_url), "%sdelay", url) > 0);
+            assert(cog_net_request(delayed, "GET", delay_url, NULL, NULL, 0U, &b) == COG_OK);
+            for (i = 0U; i < 5000U && !done; ++i) {
+                struct timespec delay = {0, 1000000L};
+                assert(cog_net_service(delayed, now_ms(), &next) == COG_OK);
+                while (cog_net_peek_request(delayed, b, &v) == COG_OK) {
+                    if (v.is_complete) { assert(v.outcome == COG_OK); done = true; }
+                    assert(cog_net_ack(delayed, b, v.sequence) == COG_OK);
+                }
+                (void)nanosleep(&delay, NULL);
+            }
+            assert(done);
+            assert(cog_net_request_release(delayed, b) == COG_OK);
+        }
+        {
+            bool done = false;
+            assert(cog_net_request(ctx, "HEAD", url, NULL, NULL, 0U, &a) == COG_OK);
+            for (i = 0U; i < 5000U && !done; ++i) {
+                struct timespec delay = {0, 1000000L};
+                assert(cog_net_service(ctx, now_ms(), &next) == COG_OK);
+                while (cog_net_peek_request(ctx, a, &v) == COG_OK) {
+                    assert(v.http_status == 200 && v.chunk_len == 0U);
+                    if (v.is_complete) { assert(v.outcome == COG_OK); done = true; }
+                    assert(cog_net_ack(ctx, a, v.sequence) == COG_OK);
+                }
+                (void)nanosleep(&delay, NULL);
+            }
+            assert(done);
             assert(cog_net_request_release(ctx, a) == COG_OK);
         }
         {
