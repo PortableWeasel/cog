@@ -54,6 +54,20 @@ add_executable(cog-cli src/main.c)
 target_link_libraries(cog-cli PRIVATE cog::cli)
 target_enable_warnings(cog-cli)
 
+# The supported Linux bundle keeps its admitted shared transport beside the
+# installed archives. Resolve it relative to the executable after relocation.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(IS_ABSOLUTE "${CMAKE_INSTALL_BINDIR}" OR IS_ABSOLUTE "${CMAKE_INSTALL_LIBDIR}"
+       OR "${CMAKE_INSTALL_BINDIR}" MATCHES "(^|/)\\.\\.(/|$)"
+       OR "${CMAKE_INSTALL_LIBDIR}" MATCHES "(^|/)\\.\\.(/|$)")
+        message(FATAL_ERROR "Relocatable cog-cli requires relative install bin/lib directories without parent traversal")
+    endif()
+    file(RELATIVE_PATH cog_cli_install_library_path
+        "${CMAKE_INSTALL_FULL_BINDIR}" "${CMAKE_INSTALL_FULL_LIBDIR}")
+    set_target_properties(cog-cli PROPERTIES
+        INSTALL_RPATH "$ORIGIN/${cog_cli_install_library_path}")
+endif()
+
 # -----------------------------------------------------------------------
 # Install rules
 # -----------------------------------------------------------------------
