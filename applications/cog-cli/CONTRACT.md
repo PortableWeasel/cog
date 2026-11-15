@@ -16,9 +16,13 @@ applications/cog-cli/
     main.c            thin entry point: parse, signal handlers, run, exit code
     cli.c             app implementation: dispatch table, handlers, wait hook
     mock_provider.c   mock provider implementation (no network)
-  tests/              unit + smoke + harness-contract tests (CTest: cli-*)
+  tests/              cli-* tests and executable scenarios 11–20
   CONTRACT.md         this file
   HARNESS.md          scenario-writer guide (fixtures and observation)
+
+Scenarios 01–10 and the 05b shutdown regression live in
+`tests/scenarios/`. All 20 numbered scenarios plus 05b use the shared
+`scenario` CTest label.
 ```
 
 ## Build targets
@@ -30,6 +34,18 @@ applications/cog-cli/
 
 `cog::cli` links `cog::core`, `cog::provider`, and `cog::obs` PUBLIC so
 consumers (scenario tests) get the full include path and link closure.
+
+## Installation and exports
+
+```bash
+cmake --install build --prefix install/stage
+install/stage/bin/cog-cli --prompt hello
+```
+
+The install includes `bin/cog-cli`, `libcog-cli-lib.a`, the `cog_cli`
+headers, and `cog-cli-targets.cmake`, which exports the library as
+`cog::cli`. Load installed target sets in dependency order: `cog-result`,
+`cog-ipc`, `cog-obs`, `cog-core`, `cog-provider`, then `cog-cli`.
 
 ## CLI options
 
@@ -111,8 +127,19 @@ request is honoured promptly.
 
 ## Tests
 
-CTest names `cli-options`, `cli-mock-provider`, `cli-smoke`,
-`cli-harness`, `cli-binary-smoke` (see `tests/CMakeLists.txt`).  The
-binary smoke test spawns the built `cog-cli` executable and checks its
-stdout and exit code for the stream, error-retry, cancel, custom-chunk,
-help, and bad-option cases.
+The app-focused CTest names are `cli-options`, `cli-mock-provider`,
+`cli-smoke`, `cli-harness`, `cli-regression`, and `cli-binary-smoke` (see
+`tests/CMakeLists.txt`). The binary smoke test spawns the built `cog-cli`
+executable and checks its stdout and exit code for the stream, error-retry,
+cancel, custom-chunk, help, and bad-option cases.
+
+Scenario tests use names `scenario-test_11_ui_reconnect` through
+`scenario-test_20_interrupt_and_queue` in this directory and
+`scenario-test_01_user_prompt` through `scenario-test_10_fan_out_fan_in` in
+the shared scenario directory; `scenario-test_05b_shutdown_cancel_contract`
+is also labeled `regression`. The complete project suite has 61 tests:
+
+```bash
+ctest --test-dir build --output-on-failure -j4
+ctest --test-dir build -L scenario --output-on-failure
+```

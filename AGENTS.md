@@ -5,9 +5,9 @@ routes events (user input, tool results, signals) to handlers (provider calls,
 tool execution, file I/O), validates results, and advances session state.
 Think `pi` / `opencode`, but compiled and embeddable.
 
-**Status: pre-alpha, design phase.** Eight libraries are *header-only INTERFACE
-targets* (public API headers only, no `src/` yet). The CLI is not wired in.
-Working code currently lives in `pocs/`.
+**Status: pre-alpha, Phase 6 application integration.** The eight libraries and
+`cog-cli` have C11 implementations. Public headers remain the contract, and
+`pocs/` contains standalone reference proofs rather than library code.
 
 ## The header-first method
 
@@ -24,7 +24,7 @@ This is deliberate and non-negotiable.
    implementation after the fact costs everything.
 4. **Multiple iterations are required.** We go through at least 3 full passes:
    - Pass 1: Write initial headers from the design doc
-   - Pass 2: Trace 12 scenarios, find gaps, amend headers
+   - Pass 2: Trace all 20 scenarios, find gaps, amend headers
    - Pass 3: Review for consistency, completeness, and edge cases
 
 ### The iteration loop
@@ -43,17 +43,17 @@ This is deliberate and non-negotiable.
                     └─────────────┘     └─────────────┘
 ```
 
-Repeat until all 12 scenarios pass with zero gaps, then do one more full
+Repeat until all 20 scenarios pass with zero gaps, then do one more full
 review pass before implementation.
 
 ### Scenario traces
 
-We maintain 12 end-to-end scenario traces in `docs/scenarios/`. Each has:
+We maintain 20 end-to-end scenario traces in `docs/scenarios/`. Each has:
 - A sequence diagram showing the flow
 - A header coverage table mapping every call to its declaring header
 - A gap analysis listing what's missing
 
-The 12 scenarios:
+The 20 scenarios:
 1. User prompt → LLM → streaming → UI
 2. Network stall → detection → recovery → resume
 3. Subagent spawn → execute → status → result → parent
@@ -66,8 +66,18 @@ The 12 scenarios:
 10. Fan-out/fan-in across aux cores
 11. UI disconnect → buffer → reconnect → replay
 12. Provider rate limit → backoff → queue
+13. Session persistence and recovery
+14. Conversation fork and branch isolation
+15. Multi-turn tool use
+16. Provider error propagation
+17. Session migration
+18. Structured observability
+19. Connection diagnostics and events
+20. User interrupt and queued input
 
-Every scenario must pass before implementation begins.
+Every scenario has an executable test and must pass before the Phase 6 gate.
+Scenarios 01–10 live in `tests/scenarios`; scenarios 11–20 live in
+`applications/cog-cli/tests`.
 
 ## Layout
 
@@ -82,11 +92,11 @@ libraries/
   cog-obs/        logging, tracing, diagnostics
   cog-orchestrator/  process lifecycle, health, placement
     include/cog/  public headers (the contract)
-    src/          private implementation (not created yet)
-applications/     cog-cli goes here (add_subdirectory is commented out)
+    src/          private implementation
+applications/cog-cli/  installed CLI, testable app library, scenarios 11–20
 pocs/             standalone proofs for risky design questions
 tests/critic-smoke/  header self-containment / strict-warning compile checks
-docs/scenarios/   12 end-to-end validation traces
+docs/scenarios/   20 end-to-end validation traces
 docs/diagram.svg  system block diagram
 docs/DESIGN.md    system blueprint — read before changing architecture
 .pi/              pi agent config and the cog-dev orchestrator workflow
@@ -101,6 +111,23 @@ Keep the dependency graph acyclic.
 ```bash
 cmake -S . -B build -DCOG_ENABLE_WERROR=ON
 cmake --build build
+ctest --test-dir build --output-on-failure -j4
+ctest --test-dir build -L scenario --output-on-failure
+
+# Sanitizers require separate build directories.
+cmake -S . -B build-asan -DCOG_ENABLE_WERROR=ON -DCOG_ENABLE_ASAN=ON
+cmake --build build-asan
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+ctest --test-dir build-asan --output-on-failure
+
+cmake -S . -B build-tsan -DCOG_ENABLE_WERROR=ON -DCOG_ENABLE_TSAN=ON
+cmake --build build-tsan
+TSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-tsan --output-on-failure
+
+# Stage and run the application.
+cmake --install build --prefix install/stage
+install/stage/bin/cog-cli --prompt hello
 
 # Verify all headers compile standalone
 for f in $(find libraries -name "*.h" | sort); do
