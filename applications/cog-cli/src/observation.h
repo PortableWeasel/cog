@@ -10,7 +10,7 @@ typedef struct cog_cli_observer cog_cli_observer_t;
 /** Copied metadata only; strings already screened by the configuration owner.
  * MOCK/OPENROUTER select static names; no URL, credential, payload or call ID. */
 typedef struct cog_cli_observation_scope {
-    uint64_t request, configuration_generation;
+    uint64_t request, configuration_generation; /**< App observation identity, not core event serial. */
     uint32_t attempt; /**< Zero-based application retry count. */
     bool retry, mock, session_available, model_available;
     char session[CLI_OBSERVATION_LABEL_BYTES], model[CLI_OBSERVATION_LABEL_BYTES];
@@ -35,7 +35,7 @@ cog_result_t cog_cli_observer_prepare(cog_cli_observer_t *observer,
     const cog_net_ctx_t *net, const cog_cli_observation_scope_t *scope);
 /** Net constructor callback: checked monotonic callback-time stamp plus fixed
  * numeric/scope copy only. No obs, formatting, stdio, allocation or net reentry.
- * OPEN requires matching prepared scope. Every error is sticky and returned so
+ * OPEN requires a bound target and matching prepared scope. Every error is sticky and returned so
  * net independently disables its feed. @return OK; explicit clock/capacity/state error. */
 cog_result_t cog_cli_observer_capture(void *user, const cog_net_ctx_t *net,
     const cog_net_observation_t *observation);
@@ -43,6 +43,7 @@ cog_result_t cog_cli_observer_capture(void *user, const cog_net_ctx_t *net,
  * another operation/reload/retirement. Emits existing obs events/diagnostics with
  * callback timestamps and owned row labels. OPEN then admitted RETRY share time.
  * Terminal rows can be diag-cleared before reuse; active rows never evict.
+ * Every borrowed diagnostic string is cleared before its owning row is reused.
  * Assigns nonzero never-reused connection IDs across context/request keys.
  * Clears prepared scope after draining. On failure latch first deferred error,
  * never retry partially delivered records, discard remaining queued values as
@@ -67,6 +68,8 @@ const cog_obs_field_table_t *cog_cli_observation_fields(void);
 cog_result_t cog_cli_observation_check(cog_cli_app_t *app, cog_result_t primary);
 /** Prepare copied pinned scope, checked start time and static provider span;
  * caller sets admitted provider state before checking a successful send's OPEN.
+ * Burn a nonreused private observation request ID, including failed sends;
+ * core event serial and application retry-budget semantics remain unchanged.
  * No send/tool/session mutation. @return OK or first observation error. */
 cog_result_t cog_cli_observation_provider_begin(cog_cli_app_t *app);
 /** End one timed attempt once, including failed send or consumed semantic FINISH.
@@ -77,7 +80,9 @@ void cog_cli_observation_provider_end(cog_cli_app_t *app, cog_result_t outcome, 
 cog_result_t cog_cli_observation_tool_begin(cog_cli_app_t *app);
 /** Terminal-once duration through reap, or explicit no-execution record when no
  * tool timer was started. Static recognized tool name/node/original ordinal,
- * no call ID/arguments/output. Latches obs errors but never skips durable result. */
+ * no call ID/arguments/output. Identity/once state suppresses duplicate terminal
+ * records if durable insertion fails and a terminal handle must stay retained.
+ * Latches obs errors but never skips durable result. */
 void cog_cli_observation_tool_end(cog_cli_app_t *app, cog_result_t outcome,
     bool effects_possible, bool truncated);
 /** After all providers release IDs, drain/clear/unbind before app obs is freed.
