@@ -721,6 +721,13 @@ cog_provider_t *cog_core_provider(cog_core_t *core)
     return (core != NULL) ? core->provider : NULL;
 }
 
+cog_result_t cog_core_set_provider(cog_core_t *core, cog_provider_t *provider)
+{
+    if (core == NULL) { return COG_ERROR_NULL_PTR; }
+    core->provider = provider;
+    return COG_OK;
+}
+
 cog_obs_t *cog_core_obs(cog_core_t *core)
 {
     return (core != NULL) ? core->obs : NULL;

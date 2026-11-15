@@ -239,6 +239,27 @@ typedef struct cog_cli_options {
  */
 typedef struct cog_cli_app cog_cli_app_t;
 
+/**
+ * @brief Explicit live reload subset; NULL fields retain their effective value.
+ *
+ * At least one of model_id/base_url/credential_ref is required. Strings are
+ * borrowed for the reload call only; nonempty and at most 4095 bytes plus NUL,
+ * subject to the existing J validation. All other effective options are fixed:
+ * backend/net/endpoint implementation, session/store/guard/workspace, tools and
+ * policy, reservations/limits, retry/output/terminal behavior and fixture data.
+ * REAL accepts these three replacements. MOCK accepts only model_id and keeps
+ * its existing immutable borrowed script/deltas. There is no watcher or reread
+ * of argv, environment or config files to re-resolve unrelated settings.
+ */
+typedef struct cog_cli_reload_options {
+    const char *model_id; /**< NULL retains the current effective model. */
+    const char *base_url; /**< NULL retains the current endpoint URL. */
+    const char *credential_ref; /**< NULL retains reference AND resolved secret. */
+    cog_cli_credential_read_fn credential_read; /**< Per-call resolver only. */
+    void *credential_arg; /**< Borrowed only while credential_read executes. */
+} cog_cli_reload_options_t;
+
+
 /** @brief Visible display state; never provider history or opaque continuation. */
 typedef struct cog_cli_display_item {
     uint64_t node_id; /**< Durable node ID; 0 for a not-yet-inserted active aggregate. */
@@ -481,9 +502,90 @@ cog_result_t cog_cli_app_new(cog_cli_app_t **out,
  * shutdown must cancel/poll/reap before this nonblocking destructor.
  * @post All owned resources are released in the documented order. Borrowed
  * net and host dependency runtime remain the caller's responsibility.  The
- *       app must not be used after this call.
+ *       app must not be used after this call. Provider aliases are detached
+ * before each consuming disconnect, with matching config cleared after return
+ * even on cleanup error. Cleanup errors are reported in sanitized form; a consumed
+ * handle is never retried or retained. The void destructor still releases every
+ * owned generation; callers must not infer an unreported reusable provider.
  */
 void cog_cli_app_free(cog_cli_app_t *app);
+
+/**
+ * @brief Prepare and atomically publish a bounded future provider generation.
+ * @param[in,out] app Normal execution app, on its owner thread.
+ * @param[in] replacement Explicit subset; borrowed transitively until return.
+ * @param[out] out_generation Published nonzero configuration ID on OK only;
+ * unchanged on every error. This is unrelated to display/owner incarnations.
+ * @return OK after publication; NULL_PTR for a required NULL; INVALID_ARG for
+ * empty/all-absent/malformed replacement or resolver fields without credential_ref;
+ * INVALID_STATE for LIST/RECOVER, shutdown/cancelling app or unsafe selected
+ * history; INDETERMINATE for frozen normal admission; AGAIN while one published
+ * replacement or its change notification awaits activation/retirement/dispatch;
+ * LIMIT for bytes, constructor capacity or the 64 eligible reload-attempt ceiling
+ * per app; NOMEM; NOT_FOUND,
+ * DENIED, IO or UNSUPPORTED from candidate resolution/provider compatibility.
+ * PROTOCOL for malformed provider data; no error commits a candidate generation.
+ * @pre Outside dispatch/provider/tool/resolver callbacks; no recursive app drive.
+ * The terminal owner input path may call at a boundary between dispatches.
+ * @post Complete copied config/secret/endpoint and an idle provider are prepared
+ * and generically preflighted against the known selected prefix BEFORE the real
+ * app-owned cog_config transaction commits. Failure rolls back/discards only the
+ * candidate and leaves old published/active state usable when cleanup succeeds.
+ * Every disconnect consumes its handle even on cleanup error: detach its aliases
+ * first, call once, then clear/free that config after return. Candidate discard
+ * retains the original preparation/commit return code; a separate cleanup error
+ * freezes admission and requests existing cancel/drain shutdown, without changing
+ * the old provider error/clock/delta snapshot during this call. That exception is
+ * not an ordinary usable-loop refusal. Publication after commit is infallible.
+ * @note Construction is explicit here: replacement config/provider constructors
+ * may allocate within unchanged per-generation limits, with matching discard or
+ * app_free; background service/activation never allocates. Explicit terminal
+ * reload is such a constructor operation, even at an owner input hook. At most two generation owners
+ * coexist. Startup is ID1; each eligible attempt burns one never-reused ID even
+ * on failure, at most64 attempts. Initial required-pointer/presence/resolver-
+ * combination, mode/state/busy refusals burn no attempt; later candidate string,
+ * byte, compatibility, constructor or commit validation failures do consume one.
+ * A supplied credential_ref re-resolves it even if equal to the old reference,
+ * using only this call's callback or J's env: resolver. Callback/context and
+ * source buffers are not retained; only the separately owned resolved secret
+ * survives in its generation until disconnect/free. No callback means no shell.
+ * Omitted credential_ref copies the old resolved secret without a resolver call.
+ * No model wire work, tool start, durable session save or input admission occurs.
+ * Calling reload never activates/disconnects the current provider. A committed
+ * change sets one reserved notification flag; fair service retries enqueue of
+ * CONFIG_CHANGED with source_id=configuration ID and no borrowed payload until
+ * dispatch succeeds. Queue saturation cannot undo commit or lose that notice;
+ * notice handling is self-transition only and does not advance a turn. Shutdown
+ * may discard an undelivered notice with the app; it never activates new work.
+ *
+ * An entire already-active application turn (retries, model/tool rounds, policy,
+ * cancellation and retained output) stays pinned to its old options/provider.
+ * Publication selects only future idle-turn work. At the first safe idle owner
+ * boundary, before queued/fresh input, switch app options/provider and the core
+ * reference together, then disconnect the old provider before clearing/freeing
+ * its generation. This is deferred to owner loop/input admission boundaries,
+ * never the reload call; generation ID is publication, not activation completion.
+ * Metadata/frozen/draining work cannot activate a replacement. Input cannot
+ * begin another old-generation turn while a future owner awaits safe activation;
+ * defer that input without releasing/reassigning its reserved bytes/identity.
+ * A later send revalidates future output/opaque not known at preparation time;
+ * it may fail without rolling back a committed config or replaying old effects.
+ * An old failed/cancelled turn must drain before activation; it never grants
+ * fresh-input authorization. A frozen result retains both owners until safe
+ * cleanup, without activating or replaying future work. Postcommit retirement
+ * cleanup error freezes admission and is surfaced as a driver failure, not a
+ * transaction rollback. The old handle is consumed on that return, never retained
+ * or retried; after its aliases are detached its released borrows permit clearing
+ * the old secret/config on either success or error. The new core/app references
+ * remain valid but cannot admit new work. Terminal refusal handling must surface
+ * cleanup-error shutdown rather than conceal it behind a sanitized retry message.
+ * Provider accessors are borrowed until the next activation/app_free; callers
+ * must not retain those pointers across mutating app/loop calls. Owner-thread,
+ * not signal-safe. No effect-policy/store/workspace mutation is expressible.
+ */
+cog_result_t cog_cli_app_reload(cog_cli_app_t *app,
+    const cog_cli_reload_options_t *replacement, uint64_t *out_generation);
+
 
 /**
  * @brief Select a replay-safe fork point for the next fresh input in this session.
@@ -687,7 +789,9 @@ cog_session_t *cog_cli_app_session(cog_cli_app_t *app);
  * @brief Return the provider instance (owned by the app).
  *
  * @param[in] app App to query; may be NULL.
- * @return The provider, or NULL if @p app is NULL.
+ * @return The borrowed active provider, or NULL if @p app is NULL.
+ * @note Valid until the next safe reload activation or app_free. Never retain
+ * it across mutating app/loop calls. It matches cog_core_provider(app_core).
  */
 cog_provider_t *cog_cli_app_provider(cog_cli_app_t *app);
 

@@ -431,11 +431,32 @@ cog_ipc_endpoint_t *cog_core_ipc(cog_core_t *core);
  * @brief Return the active LLM provider.
  *
  * @param[in] core Core to query; may be NULL.
- * @return The provider instance, or NULL if @p core is NULL.
+ * @return The borrowed provider instance, or NULL if @p core is NULL.
+ * @note Replaced only by set_provider; callers must not retain an old reference
+ * across replacement or its owner destruction. Core never frees the provider.
  *
  * Threading: not thread-safe.
  */
 cog_provider_t *cog_core_provider(cog_core_t *core);
+
+/**
+ * @brief Replace the borrowed provider reference without driving either provider.
+ * @param[in,out] core Core whose observable provider reference is updated.
+ * @param[in] provider Borrowed replacement; NULL detaches the reference.
+ * @return COG_OK; NULL_PTR if core is NULL. No other failure is possible.
+ * @post provider() returns exactly the replacement. No allocation, callbacks,
+ * provider calls, dispatch, clock/queue/session mutation or ownership transfer.
+ * @pre Owner thread with no provider call or other outstanding handler borrow
+ * of the old pointer. Service/idle hooks and a handler before acquiring its
+ * provider are permitted; the caller proves no old borrow will be reused. It keeps
+ * each provider alive while any caller/handler still borrows it and disconnects
+ * the old instance only after its work is drained and references are replaced.
+ * Core cannot infer provider activity or validate its implementation. This does
+ * not authorize cancelling/replacing live work; composition owns that decision.
+ * @note Not thread-safe or signal-safe. Setting the same pointer is a no-op.
+ */
+cog_result_t cog_core_set_provider(cog_core_t *core, cog_provider_t *provider);
+
 
 /**
  * @brief Return the observability context.

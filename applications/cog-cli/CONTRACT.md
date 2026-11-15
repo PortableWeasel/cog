@@ -26,6 +26,7 @@ is included in app error messages.
 The private implementation is split into `cli.c` (ownership/construction),
 `app_turn.c` (static dispatch, service and input), `app_tools.c` (durable tools),
 `app_sessions.c` (selection, guarded restore and terminal recovery),
+`app_reload.c` (bounded generation publication and retirement),
 `app_display.c` (snapshots/CGD1), and `main.c` (host composition). J's immutable
 configuration generation and secret remain alive until provider disconnect.
 All contexts are explicit; dispatch and tool descriptors are static const.
@@ -188,3 +189,45 @@ so EPIPE reaches cleanup, then restores its prior disposition.
 The `cog-cli-runtime` install component installs the actual executable for the
 offline installed-binary restart tests. Shipped real transport dependency closure
 remains P's packaging gate; installing this component alone makes no such claim.
+
+R12 adds explicit owner-thread `cog_cli_app_reload` and terminal
+`/reload model VALUE`, `/reload base-url VALUE`, `/reload credential-ref VALUE`.
+The host API can replace all three fields atomically; terminal commands take the
+entire suffix as one value and never echo it. REAL accepts the three-field subset;
+MOCK accepts model only. Credential authority belongs to that explicit call:
+omission copies the current owned secret, while a supplied reference resolves
+again through its supplied callback or the env-only default. Terminal reload has
+no retained host callback authority. No watcher, startup-source reread, config-file
+write or backend/resource/store/guard/workspace/policy change is introduced.
+
+Each execution app owns one constructor-reserved real config tree:64 aggregate
+nodes,65536 string bytes,65 transaction identities and one static validator. It
+stores only effective model/URL/credential reference. Startup uses identity1;
+64 eligible attempts burn IDs2..65, including failed preparation. Mode/busy and
+initial invalid-pointer/presence refusals burn none. Candidate config/secret,
+endpoint and idle provider are constructed and generically preflighted before
+real commit. Failure rolls back and disposes only that candidate. Commit success
+has only infallible publication remaining; its returned ID means published future
+configuration, not completed activation. Further reload waits until that future
+activates/retires and its retained by-value CONFIG_CHANGED notice is handled.
+
+The whole existing application turn stays pinned, including retry/backoff, model
+and tool rounds, current policy and retained output. At a safe owner boundary
+before queued/fresh input, activation switches app and core references together.
+There are at most two live owners. Provider aliases detach before exactly one
+consuming disconnect; matching configuration/secret clears after every return.
+An exceptional cleanup error freezes admission and reaches driver cancel/drain;
+it never retries the consumed handle or undoes committed publication. Candidate
+discard preserves its primary preparation/commit API error and records cleanup
+error separately. Terminal refusal handling cannot conceal that freeze.
+
+Normal requests and restored pending-prefix preflight use the pinned generation
+ID. Candidate preflight checks only the known selected prefix, using a pending
+fork point when present. New bytes from old work are revalidated at later send;
+capacity/compatibility failure preserves the old data without implicit replay or
+truncation. Publication does not authorize incomplete-turn continuation. Known
+EOF with no eligible input leaves a future generation pending for teardown;
+already-admitted/final unterminated input retains ordinary execution semantics.
+Provider getters expose the current borrowed instance and must be reacquired
+after mutating/drive calls. [R12 evidence](../../docs/REAL_CLIENT_RELOAD_EVIDENCE.md)
+records the scoped checks and remaining review/release gates.

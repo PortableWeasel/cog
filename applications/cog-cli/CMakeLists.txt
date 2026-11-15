@@ -31,6 +31,7 @@ add_library(cog-cli-lib STATIC
     src/app_tools.c
     src/app_display.c
     src/app_sessions.c
+    src/app_reload.c
     src/mock_provider.c
 )
 add_library(cog::cli ALIAS cog-cli-lib)
@@ -45,7 +46,7 @@ target_compile_features(cog-cli-lib PUBLIC c_std_11)
 
 # cli.c and mock_provider.c use POSIX facilities (select, nanosleep,
 # signal); the _POSIX_C_SOURCE define lives in each source file.
-target_link_libraries(cog-cli-lib PUBLIC cog::core cog::provider cog::obs cog::toolkit cog::net cog-cli-config)
+target_link_libraries(cog-cli-lib PUBLIC cog::core cog::provider cog::obs cog::toolkit cog::net cog::config cog-cli-config)
 
 target_enable_warnings(cog-cli-lib)
 

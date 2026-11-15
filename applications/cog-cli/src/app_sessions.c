@@ -180,7 +180,7 @@ cog_result_t cog_cli_sessions_prepare(cog_cli_app_t *app)
     if (rc != COG_OK) return rc;
     cog_provider_request_t request = {.model_id = app->opts.model_id,
         .messages = app->history, .message_count = count, .stream = true,
-        .max_tokens = app->opts.max_output_tokens, .configuration_generation = 1U};
+        .max_tokens = app->opts.max_output_tokens, .configuration_generation = app->configuration_generation};
     if (app->workspace != NULL) { request.tools_json = app->tools_json; request.tools_json_len = app->tools_json_len; }
     rc = cog_provider_preflight(app->provider, &request, COG_PROVIDER_PREFLIGHT_PENDING_TOOLS);
     if (rc != COG_OK) return rc;
@@ -223,6 +223,8 @@ cog_session_node_t *cog_cli_session_node(cog_cli_app_t *app, uint64_t id)
 cog_result_t cog_cli_app_fork(cog_cli_app_t *app, uint64_t node_id)
 {
     if (app == NULL) return COG_ERROR_NULL_PTR;
+    if (app->reload_in_progress) return COG_ERROR_INVALID_STATE;
+    if (app->reload_cleanup_error != COG_OK) return COG_ERROR_INDETERMINATE;
     if (cog_cli_metadata(app)) return COG_ERROR_INVALID_STATE;
     if (app->assistant_pending) return app->assistant_error;
     if (app->recovery) return COG_ERROR_INDETERMINATE;

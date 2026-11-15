@@ -182,9 +182,12 @@ static cog_result_t resolve(void *arg, const char *ref, char *out, size_t cap,
     return *verdict;
 }
 static cog_result_t descriptor_preflight(cog_provider_t *p,
-    const cog_provider_request_t *r, cog_provider_preflight_stage_t stage)
+                                         const cog_provider_request_t *r,
+                                         cog_provider_preflight_stage_t stage)
 {
-    (void)p; (void)r; (void)stage;
+    (void)p;
+    (void)r;
+    (void)stage;
     return COG_ERROR_UNSUPPORTED; /* Identity-only descriptor, never driven. */
 }
 static int generation(void)
@@ -784,17 +787,394 @@ static int session_unicode_boundary(void)
         CHECK(effective->store_mode == COG_CLI_STORE_DURABLE);
         cog_cli_configuration_free(c);
         memcpy(source, expected, sizeof(expected));
-        source[127] = 'x'; source[128] = '\0';
+        source[127] = 'x';
+        source[128] = '\0';
         CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_LIMIT && c == NULL);
         source[126] = '\0'; /* Truncated four-byte scalar, below byte ceiling. */
-        CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_INVALID_ARG && c == NULL);
+        CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_INVALID_ARG &&
+              c == NULL);
     }
+    return 0;
+}
+
+typedef struct reload_resolver {
+    const char *secret, *expected_reference;
+    unsigned calls;
+    cog_result_t result;
+} reload_resolver_t;
+static cog_result_t reload_resolve(void *arg, const char *reference, char *output,
+                                   size_t capacity, size_t *required)
+{
+    reload_resolver_t *resolver = arg;
+    ++resolver->calls;
+    if (resolver->expected_reference != NULL &&
+        strcmp(reference, resolver->expected_reference) != 0)
+        return COG_ERROR_PROTOCOL;
+    *required = strlen(resolver->secret) + 1U;
+    if (*required > capacity)
+        return COG_ERROR_OVERFLOW;
+    memcpy(output, resolver->secret, *required);
+    return resolver->result;
+}
+static int fixed_options_equal(const cog_cli_options_t *a, const cog_cli_options_t *b)
+{
+#define SAME(member) CHECK(a->member == b->member)
+    SAME(backend);
+    SAME(session_action);
+    SAME(fork_node_id);
+    SAME(previous_processes_fenced);
+    SAME(show_usage);
+    SAME(store_mode);
+    SAME(mock_mode);
+    SAME(script);
+    SAME(mock_deltas);
+    SAME(mock_delta_count);
+    SAME(interactive);
+    SAME(verbose);
+    SAME(tool_policy);
+    SAME(net);
+    SAME(max_output_tokens);
+    SAME(max_tool_rounds);
+    SAME(max_turn_ms);
+    SAME(max_tool_ms);
+    SAME(max_tool_output_bytes);
+    SAME(max_context_bytes);
+    SAME(max_retries);
+    SAME(max_retry_elapsed_ms);
+    SAME(explicit_options);
+#undef SAME
+#define COPIED(member)                                                                 \
+    do {                                                                               \
+        CHECK((a->member == NULL) == (b->member == NULL));                             \
+        if (a->member != NULL) {                                                       \
+            CHECK(a->member != b->member);                                             \
+            CHECK(strcmp(a->member, b->member) == 0);                                  \
+        }                                                                              \
+    } while (0)
+    COPIED(prompt);
+    COPIED(session_id);
+    COPIED(source_session_id);
+    COPIED(store_dir);
+    COPIED(log_path);
+    COPIED(socket_path);
+    COPIED(endpoint_name);
+    COPIED(chunks);
+    COPIED(queue_text);
+    COPIED(config_path);
+    COPIED(workspace_root);
+#undef COPIED
+    CHECK(b->credential_read == NULL && b->credential_arg == NULL);
+    return 0;
+}
+static int reload_generations(void)
+{
+    char path[] = "/tmp/cog-config-reload-XXXXXX", model[64] = "replacement/model";
+    char url[64] = "https://replacement.invalid/v2", reference[64] = "host:replacement";
+    cog_cli_options_t input;
+    cog_cli_configuration_t *current = NULL, *next = NULL, *rotated = NULL,
+                            *host = NULL, *copy = NULL;
+    const cog_cli_options_t *old_options, *options;
+    const cog_endpoint_t *old_endpoint, *endpoint;
+    static const cog_provider_vtable_t identity = {
+        0}; /* Never dispatched: ownership only. */
+    const cog_provider_limits_t limits = {1U, 1U, 1U, 1U, 1U, 1U, 1U,
+                                          1U, 1U, 1U, 1U, 1U, 1U};
+    reload_resolver_t first = {"SYNTHETIC_INITIAL", "env:COG_TEST_SECRET", 0U, COG_OK};
+    reload_resolver_t resolver = {"SYNTHETIC_ROTATED_HOST", reference, 0U, COG_OK};
+    cog_cli_reload_options_t replacement = {.model_id = model, .base_url = url};
+    size_t i;
+    CHECK(clean() == 0);
+    CHECK(
+        fixture(
+            path,
+            "models.default=file/model\nproviders.openrouter.base-url=https://"
+            "pinned.invalid/v1\nworkspace.root=/pinned/"
+            "workspace\nlimits.max-output-tokens=17\nlimits.max-tool-rounds=3\nlimits."
+            "max-turn-ms=8000\nlimits.max-tool-ms=4000\nlimits.max-tool-output-bytes="
+            "71\nlimits.max-context-bytes=411\nlimits.max-retry-elapsed-ms=3000\n") ==
+        0);
+    base(&input);
+    input.config_path = path;
+    input.session_id = "pinned-session";
+    input.prompt = "pinned prompt";
+    input.queue_text = "pinned queue";
+    input.log_path = "/pinned/log";
+    input.socket_path = "/pinned/socket";
+    input.max_retries = 0U;
+    input.tool_policy = COG_CLI_TOOL_POLICY_ASK;
+    input.explicit_options |= COG_CLI_OPT_RETRIES | COG_CLI_OPT_POLICY;
+    input.interactive = false;
+    input.verbose = true;
+    input.show_usage = true;
+    input.net = (cog_net_ctx_t *)(void *)&input;
+    input.credential_read = reload_resolve;
+    input.credential_arg = &first;
+    CHECK(cog_cli_configuration_new(&current, &input, 1U) == COG_OK &&
+          first.calls == 1U);
+    CHECK(cog_cli_configuration_bind(current, &identity, NULL, NULL, &limits) ==
+          COG_OK);
+    old_options = cog_cli_configuration_options(current);
+    old_endpoint = cog_cli_configuration_endpoint(current);
+    CHECK(strcmp(old_options->model_id, "file/model") == 0);
+    CHECK(strcmp(old_endpoint->api_key, "SYNTHETIC_INITIAL") == 0);
+    CHECK(unlink(path) == 0); /* Reload must not reopen the old config file. */
+    for (i = 0U; i < sizeof(variables) / sizeof(variables[0]); ++i)
+        CHECK(setenv(variables[i], "INVALID_UNRELATED_SOURCE", 1) == 0);
+    CHECK(setenv("HOME", "relative", 1) == 0 &&
+          setenv("XDG_STATE_HOME", "relative", 1) == 0);
+    CHECK(unsetenv("COG_TEST_SECRET") == 0);
+    CHECK(cog_cli_configuration_reload_new(&next, current, &replacement, 2U) == COG_OK);
+    options = cog_cli_configuration_options(next);
+    CHECK(fixed_options_equal(old_options, options) == 0);
+    CHECK(strcmp(options->model_id, model) == 0 && options->model_id != model);
+    CHECK(strcmp(options->base_url, url) == 0 && options->base_url != url);
+    CHECK(strcmp(options->credential_ref, old_options->credential_ref) == 0 &&
+          options->credential_ref != old_options->credential_ref);
+    CHECK(cog_cli_configuration_endpoint(next) == NULL && first.calls == 1U);
+    memset(model, 'x', strlen(model));
+    memset(url, 'x', strlen(url));
+    CHECK(cog_cli_configuration_bind(next, &identity, NULL, NULL, &limits) == COG_OK);
+    endpoint = cog_cli_configuration_endpoint(next);
+    CHECK(endpoint->generation == 2U &&
+          strcmp(endpoint->models->models[0].id, "replacement/model") == 0);
+    CHECK(strcmp(endpoint->base_url, "https://replacement.invalid/v2") == 0);
+    CHECK(endpoint->api_key != old_endpoint->api_key &&
+          strcmp(endpoint->api_key, old_endpoint->api_key) == 0);
+    CHECK(strcmp(old_endpoint->models->models[0].id, "file/model") == 0);
+    CHECK(setenv("COG_TEST_SECRET", "SYNTHETIC_ROTATED_ENV", 1) == 0);
+    replacement = (cog_cli_reload_options_t){.credential_ref = options->credential_ref};
+    CHECK(cog_cli_configuration_reload_new(&rotated, next, &replacement, 3U) == COG_OK);
+    CHECK(cog_cli_configuration_bind(rotated, &identity, NULL, NULL, &limits) ==
+          COG_OK);
+    CHECK(strcmp(cog_cli_configuration_endpoint(rotated)->api_key,
+                 "SYNTHETIC_ROTATED_ENV") == 0);
+    CHECK(strcmp(endpoint->api_key, "SYNTHETIC_INITIAL") == 0 && first.calls == 1U);
+    CHECK(fixed_options_equal(options, cog_cli_configuration_options(rotated)) == 0);
+    replacement = (cog_cli_reload_options_t){.credential_ref = reference,
+                                             .credential_read = reload_resolve,
+                                             .credential_arg = &resolver};
+    CHECK(cog_cli_configuration_reload_new(&host, rotated, &replacement, 4U) ==
+              COG_OK &&
+          resolver.calls == 1U);
+    CHECK(cog_cli_configuration_bind(host, &identity, NULL, NULL, &limits) == COG_OK);
+    CHECK(strcmp(cog_cli_configuration_endpoint(host)->api_key,
+                 "SYNTHETIC_ROTATED_HOST") == 0);
+    CHECK(cog_cli_configuration_options(host)->credential_read == NULL &&
+          cog_cli_configuration_options(host)->credential_arg == NULL);
+    resolver.secret = "SYNTHETIC_SECOND_HOST";
+    replacement.credential_ref = cog_cli_configuration_options(host)->credential_ref;
+    CHECK(cog_cli_configuration_reload_new(&copy, host, &replacement, 5U) == COG_OK &&
+          resolver.calls == 2U);
+    CHECK(cog_cli_configuration_bind(copy, &identity, NULL, NULL, &limits) == COG_OK);
+    CHECK(strcmp(cog_cli_configuration_endpoint(copy)->api_key,
+                 "SYNTHETIC_SECOND_HOST") == 0);
+    CHECK(strcmp(cog_cli_configuration_endpoint(host)->api_key,
+                 "SYNTHETIC_ROTATED_HOST") == 0);
+    cog_cli_configuration_free(host);
+    host = copy;
+    copy = NULL;
+    memset(reference, 'x', strlen(reference));
+    memset(&resolver, 0, sizeof(resolver));
+    replacement = (cog_cli_reload_options_t){.model_id = "same-owner/new-model"};
+    CHECK(cog_cli_configuration_reload_new(&copy, host, &replacement, 6U) == COG_OK);
+    CHECK(fixed_options_equal(cog_cli_configuration_options(host),
+                              cog_cli_configuration_options(copy)) == 0);
+    cog_cli_configuration_free(current);
+    cog_cli_configuration_free(next);
+    cog_cli_configuration_free(rotated);
+    cog_cli_configuration_free(host);
+    CHECK(cog_cli_configuration_bind(copy, &identity, NULL, NULL, &limits) == COG_OK);
+    endpoint = cog_cli_configuration_endpoint(copy);
+    CHECK(endpoint->generation == 6U &&
+          strcmp(endpoint->api_key, "SYNTHETIC_SECOND_HOST") == 0);
+    CHECK(strcmp(endpoint->models->models[0].id, "same-owner/new-model") == 0);
+    CHECK(strcmp(cog_cli_configuration_options(copy)->config_path, path) == 0);
+    cog_cli_configuration_free(copy);
+    CHECK(clean() == 0);
+    return 0;
+}
+static int reload_validation(void)
+{
+    cog_cli_options_t input;
+    cog_cli_configuration_t *current = NULL, *candidate = NULL;
+    cog_cli_reload_options_t replacement = {.model_id = "valid/model"};
+    reload_resolver_t resolver = {"SYNTHETIC_RELOAD_FAILURE", NULL, 0U,
+                                  COG_ERROR_DENIED};
+    char oversized[4097];
+    static const char *const bad_models[] = {"", "bad model", "bad/\xc0\xaf",
+                                             "bad/\xed\xa0\x80"};
+    static const char *const bad_urls[] = {"", "http://synthetic.invalid",
+                                           "https://:443/v1", "https://[]/v1",
+                                           "https://synthetic.invalid:65536/v1"};
+    size_t i;
+    CHECK(clean() == 0);
+    base(&input);
+    input.model_id = "pinned/model";
+    input.explicit_options |= COG_CLI_OPT_MODEL;
+    CHECK(cog_cli_configuration_new(&current, &input, 1U) == COG_OK);
+    CHECK(cog_cli_configuration_reload_new(NULL, current, &replacement, 2U) ==
+          COG_ERROR_NULL_PTR);
+    CHECK(cog_cli_configuration_reload_new(&candidate, NULL, &replacement, 2U) ==
+              COG_ERROR_NULL_PTR &&
+          candidate == NULL);
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, NULL, 2U) ==
+              COG_ERROR_NULL_PTR &&
+          candidate == NULL);
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 0U) ==
+              COG_ERROR_INVALID_ARG &&
+          candidate == NULL);
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 1U) ==
+              COG_ERROR_INVALID_ARG &&
+          candidate == NULL);
+    replacement = (cog_cli_reload_options_t){0};
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+              COG_ERROR_INVALID_ARG &&
+          candidate == NULL);
+    replacement = (cog_cli_reload_options_t){.model_id = "next/model",
+                                             .credential_read = reload_resolve,
+                                             .credential_arg = &resolver};
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+              COG_ERROR_INVALID_ARG &&
+          candidate == NULL && resolver.calls == 0U);
+    replacement.credential_read = NULL;
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+              COG_ERROR_INVALID_ARG &&
+          candidate == NULL);
+    for (i = 0U; i < sizeof(bad_models) / sizeof(bad_models[0]); ++i) {
+        replacement = (cog_cli_reload_options_t){.model_id = bad_models[i]};
+        CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+                  COG_ERROR_INVALID_ARG &&
+              candidate == NULL);
+    }
+    for (i = 0U; i < sizeof(bad_urls) / sizeof(bad_urls[0]); ++i) {
+        replacement = (cog_cli_reload_options_t){.base_url = bad_urls[i]};
+        CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+                  COG_ERROR_INVALID_ARG &&
+              candidate == NULL);
+    }
+    memset(oversized, 'x', sizeof(oversized) - 1U);
+    oversized[sizeof(oversized) - 1U] = '\0';
+    replacement = (cog_cli_reload_options_t){.model_id = oversized};
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+              COG_ERROR_LIMIT &&
+          candidate == NULL);
+    replacement = (cog_cli_reload_options_t){.base_url = oversized};
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+              COG_ERROR_LIMIT &&
+          candidate == NULL);
+    replacement = (cog_cli_reload_options_t){.credential_ref = oversized,
+                                             .credential_read = reload_resolve,
+                                             .credential_arg = &resolver};
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+              COG_ERROR_LIMIT &&
+          candidate == NULL && resolver.calls == 0U);
+    replacement.credential_ref = "";
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+              COG_ERROR_INVALID_ARG &&
+          candidate == NULL && resolver.calls == 0U);
+    replacement.credential_ref = "host:failure";
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+              COG_ERROR_DENIED &&
+          candidate == NULL && resolver.calls == 1U);
+    CHECK(strcmp(cog_cli_configuration_options(current)->model_id, "pinned/model") ==
+          0);
+    replacement = (cog_cli_reload_options_t){.credential_ref = "env:INVALID-NAME"};
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+              COG_ERROR_INVALID_ARG &&
+          candidate == NULL);
+    replacement.credential_ref = "env:COG_RELOAD_MISSING";
+    CHECK(unsetenv("COG_RELOAD_MISSING") == 0);
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+              COG_ERROR_NOT_FOUND &&
+          candidate == NULL);
+    replacement.credential_ref = "pass:synthetic";
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+              COG_ERROR_UNSUPPORTED &&
+          candidate == NULL);
+    oversized[4095U] = '\0';
+    replacement = (cog_cli_reload_options_t){.model_id = oversized};
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+          COG_OK);
+    CHECK(strlen(cog_cli_configuration_options(candidate)->model_id) == 4095U);
+    cog_cli_configuration_free(candidate);
+    replacement = (cog_cli_reload_options_t){.model_id = "pinned/model"};
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement,
+                                           UINT64_MAX) == COG_OK);
+    CHECK(fixed_options_equal(cog_cli_configuration_options(current),
+                              cog_cli_configuration_options(candidate)) == 0);
+    cog_cli_configuration_free(candidate);
+    cog_cli_configuration_free(current);
+    cog_cli_options_defaults(&input);
+    input.session_action = COG_CLI_SESSION_LIST;
+    CHECK(cog_cli_configuration_new(&current, &input, 1U) == COG_OK);
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+              COG_ERROR_INVALID_ARG &&
+          candidate == NULL);
+    cog_cli_configuration_free(current);
+    return 0;
+}
+static int reload_mock_borrows(void)
+{
+    cog_cli_options_t input;
+    cog_cli_configuration_t *current = NULL, *candidate = NULL;
+    const cog_cli_options_t *before, *after;
+    static const cog_mock_script_t script = {0};
+    static const cog_provider_delta_t delta = {0};
+    cog_cli_reload_options_t replacement = {.model_id = "mock/replacement"};
+    CHECK(clean() == 0);
+    base(&input);
+    input.backend = COG_CLI_BACKEND_MOCK;
+    input.explicit_options |= COG_CLI_OPT_BACKEND;
+    input.session_action = COG_CLI_SESSION_FORK;
+    input.source_session_id = "pinned-source";
+    input.fork_node_id = 9U;
+    input.previous_processes_fenced = true;
+    input.script = &script;
+    input.net =
+        (cog_net_ctx_t *)(void *)&input; /* Borrow preservation, never dispatched. */
+    CHECK(cog_cli_configuration_new(&current, &input, 1U) == COG_OK);
+    before = cog_cli_configuration_options(current);
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+          COG_OK);
+    after = cog_cli_configuration_options(candidate);
+    CHECK(fixed_options_equal(before, after) == 0 &&
+          strcmp(after->model_id, "mock/replacement") == 0);
+    CHECK(after->script == &script && after->mock_deltas == NULL &&
+          after->mock_delta_count == 0U && after->net == input.net);
+    cog_cli_configuration_free(candidate);
+    replacement.base_url = "https://synthetic.invalid";
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 3U) ==
+              COG_ERROR_UNSUPPORTED &&
+          candidate == NULL);
+    replacement.base_url = NULL;
+    replacement.credential_ref = "env:COG_TEST_SECRET";
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 4U) ==
+              COG_ERROR_UNSUPPORTED &&
+          candidate == NULL);
+    CHECK(strcmp(before->model_id, "mock-model") == 0);
+    cog_cli_configuration_free(current);
+    input.script = NULL;
+    input.mock_deltas = &delta;
+    input.mock_delta_count = 1U;
+    CHECK(cog_cli_configuration_new(&current, &input, 1U) == COG_OK);
+    replacement = (cog_cli_reload_options_t){.model_id = "typed-fixture/model"};
+    CHECK(cog_cli_configuration_reload_new(&candidate, current, &replacement, 2U) ==
+          COG_OK);
+    after = cog_cli_configuration_options(candidate);
+    CHECK(after->script == NULL && after->mock_deltas == &delta &&
+          after->mock_delta_count == 1U);
+    CHECK(fixed_options_equal(cog_cli_configuration_options(current), after) == 0);
+    cog_cli_configuration_free(candidate);
+    cog_cli_configuration_free(current);
     return 0;
 }
 
 int main(void)
 {
     CHECK(session_unicode_boundary() == 0);
+    CHECK(reload_generations() == 0);
+    CHECK(reload_validation() == 0);
+    CHECK(reload_mock_borrows() == 0);
     CHECK(session_configuration() == 0);
     CHECK(session_selector_failures() == 0);
     CHECK(session_inputs_are_direct() == 0);

@@ -66,6 +66,11 @@ oversized replacement is atomic LIMIT. N/O still owns the new remote attempt,
 notification acknowledgment, release/reuse, and wire-control APIs. No success
 stub is supplied for these unimplemented protocols.
 
+Provider replacement changes only the borrowed pointer. NULL detaches it, and
+replacing with the same pointer is a successful no-op. The caller ensures no
+old provider borrow remains in use and manages both provider lifetimes; core
+does not allocate, drive, or destroy a provider or change runtime state.
+
 Session/provider/obs/store remain borrowed; the IPC endpoint transfers ownership
 only on successful construction. Session attachment and existing auto-save
 behavior remain unchanged. Constructor failure releases only new core storage.

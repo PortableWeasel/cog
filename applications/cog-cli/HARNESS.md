@@ -107,3 +107,22 @@ has not been replaced by the injected failure, no call is reexecuted, and only a
 new explicit recovery decision after restart can close the durable uncertainty.
 Use separate sanitizer directories and preserve these failure paths in Release;
 assertion workloads are kept enabled by the shared test build policy.
+
+`cli-app-reload` uses real app/config/provider objects with explicit owner-hook
+controls between dispatches. It exercises two providers, retained OVERFLOW,
+whole-turn retry/tool/policy pinning, pending restore, real validator rejection
+and actual reset-LIMIT, consuming cleanup faults, source/resolver lifetime,
+known-prefix REAL compatibility and queue/EOF/fresh-input boundaries. Linker
+interposition supplies failure injection while still running the real commit,
+disconnect and copied-generation implementations. No paid request is made.
+`cli-app-reload-critic` independently checks pipe EOF during delayed old work and
+64 successful publications, with an exact two-live-owner peak and65 total
+constructors/destructors. Original08 preserves its component assertions and now
+also drives actual app generation1/2 sends. Installed session tests additionally
+drive terminal reload; app-memory tests exhaust explicit candidate constructors
+and reject all allocations during later activation/service/send.
+
+The exact R12 selection and supported curl recipe are in
+[R12 evidence](../../docs/REAL_CLIENT_RELOAD_EVIDENCE.md). Use separate Release
+GCC/Clang/ASan and Debug TSan directories. The selected executable count is not
+a claim that all release scenarios or full installed transport closure passed.

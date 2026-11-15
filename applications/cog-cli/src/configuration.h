@@ -23,6 +23,24 @@ typedef struct cog_cli_configuration cog_cli_configuration_t;
 cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
                                        const cog_cli_options_t *input,
                                        uint64_t generation);
+/**
+ * @brief Construct an explicit reload generation from resolved immutable state.
+ * @param[out] out Owned candidate, NULL on failure; match configuration_free.
+ * @param[in] current Resolved current generation; remains unchanged.
+ * @param[in] replacement Public reload subset, borrowed only until return.
+ * @param[in] generation Nonzero fresh configuration ID supplied by app owner.
+ * @return OK; NULL_PTR; INVALID_ARG; LIMIT; NOMEM; NOT_FOUND/DENIED/IO/PROTOCOL/
+ * UNSUPPORTED from explicit credential resolution or fixed profile validation.
+ * @note No argv/environment/file precedence rerun. Only an explicit credential
+ * reference is resolved (callback or env:); otherwise copy the old secret into
+ * separate candidate storage. Copy all effective strings in existing J bounds;
+ * retain only existing declared net/script borrows. Never retain resolver
+ * authority. Same fixed nonreloadable options/resources; no provider/store/tool
+ * calls. Constructor allocation is explicit and candidate secrets clear on free.
+ */
+cog_result_t cog_cli_configuration_reload_new(cog_cli_configuration_t **out,
+    const cog_cli_configuration_t *current,
+    const cog_cli_reload_options_t *replacement, uint64_t generation);
 void cog_cli_configuration_free(cog_cli_configuration_t *configuration);
 const cog_cli_options_t *
 cog_cli_configuration_options(const cog_cli_configuration_t *configuration);

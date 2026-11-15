@@ -187,6 +187,7 @@ cog_result_t cog_cli_app_new(cog_cli_app_t **out, const cog_cli_options_t *input
     cog_result_t rc = cog_cli_configuration_new(&app->configuration, input, 1U);
     if (rc != COG_OK) goto fail;
     app->opts = *cog_cli_configuration_options(app->configuration);
+    app->configuration_generation = 1U;
     if ((app->opts.mock_deltas == NULL) != (app->opts.mock_delta_count == 0U) ||
         app->opts.mock_delta_count > 4096U ||
         (app->opts.mock_deltas != NULL && app->opts.script != NULL) ||
@@ -211,6 +212,8 @@ cog_result_t cog_cli_app_new(cog_cli_app_t **out, const cog_cli_options_t *input
         rc = COG_ERROR_IO; goto fail;
     }
     if (cog_cli_metadata(app)) { *out = app; return COG_OK; }
+    rc = cog_cli_reload_init(app);
+    if (rc != COG_OK) goto fail;
     if (app->opts.backend == COG_CLI_BACKEND_MOCK) {
         rc = cli_build_script(app);
         if (rc != COG_OK) goto fail;
@@ -290,15 +293,16 @@ void cog_cli_app_free(cog_cli_app_t *app)
         }
     }
     if (app->workspace != NULL) (void)cog_workspace_free(app->workspace);
-    if (app->core != NULL) cog_core_free(app->core);
-    if (app->provider != NULL) (void)cog_provider_disconnect(app->provider);
+    if (app->core != NULL) { cog_core_free(app->core); app->core = NULL; }
+    cog_result_t cleanup = cog_cli_reload_free(app);
+    if (cleanup != COG_OK)
+        (void)fprintf(stderr, "cog-cli: provider cleanup: %s\n", cog_cli_result_name(cleanup));
     if (app->guard != NULL) (void)cog_store_owner_release(app->guard);
     if (app->obs != NULL) cog_obs_free(app->obs);
     if (app->store != NULL) cog_store_free(app->store);
     if (app->session != NULL) cog_session_free(app->session);
     if (app->ipc != NULL) (void)cog_ipc_endpoint_free(app->ipc);
     if (app->log_file != NULL && app->log_file != stderr) (void)fclose(app->log_file);
-    cog_cli_configuration_free(app->configuration);
     for (size_t i = 0U; i < CLI_CALLS; i++) free(app->calls[i].arguments);
     for (size_t i = 0U; i < CLI_INPUTS; i++) free(app->inputs[i].text);
     free(app->text); free(app->opaque_storage); free(app->delta_storage);
@@ -308,11 +312,17 @@ void cog_cli_app_free(cog_cli_app_t *app)
 cog_result_t cog_cli_app_run(cog_cli_app_t *app)
 {
     if (app == NULL) return COG_ERROR_NULL_PTR;
+    if (app->reload_in_progress) return COG_ERROR_INVALID_STATE;
     if (cog_cli_metadata(app)) return cog_cli_metadata_run(app);
+    if (app->reload_cleanup_error != COG_OK) {
+        (void)cog_cli_drain(app); return app->reload_cleanup_error;
+    }
     if (app->assistant_pending) return app->assistant_error;
     if (app->recovery) return COG_ERROR_INDETERMINATE;
     atomic_store_explicit(&app->stop_requested, false, memory_order_release);
     app->shutdown = false;
+    if (!app->active && !app->provider_active && app->execution == NULL)
+        app->cancelling = false; /* Previous cancellation has already drained. */
     cog_result_t rc = COG_OK;
     if (app->resuming_policy && app->active && !app->event_queued) {
         cog_event_t event = {.id = CLI_EVENT_RESUME_POLICY, .kind = COG_EVENT_STATUS_UPDATE,
@@ -343,6 +353,8 @@ static cog_result_t input_add(cog_cli_app_t *app, const char *text, size_t lengt
 {
     if (app == NULL || text == NULL) return COG_ERROR_NULL_PTR;
     if (cog_cli_metadata(app)) return COG_ERROR_INVALID_STATE;
+    if (app->reload_in_progress) return COG_ERROR_INVALID_STATE;
+    if (app->reload_cleanup_error != COG_OK) return COG_ERROR_INDETERMINATE;
     if (length > app->opts.max_context_bytes) return COG_ERROR_LIMIT;
     if (!cog_cli_text_valid(text, length)) return COG_ERROR_INVALID_ARG;
     if (app->assistant_pending) return app->assistant_error;
@@ -370,6 +382,7 @@ cog_result_t cog_cli_app_queue(cog_cli_app_t *app, const char *text, size_t leng
 static cog_result_t inject(cog_cli_app_t *app, cog_event_kind_t kind)
 {
     if (app == NULL) return COG_ERROR_NULL_PTR;
+    if (app->reload_in_progress) return COG_ERROR_INVALID_STATE;
     if (cog_cli_metadata(app)) {
         if (kind != COG_EVENT_SHUTDOWN) return COG_ERROR_INVALID_STATE;
         cog_cli_app_stop(app); return COG_OK;
