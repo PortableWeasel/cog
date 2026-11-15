@@ -6,10 +6,20 @@
 # call/exec/result modules into an archive while preserving the public
 # include path, the C11 compile feature, the cog::toolkit alias, and the
 # strict-warning settings that downstream INTERFACE consumers rely on.
+add_library(cog-toolkit-yyjson OBJECT vendor/yyjson/yyjson.c)
+target_compile_features(cog-toolkit-yyjson PRIVATE c_std_11)
+target_compile_options(cog-toolkit-yyjson PRIVATE
+    -include ${CMAKE_CURRENT_SOURCE_DIR}/vendor/yyjson/prefix.h)
+
 add_library(cog-toolkit STATIC
     src/toolkit_call.c
     src/toolkit_exec.c
     src/toolkit_result.c
+    src/toolkit_json.c
+    src/toolkit_execution.c
+    src/workspace.c
+    src/workspace_process.c
+    $<TARGET_OBJECTS:cog-toolkit-yyjson>
 )
 add_library(cog::toolkit ALIAS cog-toolkit)
 
@@ -23,6 +33,7 @@ target_include_directories(cog-toolkit
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 target_compile_features(cog-toolkit PUBLIC c_std_11)
+target_include_directories(cog-toolkit SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendor/yyjson)
 find_package(Threads REQUIRED)
 target_link_libraries(cog-toolkit PUBLIC cog::core Threads::Threads)
 
@@ -87,3 +98,4 @@ install(EXPORT cog-toolkit-targets
     FILE cog-toolkit-targets.cmake
     NAMESPACE cog::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cog)
+install(FILES vendor/yyjson/YYJSON-LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/cog-toolkit RENAME yyjson-LICENSE)

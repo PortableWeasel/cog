@@ -15,6 +15,17 @@
 #include <cog/toolkit_result.h>
 
 #include <stddef.h>
+#define COG_TOOLKIT_CAPTURE_BYTES 65536U
+struct cog_toolkit_call {
+    char *name;
+    char *request;
+    size_t request_len;
+    uint32_t timeout_ms;
+    bool cancelled;
+    bool invoked;
+    char *capture;
+    cog_toolkit_result_t outcome;
+};
 
 #ifdef __cplusplus
 extern "C" {
