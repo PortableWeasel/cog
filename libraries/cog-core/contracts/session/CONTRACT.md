@@ -48,3 +48,16 @@ refusal, sparse restore, malformed identities/audits and legacy inspection.
 opaque bytes and finite known cost. Targeted strict C11 and ASan/UBSan executions
 pass. Store migration, durable generations and OS ownership are the separate
 G.2 persistence contract; they are not inferred from these session tests.
+
+The private allocation-free `cog_session_snapshot_validate` checks exact public
+records for store admission without constructing a hidden temporary session.
+It validates tree/active-leaf identities, complete call/result associations,
+audit chains and unique sequences, preserved high-water, and the prohibition
+on unrelated descendants after unresolved calls. It does not normalize STARTED
+or grant execution. Restore calls this validator before reserving its owned
+object, then copies and conservatively normalizes.
+
+`test_session_allocations.c` uses linker wrappers for malloc/calloc/realloc/
+strdup: every constructor allocation is failed individually for new and restore,
+and all append/discard/transition/reconcile/history/fork/snapshot/validation
+operations run with allocation forbidden. Strict and ASan/UBSan runs pass.

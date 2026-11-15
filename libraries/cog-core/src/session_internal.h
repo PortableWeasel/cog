@@ -112,4 +112,11 @@ _Static_assert(offsetof(struct cog_session, attached) == 64U,
                "session_internal: attached offset regression (64-bit)");
 #endif
 
+/** Allocation-free validation of exact public snapshot records. No normalization,
+ * allocation, mutation, disk or activation. Shared by restore and bounded store
+ * admission/diff checks. Return OK, NULL_PTR, PROTOCOL, LIMIT identity exhaustion
+ * or unsupported unsafe legacy tools. inspection_only restricts, never grants.
+ */
+cog_result_t cog_session_snapshot_validate(const cog_session_snapshot_t *snapshot);
+
 #endif /* COG_SESSION_INTERNAL_H */

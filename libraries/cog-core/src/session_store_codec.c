@@ -28,9 +28,12 @@ typedef struct wire {
 static void *scratch(cog_store_codec_workspace_t *w, size_t size)
 {
     const size_t a = alignof(max_align_t);
-    if (w->used > SIZE_MAX - (a - 1U)) return NULL;
-    const size_t at = (w->used + a - 1U) / a * a;
-    if (at > w->capacity || size > w->capacity - at) return NULL;
+    if (w->used > w->capacity) return NULL;
+    const size_t residue = ((size_t)((uintptr_t)w->data % a) + w->used % a) % a;
+    const size_t padding = (a - residue) % a;
+    if (padding > w->capacity - w->used) return NULL;
+    const size_t at = w->used + padding;
+    if (size > w->capacity - at) return NULL;
     void *p = w->data + at;
     (void)memset(p, 0, size);
     w->used = at + size;
