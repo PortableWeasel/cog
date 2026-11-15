@@ -4,6 +4,7 @@
 
 add_library(cog-config STATIC src/config.c)
 add_library(cog::config ALIAS cog-config)
+set_target_properties(cog-config PROPERTIES EXPORT_NAME config)
 
 target_include_directories(cog-config
     PUBLIC
