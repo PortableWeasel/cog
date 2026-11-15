@@ -14,8 +14,9 @@ void *__real_realloc(void *memory, size_t size);
 void *__wrap_malloc(size_t size);
 void *__wrap_calloc(size_t count, size_t size);
 void *__wrap_realloc(void *memory, size_t size);
-static long fail_after = -1L;
-static size_t forbidden_allocations;
+/* Observe linker-wrapper effects across builtin/libc leaf assumptions. */
+static volatile long fail_after = -1L;
+static volatile size_t forbidden_allocations;
 static bool fail_all;
 static bool fail_allocation(void)
 {
@@ -144,8 +145,36 @@ static void batch_setup_faults(void)
         cog_toolkit_call_free(call);
     }
 }
+/* Countdowns and the no-allocation deny counter must survive optimization. */
+static void allocation_oracle_control(void)
+{
+    fail_after = 1L;
+    unsigned char *bytes = malloc(8U);
+    assert(bytes != NULL && fail_after == 0L);
+    bytes[0] = 0x5aU;
+    fail_after = 1L;
+    unsigned char *grown = realloc(bytes, 16U);
+    assert(grown != NULL && fail_after == 0L && grown[0] == 0x5aU);
+    free(grown);
+    fail_after = 1L;
+    bytes = calloc(8U, 1U);
+    assert(bytes != NULL && fail_after == 0L && bytes[0] == 0U && bytes[7] == 0U);
+    free(bytes);
+    fail_after = 1L;
+    bytes = malloc(8U);
+    free(bytes);
+    assert(fail_after == 0L); /* Detect an optimized-away allocator pair. */
+    fail_all = true;
+    size_t before = forbidden_allocations;
+    bytes = malloc(8U);
+    assert(bytes == NULL && forbidden_allocations == before + 1U);
+    fail_all = false;
+    fail_after = -1L;
+    forbidden_allocations = 0U;
+}
 int main(void)
 {
+    allocation_oracle_control();
     toolkit_core_create();
     retained_legacy(); batch_setup_faults();
     char root[] = "/tmp/cog-toolkit-resources-XXXXXX";

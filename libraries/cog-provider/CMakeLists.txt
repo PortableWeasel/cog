@@ -113,6 +113,9 @@ if(BUILD_TESTING)
     target_enable_warnings(test_mock_provider_contract)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         target_link_options(test_mock_provider_contract PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc)
+        # Allocator linker wrappers invalidate the corresponding builtin effects.
+        target_compile_options(test_mock_provider_contract PRIVATE
+            -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc)
         target_compile_definitions(test_mock_provider_contract PRIVATE COG_MOCK_WRAP_ALLOC=1)
     endif()
     add_test(NAME unit-mock-provider COMMAND test_mock_provider_contract)

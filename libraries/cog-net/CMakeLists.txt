@@ -50,6 +50,11 @@ if(BUILD_TESTING)
         add_executable(test_net_cog_oom ${PROJECT_SOURCE_DIR}/tests/unit/test_net_cog_oom.c)
         target_link_libraries(test_net_cog_oom PRIVATE cog::net)
         target_link_options(test_net_cog_oom PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc)
+        # Allocator linker wrappers invalidate the corresponding builtin effects.
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(test_net_cog_oom PRIVATE
+                -fno-builtin-malloc -fno-builtin-calloc)
+        endif()
         target_enable_warnings(test_net_cog_oom)
         add_test(NAME unit-net-cog-oom COMMAND test_net_cog_oom)
         find_package(Python3 COMPONENTS Interpreter REQUIRED)
