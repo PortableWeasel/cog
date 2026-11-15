@@ -130,3 +130,11 @@ install(FILES src/vendor/LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/c
 if(BUILD_TESTING)
     target_compile_options(test_openrouter PRIVATE -UNDEBUG)
 endif()
+
+if(BUILD_TESTING)
+    add_executable(test_provider_preflight_critic
+        ${PROJECT_SOURCE_DIR}/tests/unit/test_provider_preflight_critic.c)
+    target_link_libraries(test_provider_preflight_critic PRIVATE cog::provider)
+    target_enable_warnings(test_provider_preflight_critic)
+    add_test(NAME unit-provider-preflight-critic COMMAND test_provider_preflight_critic)
+endif()
