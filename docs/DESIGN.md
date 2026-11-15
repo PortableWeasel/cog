@@ -796,4 +796,8 @@ references before disconnecting the old provider and clearing its secret. The
 new core setter changes a borrowed pointer only; it imports no provider runtime
 link or private-structure dependency. [Reload contract](REAL_CLIENT_RELOAD_CONTRACTS.md)
 records bounds, transaction/error/lifetime semantics and the required three-pass
-plus independent review gate. No runtime reload implementation is claimed here.
+plus independent review gate. The application delivery now uses that boundary,
+including consuming-disconnect error handling, retained notices and EOF-aware
+input admission. [Scoped writer evidence](REAL_CLIENT_RELOAD_EVIDENCE.md) records
+actual two-generation composition; independent package/integration gates remain
+separate from the original header approval.
