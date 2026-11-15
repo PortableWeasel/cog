@@ -309,6 +309,19 @@ block.
 
 ---
 
+## Bounded configuration delivery
+
+Stage 14.J follows the accepted header contract: constructor-reserved aggregate
+node/string/transaction/validator pools, no allocation during tree operations,
+and immutable caller-owned endpoint generations retained through disconnect.
+[Config contract](../libraries/cog-config/contracts/CONTRACT.md) records contiguous
+string admission and tombstone ceilings. [CLI configuration](../applications/cog-cli/CONFIGURATION.md)
+defines the bounded dotted-key file grammar, exact presence/precedence, required
+explicit REAL model, durable XDG/HOME default, text-only no-store policy and
+construction-only credential resolution/clearing. No implicit mock fallback or
+runtime dependency on pi/pass is introduced. H/K still own provider dispatch,
+durable guard admission and complete application-loop migration.
+
 ## Provider & Endpoint Registry
 
 The Provider & Endpoint Registry is the boundary between the agent core

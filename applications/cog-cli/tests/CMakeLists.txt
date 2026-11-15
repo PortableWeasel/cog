@@ -8,7 +8,7 @@
 
 # Options parsing contract.
 add_executable(test_cli_options test_cli_options.c)
-target_link_libraries(test_cli_options PRIVATE cog::cli)
+target_link_libraries(test_cli_options PRIVATE cog-cli-config)
 target_enable_warnings(test_cli_options)
 
 # Mock provider contract (chunks, errors, cancellation, rate limits,
@@ -116,3 +116,20 @@ add_test(NAME cli-regression
 add_test(NAME cli-binary-smoke
     COMMAND run_cli_smoke
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+# J resolution contract, independent of provider/store/app implementation migration.
+add_executable(test_configuration test_configuration.c)
+target_link_libraries(test_configuration PRIVATE cog-cli-config)
+target_enable_warnings(test_configuration)
+add_test(NAME cli-configuration COMMAND test_configuration)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    add_executable(test_configuration_memory test_configuration_memory.c
+        ${PROJECT_SOURCE_DIR}/libraries/cog-config/src/config.c)
+    target_include_directories(test_configuration_memory PRIVATE
+        ${PROJECT_SOURCE_DIR}/libraries/cog-config/include)
+    target_link_libraries(test_configuration_memory PRIVATE cog-cli-config)
+    target_link_options(test_configuration_memory PRIVATE
+        -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=free)
+    target_enable_warnings(test_configuration_memory)
+    add_test(NAME cli-configuration-memory COMMAND test_configuration_memory)
+endif()

@@ -1,5 +1,12 @@
 # cog-cli — Application Contract
 
+Stage 14.J supersedes the baseline options/configuration portions below with
+[effective configuration](CONFIGURATION.md). The independent `cog-cli-config`
+static library implements parsing and private immutable generation construction;
+`cog::cli` propagates it plus toolkit/net. H/K still migrate provider dispatch and
+the full application loop. These baseline scenario claims are not a Stage 14
+real-client release pass.
+
 `cog-cli` is the command-line application for Cog: a single-process LLM
 agent harness that wires the real `cog-core`, `cog-provider`, `cog-obs`,
 and `cog-store` libraries into a functional prompt flow.  It is the

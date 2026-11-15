@@ -39,3 +39,10 @@ install(EXPORT cog-config-targets
     FILE cog-config-targets.cmake
     NAMESPACE cog::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cog)
+if(BUILD_TESTING)
+    add_executable(test_config_bounded tests/test_config_bounded.c src/config.c)
+    target_include_directories(test_config_bounded PRIVATE include
+        ${PROJECT_SOURCE_DIR}/libraries/cog-core/include)
+    target_enable_warnings(test_config_bounded)
+    add_test(NAME unit-config-bounded COMMAND test_config_bounded)
+endif()
