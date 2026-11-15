@@ -2237,6 +2237,127 @@ static int test_fork_over_cap_no_corruption(void)
     return 0;
 }
 
+/* Revision 1: the internal prunable-leaf counter must stay exact across
+ * every mutation.  A chain must never be pruned (its only leaf is
+ * active); a sibling add, fork, or discard that exposes a leaf must
+ * prune exactly down to the cap; root and active must survive.  Each
+ * phase asserts the exact surviving shape through the public API. */
+static int test_prune_counter_exactness(void)
+{
+    cog_session_t *s = NULL;
+    cog_session_config_t cfg = {.id = NULL, .max_nodes = 4U};
+    cog_session_node_t *root = NULL;
+    cog_session_node_t *a = NULL;
+    cog_session_node_t *b = NULL;
+    cog_session_node_t *c = NULL;
+    cog_session_node_t *d = NULL;
+    cog_session_node_t *e = NULL;
+    cog_session_node_t *f = NULL;
+    cog_session_node_t *g = NULL;
+    cog_session_node_t *h = NULL;
+    cog_session_node_t *i = NULL;
+    cog_session_node_t *j = NULL;
+
+    if (cog_session_new(&s, &cfg) != COG_OK) {
+        return 1;
+    }
+    /* Phase 1: pure chain of 4 under cap 4 — nothing to prune. */
+    if (cog_session_add_message(s, NULL, MSG_USER("r"), &root) != COG_OK ||
+        cog_session_add_message(s, root, MSG_USER("a"), &a) != COG_OK ||
+        cog_session_add_message(s, a, MSG_USER("b"), &b) != COG_OK ||
+        cog_session_add_message(s, b, MSG_USER("c"), &c) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_node_child_count(a) != 1U || cog_node_child_count(b) != 1U ||
+        cog_node_child_count(c) != 0U) {
+        CRIT_FAIL(s);
+    }
+    /* Phase 2: sibling add past the cap — the chain leaf c is the only
+     * eligible leaf and must be pruned, exposing b as a new leaf. */
+    if (cog_session_add_message(s, root, MSG_USER("d"), &d) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_session_active(s) != d || cog_node_child_count(b) != 0U) {
+        CRIT_FAIL(s); /* c pruned; b is now a leaf */
+    }
+    if (cog_node_child_count(root) != 2U) {
+        CRIT_FAIL(s); /* root -> a, d */
+    }
+    /* Phase 3: fork of the idle leaf b — the fork exposes b and d as
+     * eligible leaves; two consecutive prunes must land on the cap. */
+    if (cog_session_fork(s, b, &e) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_session_active(s) != e || cog_node_child_count(a) != 1U ||
+        cog_node_first_child(a) != e) {
+        CRIT_FAIL(s); /* root -> a -> copy(e); b and d pruned */
+    }
+    /* Phase 4: sibling adds prune the fork copy e, then a, settling at
+     * the cap with the newest nodes alive. */
+    if (cog_session_add_message(s, root, MSG_USER("f"), &f) != COG_OK ||
+        cog_session_add_message(s, root, MSG_USER("g"), &g) != COG_OK ||
+        cog_session_add_message(s, root, MSG_USER("h"), &h) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_session_active(s) != h || cog_node_child_count(root) != 3U) {
+        CRIT_FAIL(s); /* root -> f, g, h; a and e pruned */
+    }
+    /* Phase 5: discarding the active leaf moves active to its parent
+     * (the root, briefly counted then uncounted because it becomes
+     * active); later adds must not over- or under-prune. */
+    if (cog_session_discard_node(s, h) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_session_active(s) != root) {
+        CRIT_FAIL(s);
+    }
+    if (cog_session_add_message(s, root, MSG_USER("i"), &i) != COG_OK ||
+        cog_session_add_message(s, root, MSG_USER("j"), &j) != COG_OK) {
+        CRIT_FAIL(s);
+    }
+    if (cog_session_active(s) != j || cog_node_child_count(root) != 3U) {
+        CRIT_FAIL(s); /* root -> g, i, j; f pruned */
+    }
+    /* Walk the whole tree: every node's parent chain reaches root,
+     * child_count agrees with the actual children, and the total is
+     * exactly the cap. */
+    {
+        size_t total = 0U;
+        cog_session_node_t *stack[64];
+        size_t sp = 0U;
+
+        stack[sp++] = cog_session_root(s);
+        while (sp > 0U) {
+            cog_session_node_t *node = stack[--sp];
+            cog_session_node_t *p;
+            cog_session_node_t *ch;
+            size_t cc = 0U;
+
+            ++total;
+            for (p = node; p != NULL; p = cog_node_parent(p)) {
+                if (cog_node_parent(p) == NULL && p != root) {
+                    CRIT_FAIL(s);
+                }
+            }
+            for (ch = cog_node_first_child(node); ch != NULL;
+                 ch = cog_node_next_sibling(ch)) {
+                ++cc;
+                if (sp < sizeof(stack) / sizeof(stack[0])) {
+                    stack[sp++] = ch;
+                }
+            }
+            if (cc != cog_node_child_count(node)) {
+                CRIT_FAIL(s);
+            }
+        }
+        if (total != 4U) {
+            CRIT_FAIL(s); /* exactly at the cap of 4 */
+        }
+    }
+    cog_session_free(s);
+    return 0;
+}
+
 /* Mixed fork/discard/append/prune/reset cycles: verify tree-wide
  * invariants through the public API (parent chains reach the root,
  * child_count matches actual children, ids unique and increasing,
@@ -2458,6 +2579,9 @@ int main(void)
     /* Writer revision 1 additions (review 14519f8) */
     CHECK("tool call history len after fork",
           test_tool_call_history_len_after_fork());
+
+    /* Critic revision 2 addition (review 14519f8) */
+    CHECK("prune counter exactness", test_prune_counter_exactness());
 
 #undef CHECK
 
