@@ -124,15 +124,16 @@ typedef struct cog_core_config {
     /**
      * @brief Optional IPC endpoint for multi-process operation.
      *
-     * During the pre-IPC integration phase, a non-NULL endpoint is
-     * rejected by @c cog_core_new with @c COG_ERROR_UNAVAILABLE; the
-     * core does not take ownership or promise to drain a resource it
-     * cannot yet service.  Once IPC integration is complete, a non-NULL
-     * endpoint will be accepted: the core takes ownership of the endpoint
-     * and drains incoming messages during the event loop, enqueuing them
-     * as COG_EVENT_IPC_* events into the local queue.
+     * May be NULL for single-process operation (the default).  If
+     * non-NULL, the core takes ownership of the endpoint: it drains
+     * incoming connections and messages during @c cog_core_run,
+     * enqueuing them as COG_EVENT_IPC_* events into the local queue,
+     * and destroys the endpoint in @c cog_core_free.  The endpoint must
+     * be bound (listening or connected) before it is passed to the
+     * core; an unbound endpoint is accepted but never drained.
      *
-     * Set to NULL for single-process operation (the default).
+     * Ownership transfers to the core at @c cog_core_new: the caller
+     * must not use or free the endpoint after that call.
      */
     cog_ipc_endpoint_t *ipc_endpoint;
 
@@ -184,11 +185,11 @@ typedef struct cog_core_config {
  * @return COG_ERROR_INVALID_ARG if @p config->session is NULL, if
  *         @p config->dispatch_table is NULL, or if
  *         @p config->dispatch_table_size is zero.
- * @return COG_ERROR_UNAVAILABLE if @p config->ipc_endpoint is non-NULL
- *         before IPC integration is enabled.
  * @return COG_ERROR_NOMEM if allocation fails.
  *
- * @post On success, @p *out is a valid core and the caller owns it.
+ * @post On success, @p *out is a valid core and the caller owns it.  If
+ *       @p config->ipc_endpoint is non-NULL, the core owns it and will
+ *       destroy it in @c cog_core_free.
  * @post On failure, @p *out is NULL and no resources are held.
  *
  * Threading: not thread-safe.
@@ -200,9 +201,11 @@ cog_result_t cog_core_new(cog_core_t **out, const cog_core_config_t *config);
  *
  * @param[in,out] core Core to destroy; may be NULL (no-op).
  *
- * @post All storage owned by @p core is released.  @p core must not be
- *       used after this call.  The session supplied at construction is
- *       not freed; the caller retains ownership of it.
+ * @post All storage owned by @p core is released, including the IPC
+ *       endpoint (if configured), its accepted peers, and any in-flight
+ *       IPC message payloads.  @p core must not be used after this call.
+ *       The session supplied at construction is not freed; the caller
+ *       retains ownership of it.
  *
  * Threading: not thread-safe.  @p core must not be running when this
  * function is called.
@@ -310,10 +313,13 @@ cog_state_t cog_core_state(const cog_core_t *core);
 bool cog_core_is_running(const cog_core_t *core);
 
 /**
- * @brief Return the IPC endpoint associated with the core.
+ * @brief Return the IPC endpoint owned by the core.
  *
  * @param[in] core Core to query; may be NULL.
  * @return The IPC endpoint, or NULL if single-process or @p core is NULL.
+ *
+ * @note The returned endpoint is owned by the core and is destroyed by
+ *       @c cog_core_free; the caller must not free it.
  *
  * Threading: not thread-safe.
  */
