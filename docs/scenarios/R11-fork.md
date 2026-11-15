@@ -100,3 +100,13 @@ assistant. Fork after the final associated result preserves every ancestor
 identity and does not admit repeated effects. Exact snapshot validation checks
 retained sibling leaves as well as the active path; INSPECT cannot bypass a
 malformed branch's call/result associations.
+
+## L application fork retrace
+
+The header-only L amendment maps FORK source ID / fork_node_id and
+`cog_cli_app_fork` to the existing same-session `cog_session_fork` contract.
+There is no session-ID rebinding or cross-session copy. A nonleaf selection is
+remembered as the explicit parent of the next fresh user message; old branches
+and exact call/result/opaque identity remain present. Active work/queued input
+refuses selection; an unresolved/unsafe prefix cannot be forked. See
+[three-pass amendment](../REAL_CLIENT_L_CONTRACTS.md). Executable evidence remains L work.

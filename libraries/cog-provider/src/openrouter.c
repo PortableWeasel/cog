@@ -71,6 +71,9 @@ static cog_result_t disconnect(cog_provider_t *base)
     free(p->opaque_bytes);
     free(p->parser_pool);
     free(p->writer_pool);
+    free(p->preflight_parser_pool);
+    free(p->preflight_writer_pool);
+    free(p->preflight_request);
     free(p->url);
     free(p->headers);
     free(p);
@@ -195,12 +198,16 @@ static cog_result_t or_connect(const cog_endpoint_t *e, cog_provider_t **out)
     p->opaque_bytes = calloc(l->max_opaque_bytes, 1U);
     p->parser_pool = malloc(l->parser_bytes);
     p->writer_pool = malloc(l->writer_bytes);
+    p->preflight_parser_pool = malloc(l->parser_bytes);
+    p->preflight_writer_pool = malloc(l->writer_bytes);
+    p->preflight_request = malloc(l->request_bytes);
     p->url = calloc(strlen(e->base_url) + 32U, 1U);
     p->tools = calloc(l->max_tool_calls, sizeof(*p->tools));
     if (p->request == NULL || p->headers == NULL || p->line == NULL ||
         p->frame == NULL || p->item_bytes == NULL || p->opaque_bytes == NULL ||
         p->parser_pool == NULL || p->writer_pool == NULL || p->url == NULL ||
-        p->tools == NULL)
+        p->tools == NULL || p->preflight_parser_pool == NULL ||
+        p->preflight_writer_pool == NULL || p->preflight_request == NULL)
     {
         (void)disconnect(&p->base);
         return COG_ERROR_NOMEM;
@@ -231,6 +238,55 @@ static cog_result_t or_connect(const cog_endpoint_t *e, cog_provider_t **out)
     *out = &p->base;
     return COG_OK;
 }
+static cog_result_t compatibility(or_provider *p,
+                                   const cog_provider_request_t *r)
+{
+    if (r->max_tokens == 0U ||
+        r->configuration_generation != p->endpoint->generation)
+        return COG_ERROR_INVALID_ARG;
+    const cog_model_t *model = NULL;
+    cog_result_t rc = cog_endpoint_model_lookup(p->endpoint, r->model_id, &model);
+    if (rc != COG_OK)
+        return rc;
+    if ((r->stream &&
+         !cog_model_has_capability(model, COG_MODEL_CAPABILITY_STREAMING)) ||
+        (r->tools_json != NULL &&
+         !cog_model_has_capability(model, COG_MODEL_CAPABILITY_TOOLS)))
+        return COG_ERROR_UNSUPPORTED;
+    if (model->context_window != 0U && r->max_tokens > model->context_window)
+        return COG_ERROR_LIMIT;
+    size_t kn = strlen(p->endpoint->api_key);
+    static const char prefix[] = "Authorization: Bearer ";
+    static const char suffix[] =
+        "\nContent-Type: application/json\nAccept: text/event-stream";
+    if (kn > SIZE_MAX - sizeof(prefix) - sizeof(suffix) ||
+        sizeof(prefix) + kn + sizeof(suffix) > p->config.limits.request_bytes)
+        return COG_ERROR_LIMIT;
+    return COG_OK;
+}
+static cog_result_t preflight(cog_provider_t *base,
+    const cog_provider_request_t *r, cog_provider_preflight_stage_t stage)
+{
+    or_provider *p = (or_provider *)base;
+    (void)stage; /* Generic dispatch owns ordered-history eligibility. */
+    if (p->active)
+        return COG_ERROR_INVALID_STATE;
+    cog_result_t rc = compatibility(p, r);
+    if (rc != COG_OK)
+        return rc;
+    /* A completed turn can retain an opaque document in its writer pool.
+     * Isolated equal-sized pools preserve that document and the accepted body,
+     * while exercising precisely the send encoder and its capacity checks. */
+    or_provider scratch = *p;
+    scratch.request = p->preflight_request;
+    if (!yyjson_alc_pool_init(&scratch.parser, p->preflight_parser_pool,
+                             p->config.limits.parser_bytes) ||
+        !yyjson_alc_pool_init(&scratch.writer, p->preflight_writer_pool,
+                             p->config.limits.writer_bytes))
+        return COG_ERROR_LIMIT;
+    size_t len = 0U;
+    return or_encode(&scratch, r, &len);
+}
 static cog_result_t send_request(cog_provider_t *base,
                                  const cog_provider_request_t *r)
 {
@@ -242,20 +298,9 @@ static cog_result_t send_request(cog_provider_t *base,
     cog_result_t rc = cog_provider_request_validate(r);
     if (rc != COG_OK)
         return rc;
-    if (r->max_tokens == 0U ||
-        r->configuration_generation != p->endpoint->generation)
-        return COG_ERROR_INVALID_ARG;
-    const cog_model_t *model = NULL;
-    rc = cog_endpoint_model_lookup(p->endpoint, r->model_id, &model);
+    rc = compatibility(p, r);
     if (rc != COG_OK)
         return rc;
-    if ((r->stream &&
-         !cog_model_has_capability(model, COG_MODEL_CAPABILITY_STREAMING)) ||
-        (r->tools_json != NULL &&
-         !cog_model_has_capability(model, COG_MODEL_CAPABILITY_TOOLS)))
-        return COG_ERROR_UNSUPPORTED;
-    if (model->context_window != 0U && r->max_tokens > model->context_window)
-        return COG_ERROR_LIMIT;
     if (p->opaque_doc != NULL)
     {
         yyjson_mut_doc_free(p->opaque_doc);
@@ -681,4 +726,4 @@ static cog_result_t error(const cog_provider_t *base, cog_provider_error_t *out)
 }
 const cog_provider_vtable_t cog_openrouter_provider_vtable = {
     or_connect,    disconnect, send_request, receive,
-    poll_provider, cancel,     next,         error};
+    poll_provider, cancel,     next,         error, preflight};

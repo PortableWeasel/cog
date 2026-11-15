@@ -16,6 +16,10 @@ target_enable_warnings(test_cli_options)
 add_executable(test_mock_provider test_mock_provider.c)
 target_link_libraries(test_mock_provider PRIVATE cog::cli)
 target_enable_warnings(test_mock_provider)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_link_options(test_mock_provider PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc)
+    target_compile_definitions(test_mock_provider PRIVATE COG_MOCK_WRAP_ALLOC=1)
+endif()
 
 # End-to-end app flows through the real core/session/provider/obs/store:
 # streaming, queueing, cancellation, error+retry, shutdown, persistence.
@@ -182,3 +186,26 @@ find_package(Python3 COMPONENTS Interpreter REQUIRED)
 add_test(NAME cli-host-signal COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/run_host_signal.py $<TARGET_FILE:cog-cli>)
 set_tests_properties(cli-host-signal PROPERTIES TIMEOUT 15)
+
+add_executable(test_session_ux test_session_ux.c)
+target_include_directories(test_session_ux PRIVATE ../src)
+target_link_libraries(test_session_ux PRIVATE cog::cli)
+if(COG_NET_CURL_BUILD_DIR AND COG_NET_CURL_LIBRARY)
+    target_compile_definitions(test_session_ux PRIVATE COG_SESSION_TEST_REAL_PROFILE)
+endif()
+target_enable_warnings(test_session_ux)
+add_test(NAME cli-session-ux COMMAND test_session_ux)
+set_tests_properties(cli-session-ux PROPERTIES TIMEOUT 30)
+add_test(NAME cli-installed-session-ux COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_installed_session_ux.py ${PROJECT_BINARY_DIR}
+    $<TARGET_FILE:test_session_ux>)
+set_tests_properties(cli-installed-session-ux PROPERTIES TIMEOUT 45)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    add_executable(test_session_recovery_faults test_session_recovery_faults.c)
+    target_include_directories(test_session_recovery_faults PRIVATE ../src)
+    target_link_libraries(test_session_recovery_faults PRIVATE cog::cli)
+    target_link_options(test_session_recovery_faults PRIVATE -Wl,--wrap=cog_store_save)
+    target_enable_warnings(test_session_recovery_faults)
+    add_test(NAME cli-session-recovery-faults COMMAND test_session_recovery_faults)
+    set_tests_properties(cli-session-recovery-faults PROPERTIES TIMEOUT 20)
+endif()

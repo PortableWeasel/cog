@@ -16,7 +16,7 @@ static void reset_turn(cog_cli_app_t *app)
     app->sequence = 0U; app->delta_ready = false; app->assistant = NULL;
     memset(&app->usage, 0, sizeof(app->usage));
     for (size_t i = 0U; i < CLI_CALLS; i++) {
-        app->calls[i].begun = false; app->calls[i].ended = false;
+        app->calls[i].begun = false; app->calls[i].ended = false; app->calls[i].resumed_closed = false;
         app->calls[i].arguments[0] = '\0';
         app->calls[i].view = (cog_message_tool_call_t){0};
     }
@@ -26,7 +26,7 @@ static bool add_bytes(size_t *total, size_t length, size_t limit)
     if (length > limit - *total) return false;
     *total += length; return true;
 }
-static cog_result_t context_size(cog_cli_app_t *app, size_t count)
+cog_result_t cog_cli_context_check(cog_cli_app_t *app, size_t count)
 {
     size_t size = app->workspace != NULL ? app->tools_json_len : 0U;
     size_t limit = app->opts.max_context_bytes;
@@ -54,7 +54,7 @@ cog_result_t cog_cli_begin_request(cog_cli_app_t *app, bool reset)
     if (app->now - app->started_at >= app->opts.max_turn_ms) return COG_ERROR_TIMEOUT;
     size_t count = 0U;
     cog_result_t rc = cog_session_copy_history(app->session, NULL, app->history, CLI_NODES, &count);
-    if (rc == COG_OK) rc = context_size(app, count);
+    if (rc == COG_OK) rc = cog_cli_context_check(app, count);
     if (rc != COG_OK) return rc;
     cog_provider_request_t request = {.model_id = app->opts.model_id,
         .messages = app->history, .message_count = count, .stream = true,
@@ -93,6 +93,8 @@ static cog_result_t append_turn(cog_cli_app_t *app, cog_message_status_t status,
     app->display_sequence++;
     rc = cog_cli_save(app);
     if (rc == COG_ERROR_INDETERMINATE) app->recovery = true;
+    if (rc == COG_OK && status == COG_MESSAGE_COMPLETE && app->opts.show_usage)
+        rc = cog_cli_usage(app, app->assistant, stderr, false);
     return rc;
 }
 cog_result_t cog_cli_finish_partial(cog_cli_app_t *app, cog_result_t reason)
@@ -243,7 +245,10 @@ static cog_handler_result_t input(cog_core_t *core, const cog_event_t *event)
     cog_message_t message = {.role = COG_MESSAGE_ROLE_USER, .content = event->payload,
         .content_len = event->payload_len};
     cog_session_node_t *active = cog_session_active(app->session);
-    if (active != NULL && cog_node_data(active)->message->status != COG_MESSAGE_COMPLETE) {
+    if (app->fork_parent != NULL) {
+        r.status = cog_session_add_message(app->session, app->fork_parent, &message, NULL);
+        if (r.status == COG_OK) app->fork_parent = NULL;
+    } else if (active != NULL && cog_node_data(active)->message->status != COG_MESSAGE_COMPLETE) {
         if (slot == NULL || !slot->continuation_authorized) {
             if (slot != NULL) slot->queued = true;
             else r.status = cog_cli_app_queue(app, event->payload, event->payload_len);
@@ -311,6 +316,16 @@ static cog_handler_result_t cancel(cog_core_t *core, const cog_event_t *event)
     }
     return r;
 }
+static cog_handler_result_t resume_policy(cog_core_t *core, const cog_event_t *event)
+{
+    cog_cli_app_t *app = cog_core_user(core);
+    if (event->source_id != app->request_serial || !app->resuming_policy)
+        return (cog_handler_result_t){COG_TRANSITION_SELF, COG_OK};
+    if (!app->active || cog_core_state(core) != CLI_IDLE)
+        return (cog_handler_result_t){COG_TRANSITION_SELF, COG_ERROR_INVALID_STATE};
+    app->event_queued = false; app->resuming_policy = false;
+    return (cog_handler_result_t){CLI_POLICY, COG_OK};
+}
 static cog_handler_result_t stale(cog_core_t *core, const cog_event_t *event)
 {
     cog_cli_app_t *app = cog_core_user(core);
@@ -321,7 +336,7 @@ static cog_handler_result_t stale(cog_core_t *core, const cog_event_t *event)
 static const cog_state_t transitions[] = {CLI_IDLE, CLI_MODEL, CLI_BACKOFF, CLI_POLICY,
     CLI_TOOL, COG_TRANSITION_SELF, COG_TRANSITION_END};
 #define ROW(state, event, handler) COG_DISPATCH_ENTRY(state, event, handler, transitions)
-#define COMMON(state) ROW(state, COG_EVENT_USER_INPUT, input), ROW(state, COG_EVENT_CANCEL, cancel), ROW(state, COG_EVENT_SHUTDOWN, cancel)
+#define COMMON(state) ROW(state, COG_EVENT_USER_INPUT, input), ROW(state, COG_EVENT_CANCEL, cancel), ROW(state, COG_EVENT_SHUTDOWN, cancel), ROW(state, CLI_EVENT_RESUME_POLICY, resume_policy)
 static const cog_dispatch_entry_t cog_cli_dispatch[] = {
     COMMON(CLI_IDLE), COMMON(CLI_MODEL), COMMON(CLI_BACKOFF), COMMON(CLI_POLICY), COMMON(CLI_TOOL),
     ROW(CLI_MODEL, COG_EVENT_LLM_CHUNK, advance), ROW(CLI_BACKOFF, COG_EVENT_RETRY, advance),
@@ -357,6 +372,9 @@ cog_result_t cog_cli_service(void *arg, uint64_t now, uint64_t *deadline)
 {
     cog_cli_app_t *app = arg;
     app->now = now; *deadline = UINT64_MAX;
+    if (atomic_load_explicit(&app->stop_requested, memory_order_acquire)) {
+        cog_core_stop(app->core); return COG_OK;
+    }
     cog_result_t rc = read_signal(app);
     if (rc != COG_OK) return rc;
     if (app->active && now - app->started_at >= app->opts.max_turn_ms && !app->cancelling) {
@@ -425,6 +443,9 @@ static cog_result_t line(cog_cli_app_t *app)
 {
     while (app->line_length != 0U && app->line[app->line_length - 1U] == '\r') app->line_length--;
     app->line[app->line_length] = '\0';
+    if (!cog_cli_text_valid(app->line, app->line_length)) {
+        app->line_length = 0U; return COG_ERROR_INVALID_ARG;
+    }
     cog_result_t rc = COG_OK;
     if (app->policy_prompt) {
         if (strcmp(app->line, "allow") == 0) app->policy_decision = COG_TOOLKIT_POLICY_ALLOW;
@@ -433,7 +454,15 @@ static cog_result_t line(cog_cli_app_t *app)
     } else if (strcmp(app->line, "/quit") == 0 || strcmp(app->line, "/exit") == 0)
         rc = cog_cli_app_shutdown(app);
     else if (strcmp(app->line, "/cancel") == 0) rc = cog_cli_app_cancel(app);
-    else if (app->line_length != 0U) rc = cog_cli_app_submit(app, app->line, app->line_length);
+    else if (app->line_length != 0U) {
+        bool handled;
+        rc = cog_cli_session_command(app, app->line, &handled);
+        if (handled && (rc == COG_ERROR_INVALID_ARG || rc == COG_ERROR_INVALID_STATE ||
+            rc == COG_ERROR_NOT_FOUND || rc == COG_ERROR_AGAIN || rc == COG_ERROR_DENIED)) {
+            rc = fprintf(stderr, "cog-cli: command refused\n") < 0 ? COG_ERROR_IO : COG_OK;
+        }
+        if (rc == COG_OK && !handled) rc = cog_cli_app_submit(app, app->line, app->line_length);
+    }
     app->line_length = 0U;
     return rc;
 }
@@ -470,6 +499,7 @@ cog_result_t cog_cli_drain(cog_cli_app_t *app)
         app->delta_ready = false; app->event_queued = false;
         return app->assistant_error;
     }
+    app->resuming_policy = false;
     if (!app->active && app->execution == NULL && !app->provider_active) return COG_OK;
     app->shutdown = true; app->cancelling = true;
     cog_result_t rc = cog_cli_clock(&app->now);

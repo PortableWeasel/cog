@@ -30,6 +30,7 @@ add_library(cog-cli-lib STATIC
     src/app_turn.c
     src/app_tools.c
     src/app_display.c
+    src/app_sessions.c
     src/mock_provider.c
 )
 add_library(cog::cli ALIAS cog-cli-lib)
@@ -56,7 +57,7 @@ target_enable_warnings(cog-cli)
 # Install rules
 # -----------------------------------------------------------------------
 install(TARGETS cog-cli
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT cog-cli-runtime)
 
 install(TARGETS cog-cli-lib cog-cli-config
     EXPORT cog-cli-targets

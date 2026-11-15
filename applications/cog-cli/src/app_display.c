@@ -6,6 +6,7 @@
 cog_result_t cog_cli_app_display_snapshot(cog_cli_app_t *app, cog_cli_display_snapshot_t *out)
 {
     if (app == NULL || out == NULL) return COG_ERROR_NULL_PTR;
+    if (app->session == NULL) return COG_ERROR_NOT_FOUND;
     cog_session_node_t *node = cog_session_active(app->session);
     size_t count = 0U, bytes = 0U;
     for (cog_session_node_t *p = node; p != NULL; p = cog_node_parent(p)) {

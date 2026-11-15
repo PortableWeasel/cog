@@ -18,7 +18,7 @@ typedef struct
     uint64_t sequence, now, ready_at;
     cog_provider_request_t request;
     cog_provider_error_t error;
-    char *request_arena;
+    char *request_arena, *preflight_arena;
     size_t used;
 } mock;
 static void *reserve(mock *p, size_t n)
@@ -149,9 +149,23 @@ static cog_result_t disconnect_mock(cog_provider_t *base)
     if (p != NULL)
     {
         free(p->request_arena);
+        free(p->preflight_arena);
         free(p);
     }
     return COG_OK;
+}
+static cog_result_t preflight_mock(cog_provider_t *base,
+    const cog_provider_request_t *r, cog_provider_preflight_stage_t stage)
+{
+    mock *p = (mock *)base;
+    (void)stage; /* Generic dispatch validates stage/history before callback. */
+    if (p->sent)
+        return COG_ERROR_INVALID_STATE;
+    /* Copy through the identical bounded representation into isolated scratch.
+     * Never replace last_request, alter cursors, or consult future send_error. */
+    mock scratch = *p;
+    scratch.request_arena = p->preflight_arena;
+    return copy_request(&scratch, r);
 }
 static cog_result_t send_mock(cog_provider_t *base,
                               const cog_provider_request_t *r)
@@ -466,7 +480,7 @@ static cog_result_t error_mock(const cog_provider_t *base,
 }
 const cog_provider_vtable_t cog_mock_provider_vtable = {
     connect_mock, disconnect_mock, send_mock, receive_mock,
-    poll_mock,    cancel_mock,     next_mock, error_mock};
+    poll_mock,    cancel_mock,     next_mock, error_mock, preflight_mock};
 const cog_endpoint_t cog_mock_endpoint = {.name = "mock",
                                           .vtable = &cog_mock_provider_vtable};
 cog_result_t cog_mock_provider_new(const cog_mock_script_t *script,
@@ -488,8 +502,11 @@ cog_result_t cog_mock_provider_new(const cog_mock_script_t *script,
     if (p == NULL)
         return COG_ERROR_NOMEM;
     p->request_arena = malloc(MOCK_REQUEST_BYTES);
-    if (p->request_arena == NULL)
+    p->preflight_arena = malloc(MOCK_REQUEST_BYTES);
+    if (p->request_arena == NULL || p->preflight_arena == NULL)
     {
+        free(p->request_arena);
+        free(p->preflight_arena);
         free(p);
         return COG_ERROR_NOMEM;
     }
@@ -558,7 +575,7 @@ cog_result_t cog_mock_provider_disconnect(cog_provider_t *p)
 cog_result_t cog_mock_provider_send(cog_provider_t *p,
                                     const cog_provider_request_t *r)
 {
-    return send_mock(p, r);
+    return cog_provider_send(p, r);
 }
 cog_result_t cog_mock_provider_receive(cog_provider_t *p,
                                        cog_provider_response_t *r)

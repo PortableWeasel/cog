@@ -34,6 +34,56 @@ static int failures = 0;
         }                                                               \
     } while (0)
 
+#ifdef COG_MOCK_WRAP_ALLOC
+static bool forbid_alloc;
+static size_t allocations, fail_after;
+void *__real_malloc(size_t n);
+void *__real_calloc(size_t a, size_t b);
+void *__real_realloc(void *p, size_t n);
+void *__wrap_malloc(size_t n);
+void *__wrap_calloc(size_t a, size_t b);
+void *__wrap_realloc(void *p, size_t n);
+void *__wrap_malloc(size_t n)
+{
+    ++allocations; CHECK(!forbid_alloc);
+    if (fail_after != 0U && --fail_after == 0U) return NULL;
+    return __real_malloc(n);
+}
+void *__wrap_calloc(size_t a, size_t b)
+{
+    ++allocations; CHECK(!forbid_alloc);
+    if (fail_after != 0U && --fail_after == 0U) return NULL;
+    return __real_calloc(a, b);
+}
+void *__wrap_realloc(void *p, size_t n)
+{
+    ++allocations; CHECK(!forbid_alloc);
+    if (fail_after != 0U && --fail_after == 0U) return NULL;
+    return __real_realloc(p, n);
+}
+static cog_result_t checked_preflight(cog_provider_t *p,
+    const cog_provider_request_t *r, cog_provider_preflight_stage_t stage)
+{
+    size_t before = allocations;
+    forbid_alloc = true;
+    cog_result_t rc = cog_provider_preflight(p, r, stage);
+    forbid_alloc = false;
+    CHECK(allocations == before);
+    return rc;
+}
+#define cog_provider_preflight checked_preflight
+static void test_constructor_failures(void)
+{
+    for (size_t i = 1U; i <= 3U; ++i)
+    {
+        cog_provider_t *p = (cog_provider_t *)(uintptr_t)1U;
+        fail_after = i;
+        CHECK(cog_mock_provider_new(NULL, &p) == COG_ERROR_NOMEM && p == NULL);
+        fail_after = 0U;
+    }
+}
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
@@ -460,8 +510,10 @@ static void test_nested_request_copy(void)
                              .name = name, .tool_calls = &call, .tool_call_count = 1U,
                              .opaque = &opaque, .opaque_count = 1U,
                              .usage = {.currency = currency}};
-    cog_provider_request_t request = {.model_id = model, .messages = &message,
-                                      .message_count = 1U, .tools_json = tools,
+    cog_message_t history[] = {message, {.role = COG_MESSAGE_ROLE_TOOL,
+                                         .tool_call_id = id}};
+    cog_provider_request_t request = {.model_id = model, .messages = history,
+                                      .message_count = 2U, .tools_json = tools,
                                       .tools_json_len = 2U};
     cog_provider_t *p = NULL;
     CHECK(cog_mock_provider_new(NULL, &p) == COG_OK);
@@ -490,8 +542,162 @@ static void test_nested_request_copy(void)
     CHECK(strcmp(m->usage.currency, "USD") == 0);
     CHECK(cog_provider_disconnect(p) == COG_OK);
 }
+static void test_preflight_history(void)
+{
+    cog_provider_t *p = NULL;
+    cog_message_tool_call_t calls[] = {{"a", "one", "{}", 2U},
+                                      {"b", "two", "{}", 2U},
+                                      {"c", "three", "{}", 2U}};
+    cog_message_t messages[7] = {
+        {.role = COG_MESSAGE_ROLE_ASSISTANT, .tool_calls = calls,
+         .tool_call_count = 3U}};
+    cog_provider_request_t r = {.model_id = "any-fixture", .messages = messages};
+    CHECK(cog_mock_provider_new(NULL, &p) == COG_OK);
+    CHECK(cog_provider_preflight(NULL, &r, COG_PROVIDER_PREFLIGHT_COMPLETE) == COG_ERROR_NULL_PTR);
+    CHECK(cog_provider_preflight(p, NULL, COG_PROVIDER_PREFLIGHT_COMPLETE) == COG_ERROR_NULL_PTR);
+    CHECK(cog_provider_preflight(p, &r, (cog_provider_preflight_stage_t)99) == COG_ERROR_INVALID_ARG);
+    for (unsigned mask = 0U; mask < 8U; ++mask)
+        for (unsigned reverse = 0U; reverse < 2U; ++reverse)
+        {
+            r.message_count = 1U;
+            for (unsigned j = 0U; j < 3U; ++j)
+            {
+                unsigned k = reverse != 0U ? 2U - j : j;
+                if ((mask & (1U << k)) != 0U)
+                    messages[r.message_count++] = (cog_message_t){
+                        .role = COG_MESSAGE_ROLE_TOOL, .tool_call_id = calls[k].id,
+                        .name = "a descriptive result name"};
+            }
+            CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE) ==
+                  (mask == 7U ? COG_OK : COG_ERROR_INVALID_STATE));
+            CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_PENDING_TOOLS) ==
+                  (mask == 7U ? COG_ERROR_INVALID_STATE : COG_OK));
+            if (mask != 7U)
+                CHECK(cog_provider_send(p, &r) == COG_ERROR_INVALID_STATE);
+        }
+    /* Closed groups can reuse an ID; a pending group cannot be crossed. */
+    messages[0].tool_call_count = 1U;
+    messages[1] = (cog_message_t){.role = COG_MESSAGE_ROLE_TOOL, .tool_call_id = "a"};
+    messages[2] = messages[0];
+    r.message_count = 3U;
+    CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_PENDING_TOOLS) == COG_OK);
+    messages[3] = messages[1]; r.message_count = 4U;
+    CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE) == COG_OK);
+    messages[3].tool_call_id = "b";
+    CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE) == COG_ERROR_INVALID_STATE);
+    messages[3] = (cog_message_t){.role = COG_MESSAGE_ROLE_USER};
+    CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_PENDING_TOOLS) == COG_ERROR_INVALID_STATE);
+    r.message_count = 2U; messages[1].tool_call_id = "unknown";
+    CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE) == COG_ERROR_INVALID_STATE);
+    r.messages = &messages[1]; r.message_count = 1U;
+    CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE) == COG_ERROR_INVALID_STATE);
+    r.messages = messages; r.message_count = 3U;
+    messages[1].tool_call_id = "a"; messages[2] = messages[1];
+    CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE) == COG_ERROR_INVALID_STATE);
+    r.message_count = 1U;
+    for (int status = (int)COG_MESSAGE_INCOMPLETE; status <= (int)COG_MESSAGE_FAILED; ++status)
+    {
+        messages[0].status = (cog_message_status_t)status;
+        CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_PENDING_TOOLS) == COG_ERROR_INVALID_STATE);
+    }
+    messages[0].status = COG_MESSAGE_COMPLETE;
+    calls[0].name = "\xc0\xaf";
+    CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_PENDING_TOOLS) == COG_ERROR_INVALID_ARG);
+    calls[0].name = "one";
+    messages[0].tool_call_count = 0U;
+    CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_PENDING_TOOLS) == COG_ERROR_INVALID_STATE);
+    CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE) == COG_OK);
+    cog_mock_state_t state;
+    CHECK(cog_mock_provider_state(p, &state) == COG_OK);
+    CHECK(state.send_count == 0U && state.receive_count == 0U && state.step_index == 0U);
+    CHECK(cog_provider_disconnect(p) == COG_OK);
+}
+static void test_preflight_fixture_state(void)
+{
+    cog_provider_t *p = NULL;
+    CHECK(cog_mock_provider_new(NULL, &p) == COG_OK);
+    CHECK(do_send(p, "retained-model") == COG_OK);
+    cog_provider_request_t r = {.model_id = "next-model", .configuration_generation = 99U};
+    char bytes[64]; size_t required;
+    cog_provider_delta_t delta;
+    CHECK(cog_provider_next(p, &delta, NULL, 0U, &required) == COG_ERROR_OVERFLOW);
+    CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE) == COG_ERROR_INVALID_STATE);
+    CHECK(cog_provider_cancel(p) == COG_OK);
+    CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE) == COG_ERROR_INVALID_STATE);
+    CHECK(cog_provider_next(p, &delta, bytes, sizeof(bytes), &required) == COG_OK);
+    CHECK(delta.kind == COG_PROVIDER_DELTA_TEXT && delta.sequence == 1U &&
+          strcmp(delta.data, "mock response") == 0);
+    CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE) == COG_ERROR_INVALID_STATE);
+    CHECK(cog_provider_next(p, &delta, bytes, sizeof(bytes), &required) == COG_OK);
+    CHECK(delta.kind == COG_PROVIDER_DELTA_FINISH && delta.outcome == COG_ERROR_ABORTED);
+    cog_mock_state_t before, after;
+    cog_provider_error_t old, next;
+    CHECK(cog_mock_provider_state(p, &before) == COG_OK);
+    CHECK(cog_provider_get_error(p, &old) == COG_OK);
+    const char *saved_model = before.last_request->model_id;
+    unsigned char arbitrary[] = {0U, 255U, 1U};
+    cog_message_opaque_t o = {"any-provider", "uninterpreted", arbitrary, sizeof(arbitrary)};
+    cog_message_t m = {.role = COG_MESSAGE_ROLE_ASSISTANT, .opaque = &o, .opaque_count = 1U};
+    r.messages = &m; r.message_count = 1U;
+    CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE) == COG_OK);
+    char *large = malloc(131072U);
+    CHECK(large != NULL);
+    if (large != NULL)
+    {
+        memset(large, 'x', 131072U);
+        m.content = large; m.content_len = 131072U;
+        CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE) == COG_ERROR_LIMIT);
+        /* Locate the exact aligned copy boundary, then test both sides and
+         * confirm COMPLETE send uses that same representation ceiling. */
+        size_t low = 0U, high = 131072U;
+        while (low + 1U < high)
+        {
+            size_t mid = low + (high - low) / 2U;
+            m.content_len = mid;
+            cog_result_t rc = cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE);
+            CHECK(rc == COG_OK || rc == COG_ERROR_LIMIT);
+            if (rc == COG_OK) low = mid; else high = mid;
+        }
+        m.content_len = low;
+        CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE) == COG_OK);
+        cog_provider_t *boundary = NULL;
+        CHECK(cog_mock_provider_new(NULL, &boundary) == COG_OK);
+        CHECK(cog_provider_send(boundary, &r) == COG_OK);
+        CHECK(cog_provider_disconnect(boundary) == COG_OK);
+        m.content_len = high;
+        CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE) == COG_ERROR_LIMIT);
+        CHECK(cog_provider_send(p, &r) == COG_ERROR_LIMIT);
+        free(large);
+    }
+    CHECK(cog_mock_provider_state(p, &after) == COG_OK);
+    CHECK(after.last_request == before.last_request && after.last_request->model_id == saved_model);
+    CHECK(strcmp(saved_model, "retained-model") == 0);
+    CHECK(after.send_count == before.send_count && after.receive_count == before.receive_count &&
+          after.chunk_count == before.chunk_count && after.cancel_count == before.cancel_count &&
+          after.error_count == before.error_count && after.step_index == before.step_index &&
+          after.cancel_requested == before.cancel_requested);
+    CHECK(cog_provider_get_error(p, &next) == COG_OK);
+    CHECK(next.code == old.code && next.message == old.message && next.kind == old.kind &&
+          next.output_accepted == old.output_accepted && next.replay_safe == old.replay_safe);
+    uint64_t deadline;
+    CHECK(cog_provider_poll(p, 0U, &deadline) == COG_OK);
+    CHECK(cog_provider_disconnect(p) == COG_OK);
+    static const cog_mock_script_t failing = {.send_error = COG_ERROR_UNAVAILABLE};
+    CHECK(cog_mock_provider_new(&failing, &p) == COG_OK);
+    r.messages = NULL; r.message_count = 0U;
+    CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE) == COG_OK);
+    CHECK(cog_provider_send(p, &r) == COG_ERROR_UNAVAILABLE);
+    CHECK(cog_provider_preflight(p, &r, COG_PROVIDER_PREFLIGHT_COMPLETE) == COG_OK);
+    CHECK(cog_provider_get_error(p, &next) == COG_ERROR_NOT_FOUND);
+    CHECK(cog_provider_disconnect(p) == COG_OK);
+}
 int main(void)
 {
+#ifdef COG_MOCK_WRAP_ALLOC
+    test_constructor_failures();
+#endif
+    test_preflight_history();
+    test_preflight_fixture_state();
     test_nested_request_copy();
     test_typed_cancel_error_after_retained_output();
     test_receive_overflow_then_cancel();

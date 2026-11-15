@@ -3,6 +3,7 @@
 #define COG_CLI_APP_INTERNAL_H
 #include "configuration.h"
 #include <cog/workspace.h>
+#include <stdatomic.h>
 #define CLI_NODES 1024U
 #define CLI_CALLS 16U
 #define CLI_OPAQUE 16U
@@ -11,13 +12,16 @@
 #define CLI_ARGUMENT_BYTES 65536U
 #define CLI_SCHEMA_BYTES 65536U
 #define CLI_CODEC_BYTES 1048576U
+#define CLI_LIST_IDS 1024U
+#define CLI_EVIDENCE_BYTES 4096U
 
 enum { CLI_IDLE = 0, CLI_MODEL, CLI_BACKOFF, CLI_POLICY, CLI_TOOL };
+enum { CLI_EVENT_RESUME_POLICY = 0x7f00 };
 typedef struct cli_call {
     cog_message_tool_call_t view;
     char id[CLI_ID_BYTES], name[CLI_ID_BYTES];
     char *arguments;
-    bool begun, ended;
+    bool begun, ended, resumed_closed;
 } cli_call_t;
 typedef struct cli_input {
     char *text;
@@ -44,7 +48,9 @@ struct cog_cli_app {
     FILE *out, *log_file;
     cog_obs_sink_t log_sink;
     cog_obs_sink_table_t sink_table;
+    atomic_bool stop_requested;
     bool prompt_submitted, shutdown, cancelling, active, provider_active;
+    bool resuming_policy, recovery_write_failed;
     bool delta_ready, event_queued, tool_done, effects, accepted, policy_prompt;
     bool recovery, stdin_eof, continuation_required;
     bool terminal_result_pending, result_node_added, assistant_pending;
@@ -68,7 +74,7 @@ struct cog_cli_app {
     cog_message_opaque_t opaque[CLI_OPAQUE];
     cog_message_t *history;
     cog_cli_display_item_t *display_items;
-    cog_session_node_t *assistant, *safe_ancestor;
+    cog_session_node_t *assistant, *safe_ancestor, *fork_parent;
     cli_input_t inputs[CLI_INPUTS];
     uint64_t input_order;
     char line[4096];
@@ -79,6 +85,7 @@ cog_result_t cog_cli_service(void *arg, uint64_t now, uint64_t *deadline);
 cog_result_t cog_cli_idle(void *arg, uint32_t max_wait_ms);
 cog_result_t cog_cli_save(cog_cli_app_t *app);
 cog_result_t cog_cli_begin_request(cog_cli_app_t *app, bool reset);
+cog_result_t cog_cli_context_check(cog_cli_app_t *app, size_t count);
 cog_result_t cog_cli_finish_partial(cog_cli_app_t *app, cog_result_t reason);
 cog_result_t cog_cli_tools_step(cog_cli_app_t *app, cog_state_t *next);
 cog_result_t cog_cli_tools_cancel(cog_cli_app_t *app);
@@ -86,4 +93,11 @@ cog_result_t cog_cli_drain(cog_cli_app_t *app);
 cog_result_t cog_cli_clock(uint64_t *now);
 cog_result_t cog_cli_tools_json(cog_cli_app_t *app);
 bool cog_cli_text_valid(const char *text, size_t length);
+bool cog_cli_metadata(const cog_cli_app_t *app);
+cog_result_t cog_cli_sessions_open(cog_cli_app_t *app);
+cog_result_t cog_cli_sessions_prepare(cog_cli_app_t *app);
+cog_result_t cog_cli_metadata_run(cog_cli_app_t *app);
+cog_result_t cog_cli_session_command(cog_cli_app_t *app, const char *text, bool *handled);
+cog_result_t cog_cli_usage(cog_cli_app_t *app, const cog_session_node_t *node, FILE *stream, bool explicit_request);
+cog_session_node_t *cog_cli_session_node(cog_cli_app_t *app, uint64_t id);
 #endif

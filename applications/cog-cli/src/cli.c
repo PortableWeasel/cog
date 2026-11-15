@@ -35,46 +35,14 @@ static cog_result_t log_deliver(void *arg, const char *record, size_t length)
     return fwrite(record, 1U, length, stream) == length && fputc('\n', stream) != EOF
         ? COG_OK : COG_ERROR_IO;
 }
-/* Walk parent directories without changing cwd or following a symlink. New
-   directory entries and their parents are fsynced before store construction. */
-static cog_result_t durable_directory(const char *path)
-{
-    char copy[4097];
-    size_t length = strlen(path);
-    int parent;
-    if (length == 0U || length >= sizeof(copy)) return COG_ERROR_LIMIT;
-    memcpy(copy, path, length + 1U);
-    parent = open(path[0] == '/' ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (parent < 0) return COG_ERROR_IO;
-    char *part = copy + (path[0] == '/' ? 1U : 0U);
-    cog_result_t rc = COG_OK;
-    while (*part != '\0') {
-        char *slash = strchr(part, '/');
-        if (slash != NULL) *slash = '\0';
-        if (*part != '\0' && strcmp(part, ".") != 0) {
-            if (strcmp(part, "..") == 0) { rc = COG_ERROR_DENIED; break; }
-            bool created = mkdirat(parent, part, 0700) == 0;
-            if (!created && errno != EEXIST) { rc = COG_ERROR_IO; break; }
-            int next = openat(parent, part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-            if (next < 0) { rc = COG_ERROR_IO; break; }
-            if (created && (fsync(next) != 0 || fsync(parent) != 0)) {
-                (void)close(next); rc = COG_ERROR_IO; break;
-            }
-            (void)close(parent); parent = next;
-        }
-        if (slash == NULL) break;
-        part = slash + 1;
-    }
-    (void)close(parent);
-    return rc;
-}
 static cog_result_t reserve_state(cog_cli_app_t *app)
 {
     size_t cap = app->opts.max_context_bytes;
     if (cap > (SIZE_MAX - 65536U) / 32U || app->opts.max_tool_output_bytes > SIZE_MAX - 512U)
         return COG_ERROR_LIMIT;
     app->delta_capacity = cap + 65536U;
-    app->result_capacity = app->opts.max_tool_output_bytes + 512U;
+    app->result_capacity = (app->opts.max_tool_output_bytes < CLI_EVIDENCE_BYTES ?
+        CLI_EVIDENCE_BYTES : app->opts.max_tool_output_bytes) + 512U;
     app->text = calloc(cap + 1U, 1U);
     app->opaque_storage = malloc(cap);
     app->delta_storage = malloc(app->delta_capacity);
@@ -206,33 +174,6 @@ static cog_result_t cli_build_script(cog_cli_app_t *app)
 }
 
 
-static cog_result_t make_store(cog_cli_app_t *app)
-{
-    if (app->opts.store_mode == COG_CLI_STORE_DISABLED) return COG_OK;
-    cog_result_t rc = durable_directory(app->opts.store_dir);
-    if (rc != COG_OK) return rc;
-    cog_store_config_t config = {.base_dir = app->opts.store_dir,
-        .require_owner = true, .max_record_bytes = app->opts.max_context_bytes * 16U};
-    rc = cog_store_new(&app->store, &config);
-    if (rc != COG_OK) return rc;
-    /* K creates new sessions; L owns explicit resume/fork UX. A reused ID must
-       never replace durable history or silently admit a dead incarnation. */
-    cog_store_owner_t old = {0};
-    cog_store_checkpoint_t checkpoint = {0};
-    rc = cog_store_owner_read(app->store, cog_session_id(app->session), &old, &checkpoint);
-    if (rc != COG_OK) return rc;
-    if (old.epoch != 0U || checkpoint.generation != 0U) return COG_ERROR_INVALID_STATE;
-    uint64_t incarnation = 0U;
-    int random_fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
-    if (random_fd < 0) return COG_ERROR_IO;
-    ssize_t n = read(random_fd, &incarnation, sizeof(incarnation));
-    (void)close(random_fd);
-    if (n != (ssize_t)sizeof(incarnation) || incarnation == 0U) return COG_ERROR_IO;
-    cog_store_owner_t owner = {.epoch = 1U, .instance_id = incarnation};
-    rc = cog_store_owner_compare_exchange(app->store, cog_session_id(app->session), old, owner, checkpoint);
-    if (rc == COG_OK) rc = cog_store_owner_acquire(app->store, cog_session_id(app->session), owner, &app->guard);
-    return rc;
-}
 cog_result_t cog_cli_app_new(cog_cli_app_t **out, const cog_cli_options_t *input)
 {
     if (out == NULL || input == NULL) return COG_ERROR_NULL_PTR;
@@ -241,6 +182,8 @@ cog_result_t cog_cli_app_new(cog_cli_app_t **out, const cog_cli_options_t *input
     if (app == NULL) return COG_ERROR_NOMEM;
     app->signal_fd = -1;
     app->out = stdout;
+    atomic_init(&app->stop_requested, false);
+    if (!atomic_is_lock_free(&app->stop_requested)) { free(app); return COG_ERROR_UNSUPPORTED; }
     cog_result_t rc = cog_cli_configuration_new(&app->configuration, input, 1U);
     if (rc != COG_OK) goto fail;
     app->opts = *cog_cli_configuration_options(app->configuration);
@@ -251,15 +194,23 @@ cog_result_t cog_cli_app_new(cog_cli_app_t **out, const cog_cli_options_t *input
          (app->opts.mock_deltas != NULL || app->opts.script != NULL))) {
         rc = COG_ERROR_INVALID_ARG; goto fail;
     }
-    rc = reserve_state(app);
+    if (app->opts.max_context_bytes > (SIZE_MAX - 65536U) / 32U) { rc = COG_ERROR_LIMIT; goto fail; }
+    if (app->opts.session_action != COG_CLI_SESSION_LIST) {
+        rc = reserve_state(app);
+        if (rc != COG_OK) goto fail;
+    }
+    rc = cog_cli_sessions_open(app);
     if (rc != COG_OK) goto fail;
-    cog_session_config_t session = {.id = app->opts.session_id, .max_nodes = CLI_NODES,
-        .max_payload_bytes = app->opts.max_context_bytes * 4U,
-        .max_tool_calls_per_message = CLI_CALLS};
-    rc = cog_session_new(&app->session, &session);
+    rc = cog_cli_clock(&app->now);
     if (rc != COG_OK) goto fail;
-    rc = make_store(app);
-    if (rc != COG_OK) goto fail;
+    int random_fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (random_fd < 0) { rc = COG_ERROR_IO; goto fail; }
+    ssize_t random_size = read(random_fd, &app->generation, sizeof(app->generation));
+    (void)close(random_fd);
+    if (random_size != (ssize_t)sizeof(app->generation) || app->generation == 0U) {
+        rc = COG_ERROR_IO; goto fail;
+    }
+    if (cog_cli_metadata(app)) { *out = app; return COG_OK; }
     if (app->opts.backend == COG_CLI_BACKEND_MOCK) {
         rc = cli_build_script(app);
         if (rc != COG_OK) goto fail;
@@ -314,14 +265,11 @@ cog_result_t cog_cli_app_new(cog_cli_app_t **out, const cog_cli_options_t *input
     rc = cog_core_new(&app->core, &core);
     if (rc != COG_OK) goto fail;
     app->ipc = NULL;
-    rc = cog_cli_clock(&app->now);
+    rc = cog_cli_sessions_prepare(app);
     if (rc != COG_OK) goto fail;
-    int random_fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
-    if (random_fd < 0) { rc = COG_ERROR_IO; goto fail; }
-    ssize_t random_size = read(random_fd, &app->generation, sizeof(app->generation));
-    (void)close(random_fd);
-    if (random_size != (ssize_t)sizeof(app->generation) || app->generation == 0U) {
-        rc = COG_ERROR_IO; goto fail;
+    if (app->opts.session_action == COG_CLI_SESSION_FORK) {
+        rc = cog_cli_app_fork(app, app->opts.fork_node_id);
+        if (rc != COG_OK) goto fail;
     }
     *out = app;
     return COG_OK;
@@ -360,10 +308,19 @@ void cog_cli_app_free(cog_cli_app_t *app)
 cog_result_t cog_cli_app_run(cog_cli_app_t *app)
 {
     if (app == NULL) return COG_ERROR_NULL_PTR;
+    if (cog_cli_metadata(app)) return cog_cli_metadata_run(app);
     if (app->assistant_pending) return app->assistant_error;
     if (app->recovery) return COG_ERROR_INDETERMINATE;
+    atomic_store_explicit(&app->stop_requested, false, memory_order_release);
     app->shutdown = false;
     cog_result_t rc = COG_OK;
+    if (app->resuming_policy && app->active && !app->event_queued) {
+        cog_event_t event = {.id = CLI_EVENT_RESUME_POLICY, .kind = COG_EVENT_STATUS_UPDATE,
+            .source_id = app->request_serial};
+        rc = cog_core_enqueue(app->core, &event);
+        if (rc != COG_OK) return rc;
+        app->event_queued = true;
+    }
     if (!app->prompt_submitted) {
         if (app->opts.prompt != NULL) rc = cog_cli_app_submit(app, app->opts.prompt, strlen(app->opts.prompt));
         if (rc == COG_OK && app->opts.queue_text != NULL)
@@ -378,12 +335,14 @@ cog_result_t cog_cli_app_run(cog_cli_app_t *app)
 void cog_cli_app_stop(cog_cli_app_t *app)
 {
     if (app != NULL) {
+        atomic_store_explicit(&app->stop_requested, true, memory_order_release);
         cog_core_stop(app->core);
     }
 }
 static cog_result_t input_add(cog_cli_app_t *app, const char *text, size_t length, bool queue)
 {
     if (app == NULL || text == NULL) return COG_ERROR_NULL_PTR;
+    if (cog_cli_metadata(app)) return COG_ERROR_INVALID_STATE;
     if (length > app->opts.max_context_bytes) return COG_ERROR_LIMIT;
     if (!cog_cli_text_valid(text, length)) return COG_ERROR_INVALID_ARG;
     if (app->assistant_pending) return app->assistant_error;
@@ -411,6 +370,10 @@ cog_result_t cog_cli_app_queue(cog_cli_app_t *app, const char *text, size_t leng
 static cog_result_t inject(cog_cli_app_t *app, cog_event_kind_t kind)
 {
     if (app == NULL) return COG_ERROR_NULL_PTR;
+    if (cog_cli_metadata(app)) {
+        if (kind != COG_EVENT_SHUTDOWN) return COG_ERROR_INVALID_STATE;
+        cog_cli_app_stop(app); return COG_OK;
+    }
     cog_event_t event = {.id = (cog_event_id_t)kind, .kind = kind};
     return cog_core_enqueue(app->core, &event);
 }

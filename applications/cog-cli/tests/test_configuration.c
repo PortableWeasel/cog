@@ -181,6 +181,12 @@ static cog_result_t resolve(void *arg, const char *ref, char *out, size_t cap,
     memcpy(out, synthetic_secret, n);
     return *verdict;
 }
+static cog_result_t descriptor_preflight(cog_provider_t *p,
+    const cog_provider_request_t *r, cog_provider_preflight_stage_t stage)
+{
+    (void)p; (void)r; (void)stage;
+    return COG_ERROR_UNSUPPORTED; /* Identity-only descriptor, never driven. */
+}
 static int generation(void)
 {
     cog_cli_options_t o;
@@ -190,7 +196,7 @@ static int generation(void)
     size_t required = 0U;
     cog_result_t verdict = COG_OK;
     static const cog_provider_vtable_t descriptor = {
-        0}; /* identity only, never dispatched */
+        .preflight = descriptor_preflight}; /* identity only, never dispatched */
     cog_provider_limits_t limits = {1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U, 1U};
     char model[64] = "owned/model";
     CHECK(clean() == 0);
@@ -520,8 +526,278 @@ static int protocol_inputs(void)
     return 0;
 }
 
+static cog_result_t offline_resolver(void *arg, const char *reference, char *output,
+                                     size_t capacity, size_t *required)
+{
+    unsigned *calls = arg;
+    (void)reference;
+    (void)output;
+    (void)capacity;
+    (void)required;
+    ++*calls;
+    return COG_ERROR_DENIED;
+}
+static int session_configuration(void)
+{
+    static const cog_cli_session_action_t offline[] = {COG_CLI_SESSION_LIST,
+                                                       COG_CLI_SESSION_RECOVER};
+    cog_cli_options_t o;
+    cog_cli_configuration_t *c = NULL;
+    const cog_cli_options_t *effective;
+    size_t i;
+    unsigned calls = 0U;
+    char source[128] = "session-owned-copy", text[160];
+    size_t required;
+    CHECK(clean() == 0);
+    CHECK(setenv("COG_CREDENTIAL_REF", "env:COG_L1_MISSING_KEY", 1) == 0);
+    CHECK(unsetenv("COG_L1_MISSING_KEY") == 0);
+    for (i = 0U; i < sizeof(offline) / sizeof(offline[0]); ++i) {
+        cog_cli_options_defaults(&o);
+        o.session_action = offline[i];
+        o.source_session_id =
+            o.session_action == COG_CLI_SESSION_RECOVER ? source : NULL;
+        o.previous_processes_fenced = o.session_action == COG_CLI_SESSION_RECOVER;
+        o.show_usage = true;
+        o.credential_read = offline_resolver;
+        o.credential_arg = &calls;
+        o.net = (cog_net_ctx_t *)(void *)&o;
+        o.workspace_root = "/synthetic/workspace";
+        o.tool_policy = COG_CLI_TOOL_POLICY_ALLOW;
+        o.explicit_options = COG_CLI_OPT_WORKSPACE | COG_CLI_OPT_POLICY;
+        CHECK(cog_cli_configuration_new(&c, &o, 100U + i) == COG_OK);
+        effective = cog_cli_configuration_options(c);
+        CHECK(effective->session_action == o.session_action && effective->show_usage);
+        CHECK(effective->store_mode == COG_CLI_STORE_DURABLE);
+        CHECK(strcmp(effective->store_dir, "/synthetic/home/.local/state/cog") == 0);
+        CHECK(effective->model_id == NULL && effective->net == NULL);
+        CHECK(effective->credential_read == NULL && effective->credential_arg == NULL &&
+              calls == 0U);
+        CHECK(cog_cli_configuration_endpoint(c) == NULL);
+        CHECK(cog_cli_configuration_bind(c, NULL, NULL, NULL, NULL) ==
+              COG_ERROR_INVALID_STATE);
+        CHECK(cog_cli_configuration_endpoint(c) == NULL);
+        CHECK(cog_cli_configuration_describe(c, text, sizeof(text), &required) ==
+              COG_OK);
+        CHECK(strstr(text, "tools=disabled") != NULL &&
+              strstr(text, "credential=none") != NULL);
+        if (o.session_action == COG_CLI_SESSION_RECOVER) {
+            source[0] = 'X';
+            CHECK(strcmp(effective->source_session_id, "session-owned-copy") == 0);
+            CHECK(effective->previous_processes_fenced);
+            source[0] = 's';
+        }
+        cog_cli_configuration_free(c);
+        o.backend = COG_CLI_BACKEND_MOCK;
+        o.explicit_options |= COG_CLI_OPT_BACKEND;
+        CHECK(cog_cli_configuration_new(&c, &o, 200U + i) == COG_OK);
+        CHECK(cog_cli_configuration_options(c)->store_mode == COG_CLI_STORE_DURABLE);
+        CHECK(cog_cli_configuration_options(c)->model_id == NULL);
+        cog_cli_configuration_free(c);
+        o.store_mode = COG_CLI_STORE_DISABLED;
+        o.explicit_options |= COG_CLI_OPT_STORE_MODE;
+        CHECK(cog_cli_configuration_new(&c, &o, 300U + i) == COG_ERROR_INVALID_ARG &&
+              c == NULL);
+        o.explicit_options &= ~(uint32_t)COG_CLI_OPT_STORE_MODE;
+        CHECK(setenv("COG_STORE_MODE", "disabled", 1) == 0);
+        CHECK(cog_cli_configuration_new(&c, &o, 301U + i) == COG_ERROR_INVALID_ARG &&
+              c == NULL);
+        CHECK(unsetenv("COG_STORE_MODE") == 0);
+        CHECK(setenv("COG_MODEL", "synthetic/\xc0\xaf", 1) == 0);
+        CHECK(cog_cli_configuration_new(&c, &o, 302U + i) == COG_ERROR_INVALID_ARG &&
+              c == NULL);
+        CHECK(unsetenv("COG_MODEL") == 0);
+        CHECK(setenv("COG_CREDENTIAL_REF", "env:INVALID-NAME", 1) == 0);
+        CHECK(cog_cli_configuration_new(&c, &o, 303U + i) == COG_ERROR_INVALID_ARG &&
+              c == NULL);
+        CHECK(setenv("COG_CREDENTIAL_REF", "env:COG_L1_MISSING_KEY", 1) == 0);
+        CHECK(setenv("COG_BASE_URL", "https://:443/v1", 1) == 0);
+        CHECK(cog_cli_configuration_new(&c, &o, 304U + i) == COG_ERROR_INVALID_ARG &&
+              c == NULL);
+        CHECK(unsetenv("COG_BASE_URL") == 0);
+        CHECK(setenv("COG_MAX_CONTEXT_BYTES", "0", 1) == 0);
+        CHECK(cog_cli_configuration_new(&c, &o, 305U + i) == COG_ERROR_LIMIT &&
+              c == NULL);
+        CHECK(unsetenv("COG_MAX_CONTEXT_BYTES") == 0);
+        CHECK(unsetenv("HOME") == 0);
+        CHECK(cog_cli_configuration_new(&c, &o, 306U + i) == COG_ERROR_NOT_FOUND &&
+              c == NULL);
+        o.store_dir = "/synthetic/explicit";
+        o.explicit_options |= COG_CLI_OPT_STORE_DIR;
+        CHECK(cog_cli_configuration_new(&c, &o, 307U + i) == COG_OK);
+        CHECK(strcmp(cog_cli_configuration_options(c)->store_dir,
+                     "/synthetic/explicit") == 0);
+        cog_cli_configuration_free(c);
+        CHECK(setenv("HOME", "/synthetic/home", 1) == 0);
+    }
+    cog_cli_options_defaults(&o);
+    o.session_action = COG_CLI_SESSION_RECOVER;
+    o.source_session_id = source;
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_DENIED && c == NULL);
+    o.source_session_id = "session-\xe2\x98\x83";
+    o.previous_processes_fenced = true;
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_OK);
+    cog_cli_configuration_free(c);
+    o.previous_processes_fenced = false;
+    o.session_action = COG_CLI_SESSION_RESUME;
+    o.store_mode = COG_CLI_STORE_DISABLED;
+    o.explicit_options = COG_CLI_OPT_STORE_MODE;
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_INVALID_ARG && c == NULL);
+    o.explicit_options = 0U;
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_NOT_FOUND && c == NULL);
+    o.model_id = "synthetic/model";
+    o.explicit_options = COG_CLI_OPT_MODEL;
+    o.credential_read = offline_resolver;
+    o.credential_arg = &calls;
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_DENIED && c == NULL &&
+          calls == 1U);
+    o.backend = COG_CLI_BACKEND_MOCK;
+    o.explicit_options |= COG_CLI_OPT_BACKEND;
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_OK);
+    CHECK(cog_cli_configuration_options(c)->store_mode == COG_CLI_STORE_DURABLE);
+    CHECK(cog_cli_configuration_options(c)->session_action == COG_CLI_SESSION_RESUME);
+    cog_cli_configuration_free(c);
+    o.session_action = COG_CLI_SESSION_FORK;
+    o.fork_node_id = UINT64_MAX;
+    o.previous_processes_fenced = true;
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_OK);
+    effective = cog_cli_configuration_options(c);
+    CHECK(effective->fork_node_id == UINT64_MAX &&
+          effective->previous_processes_fenced);
+    cog_cli_configuration_free(c);
+    CHECK(calls == 1U);
+    return 0;
+}
+static int session_selector_failures(void)
+{
+    static const char *const bad_ids[] = {
+        "",         ".",    "..",     ".cog-domain.lock", "path/id",
+        "path\\id", "id\n", "id\x7f", "id\x80",           "id\xed\xa0\x80"};
+    cog_cli_options_t o;
+    cog_cli_configuration_t *c = NULL;
+    size_t i;
+    char source[129];
+    CHECK(clean() == 0);
+    cog_cli_options_defaults(&o);
+    o.session_action = COG_CLI_SESSION_RECOVER;
+    o.previous_processes_fenced = true;
+    for (i = 0U; i < sizeof(bad_ids) / sizeof(bad_ids[0]); ++i) {
+        o.source_session_id = bad_ids[i];
+        CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_INVALID_ARG &&
+              c == NULL);
+    }
+    memset(source, 's', 128U);
+    source[128U] = '\0';
+    o.source_session_id = source;
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_LIMIT && c == NULL);
+    source[127U] = '\0';
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_OK);
+    cog_cli_configuration_free(c);
+    o.source_session_id = "session/invalid";
+    o.session_action = COG_CLI_SESSION_NEW;
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_INVALID_ARG && c == NULL);
+    o.source_session_id = NULL;
+    o.previous_processes_fenced = false;
+    o.session_action = (cog_cli_session_action_t)999;
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_INVALID_ARG && c == NULL);
+    o.session_action = COG_CLI_SESSION_LIST;
+    o.prompt = "";
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_INVALID_ARG && c == NULL);
+    o.prompt = NULL;
+    o.queue_text = "queued";
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_INVALID_ARG && c == NULL);
+    o.queue_text = NULL;
+    o.session_id = "new-only";
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_INVALID_ARG && c == NULL);
+    o.session_id = NULL;
+    o.source_session_id = "resume";
+    o.session_action = COG_CLI_SESSION_RESUME;
+    o.fork_node_id = 1U;
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_INVALID_ARG && c == NULL);
+    o.session_action = COG_CLI_SESSION_FORK;
+    o.queue_text = "queued";
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_INVALID_ARG && c == NULL);
+    return 0;
+}
+static int session_inputs_are_direct(void)
+{
+    char path[] = "/tmp/cog-session-selectors-l1-XXXXXX";
+    cog_cli_options_t o;
+    cog_cli_configuration_t *c = NULL;
+    CHECK(clean() == 0);
+    CHECK(setenv("COG_SESSION_ACTION", "recover", 1) == 0);
+    CHECK(setenv("COG_SOURCE_SESSION_ID", "ignored", 1) == 0);
+    CHECK(setenv("COG_FORK_NODE_ID", "12", 1) == 0);
+    CHECK(setenv("COG_PREVIOUS_PROCESSES_FENCED", "true", 1) == 0);
+    CHECK(setenv("COG_SHOW_USAGE", "true", 1) == 0);
+    base(&o);
+    o.backend = COG_CLI_BACKEND_MOCK;
+    o.explicit_options |= COG_CLI_OPT_BACKEND;
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_OK);
+    CHECK(cog_cli_configuration_options(c)->session_action == COG_CLI_SESSION_NEW);
+    CHECK(cog_cli_configuration_options(c)->source_session_id == NULL);
+    CHECK(cog_cli_configuration_options(c)->fork_node_id == 0U);
+    CHECK(!cog_cli_configuration_options(c)->previous_processes_fenced &&
+          !cog_cli_configuration_options(c)->show_usage);
+    cog_cli_configuration_free(c);
+    CHECK(fixture(path, "client.session-action=list\n") == 0);
+    o.config_path = path;
+    CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_INVALID_ARG && c == NULL);
+    CHECK(unlink(path) == 0);
+    CHECK(unsetenv("COG_SESSION_ACTION") == 0);
+    CHECK(unsetenv("COG_SOURCE_SESSION_ID") == 0);
+    CHECK(unsetenv("COG_FORK_NODE_ID") == 0);
+    CHECK(unsetenv("COG_PREVIOUS_PROCESSES_FENCED") == 0);
+    CHECK(unsetenv("COG_SHOW_USAGE") == 0);
+    return 0;
+}
+
+/* The store ceiling is UTF-8 bytes, and every source-selecting action owns it. */
+static int session_unicode_boundary(void)
+{
+    static const cog_cli_session_action_t actions[] = {
+        COG_CLI_SESSION_RESUME, COG_CLI_SESSION_FORK, COG_CLI_SESSION_RECOVER};
+    size_t i;
+    CHECK(clean() == 0);
+    for (i = 0U; i < sizeof(actions) / sizeof(actions[0]); ++i) {
+        cog_cli_options_t o;
+        cog_cli_configuration_t *c = NULL;
+        const cog_cli_options_t *effective;
+        char source[129], expected[128];
+        memset(source, 's', 123U);
+        memcpy(source + 123U, "\xf0\x9f\x98\x80", 5U);
+        memcpy(expected, source, sizeof(expected));
+        cog_cli_options_defaults(&o);
+        o.backend = COG_CLI_BACKEND_MOCK;
+        o.explicit_options = COG_CLI_OPT_BACKEND;
+        o.session_action = actions[i];
+        o.source_session_id = source;
+        o.previous_processes_fenced = actions[i] == COG_CLI_SESSION_RECOVER;
+        o.fork_node_id = actions[i] == COG_CLI_SESSION_FORK ? UINT64_MAX : 0U;
+        CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_OK);
+        effective = cog_cli_configuration_options(c);
+        CHECK(effective->source_session_id != source);
+        memset(source, 'x', 127U);
+        CHECK(memcmp(effective->source_session_id, expected, sizeof(expected)) == 0);
+        CHECK(effective->session_action == actions[i] &&
+              effective->fork_node_id == o.fork_node_id &&
+              effective->previous_processes_fenced == o.previous_processes_fenced);
+        CHECK(effective->store_mode == COG_CLI_STORE_DURABLE);
+        cog_cli_configuration_free(c);
+        memcpy(source, expected, sizeof(expected));
+        source[127] = 'x'; source[128] = '\0';
+        CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_LIMIT && c == NULL);
+        source[126] = '\0'; /* Truncated four-byte scalar, below byte ceiling. */
+        CHECK(cog_cli_configuration_new(&c, &o, 1U) == COG_ERROR_INVALID_ARG && c == NULL);
+    }
+    return 0;
+}
+
 int main(void)
 {
+    CHECK(session_unicode_boundary() == 0);
+    CHECK(session_configuration() == 0);
+    CHECK(session_selector_failures() == 0);
+    CHECK(session_inputs_are_direct() == 0);
     CHECK(protocol_inputs() == 0);
     CHECK(malformed_and_capacity() == 0);
     CHECK(error_redaction() == 0);

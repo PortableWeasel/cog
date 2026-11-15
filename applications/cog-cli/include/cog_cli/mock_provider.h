@@ -13,7 +13,7 @@
  * scaffolding.  Scenario tests (Stages 12.6b–12.6e) link @c cog::cli and
  * use this header to inject chunks/errors and observe provider state.
  *
- * Legacy steps and typed delta fixtures share the mandatory eight-callback
+ * Legacy steps and typed delta fixtures share the mandatory nine-callback
  * provider contract. Requests are copied transitively into a constructor-owned
  * 128 KiB arena; LIMIT leaves the instance idle. Scripts/nested fixture strings
  * remain borrowed until disconnect. next() reports exact required capacity and
@@ -22,6 +22,15 @@
  * chunk_delay_ms is serviced using monotonic poll timestamps. Legacy receive
  * can combine the last text chunk with STOP; after completion the turn is idle.
  * Typed fixtures emit a separate FINISH. Do not mix receive/next in one turn.
+ * Generic preflight checks structural request values, stage-specific call/result
+ * associations and exact capacity of the same 128 KiB request representation,
+ * without copying into or invalidating last_request, changing script cursors,
+ * counts/time/cancellation/deltas or the last terminal error. It has no model or
+ * immutable endpoint-generation registry and intentionally accepts every
+ * structurally valid model/opaque namespace/format/blob as fixture data within
+ * its fixed limit. This is fixture compatibility, not OpenRouter json-v1
+ * validation. Real protocol compatibility tests use the real adapter preflight.
+ * A scripted send_error is a future send failure, never a preflight turn error.
  * Threading: one owner thread; static descriptors may be shared.
  */
 #ifndef COG_CLI_MOCK_PROVIDER_H

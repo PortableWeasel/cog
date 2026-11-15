@@ -200,8 +200,90 @@ static void test_result_name(void)
     CHECK(strcmp(cog_cli_result_name((cog_result_t)999), "unknown") == 0);
 }
 
+static void test_session_actions(void)
+{
+    cog_cli_options_t o;
+    int code = 99;
+    CHECK(cog_cli_options_parse(&o, 2, (char *[]){S("cog-cli"), S("--sessions")},
+                                &code) == COG_OK);
+    CHECK(o.session_action == COG_CLI_SESSION_LIST && o.source_session_id == NULL);
+    CHECK(o.explicit_options == 0U);
+    CHECK(cog_cli_options_parse(&o, 4,
+                                (char *[]){S("cog-cli"), S("--resume=session"),
+                                           S("--fenced"), S("--usage")},
+                                &code) == COG_OK);
+    CHECK(o.session_action == COG_CLI_SESSION_RESUME &&
+          strcmp(o.source_session_id, "session") == 0);
+    CHECK(o.previous_processes_fenced && o.show_usage && o.explicit_options == 0U);
+    CHECK(cog_cli_options_parse(&o, 7,
+                                (char *[]){S("cog-cli"), S("--fork"), S("session"),
+                                           S("--from-node=18446744073709551615"),
+                                           S("--fenced"), S("--prompt"), S("fresh")},
+                                &code) == COG_OK);
+    CHECK(o.session_action == COG_CLI_SESSION_FORK && o.fork_node_id == UINT64_MAX);
+    CHECK(o.previous_processes_fenced && strcmp(o.prompt, "fresh") == 0 &&
+          o.explicit_options == 0U);
+    CHECK(cog_cli_options_parse(
+              &o, 4,
+              (char *[]){S("cog-cli"), S("--recover"), S("session"), S("--fenced")},
+              &code) == COG_OK);
+    CHECK(o.session_action == COG_CLI_SESSION_RECOVER && o.previous_processes_fenced);
+    /* Missing recovery fencing is constructor DENIED, not an implicit assertion. */
+    CHECK(cog_cli_options_parse(&o, 3,
+                                (char *[]){S("cog-cli"), S("--recover"), S("session")},
+                                &code) == COG_OK);
+    CHECK(o.session_action == COG_CLI_SESSION_RECOVER && !o.previous_processes_fenced);
+    CHECK(cog_cli_options_parse(
+              &o, 4,
+              (char *[]){S("cog-cli"), S("--fork=session"), S("--from-node"), S("0")},
+              &code) == COG_OK);
+    CHECK(o.fork_node_id == 0U && o.session_action == COG_CLI_SESSION_FORK);
+}
+static void test_session_action_conflicts(void)
+{
+    static const char *const cases[][8] = {
+        {"cog-cli", "--sessions", "--sessions", NULL},
+        {"cog-cli", "--sessions", "--resume", "source", NULL},
+        {"cog-cli", "--resume=one", "--fork=two", NULL},
+        {"cog-cli", "--session", "new-only", "--resume=source", NULL},
+        {"cog-cli", "--sessions", "--prompt=", NULL},
+        {"cog-cli", "--sessions", "--queue=queued", NULL},
+        {"cog-cli", "--recover=source", "--fenced", "--prompt=text", NULL},
+        {"cog-cli", "--recover=source", "--fenced", "--queue=text", NULL},
+        {"cog-cli", "--fork=source", "--queue=text", NULL},
+        {"cog-cli", "--from-node=0", NULL},
+        {"cog-cli", "--resume=source", "--from-node=0", NULL},
+        {"cog-cli", "--fork=source", "--from-node=18446744073709551616", NULL},
+        {"cog-cli", "--fork=source", "--from-node=-1", NULL},
+        {"cog-cli", "--fork=source", "--from-node=+1", NULL},
+        {"cog-cli", "--fork=source", "--from-node=", NULL},
+        {"cog-cli", "--fork=source", "--from-node=0", "--from-node=1", NULL},
+        {"cog-cli", "--resume=", NULL},
+        {"cog-cli", "--resume=path/id", NULL},
+        {"cog-cli", "--resume=.cog-domain.lock", NULL},
+        {"cog-cli", "--resume=bad\x80", NULL},
+        {"cog-cli", "--resume", NULL},
+        {"cog-cli", "--fenced", NULL},
+        {"cog-cli", "--sessions", "--fenced", NULL}};
+    size_t i;
+    for (i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        cog_cli_options_t o;
+        char *args[8];
+        int argc = 0, code = 0;
+        while (cases[i][argc] != NULL) {
+            args[argc] = (char *)cases[i][argc];
+            ++argc;
+        }
+        CHECK(cog_cli_options_parse(&o, argc, args, &code) == COG_ERROR_ABORTED);
+        CHECK_EQ_INT(code, 2);
+    }
+}
+
+
 int main(void)
 {
+    test_session_actions();
+    test_session_action_conflicts();
     test_defaults();
     test_prompt_short_and_long();
     test_value_options();
