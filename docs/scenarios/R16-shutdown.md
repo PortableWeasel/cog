@@ -1,0 +1,55 @@
+# R16: Stop and shutdown with active transport, tools and saved intent
+
+Stage 14.D pass 2; baseline header pass 1 `29b41e8`, amended by this pass.
+This is a contract trace, **not an executable conformance pass**.
+
+## Sequence
+
+```mermaid
+sequenceDiagram
+    Host->>CLI: cog_cli_app_stop(app) or cog_cli_app_shutdown(app)
+    CLI->>Provider: cog_provider_cancel(provider)
+    CLI->>Toolkit: cog_toolkit_execution_cancel(exec,now)
+    loop owned children or retained outcomes remain
+    CLI->>Toolkit: cog_toolkit_execution_poll(exec,now,done,deadline)
+    CLI->>Provider: cog_provider_next(provider,delta,storage,capacity,required)
+    end
+    CLI->>Store: cog_store_save(store,session)
+    CLI->>Toolkit: cog_toolkit_execution_free(exec)
+    Host->>CLI: cog_cli_app_free(app)
+    Host->>Net: cog_net_free(net) before host dependency cleanup
+```
+
+## Exact public coverage
+
+Each symbol below is declared in the linked public header. Local application
+decisions in the diagram are not invented library functions.
+
+| Step | Exact calls, types, events or fields | Declaring header |
+|---|---|---|
+| Signal-safe stop vs queued shutdown | `cog_cli_app_stop`, `cog_cli_app_shutdown`, `cog_cli_app_run`, `cog_cli_app_free` | [applications/cog-cli/include/cog_cli/cli.h](../../applications/cog-cli/include/cog_cli/cli.h) |
+| Core lifetime | `cog_core_stop`, `cog_core_run`, `cog_core_free` | [libraries/cog-core/include/cog/core.h](../../libraries/cog-core/include/cog/core.h) |
+| Provider drain/release | `cog_provider_cancel`, `cog_provider_next`, `cog_provider_disconnect` | [libraries/cog-provider/include/cog/provider_vtable.h](../../libraries/cog-provider/include/cog/provider_vtable.h) |
+| Process cleanup | `cog_toolkit_execution_cancel`, `cog_toolkit_execution_poll`, `cog_toolkit_execution_free` | [libraries/cog-toolkit/include/cog/toolkit_exec.h](../../libraries/cog-toolkit/include/cog/toolkit_exec.h) |
+| Owned runtime | `cog_net_free`, `cog_net_request_release` | [libraries/cog-net/include/cog/net.h](../../libraries/cog-net/include/cog/net.h) |
+| Durable incomplete/ledger and guard release | `cog_store_save`, `cog_store_owner_release` | [libraries/cog-core/include/cog/session_store.h](../../libraries/cog-core/include/cog/session_store.h) |
+
+
+## Ownership and invariants
+
+- Core stop alone does not free application-owned work. app_run must perform cancel/drain/reap after core_run returns, including error/stop paths, before app_free preconditions hold.
+- After all execution borrowers, provider and children are drained, release the session owner guard before store_free. No thread except owner performs provider/net/tool cancel. Signal handler only records app/core stop. No curl global cleanup while Cog or other host users remain.
+- Active tool cancellation may leave effects; persist terminal outcome or INDETERMINATE. IO at shutdown is reported, never silently discarding durable STARTED history.
+
+## Failure and capacity branches
+
+- Already queued provider success wins over cancellation; never enqueue a second FINISH. Full queues retain terminal outcomes during drain.
+- Unreapable/driver-error cleanup cannot claim success or destroy active handle; report failure and preserve explicit ownership. OS scheduling is not a hard wall-clock guarantee.
+
+## Evidence and gap disposition
+
+Original05/05b baseline tests prove old shutdown cancellation only.
+
+**Required future executable evidence:** F/I/K/Q: signal during every DNS/tool/backoff phase, continuous queue stop, PID/fd cleanup and failed final save tests.
+
+**Amendment references:** D02,D03,D10 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).

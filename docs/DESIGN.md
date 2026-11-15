@@ -24,6 +24,12 @@
 > is explicitly declared and total dependency-memory caps are unsupported. Gate E
 > must review adoption. No production implementation or scenario gate is complete.
 
+The [Stage 14.D pass-2 scenario register](REAL_CLIENT_SCENARIO_PASS2.md) records
+the current header amendments, all original20 plus R01–R18 traces and delivery
+ownership. Quiescent same-host guarded checkpoint migration is the supported
+real-client profile; historical cross-core sketches below do not imply live
+handle transfer or automatic replay of effects. Independent gate E remains open.
+
 This document captures the software blueprint for Cog, an LLM harness and
 agent framework written in C. It follows the Jeep Method: the fewest
 essential parts that still make a working, maintainable system.

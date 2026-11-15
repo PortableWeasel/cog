@@ -15,6 +15,7 @@
 
 #include <cog/ipc.h>
 #include <cog/result.h>
+#include <cog/session_store.h>
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -75,6 +76,11 @@ typedef struct cog_orchestrator_config {
 
     /** If true, automatically spawn a replacement when a core dies. */
     bool auto_replace;
+    size_t service_quantum; /**< Constructor-bounded work/step; zero defaults 16. */
+    size_t max_sessions; /**< Reserved owner/route records; zero defaults 64. */
+    uint32_t shutdown_timeout_ms; /**< Per-stop grace; zero defaults 1000. */
+    cog_store_t *store; /**< Borrowed same-host require_owner store for durable
+       migration; optional only for non-migrating fixture/process-only use. */
 } cog_orchestrator_config_t;
 
 /* ── Lifecycle ──────────────────────────────────────────────────── */
@@ -97,7 +103,9 @@ cog_result_t cog_orchestrator_new(cog_orchestrator_t **out,
 /**
  * @brief Destroy an orchestrator.
  *
- * Stops all managed cores and releases resources.
+ * Releases constructor resources after asynchronous shutdown has completed.
+ * @pre request_shutdown/service reports all owned children reaped. No implicit
+ * blocking peer wait or abandoned child is permitted; store outlives orch.
  *
  * @param[in,out] orch Orchestrator to destroy; may be NULL (no-op).
  *
@@ -111,7 +119,9 @@ void cog_orchestrator_free(cog_orchestrator_t *orch);
  * @brief Spawn an auxiliary core process.
  *
  * Forks and execs the given binary with the IPC socket path as an
- * argument.  The aux core connects back to the orchestrator.
+ * argument without waiting for connection/identity handshake. Reserves an
+ * owner ID before return; service drives connection and health becomes HEALTHY
+ * only after validation. No session task is admitted on UNKNOWN readiness.
  *
  * @param[in,out] orch       Orchestrator.
  * @param[in]     binary_path Path to the cog core binary.
@@ -131,7 +141,9 @@ cog_result_t cog_orchestrator_spawn(cog_orchestrator_t *orch,
 /**
  * @brief Gracefully stop an auxiliary core.
  *
- * Sends a shutdown command and waits for acknowledgment.
+ * Admits a nonblocking shutdown intent/deadline for this owned peer. service
+ * drives acknowledgement, KILL if needed, and nonblocking reap; do not assume
+ * the process is gone merely because stop returned OK.
  *
  * @param[in,out] orch    Orchestrator.
  * @param[in]     peer_id Core to stop.
@@ -233,7 +245,8 @@ cog_peer_id_t cog_orchestrator_place(const cog_orchestrator_t *orch,
 /**
  * @brief Gracefully shut down all managed cores.
  *
- * Sends shutdown commands to all aux cores and waits for acknowledgments
+ * Legacy blocking compatibility helper, excluded from responsive core hooks.
+ * New code uses request_shutdown/service. Sends shutdown commands and waits
  * up to the timeout.  Cores that don't respond are force-killed.
  *
  * @param[in,out] orch       Orchestrator.
@@ -271,6 +284,125 @@ cog_result_t cog_orchestrator_sessions(const cog_orchestrator_t *orch,
                                         const char **out_sessions,
                                         size_t max_sessions,
                                         size_t *out_count);
+
+/**
+ * @brief Advance bounded child connection/heartbeat/shutdown/reap work, no wait.
+ * @param[in,out] orch Owner thread. @param[in] now_ms Nondecreasing clock.
+ * @param[out] out_shutdown_done True iff a requested shutdown has reaped all
+ * owned children (false when shutdown not requested).
+ * @param[out] out_deadline_ms Earliest absolute timer or UINT64_MAX.
+ * @return OK; AGAIN no progress; NULL_PTR; INVALID_ARG clock; IO/PROTOCOL.
+ * @note Bounded by constructor service_quantum even with continuous traffic.
+ * No blocking handshake/waitpid or foreign-PID signals. Dead owner sessions
+ * stay failed/frozen; auto_replace creates idle capacity, never replays tools.
+ */
+cog_result_t cog_orchestrator_service(cog_orchestrator_t *orch, uint64_t now_ms,
+                                       bool *out_shutdown_done,
+                                       uint64_t *out_deadline_ms);
+/**
+ * @brief Admit bounded all-child shutdown, then service until done.
+ * @param[in,out] orch Owner. @param[in] now_ms Clock.
+ * @param[in] timeout_ms Finite graceful deadline before owned-child KILL/reap.
+ * @return OK; NULL_PTR; INVALID_ARG. Idempotent, never extends earlier deadline.
+ * @note No peer wait; service reports TIMEOUT only with out_shutdown_done=true
+ * after all owned children are reaped. Other driver errors retain owned state
+ * for explicit cleanup and do not make free safe.
+ */
+cog_result_t cog_orchestrator_request_shutdown(cog_orchestrator_t *orch,
+                                                uint64_t now_ms,
+                                                uint32_t timeout_ms);
+/**
+ * @brief Publish an advisory route only for the durably admitted active owner.
+ * @param[in,out] orch Owner with borrowed shared store configured.
+ * @param[in] session_id Copied UTF-8 ID <=127 bytes.
+ * @param[in] peer_id Healthy authenticated destination owning its live guard.
+ * @param[in] owner Durable process-incarnation tuple, not socket identity.
+ * @param[in] checkpoint Exact validated shared-store generation loaded by target.
+ * @return OK (identical publication idempotent); NULL_PTR; LIMIT reserved routes;
+ * INVALID_STATE stale/conflicting epoch/peer; NOT_FOUND peer; IO/INDETERMINATE
+ * store state; UNSUPPORTED no fenced store/profile. Failure changes no route.
+ * @note Checks owner_read against claimed tuple/checkpoint; route is NOT an
+ * execution lease. The app validates target READY under that guard before
+ * publication. Target remains staged (no new save/effects) between acquiring
+ * its guard and publishing this initial checkpoint route; only then starts
+ * work. Registration never overwrites a newer epoch. No remote-host or
+ * active-handle migration; quiescent same-host shared-store handoff only.
+ */
+cog_result_t cog_orchestrator_publish_owner(cog_orchestrator_t *orch,
+                                            const char *session_id,
+                                            cog_peer_id_t peer_id,
+                                            cog_store_owner_t owner,
+                                            cog_store_checkpoint_t checkpoint);
+/**
+ * @brief Query advisory routed ownership; durable guard alone grants execution.
+ * @param[in] orch Owner. @param[in] session_id Registered ID.
+ * @param[out] peer_id Socket peer. @param[out] owner Epoch/incarnation.
+ * @param[out] checkpoint Validated immutable generation.
+ * @return OK; NULL_PTR; NOT_FOUND. Outputs unchanged on failure; no allocation.
+ */
+cog_result_t cog_orchestrator_session_owner(const cog_orchestrator_t *orch,
+                                            const char *session_id,
+                                            cog_peer_id_t *peer_id,
+                                            cog_store_owner_t *owner,
+                                            cog_store_checkpoint_t *checkpoint);
+/**
+ * @brief Remove an advisory route only if its exact owner is still current.
+ * @param[in,out] orch Owner. @param[in] session_id ID.
+ * @param[in] expected Current owner tuple, prevents stale disconnect teardown.
+ * @return OK; NULL_PTR; NOT_FOUND; INVALID_STATE stale tuple. Does not release
+ * a durable owner guard or authorize failover; remaining data/ledger persist.
+ */
+cog_result_t cog_orchestrator_forget_owner(cog_orchestrator_t *orch,
+                                           const char *session_id,
+                                           cog_store_owner_t expected);
+
+/** @brief Bounded same-host handoff envelope; no native handles are transferred. */
+typedef enum cog_handoff_kind {
+    COG_HANDOFF_QUIESCE = 1,
+    COG_HANDOFF_PREPARED,
+    COG_HANDOFF_COMMIT,
+    COG_HANDOFF_ABORT,
+    COG_HANDOFF_FAILED
+} cog_handoff_kind_t;
+/** @brief Every ACK is correlated to exact old/new owner and checkpoint tuples. */
+typedef struct cog_handoff_message {
+    cog_handoff_kind_t kind;
+    const char *session_id; /**< UTF-8 <=127 bytes; exact configured shared store. */
+    cog_peer_id_t source_peer;
+    cog_peer_id_t target_peer;
+    cog_store_owner_t expected;
+    cog_store_owner_t next;
+    cog_store_checkpoint_t checkpoint;
+} cog_handoff_message_t;
+/**
+ * @brief Encode CGH1 correlation metadata, never a live session/provider/tool.
+ * @param[in] message Complete view. @param[out] output Bytes; NULL iff capacity=0.
+ * @param[in] capacity Bytes. @param[out] required Exact wire size.
+ * @return OK; OVERFLOW changes required only; NULL_PTR; INVALID_ARG.
+ * @note CGH1 magic, kind u8, session length u8+UTF-8 (no NUL), source/target peer,
+ * expected epoch/instance, next epoch/instance, checkpoint generation as u64
+ * big-endian in that order. Shared store authority is fixed/verified at peer
+ * startup; no path or remote transfer is selected by an untrusted envelope.
+ * PREPARED/COMMIT echo exact tuples. Receiving COMMIT is never an execution grant:
+ * validate exact checkpoint and acquire the committed owner guard first.
+ */
+cog_result_t cog_orchestrator_handoff_encode(const cog_handoff_message_t *message,
+                                             void *output, size_t capacity,
+                                             size_t *required);
+/**
+ * @brief Decode CGH1 to caller storage without route or ownership side effects.
+ * @param[in] input Bytes. @param[in] input_len Exact length.
+ * @param[out] message Metadata. @param[out] session_id Copied ID+NUL.
+ * @param[in] capacity ID bytes. @param[out] required Exact ID bytes.
+ * @return OK; OVERFLOW changes required only; NULL_PTR; UNSUPPORTED version/kind;
+ * PROTOCOL bad UTF-8/length/zero tuple/wrapped epoch/trailing bytes. Caller
+ * validates transport peer, store authority and all ACK correlation fields.
+ * No allocation, activation, rollback, or native pointer survives input.
+ */
+cog_result_t cog_orchestrator_handoff_decode(const void *input, size_t input_len,
+                                             cog_handoff_message_t *message,
+                                             char *session_id, size_t capacity,
+                                             size_t *required);
 
 #ifdef __cplusplus
 }

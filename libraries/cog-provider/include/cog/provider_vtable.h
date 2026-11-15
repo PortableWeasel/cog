@@ -35,7 +35,9 @@ typedef struct cog_provider {
  * @param[in] endpoint Immutable generation, credential and config kept alive
  * until disconnect. Constructor validates backend capability and all limits.
  * @param[out] out_provider NULL on failure; owned instance on COG_OK.
- * @return NULL_PTR, INVALID_ARG, UNSUPPORTED, NOMEM or COG_OK. No wire effects
+ * @return NULL_PTR, INVALID_ARG (including missing required static callbacks),
+ * UNSUPPORTED, NOMEM or COG_OK. Generic connect validates all eight callbacks
+ * before invoking implementation connect. No wire effects
  * on failure. Called only on owner thread; no lazy dependency global init.
  */
 typedef cog_result_t (*cog_provider_connect_fn)(const cog_endpoint_t *endpoint,
@@ -80,6 +82,9 @@ typedef cog_result_t (*cog_provider_receive_fn)(cog_provider_t *provider,
  * time. Per-request failures become one retained FINISH and error snapshot;
  * a fatal driver failure is returned and must be propagated by the core hook.
  * @note Owner thread; never sleeps or invokes tools. Poll even with queue work.
+ * Shared-net adapters receive the same monotonic hook timestamp, service only
+ * bounded work and drain only their own IDs. Hook aggregates minimum deadlines
+ * and rotates adapters fairly; one blocked adapter cannot suppress another.
  */
 typedef cog_result_t (*cog_provider_poll_fn)(cog_provider_t *provider,
                                             uint64_t now_ms,

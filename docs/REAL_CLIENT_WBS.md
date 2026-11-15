@@ -91,3 +91,16 @@ tool/result associations and actual sandbox task outcomes.
 Planning validation checks ticket identities, parent/dependency edges,
 acyclic ordering and local documentation links. It does not claim any new
 implementation test coverage or a completed header gate.
+
+
+## Pass-2 ownership additions
+
+[Stage D scenario/amendment register](REAL_CLIENT_SCENARIO_PASS2.md) supplies the
+all-38 contract trace. Q includes the bounded nonblocking IPC endpoint profile
+needed before K; O supplies its headless/replay integration. G includes exact
+checkpoint/durable owner/OFD guard persistence, and N/O implement the declared
+quiescent same-host handoff. K owns constructor-bounded visible snapshot state
+and CGD1 codec; O owns CGR1 reconnect/GAP behavior. N/O implement CGA1 child
+updates and CGH1 handoff, with public orchestrator service/admission. N may refine
+integration but cannot defer an undeclared original-scenario requirement past E.
+Any later header amendment repeats trace/review gates before code.
