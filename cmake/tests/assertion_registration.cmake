@@ -1,0 +1,32 @@
+cmake_minimum_required(VERSION 3.16)
+# Consume CMake's generated registration, not a hand-maintained test-name list.
+# Defining these commands allows a read-only traversal in script mode (3.16+).
+include("${ASSERTION_MANIFEST}")
+set_property(GLOBAL PROPERTY COG_AUDITED_ASSERTIONS 0)
+function(add_test name)
+    foreach(argument IN LISTS ARGN)
+        if(argument IN_LIST COG_ASSERTION_EXECUTABLES)
+            get_property(count GLOBAL PROPERTY COG_AUDITED_ASSERTIONS)
+            math(EXPR count "${count} + 1")
+            set_property(GLOBAL PROPERTY COG_AUDITED_ASSERTIONS ${count})
+        endif()
+        if(argument IN_LIST COG_PROJECT_EXECUTABLES AND
+           NOT argument IN_LIST COG_ASSERTION_EXECUTABLES AND
+           NOT argument IN_LIST COG_PRODUCTION_EXECUTABLES)
+            message(FATAL_ERROR "Registered test ${name} uses unclassified executable ${argument}; enable its test assertions")
+        endif()
+    endforeach()
+endfunction()
+function(set_tests_properties)
+endfunction()
+function(subdirs)
+    foreach(directory IN LISTS ARGN)
+        include("${CMAKE_CURRENT_LIST_DIR}/${directory}/CTestTestfile.cmake")
+    endforeach()
+endfunction()
+include("${BUILD_ROOT}/CTestTestfile.cmake")
+
+get_property(count GLOBAL PROPERTY COG_AUDITED_ASSERTIONS)
+if(count EQUAL 0)
+    message(FATAL_ERROR "No assertion-enabled executable registrations were inspected")
+endif()
