@@ -89,3 +89,14 @@ snapshot invariants; (2) trace nonleaf fork -> snapshot -> explicit child ->
 branch history, plus completed assistant-call fork with zero repeated effects;
 (3) consistency review against active-leaf restore, unresolved branch refusal and
 allocation-free constructor capacities. Independent G review remains required.
+
+## G.1 review retrace: branch-local result coverage
+
+A completed global ledger does not make the assistant node before its TOOL
+results a safe fork point. Fork/add/history at that prefix refuse INVALID_STATE;
+the chosen path must include exactly one result for every call in the turn.
+The same rule rejects a prefix containing only some results of a multi-call
+assistant. Fork after the final associated result preserves every ancestor
+identity and does not admit repeated effects. Exact snapshot validation checks
+retained sibling leaves as well as the active path; INSPECT cannot bypass a
+malformed branch's call/result associations.

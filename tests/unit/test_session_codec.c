@@ -85,6 +85,37 @@ static void test_v2(void)
     cog_session_free(s);
 }
 
+static void test_unsafe_branch_wire(void)
+{
+    cog_session_t *s = NULL, *loaded = NULL;
+    const cog_session_config_t cfg = {.id = "branch", .max_nodes = 8U, .max_payload_bytes = 8192U};
+    CHECK(cog_session_new(&s, &cfg) == COG_OK);
+    const cog_message_tool_call_t call = {"id", "tool", "{}", 2U};
+    const cog_message_t assistant = {.role = COG_MESSAGE_ROLE_ASSISTANT, .tool_calls = &call, .tool_call_count = 1U};
+    const cog_message_t result = {.role = COG_MESSAGE_ROLE_TOOL, .tool_call_id = "id", .content = "done", .content_len = 4U};
+    const cog_message_t user = {.role = COG_MESSAGE_ROLE_USER, .content = "next", .content_len = 4U};
+    cog_session_node_t *a;
+    CHECK(cog_session_append(s, &assistant, &a) == COG_OK);
+    CHECK(cog_session_tool_transition(s, a, "id", COG_TOOL_EXECUTION_PROPOSED, COG_TOOL_EXECUTION_DENIED) == COG_OK);
+    CHECK(cog_session_append(s, &result, NULL) == COG_OK);
+    cog_session_snapshot_t source;
+    CHECK(cog_session_snapshot_view(s, &source) == COG_OK);
+    cog_node_data_t nodes[3] = {source.nodes[0], source.nodes[1],
+        {.node_id = 3U, .parent_id = 1U, .role = COG_NODE_USER, .message = &user}};
+    source.nodes = nodes; source.node_count = 3U; source.active_node_id = 3U; source.node_id_high_water = 3U;
+    unsigned char data[8192], scratch[8192]; size_t size = 0U;
+    CHECK(cog_store_codec_encode(&source, data, sizeof(data), &size) == COG_OK);
+    cog_store_codec_workspace_t workspace = {scratch, sizeof(scratch), 0U};
+    cog_session_snapshot_t decoded;
+    CHECK(cog_store_codec_decode(data, size, &workspace, &decoded) == COG_OK);
+    CHECK(cog_session_snapshot_validate(&decoded) == COG_ERROR_PROTOCOL);
+    CHECK(cog_session_restore(&loaded, &cfg, &decoded) == COG_ERROR_PROTOCOL && loaded == NULL);
+    decoded.inspection_only = true;
+    CHECK(cog_session_snapshot_validate(&decoded) == COG_ERROR_PROTOCOL);
+    CHECK(cog_session_restore(&loaded, &cfg, &decoded) == COG_ERROR_PROTOCOL && loaded == NULL);
+    cog_session_free(s);
+}
+
 static const char metadata[] = "{\"version\":1,\"id\":\"bGVnYWN5\",\"parent_id\":null,\"max_nodes\":4,\"node_count\":1,\"next_node_id\":11,\"active_node_id\":10}";
 static const char record[] = "{\"node_id\":10,\"parent_id\":0,\"role\":1,\"content\":\"aGVsbG8=\",\"tool_name\":null,\"tool_args\":null,\"tool_result\":null,\"raw_request\":null,\"raw_response\":null,\"chunk_count\":0,\"timing\":{\"request_sent_ms\":0,\"first_token_ms\":0,\"last_token_ms\":0,\"duration_ms\":0,\"ttft_ms\":0,\"tokens_per_second\":0},\"cost\":{\"input_tokens\":0,\"output_tokens\":0,\"cost_per_input_token\":0,\"cost_per_output_token\":0,\"total_cost\":0},\"model\":null,\"provider\":null}\n";
 static void replace(char *out, size_t capacity, const char *input, const char *from, const char *to)
@@ -164,5 +195,5 @@ static void test_v1(void)
 }
 int main(void)
 {
-    test_v2(); test_v1(); puts("bounded session wire codec contracts passed"); return 0;
+    test_v2(); test_v1(); test_unsafe_branch_wire(); puts("bounded session wire codec contracts passed"); return 0;
 }

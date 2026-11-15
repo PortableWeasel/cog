@@ -206,7 +206,8 @@ static void test_branch_and_associations(void)
     CHECK(cog_session_append(s, &r, NULL) == COG_OK);
     CHECK(cog_session_append(s, &r, NULL) == COG_ERROR_INVALID_ARG);
     CHECK(cog_session_tool_transition(s, a, "same", COG_TOOL_EXECUTION_STARTED, COG_TOOL_EXECUTION_SUCCEEDED) == COG_OK);
-    CHECK(cog_session_fork(s, a, &point) == COG_OK && point == a);
+    CHECK(cog_session_fork(s, a, &point) == COG_ERROR_INVALID_STATE);
+    CHECK(cog_session_fork(s, cog_session_active(s), &point) == COG_OK);
     CHECK(cog_session_tool_transition(s, a, "same", COG_TOOL_EXECUTION_SUCCEEDED, COG_TOOL_EXECUTION_STARTED) == COG_ERROR_INVALID_STATE);
     CHECK(cog_session_fork(s, leaf, &point) == COG_OK && point == leaf);
     CHECK(cog_session_append(s, &next, NULL) == COG_OK);
@@ -310,10 +311,107 @@ static void test_legacy_and_incomplete(void)
     cog_session_free(s);
 }
 
+static void test_branch_local_result_coverage(void)
+{
+    cog_session_t *s = session(16U, 16384U);
+    cog_session_node_t *a = assistant(s, "call");
+    const cog_message_t user = text(COG_MESSAGE_ROLE_USER, "next");
+    cog_message_t r = result("call");
+    cog_session_node_t *complete;
+    CHECK(cog_session_tool_transition(s, a, "call", COG_TOOL_EXECUTION_PROPOSED, COG_TOOL_EXECUTION_STARTED) == COG_OK);
+    CHECK(cog_session_append(s, &r, &complete) == COG_OK);
+    CHECK(cog_session_tool_transition(s, a, "call", COG_TOOL_EXECUTION_STARTED, COG_TOOL_EXECUTION_SUCCEEDED) == COG_OK);
+    cog_session_snapshot_t before = snapshot(s);
+    cog_message_t history[16]; size_t count = 123U;
+    CHECK(cog_session_copy_history(s, a, history, 16U, &count) == COG_ERROR_INVALID_STATE);
+    CHECK(count == 123U);
+    CHECK(cog_session_fork(s, a, NULL) == COG_ERROR_INVALID_STATE);
+    CHECK(cog_session_add_message(s, a, &user, NULL) == COG_ERROR_INVALID_STATE);
+    cog_session_snapshot_t after = snapshot(s);
+    CHECK(after.active_node_id == before.active_node_id && after.node_count == before.node_count &&
+        after.node_id_high_water == before.node_id_high_water);
+    CHECK(cog_session_active(s) == complete);
+    cog_node_data_t malformed[3] = {after.nodes[0], after.nodes[1],
+        {.node_id = 3U, .parent_id = 1U, .role = COG_NODE_USER, .message = &user,
+         .content = user.content, .content_len = user.content_len}};
+    cog_session_snapshot_t bad = after;
+    bad.nodes = malformed; bad.node_count = 3U; bad.node_id_high_water = 3U; bad.active_node_id = 3U;
+    cog_session_t *restored = NULL;
+    CHECK(cog_session_restore(&restored, NULL, &bad) == COG_ERROR_PROTOCOL && restored == NULL);
+    /* A safe active selection cannot conceal an unsafe retained sibling. */
+    bad.active_node_id = after.active_node_id;
+    CHECK(cog_session_restore(&restored, NULL, &bad) == COG_ERROR_PROTOCOL && restored == NULL);
+    CHECK(cog_session_fork(s, complete, NULL) == COG_OK);
+    CHECK(cog_session_append(s, &user, NULL) == COG_OK);
+    CHECK(cog_session_copy_history(s, NULL, history, 16U, &count) == COG_OK && count == 3U);
+    CHECK(history[1].role == COG_MESSAGE_ROLE_TOOL);
+    cog_session_free(s);
+
+    s = session(16U, 16384U);
+    const cog_message_tool_call_t calls[] = {{"one", "tool", "{}", 2U}, {"two", "tool", "{}", 2U}};
+    const cog_message_t proposal = {.role = COG_MESSAGE_ROLE_ASSISTANT, .tool_calls = calls, .tool_call_count = 2U};
+    cog_session_node_t *partial;
+    CHECK(cog_session_append(s, &proposal, &a) == COG_OK);
+    CHECK(cog_session_tool_transition(s, a, "one", COG_TOOL_EXECUTION_PROPOSED, COG_TOOL_EXECUTION_DENIED) == COG_OK);
+    r = result("one");
+    CHECK(cog_session_append(s, &r, &partial) == COG_OK);
+    /* The one current policy phase may retain a partially resolved turn. */
+    after = snapshot(s);
+    CHECK(cog_session_restore(&restored, NULL, &after) == COG_OK);
+    cog_session_free(restored); restored = NULL;
+    CHECK(cog_session_tool_transition(s, a, "two", COG_TOOL_EXECUTION_PROPOSED, COG_TOOL_EXECUTION_DENIED) == COG_OK);
+    r = result("two");
+    CHECK(cog_session_append(s, &r, &complete) == COG_OK);
+    CHECK(cog_session_copy_history(s, partial, history, 16U, &count) == COG_ERROR_INVALID_STATE);
+    CHECK(cog_session_fork(s, partial, NULL) == COG_ERROR_INVALID_STATE);
+    CHECK(cog_session_add_message(s, partial, &user, NULL) == COG_ERROR_INVALID_STATE);
+    after = snapshot(s);
+    cog_node_data_t split[4] = {after.nodes[0], after.nodes[1], after.nodes[2],
+        {.node_id = 4U, .parent_id = 2U, .role = COG_NODE_USER, .message = &user}};
+    bad = after; bad.nodes = split; bad.node_count = 4U; bad.node_id_high_water = 4U; bad.active_node_id = 4U;
+    CHECK(cog_session_restore(&restored, NULL, &bad) == COG_ERROR_PROTOCOL && restored == NULL);
+    /* Splitting final TOOL messages across siblings is also invalid. */
+    split[2].parent_id = 1U; bad.node_count = 3U; bad.active_node_id = 3U;
+    CHECK(cog_session_restore(&restored, NULL, &bad) == COG_ERROR_PROTOCOL && restored == NULL);
+    CHECK(cog_session_copy_history(s, complete, history, 16U, &count) == COG_OK && count == 3U);
+    cog_session_free(s);
+}
+
+static void test_divergent_discard_leaf(void)
+{
+    cog_session_t *s = session(8U, 8192U);
+    const cog_message_t user = text(COG_MESSAGE_ROLE_USER, "text");
+    cog_session_node_t *root, *first, *draft;
+    CHECK(cog_session_append(s, &user, &root) == COG_OK);
+    CHECK(cog_session_append(s, &user, &first) == COG_OK);
+    CHECK(cog_session_fork(s, root, NULL) == COG_OK);
+    CHECK(cog_session_add_message(s, root, &user, &draft) == COG_OK);
+    cog_session_snapshot_t before = snapshot(s);
+    CHECK(cog_session_discard_node(s, draft) == COG_ERROR_INVALID_STATE);
+    cog_session_snapshot_t after = snapshot(s);
+    CHECK(after.active_node_id == before.active_node_id && after.node_count == before.node_count &&
+        after.node_id_high_water == before.node_id_high_water);
+    CHECK(cog_session_active(s) == draft && cog_node_child_count(root) == 2U);
+    CHECK(cog_node_first_child(root) == first && cog_node_next_sibling(first) == draft);
+    cog_session_t *restored = NULL;
+    CHECK(cog_session_restore(&restored, NULL, &after) == COG_OK);
+    cog_session_free(restored);
+    /* Removing an unrelated safe draft leaves the selected leaf intact. */
+    CHECK(cog_session_discard_node(s, first) == COG_OK);
+    CHECK(cog_session_active(s) == draft);
+    CHECK(cog_session_discard_node(s, draft) == COG_OK);
+    CHECK(cog_session_active(s) == root && cog_node_child_count(root) == 0U);
+    after = snapshot(s);
+    CHECK(after.node_id_high_water == before.node_id_high_water);
+    CHECK(cog_session_restore(&restored, NULL, &after) == COG_OK);
+    cog_session_free(restored); cog_session_free(s);
+}
+
 int main(void)
 {
     test_capacity_identity(); test_deep_copy(); test_crash_reconciliation();
     test_branch_and_associations(); test_snapshot_validation(); test_legacy_and_incomplete();
+    test_branch_local_result_coverage(); test_divergent_discard_leaf();
     puts("bounded structured session contracts passed");
     return 0;
 }

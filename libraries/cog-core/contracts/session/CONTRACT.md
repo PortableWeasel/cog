@@ -61,3 +61,26 @@ object, then copies and conservatively normalizes.
 strdup: every constructor allocation is failed individually for new and restore,
 and all append/discard/transition/reconcile/history/fork/snapshot/validation
 operations run with allocation forbidden. Strict and ASan/UBSan runs pass.
+
+## Independent G.1 review revision 1
+
+Completion is branch-local as well as session-wide. A finalized ledger entry
+and TOOL result in a sibling branch cannot complete the selected provider
+context. Fork/history/new-message insertion require exactly one associated final
+result for every assistant call on the selected parent path. Partial multi-call
+result prefixes are unsafe fork points. Snapshot validation checks each retained
+leaf independently, allows unresolved assistant turns only on the active leaf,
+and refuses unrelated messages before their parent path's tool results. A raw
+wire decode of such a malformed branch remains inadmissible in REPLAY or INSPECT.
+
+Discard of an active divergent text draft refuses INVALID_STATE atomically when
+its parent retains another child. Successful discard continues to select its
+parent, which is then a leaf. Refusal preserves node/payload capacity, selected
+leaf, sibling order and high-water. An unrelated uncommitted text draft can still
+be discarded while retaining the selected leaf.
+
+Regressions cover assistant-before-result fork/add/history refusal, incomplete
+multi-call prefixes, active and off-active malformed sibling snapshots,
+serialized malformed branch rejection including inspection mode, and text-only
+divergent discard. All four targeted message/session/codec/allocation tests pass
+strict C11-Werror-NDEBUG and ASan/UBSan. Independent re-review remains required.
