@@ -131,3 +131,22 @@ start unrelated model/user/branch work. Crashed STARTED becomes INDETERMINATE an
 requires recovery. Cancelled unstarted proposals receive identified no-effect
 DENIED results; they are never mistaken for uncertain executed effects. Test the
 crash before STARTED save and cancel-after-proposal boundaries with zero effects.
+
+## Stage 14.I executable acceptance evidence
+
+The toolkit implementation now has dedicated real-library tests for this trace:
+`test_toolkit_async`, `test_toolkit_resources`, `test_toolkit_fencing` and
+`test_workspace`. They cover policy/guard validation, retained at-most-once
+output, constructor limits/OOM, disposable workspace refusal/effects and supported
+process-tree cancellation/reaping. Strict and ASan/UBSan writer suites pass;
+[delivery evidence](../REAL_CLIENT_I_EVIDENCE.md) records exact scope and limits.
+Independent review and library integration passed after one correction cycle.
+Application durable-loop integration remains with K.
+
+## H deterministic provider fixture amendment
+
+The narrow [H mock contract](../REAL_CLIENT_H_MOCK_AMENDMENT.md) adds
+`cog_mock_provider_new_deltas` in `cog_cli/mock_provider.h`. It supplies retained
+TOOL_BEGIN/ARGUMENTS/END/OPAQUE/FINISH fixtures through the same generic callbacks
+as the real adapter. K can exercise its tool admission loop without wire calls;
+this constructor itself executes no tool and grants no durable admission.

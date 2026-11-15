@@ -121,3 +121,11 @@ start unrelated model/user/branch work. Crashed STARTED becomes INDETERMINATE an
 requires recovery. Cancelled unstarted proposals receive identified no-effect
 DENIED results; they are never mistaken for uncertain executed effects. Test the
 crash before STARTED save and cancel-after-proposal boundaries with zero effects.
+
+### H typed mock fixture retrace
+
+The [H mock amendment](../REAL_CLIENT_H_MOCK_AMENDMENT.md) declares the typed
+script constructor before implementation, pins bounded request ownership and
+retained overflow/cancel behavior, and supplies deterministic identified tool
+and opaque events through generic provider callbacks. K retains responsibility
+for durable message aggregation and actual tool admission/execution.

@@ -16,6 +16,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "cog/toolkit.h"
+#include "fixtures/toolkit_core.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -135,13 +136,13 @@ static cog_result_t counting_tool(cog_core_t *core,
 
 static const cog_tool_t kTools[] = {
     { .name = "block", .description = NULL, .input_schema = NULL,
-      .handler = blocking_tool },
+      .handler = blocking_tool, .flags = COG_TOOL_REENTRANT | COG_TOOL_INDEPENDENT },
     { .name = "delayed_fail", .description = NULL, .input_schema = NULL,
-      .handler = delayed_fail_tool },
+      .handler = delayed_fail_tool, .flags = COG_TOOL_REENTRANT | COG_TOOL_INDEPENDENT },
     { .name = "not_found", .description = NULL, .input_schema = NULL,
-      .handler = not_found_tool },
+      .handler = not_found_tool, .flags = COG_TOOL_REENTRANT | COG_TOOL_INDEPENDENT },
     { .name = "count", .description = NULL, .input_schema = NULL,
-      .handler = counting_tool }
+      .handler = counting_tool, .flags = COG_TOOL_REENTRANT | COG_TOOL_INDEPENDENT }
 };
 
 static const cog_tool_table_t kTable = {
@@ -149,11 +150,9 @@ static const cog_tool_table_t kTable = {
     .count = sizeof(kTools) / sizeof(kTools[0])
 };
 
-static long g_core_storage;
-
 static cog_core_t *dummy_core(void)
 {
-    return (cog_core_t *)&g_core_storage;
+    return toolkit_test_core;
 }
 
 /* pthread_create wrapping: -1 passes every call through, N fails creation
@@ -208,9 +207,8 @@ static int verify_parallel_stop_claims(void)
     cog_toolkit_call_free(calls[0]);
     cog_toolkit_call_free(calls[1]);
     cog_toolkit_call_free(calls[2]);
-    if (r != COG_ERROR_IO || coll != NULL) {
-        return 1;
-    }
+    if (r != COG_OK || coll == NULL) { return 1; }
+    cog_toolkit_result_collection_free(coll);
     return atomic_load(&g_counted_calls) == 0 ? 0 : 1;
 }
 
@@ -235,9 +233,8 @@ static int verify_earliest_error_index(void)
                                 &coll);
     cog_toolkit_call_free(calls[0]);
     cog_toolkit_call_free(calls[1]);
-    if (r != COG_ERROR_IO || coll != NULL) {
-        return 1;
-    }
+    if (r != COG_OK || coll == NULL) { return 1; }
+    cog_toolkit_result_collection_free(coll);
     return atomic_load(&g_not_found_calls) == 1 ? 0 : 1;
 }
 
@@ -320,6 +317,7 @@ static int verify_create_failure(long successful_creations)
 
 int main(void)
 {
+    toolkit_core_create();
     unsigned failures = 0U;
 
 #define CHECK(label, expr)                                                   \
@@ -341,5 +339,6 @@ int main(void)
     if (failures == 0U) {
         (void)printf("test_toolkit_parallel: ok\n");
     }
+    toolkit_core_destroy();
     return failures == 0U ? 0 : 1;
 }

@@ -1,0 +1,15 @@
+{
+  "date_utc": "2026-11-15T19:42:08.984684+00:00",
+  "model": "deepseek/deepseek-v4-flash-0731",
+  "catalog_tools_verified": true,
+  "maximum_generation_requests": 2,
+  "max_output_tokens_each": 512,
+  "synthetic_only": true,
+  "retry": false,
+  "status": "passed",
+  "exit_code": 0,
+  "sanitized_output": [
+    "synthetic-tool outcome=0 tokens_known=1 input=301 output=45 cost_known=1 cost=0.000026563",
+    "synthetic-answer outcome=0 tokens_known=1 input=84 output=4 cost_known=1 cost=0.000005745"
+  ]
+}

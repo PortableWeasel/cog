@@ -13,41 +13,16 @@
  * scaffolding.  Scenario tests (Stages 12.6b–12.6e) link @c cog::cli and
  * use this header to inject chunks/errors and observe provider state.
  *
- * @section mock_script Script model
- *
- * A script is an ordered array of @c cog_mock_step_t rows.  Each
- * @c cog_provider_send resets nothing: steps are consumed monotonically
- * across the lifetime of the provider instance, so a script such as
- * @code
- *   [ERROR(429, retryable), CHUNK("recovered")]
- * @endcode
- * makes the first receive fail with retry metadata and the retry's first
- * receive succeed — exactly the shape scenario 12 (rate limit → backoff →
- * queue) needs.
- *
- * When the step array is exhausted, receives return an empty
- * @c COG_FINISH_REASON_STOP completion.  The @c repeat field replays the
- * script for multi-turn sessions: on the next @c cog_provider_send, if the
- * step index is exhausted and @c repeat > 0, the index wraps to zero and
- * @c repeat is decremented (@c SIZE_MAX repeats forever).
- *
- * @section mock_cancel Cancellation
- *
- * Two independent mechanisms produce @c COG_ERROR_ABORTED:
- *  - a @c COG_MOCK_STEP_CANCEL step in the script (provider-side abort);
- *  - @c cog_mock_provider_request_cancel, which arms a one-shot flag that
- *    makes the next receive return @c COG_ERROR_ABORTED and then clears
- *    itself (user-side cancel, scenario 20 path A).
- *
- * @section mock_state Observation
- *
- * @c cog_mock_provider_state snapshots counters (sends, receives, chunks,
- * errors, cancels), the last request (borrowed), and the last error
- * metadata.  Scenario tests assert on these after a run.
- *
- * Threading model: a mock provider instance is not thread-safe, matching
- * every other cog-provider implementation.  The static vtable, endpoint,
- * and script data are read-only and may be shared.
+ * Legacy steps and typed delta fixtures share the mandatory eight-callback
+ * provider contract. Requests are copied transitively into a constructor-owned
+ * 128 KiB arena; LIMIT leaves the instance idle. Scripts/nested fixture strings
+ * remain borrowed until disconnect. next() reports exact required capacity and
+ * retains the same item/sequence on overflow. Cancellation preserves a retained
+ * item before exactly one ABORTED FINISH. No callback sleeps or allocates.
+ * chunk_delay_ms is serviced using monotonic poll timestamps. Legacy receive
+ * can combine the last text chunk with STOP; after completion the turn is idle.
+ * Typed fixtures emit a separate FINISH. Do not mix receive/next in one turn.
+ * Threading: one owner thread; static descriptors may be shared.
  */
 #ifndef COG_CLI_MOCK_PROVIDER_H
 #define COG_CLI_MOCK_PROVIDER_H
@@ -116,8 +91,8 @@ typedef struct cog_mock_script {
                                        with this code (scripted send
                                        failure). */
     uint32_t chunk_delay_ms;      /**< Simulated latency between chunks;
-                                       zero = none.  The mock sleeps this
-                                       long before returning each chunk. */
+                                       zero = none.  The poll schedules this
+                                       delay without sleeping. */
 } cog_mock_script_t;
 
 /**
@@ -139,9 +114,8 @@ typedef struct cog_mock_state {
     const cog_provider_request_t *last_request; /**< Pointer to the mock's
                                        copy of the most recent request
                                        struct; valid until the next send.
-                                       Pointer fields inside it (model_id,
-                                       messages) remain borrowed from the
-                                       caller. */
+                                       All nested pointer fields belong to the
+                                       mock request arena. */
     cog_provider_error_t last_error; /**< Copy of the most recent scripted
                                        error metadata. */
 } cog_mock_state_t;
@@ -154,7 +128,7 @@ typedef struct cog_mock_state {
  * static const cog_endpoint_t ep = {
  *     .name = "mock",
  *     .vtable = &cog_mock_provider_vtable,
- *     .api_key = (const char *)&script,   // script is copied at connect
+ *     .implementation_config = &script,   // script is copied at connect
  * };
  * @endcode
  */
@@ -188,15 +162,26 @@ extern const cog_endpoint_t cog_mock_endpoint;
 cog_result_t cog_mock_provider_new(const cog_mock_script_t *script,
                                    cog_provider_t **out);
 
+/** @brief Construct a typed fixture provider. Deltas and nested strings are
+ * borrowed until disconnect. FINISH is required and ends each scripted turn.
+ * Requests are copied into a fixed 128 KiB constructor-owned arena; LIMIT is
+ * returned atomically when they exceed it. No runtime allocation or sleeping.
+ * @param deltas Immutable typed event script. @param count Event count.
+ * @param out Owned provider on success, NULL on failure.
+ * @return COG_OK, NULL_PTR, INVALID_ARG or NOMEM.
+ */
+cog_result_t cog_mock_provider_new_deltas(const cog_provider_delta_t *deltas,
+                                         size_t count, cog_provider_t **out);
+
 /**
  * @brief Connect a mock provider through the standard endpoint path.
  *
- * Reads the script from @p endpoint->api_key (interpreted as a
+ * Reads the script from @p endpoint->implementation_config (interpreted as a
  * @c cog_mock_script_t, copied by value) so the standard
- * @c cog_provider_connect flow works unchanged.  A NULL @p api_key
+ * @c cog_provider_connect flow works unchanged.  A NULL @p implementation_config
  * selects the default script.
  *
- * @param[in]  endpoint Endpoint whose @p api_key carries the script.
+ * @param[in]  endpoint Endpoint whose @p implementation_config carries the script.
  * @param[out] out      Uninitialised pointer; set to the new provider on
  *                      success.
  * @return COG_OK on success.
@@ -234,7 +219,8 @@ cog_result_t cog_mock_provider_send(cog_provider_t *provider,
 /**
  * @brief Receive the next scripted response or chunk.
  *
- * Consumes one step per call.  See the header overview for the exact
+ * Consumes one step on successful delivery. Overflow retains it for retry.
+ * See the header overview for the exact
  * semantics of chunks, errors, cancellation, and exhaustion.
  *
  * @param[in,out] provider Mock provider instance.
