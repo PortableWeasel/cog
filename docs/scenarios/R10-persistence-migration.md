@@ -158,3 +158,18 @@ require_owner=false store for its explicit v2 save, releases that context, then
 admits/acquires fenced ownership against the exact generation. The assertion is
 not verification; a live lock still refuses. Unowned uncertain data remains
 INDETERMINATE, and no legacy tool ID/effect is invented.
+
+
+## L/H pending-history compatibility retrace
+
+A restored PROPOSED group is preflighted before any STARTED transition/save or
+ALLOW. The application uses public selected-path node/message views to build a
+bounded current request, without fabricating missing TOOL results or calling
+send. `cog_provider_preflight(provider,request,COG_PROVIDER_PREFLIGHT_PENDING_TOOLS)`
+([provider_vtable.h](../../libraries/cog-provider/include/cog/provider_vtable.h))
+validates provider-owned opaque namespace/format/content plus known request
+limits while preserving all provider state. The last assistant may have unique
+already-recorded matching results; older groups must be complete. Store/ledger/
+guard/policy checks still determine effect admission. After results are durable,
+normal send requires COMPLETE history and revalidates future bytes. Header-only
+[three-pass gate](../REAL_CLIENT_PREFLIGHT_CONTRACTS.md); no runtime pass claimed.

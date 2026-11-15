@@ -175,3 +175,18 @@ released, then a new fenced owner is admitted against the exact v2 checkpoint.
 Owned clean RESUME/FORK still use normal exclusive guard arbitration without a
 required assertion; RECOVER always requires it. Unowned uncertain data remains
 INDETERMINATE under G's CAS contract and cannot be bootstrapped into execution.
+
+
+## L/H resumed opaque compatibility gate
+
+The follow-up [preflight contract](REAL_CLIENT_PREFLIGHT_CONTRACTS.md), gate
+`f7d9933`, closes a newly traced boundary before resumed PROPOSED effects. The
+application builds its bounded actual selected root-to-active message views,
+including the final assistant group and its already-recorded identified results,
+and calls generic `cog_provider_preflight(..., PENDING_TOOLS)` with current model,
+configuration generation, limits and tools. Structural request_validate is not
+opaque protocol validation. Ordinary copy_history still refuses unresolved
+history, and send is never called to probe support. Unsupported metadata fails
+before STARTED/save/ALLOW; supported exact opaque data remains accepted. The
+provider amendment itself requires three targeted passes and independent review
+before dependent implementation. Unaffected L work remains independent.

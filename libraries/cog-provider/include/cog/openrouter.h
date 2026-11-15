@@ -32,6 +32,10 @@ typedef struct cog_openrouter_config {
  * stages apply the same pinned namespace/json-v1 syntax and representation
  * rules below; pending-tool preflight does not send an unresolved request.
  * No preflight result changes retained output or the last terminal error.
+ * This includes prior get_error message bytes and queued cancellation/FINISH;
+ * active instances refuse preflight until FINISH is consumed. Unknown model,
+ * generation/capability mismatch and writer/parser limits are checked locally.
+ * No synthetic tool result is needed for the permitted pending last group.
  *
  * The first release accepts limits.max_json_depth in 1..256; connect returns
  * INVALID_ARG for a larger value. Depth preflight bounds recursive duplicate

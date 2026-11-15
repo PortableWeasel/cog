@@ -160,3 +160,18 @@ ends with FINISH before policy, durable STARTED, tool execution, identified
 result and continuation. This exercises application composition without wire
 traffic or relaxing durable tool admission. Pass 3 checks pointer/count pairs,
 4096-entry ceiling, fixture lifetime and REAL rejection.
+
+
+## L/H pending-history compatibility retrace
+
+A restored PROPOSED group is preflighted before any STARTED transition/save or
+ALLOW. The application uses public selected-path node/message views to build a
+bounded current request, without fabricating missing TOOL results or calling
+send. `cog_provider_preflight(provider,request,COG_PROVIDER_PREFLIGHT_PENDING_TOOLS)`
+([provider_vtable.h](../../libraries/cog-provider/include/cog/provider_vtable.h))
+validates provider-owned opaque namespace/format/content plus known request
+limits while preserving all provider state. The last assistant may have unique
+already-recorded matching results; older groups must be complete. Store/ledger/
+guard/policy checks still determine effect admission. After results are durable,
+normal send requires COMPLETE history and revalidates future bytes. Header-only
+[three-pass gate](../REAL_CLIENT_PREFLIGHT_CONTRACTS.md); no runtime pass claimed.

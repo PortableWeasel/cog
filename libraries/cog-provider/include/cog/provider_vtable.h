@@ -54,7 +54,7 @@ typedef cog_result_t (*cog_provider_disconnect_fn)(cog_provider_t *provider);
 /** @brief History eligibility checked by no-wire request preflight. */
 typedef enum cog_provider_preflight_stage {
     COG_PROVIDER_PREFLIGHT_COMPLETE = 0, /**< Every identified call has its result. */
-    COG_PROVIDER_PREFLIGHT_PENDING_TOOLS /**< One final assistant call group may remain open. */
+    COG_PROVIDER_PREFLIGHT_PENDING_TOOLS /**< Exactly one final assistant call group remains open. */
 } cog_provider_preflight_stage_t;
 
 /**
@@ -64,13 +64,22 @@ typedef enum cog_provider_preflight_stage {
  * settings, including nested message/opaque bytes and advertised tools.
  * @param[in] stage COMPLETE for ordinary send eligibility; PENDING_TOOLS for
  * the selected final assistant call group awaiting tool execution/results.
+ * Every message must be COMPLETE and structurally valid. A TOOL result must
+ * uniquely match a call in its immediately preceding assistant call group;
+ * result order within that group may differ from call order. A later non-TOOL
+ * message requires that prior group to be fully resolved. COMPLETE requires
+ * every group closed. PENDING_TOOLS requires exactly one open group belonging
+ * to the last assistant in the prefix, with one or more missing results; only
+ * its unique matching already-recorded TOOL results may follow it. No synthetic
+ * results, orphan/duplicate results or unrelated later message is permitted.
+ * Reusing a textual call ID in a distinct, earlier closed group is valid.
  * @return OK when the known input fits this implementation's protocol/profile;
  * NULL_PTR; INVALID_ARG for unknown stage/structural values; INVALID_STATE for
  * an active turn or invalid call/result sequence; NOT_FOUND for unknown model;
  * UNSUPPORTED for model capability or continuation namespace/format/semantics;
  * PROTOCOL for malformed strict protocol data; LIMIT for constructor ceilings.
  * @post On every return no turn is accepted, no request/sequence/time advances,
- * and no transport, service, tool, callback or external effect occurs. Existing
+ * and no transport, service, tool, application callback or external effect occurs. Existing
  * retained output and last terminal error snapshot/lifetimes stay unchanged.
  * No input is retained, modified, logged or rendered; no runtime allocation.
  * @note Uses only constructor-reserved workspace. Validate selected history,
@@ -92,7 +101,9 @@ typedef cog_result_t (*cog_provider_preflight_fn)(cog_provider_t *provider,
  * @return COG_OK; NULL_PTR; INVALID_ARG/UNSUPPORTED before network effects;
  * LIMIT if request/workspace cannot fit; INVALID_STATE if a turn is active.
  * @post Failure leaves instance idle and sends nothing. No runtime Cog allocation.
- * Send requires COMPLETE history; preflight PENDING_TOOLS never authorizes send.
+ * Send requires COMPLETE history and rejects an open group with INVALID_STATE
+ * before network effects; preflight PENDING_TOOLS never authorizes send. The
+ * generic structural-only request_validate does not grant history eligibility.
  * @note Owner thread; no blocking I/O or automatic retry/model substitution.
  */
 typedef cog_result_t (*cog_provider_send_fn)(cog_provider_t *provider,
