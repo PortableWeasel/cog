@@ -58,6 +58,10 @@ struct cog_net_observation;
  * downstream sinks. Copy anything retained into host-reserved storage. Both
  * callback and user must outlive the context; no registration changes at runtime.
  * NULL user is valid; a NULL configured observer ignores observer_user.
+ * A bridge using I/O-capable sinks must enqueue into host-reserved storage and
+ * invoke those sinks only after the net/provider operation returns. Queue/clock
+ * failure is a callback error; a later drain failure is host-owned, not a net
+ * observer_status change unless subsequently returned by another callback.
  */
 typedef cog_result_t (*cog_net_observer_fn)(void *user,
     const cog_net_ctx_t *ctx, const struct cog_net_observation *observation);

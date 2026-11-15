@@ -24,10 +24,10 @@ No GUI, exporter protocol, dynamic registry or new telemetry service is added.
 flowchart LR
   subgraph Host[Single owner thread / explicit host lifetime]
     NET[cog-net: numeric observations]
-    BRIDGE[Host/app bridge: bounded correlation + sanitized labels]
+    BRIDGE[Host/app bridge: reserved queue + copied scope]
     OBS[cog-obs: typed fields / spans / bounded diagnostics]
     NET -->|borrowed callback values| BRIDGE
-    BRIDGE -->|existing public obs APIs| OBS
+    BRIDGE -->|owner drain outside net call: existing obs APIs| OBS
     APP[App: pinned provider request / tool execution] -->|duration + status + availability| OBS
   end
 ```
@@ -45,7 +45,12 @@ The event contains no pointer to payload, URL, headers, credentials, error text
 or opaque continuation. `(net context identity, request ID)` keys a request;
 sequence starts at one and never wraps. The callback is synchronous on the
 calling owner thread and cannot re-enter net through itself or a downstream
-sink. It copies any retained values into explicit host reservations. No signal
+sink. The reference CLI callback captures a checked nonblocking monotonic timestamp,
+copies the numeric value and any prepared OPEN scope into constructor-reserved
+bridge storage, and returns. It performs no formatting, obs calls, stdio or sink
+I/O. Host callbacks with purely bounded memory consumers may consume directly;
+I/O-capable consumers must be drained after the net/provider call returns.
+No signal
 handler calls an observer; app/core stop still only records stop intent.
 
 OPEN follows successful `out_id` publication during request construction.
@@ -64,6 +69,9 @@ first error. Counter/sequence exhaustion latches LIMIT. Transfer state/results,
 retained bytes and constructor ownership remain independent. Hosts read
 `cog_net_observer_status` after net operations before allowing subsequent work;
 application code must also check after provider calls that service the net.
+This net status covers callback enqueue/clock failures only. Deferred drain
+sink/format failures live in separate bridge/app state and are checked too;
+there is no setter or new API to inject a deferred error into net status.
 The affected host chooses to stop its own work, then cancels/drains normally;
 observation failure itself never cancels unrelated shared-net requests. The
 failed event is not retried and the feed cannot silently resume with a gap.
@@ -84,13 +92,17 @@ A bridge target is never borrowed from a replaceable provider configuration.
 It remains app/host-owned through both R12 provider generations and their final
 cleanup. Only the host owns dependency global initialization/cleanup.
 
-The reference CLI has one app on its host net context. At OPEN, the bridge
+The reference CLI has one app on its host net context. At OPEN, the bridge callback
 copies the active request's pinned session/model/configuration generation and
 application attempt number into a fixed row. The owner prepares this scope
 before calling provider_send; OPEN can occur synchronously inside that call.
 A send failure clears the prepared scope without inventing a network row.
-Later events use the copied row, never
-whatever generation was most recently published. Candidate connect/preflight
+After the operation, the owner drains the queued OPEN into its row; later
+queued events use that copied scope, never the latest published generation.
+Drain/check before clearing the prepared scope, R12 publication/retirement,
+row reuse, bridge-target unbinding, app destruction or another provider/net
+operation. Label/target storage stays alive until drain completes. The callback
+may copy only bounded prevalidated scope; it never reads a retired generation. Candidate connect/preflight
 has no wire request and produces no transport observation. R12 publication
 cannot relabel old requests or clear labels while diagnostics borrow them.
 Embedding hosts that share a net across providers/apps supply their own
@@ -106,10 +118,28 @@ with `cog_obs_diag_clear` before reuse; there is no unbounded history. Host
 consumers copying events must likewise reserve/cap their state. Capacity or ID
 exhaustion is an explicit error; it never silently drops a row or wraps identity.
 
-The host obtains event timestamps from the existing monotonic obs clock at
-callback time. Net observations do not mix the caller-supplied service clock
-with real timestamps or report a fabricated request timestamp before first
-service. Clock failure follows the same latched observer-error path.
+The callback obtains its timestamp from the existing checked nonblocking
+monotonic obs clock and stores it with the queue entry. Owner drain preserves
+that timestamp; it does not retimestamp delayed delivery. Net observations do
+not mix caller-supplied service time with real timestamps. Clock failure is an
+explicit callback failure and latches net status, with no guessed timestamp.
+
+The reference host reserves at least `4*N+2` queue entries for a net configured
+with `N` request slots, after checked multiply/add/byte-size arithmetic. Its
+OpenRouter poll performs at most one net service plus one request release per
+provider call; send/cancel/next/disconnect cannot exceed that bound either.
+Each queue entry stores the numeric observation, timestamp and bounded copied
+scope. The owner drains after EVERY such provider/net operation, including
+cleanup, before making another; no repeated operation fills the queue while
+waiting for a later app-loop phase. External custom providers with a different
+operation envelope size/drain their host reservations explicitly. Queue overflow
+returns OVERFLOW from the callback and invalidates the feed via sticky status;
+there is no drop-oldest, retry, realloc, hidden grow or pretending the feed is
+complete. Once bridge drain fails, further callbacks may return that existing
+bridge error, but no extra callback is required to propagate failure: admission
+is already gated by the bridge/app status. Owner drain invokes existing obs
+APIs outside callback constraints; configured sinks still must cooperate with
+bounded owner service. Constructor-owned file buffers avoid first-log growth.
 
 Label reservations use fixed per-row capacities: session ID128 bytes including
 NUL, model label128 bytes including NUL, and static endpoint/provider/tool names.
@@ -139,10 +169,12 @@ snapshot strings remain valid until that row is republished/cleared, as required
 by obs.h. The bridge therefore owns copies; it does not borrow config-generation
 strings across retirement. Body/tool content is never an observation attribute.
 
-App retry admission emits existing obs RETRY with the explicit application
-attempt, then the newly admitted request has a fresh OPEN identity. RETRY is
-recorded only when an attempt is actually admitted; a refused retry budget,
-backoff cancellation or failed provider send does not claim a new wire attempt.
+For a successfully admitted retry, owner drain publishes the fresh OPEN row
+then existing obs RETRY for that same new obs identity with the copied explicit
+application attempt and OPEN timestamp, before any later CONNECTED. This
+preserves nondecreasing event times without publishing a retry before request
+construction succeeds. There is no RETRY for a refused budget, cancelled
+backoff or failed send with no admitted OPEN. Net itself never emits RETRY.
 A provider 429 record includes HTTP429 while its net CLOSED remains transport
 OK. DNS/TLS/connect/capacity/cancel are sanitized transport classes, not HTTP429.
 
@@ -175,14 +207,26 @@ invent zero billing or print a mutable credential through a model/endpoint label
 Net terminal and provider semantic terminal stay distinct (e.g. valid HTTP200
 with malformed provider frame). Both are observed once in their own domain.
 
-Sink/format/clock/capacity errors are checked. The bridge returns errors from
-existing obs calls; the net feed latches them. App timing log/span errors latch
-an app-owned observation error and stop subsequent admission after the owner
-cancels/drains/persists work. Preserve any earlier work error as primary and
-retain the first observation error for explicit reporting. Cleanup never retries
-an effect merely to regenerate a missing record. If a sink rejects trace_end,
-its documented unchanged stack may be discarded during failed cleanup, rather
-than retrying a partially delivered record blindly.
+Sink/format/clock/capacity errors are checked in their actual domain. A callback
+queue/clock failure immediately latches net observer_status. Owner-drain obs or
+app timing log/span failure latches the first observation error PRIVATELY in the
+bridge/app. It does not immediately change net status: the callback has already
+returned. The owner checks both net status and bridge/app state after the call
+and drain, and stops later admission while completing normal cancellation,
+request/tool drain, reap and durable cleanup. A later callback may return the
+latched bridge error to disable further net feed; this is not required for the
+app to notice an already-failed drain.
+
+Existing app_run/shutdown has one result channel. If no earlier work failure
+exists, return the first observation failure through that existing result. If
+an earlier work failure exists, preserve it as primary. No new public secondary
+app-error getter or reliable multi-error channel is promised. The reference host
+may make a best-effort sanitized symbolic secondary diagnostic OUTSIDE the net
+callback; failure of that diagnostic cannot hide/replace the primary nonOK
+result. Private retention serves cleanup/admission and tests, not an unexposed
+embedding-caller API. Cleanup never retries an effect to regenerate a record.
+If a sink rejects trace_end, its documented unchanged stack may be discarded
+during failed cleanup rather than blindly retrying a partially delivered record.
 
 ## Pass 2: scenario traces and amendments
 
@@ -198,10 +242,10 @@ The callback budget and accounting-error policy are now explicit as well.
 |---|---|---|
 | 1 successful HTTP | net_request -> service -> peek/ack/release | OPEN1 -> actual CONNECTED -> coalesced PROGRESS -> CLOSED; callback values contain no payload |
 | 2 invalid request/setup failure | net_request fails before ID publication | out_id unchanged, no OPEN/row, no request/effect |
-| 3 HTTP429 + retry admission | net CLOSED/HTTP429; provider_get_error; app budget; provider_send | transport OK is distinct from provider error; app RETRY only on admitted attempt; next request has fresh ID |
+| 3 HTTP429 + retry admission | net CLOSED/HTTP429; provider_get_error; app budget; provider_send -> owner drain | fresh OPEN then app RETRY with same captured timestamp/attempt; no RETRY without admitted request |
 | 4 DNS/TLS/connect failure | service fixes failure, cancel/release cleanup | OPEN -> FAILED without fake CONNECTED; sanitized error enum only |
 | 5 response inactivity | service timeout after response progress | STALLED then FAILED/TIMEOUT; connect timeout has no STALLED and pause/backpressure is excluded |
-| 6 callback rejection | any observer call returns nonOK; observer_status | first error latches, no retry/no later callbacks, ordinary transport/response outcome unchanged |
+| 6 callback rejection / deferred sink failure | reserved enqueue+clock; observer_status; owner drain outside callback | callback error latches net status; drain error separately gates app immediately, with no invented net status injection; one existing public primary result |
 | 7 body-ring pause | service -> retained peek, later ack -> service | count body bytes once after transactional acceptance; no repeated callback progress for the same paused input |
 | 8 active cancel/release | cancel/release after partial upload/body | flush final PROGRESS, FAILED/ABORTED once; ID remains owned until release |
 | 9 already captured completion | service captures DONE at quantum boundary; cancel/release before terminal response publish | captured success/error wins; no second terminal or ABORTED replacement, even while body views stay retained |
@@ -210,7 +254,7 @@ The callback budget and accounting-error policy are now explicit as well.
 | 12 reload during active old turn | existing R12 pinning; prepared provider has no wire; old send/poll/cleanup | copied row keeps old generation/model/session through retirement; subsequent OPEN gets new scope |
 | 13 tool success/deny/cancel | toolkit_new/start/poll/result, existing guarded STARTED/result saves | typed timing/status, identified ordinal, no arguments/output; span ends after joined reap |
 | 14 unknown usage/long labels | provider_next USAGE -> bounded typed app record | availability false and numeric omitted; no guessed zero or truncation; stored usage/model unchanged |
-| 15 teardown/constructor unwind | app drain, bridge clear, app_free; net_free; host cleanup | observer target alive through explicit releases; free itself emits nothing and host clears domain keys |
+| 15 teardown/constructor unwind | app drain, bridge clear, app_free; net_free; host cleanup | target/scope/labels alive through explicit releases AND final owner drain; free emits nothing; host clears domain keys |
 
 The existing original18/19 diagrams are amended to route through the host bridge
 and map each newly required call to its public header. No special provider/tool
@@ -251,7 +295,14 @@ valid component tests but cannot substitute for real event generation.
   totals, and final progress flush precedes the one terminal. Monotonic integer
   values never wrap; unavailable upload accounting cannot pretend zero progress.
   At most4callbacks/request/service,2/request/cancel-or-release,1/request constructor
-  are possible, without a new retained event queue or Cog runtime allocation.
+  are possible without a net-owned observation queue or runtime Cog growth;
+  the separate host bridge queue is explicitly reserved at construction.
+- The net callback only checks a nonblocking clock and copies numeric/prepared
+  scope into fixed storage. The owner drains after each operation before scope
+  clear/reload/reuse/teardown. Callback enqueue failure and deferred obs sink
+  failure have separate sticky state; both gate admission, with no promise of a
+  public secondary app-error channel. Existing first-error result precedence
+  suffices; sanitized secondary host diagnostics are best-effort outside callback.
 - Main owns a fresh transport context and bridge. External shared-net hosts keep
   their existing constructor observer/routing ownership; apps never overwrite it.
   Multiple contexts use host-assigned obs IDs so context-local request ID1 does
@@ -277,8 +328,9 @@ Header-only validation commands (no runtime implementation tests):
 
 Runtime transport facts travel through an optional constructor-borrowed numeric
 net observer, independent of retained body queues. A host-owned bounded bridge
-maps `(net context, request ID)` to stable sanitized obs rows and pinned app
-metadata. Connection readiness comes from real DNS/TCP/TLS readiness; retries
+queues numeric values with callback-time timestamps/copied scope, then drains
+outside net/provider calls into stable sanitized obs rows and pinned app metadata.
+Connection readiness comes from real DNS/TCP/TLS readiness; retries
 belong only to app admission. Typed provider/tool duration/status and explicit
 usage availability use existing obs calls. Observer failure is latched separately
 from transport/effect outcomes and halts later app admission through normal

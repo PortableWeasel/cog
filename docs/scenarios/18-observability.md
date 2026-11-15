@@ -98,3 +98,13 @@ screening exposes only safe bounded labels/availability, never secret storage.
 No shared obs stack is used for nonnested simultaneous providers. All callbacks
 remain on the owner thread, with reserved storage and checked downstream errors.
 Header-only validation establishes contracts/compilation, not runtime conformance.
+
+## Independent-review clarification: existing single-result reporting
+
+Provider/tool logging and owner-drained transport records check sink errors
+outside net callbacks. The first observation failure is retained privately to
+stop later admission and finish cleanup; app_run/shutdown returns it only if no
+earlier work error is primary. No public secondary app-error getter is promised.
+A sanitized secondary host diagnostic is best-effort outside callback, never a
+replacement for the primary error. Net status covers callback failures; deferred
+obs sink failure is separate bridge/app state checked after the operation/drain.

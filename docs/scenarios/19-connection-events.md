@@ -14,6 +14,8 @@ sequenceDiagram
     participant Obs
     App->>Net: request -> successful ID publication
     Net->>Bridge: observer(ctx,OPEN numeric value)
+    Note over Bridge: reserve numeric entry + callback timestamp + pinned scope
+    App->>Bridge: owner drain after operation returns
     Bridge->>Obs: conn_event_emit + diag_publish (copied sanitized row)
     App->>Net: service
     Net->>Bridge: actual CONNECTED, coalesced PROGRESS
@@ -23,10 +25,12 @@ sequenceDiagram
     else fixed wire terminal
       Net->>Bridge: final PROGRESS then CLOSED/FAILED once
     end
+    App->>Bridge: owner drain queued values after service returns
     App->>Net: observer_status after provider/net operations
+    App->>Bridge: check separate drain/app error before admission
     alt application actually admits another attempt
-      App->>Obs: RETRY explicit attempt
       App->>Net: new request -> fresh OPEN identity
+      App->>Bridge: owner drain OPEN then RETRY (same captured timestamp)
     end
     App->>Net: cancel/release owned requests before free
     Bridge->>Obs: clear/reuse bounded terminal rows
@@ -107,3 +111,16 @@ failure disables only the feed, not the transfer, and remains explicitly sticky.
 A caller never reports this lost feed as complete. Header includes remain acyclic
 and zero-init leaves the optional feed off. Different final header review and
 actual implementation/oracles are still required before runtime acceptance.
+
+## Independent-review clarification: queued bridge and error domains
+
+The strict net callback invokes no potentially blocking stdio/obs sinks. It
+copies numeric values, a checked callback-time timestamp and pinned OPEN scope
+into reserved bridge entries. Owner drain after each provider/net operation
+uses existing obs APIs outside callback; drain precedes scope clear, reload
+publication/retirement, row reuse and app/target teardown. A healthy reference
+host reserves at least4*N+2entries for N request slots, with overflow checks.
+Callback queue/clock failure latches net status; deferred sink/format failure
+latches separate private bridge/app state immediately, without pretending the
+already-returned callback can change net status. Both gate admission. New OPEN
+then app RETRY share the captured timestamp on actual retry admission.
