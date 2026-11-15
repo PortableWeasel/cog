@@ -766,7 +766,12 @@ static cog_result_t restore_ledger(cog_session_t *s, const cog_session_snapshot_
         cog_tool_ledger_record_t *l = &s->ledger[i];
         const cog_session_node_t *a = find_node(s, l->assistant_node_id);
         const cog_session_node_t *r = result_for(s, a, l->call_id);
-        if ((!final_state(l->state) || r == NULL) && !on_path(s->active, a)) return COG_ERROR_PROTOCOL;
+        if (!final_state(l->state) || r == NULL) {
+            if (!on_path(s->active, a)) return COG_ERROR_PROTOCOL;
+            for (const cog_session_node_t *descendant = s->active; descendant != a; descendant = descendant->parent)
+                if (descendant->data.message == NULL || descendant->message.role != COG_MESSAGE_ROLE_TOOL)
+                    return COG_ERROR_PROTOCOL;
+        }
         if (final_state(l->state) && r == NULL) return COG_ERROR_PROTOCOL;
         if (r != NULL && (!final_state(l->state) || !on_path(r, a))) return COG_ERROR_PROTOCOL;
     }

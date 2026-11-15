@@ -241,3 +241,37 @@ access happens on the thread that runs `cog_core_run`.
   (O(n) typical, O(n²) worst case for adversarial id orders).
 - `list`/`exists`/`delete` are O(sessions) directory scans.
 - `append` is O(1) amortized (one record write + meta rewrite).
+## Stage 14.G private codec boundary (implemented)
+
+`session_store_codec.c/.h` encodes public snapshots as explicit little-endian
+scalars with an 8-byte `COGSNAP2` version marker, explicit presence/length byte
+strings, binary64 bit patterns, complete nodes/messages/opaque/usage and
+ledger/audit records. No native structs, padding, pointers or platform indexes
+are serialized. The transaction backend wraps this payload in a checksummed
+immutable generation; the codec itself neither publishes files nor grants
+execution ownership. Constructor-owned input/output and descriptor scratch are
+supplied explicitly; encode/decode never allocate or grow memory.
+
+Binary decode retains committed STARTED exactly for monotonic diff comparison.
+Public load must pass the decoded snapshot through `cog_session_restore` for
+full tree/association/audit validation and conservative INDETERMINATE
+normalization. A successful raw decode is not replay admission. Failure leaves
+the output snapshot unchanged; scratch/output bytes may have been consumed.
+
+The v1 migration parser accepts the original writer's fixed meta/node schemas,
+canonical base64, checked integer/scalar values and valid UTF-8 text. It rejects
+duplicate/unknown members, malformed complete records, missing committed
+records/bytes and unsupported versions. Optional recovery only discards one
+unterminated record beyond the metadata's complete committed record count.
+Unidentified legacy tools require INSPECT and never acquire invented call IDs.
+Legacy embedded-NUL/nonrepresentable tool strings or invalid UTF-8 text return
+UNSUPPORTED without rewriting the source; those old files remain available for
+external forensic inspection. No truncation or guessed replay is performed.
+
+`tests/unit/test_session_codec.c` directly verifies exact byte round trips,
+opaque embedded NUL, usage, committed STARTED vs restored INDETERMINATE, every
+binary truncation boundary, descriptor/encoded capacity failure, unsupported
+wire versions, trailing bytes and strict v1 migration/inspection/tail behavior.
+Targeted C11-Werror and ASan/UBSan codec/session executions pass. This evidence
+does not establish atomic manifest transactions or ownership-fencing behavior;
+those remain G.2 transaction/backend delivery and independent-review work.
