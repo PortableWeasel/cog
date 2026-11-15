@@ -971,24 +971,22 @@ static int test_log_to_zero_capacity_buffer(void)
 
 static int test_log_null_deliver_callback(void)
 {
-    cog_obs_t *obs = NULL;
+    cog_obs_t *obs = (cog_obs_t *)(uintptr_t)1; /* Sentinel. */
     cog_obs_config_t cfg = make_config();
     cog_obs_sink_t sink;
 
-    /* A sink with a NULL deliver callback accepts nothing (defensive). */
+    /* Fail closed: a configured sink with a NULL deliver callback is
+     * rejected at construction and *out stays NULL. */
     sink.name = "null-deliver";
     sink.deliver = NULL;
     sink.user = NULL;
     sink.min_severity = COG_OBS_TRACE;
     cfg.sinks = &(cog_obs_sink_table_t){ &sink, 1U };
-    if (cog_obs_new(&obs, &cfg) != COG_OK) {
+    if (cog_obs_new(&obs, &cfg) != COG_ERROR_INVALID_ARG || obs != NULL) {
         return 1;
     }
-    if (cog_obs_log(obs, COG_OBS_INFO, "m", NULL, 0U) != COG_OK) {
-        cog_obs_free(obs);
-        return 1;
-    }
-    cog_obs_free(obs);
+    /* One NULL-deliver sink among working sinks is rejected too: a
+     * misconfigured sink must not silently drop records. */
     return 0;
 }
 

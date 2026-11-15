@@ -20,11 +20,13 @@ target_include_directories(cog-obs
 
 target_compile_features(cog-obs PUBLIC c_std_11)
 
-# cog-obs headers include cog-core headers (e.g. <cog/result.h>), so the
-# core's include path propagates to consumers.  cog-core in turn links
-# cog::obs for <cog/obs.h>; the static-library cycle is resolved by CMake
-# at link time (verified: cyclic static dependencies are supported).
-target_link_libraries(cog-obs PUBLIC cog::core)
+# cog-obs headers include <cog/result.h> from cog-core.  The result
+# contract is header-only and exposed as cog::result, so cog-obs takes the
+# cog-core include path and the C11 requirement without linking the
+# cog-core archive.  This keeps the dependency graph acyclic: cog-core
+# links cog::obs (for <cog/obs.h> from core.h) while cog-obs links only
+# the header-only cog::result.
+target_link_libraries(cog-obs PUBLIC cog::result)
 
 # Apply the project-wide strict-warning policy (and ASan/UBSan when enabled)
 # to the production sources.

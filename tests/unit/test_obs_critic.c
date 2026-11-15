@@ -14,8 +14,8 @@
  *     NOT_FOUND) and is emitted exactly once on success;
  *   - log_to log-only mode (NULL out_buf, zero capacity) still delivers
  *     to sinks and reports the formatted length;
- *   - a NULL deliver callback among working sinks is skipped without
- *     suppressing the other sinks;
+ *   - a configured sink with a NULL deliver callback is rejected at
+ *     construction (revision 1 approved change: fail closed);
  *   - filtered-out records still undergo field validation (documented
  *     precedence: INVALID_ARG wins over the filter);
  *   - connection events with conn_id == 0 are not rejected (the header
@@ -405,12 +405,12 @@ static int test_log_to_log_only_delivers(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* NULL deliver callback among working sinks                           */
+/* NULL deliver callback among working sinks is rejected               */
 /* ------------------------------------------------------------------ */
 
 static int test_log_null_deliver_among_working(void)
 {
-    cog_obs_t *obs = NULL;
+    cog_obs_t *obs = (cog_obs_t *)(uintptr_t)1; /* Sentinel. */
     cog_obs_config_t cfg = make_config();
     sink_capture_t cap;
     cog_obs_sink_t sinks[2];
@@ -425,7 +425,14 @@ static int test_log_null_deliver_among_working(void)
     sinks[1].user = &cap;
     sinks[1].min_severity = COG_OBS_TRACE;
     cfg.sinks = &(cog_obs_sink_table_t){ sinks, 2U };
-    if (cog_obs_new(&obs, &cfg) != COG_OK) {
+    /* Fail closed on any configured sink without a deliver callback:
+     * construction is rejected regardless of the other sinks. */
+    if (cog_obs_new(&obs, &cfg) != COG_ERROR_INVALID_ARG || obs != NULL) {
+        return 1;
+    }
+    /* Working sinks alone still construct and deliver normally. */
+    cfg.sinks = &(cog_obs_sink_table_t){ &sinks[1], 1U };
+    if (cog_obs_new(&obs, &cfg) != COG_OK || obs == NULL) {
         return 1;
     }
     if (cog_obs_log(obs, COG_OBS_INFO, "m", NULL, 0U) != COG_OK) {

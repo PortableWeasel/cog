@@ -140,7 +140,7 @@ conn=<id> state=<name> [endpoint=<e>] [provider=<p>] in=<n> out=<n> retries=<n> 
 |----------|-----------|--------|
 | `cog_obs_severity_name` | `cog_result_t (cog_obs_severity_t, const char **out_name)` | `COG_ERROR_NULL_PTR` (`out_name` NULL); `COG_ERROR_INVALID_ARG` (severity out of range) |
 | `cog_obs_clock_now_ns` | `cog_result_t (uint64_t *out_now_ns)` | `COG_ERROR_NULL_PTR` (`out_now_ns` NULL); `COG_ERROR_IO` (platform clock failure) |
-| `cog_obs_new` | `cog_result_t (cog_obs_t **out, const cog_obs_config_t *config)` | `COG_ERROR_NULL_PTR` (`out` or `config` NULL); `COG_ERROR_INVALID_ARG` (severity out of range; fields/sinks table with NULL array and non-zero count); `COG_ERROR_NOMEM` (allocation fails or the single-block size computation would wrap) |
+| `cog_obs_new` | `cog_result_t (cog_obs_t **out, const cog_obs_config_t *config)` | `COG_ERROR_NULL_PTR` (`out` or `config` NULL); `COG_ERROR_INVALID_ARG` (severity out of range; fields/sinks table with NULL array and non-zero count; any configured sink with a NULL `deliver` callback); `COG_ERROR_NOMEM` (allocation fails or the single-block size computation would wrap) |
 | `cog_obs_free` | `void (cog_obs_t *obs)` | none; `obs == NULL` is a no-op |
 | `cog_obs_log` | `cog_result_t (cog_obs_t *, cog_obs_severity_t, const char *message, const cog_obs_field_t *fields, size_t field_count)` | `COG_ERROR_NULL_PTR` (`obs` or `message` NULL); `COG_ERROR_INVALID_ARG` (severity out of range, fields NULL with non-zero count, field index out of range, kind mismatch, NULL string value); `COG_ERROR_OVERFLOW` (record exceeds the scratch buffer); `COG_ERROR_IO` (a sink rejected the record) |
 | `cog_obs_log_to` | `cog_result_t (cog_obs_t *, cog_obs_severity_t, const char *, const cog_obs_field_t *, size_t, char *out_buf, size_t buf_capacity, size_t *out_len)` | as `cog_obs_log`, plus `COG_ERROR_NULL_PTR` (`out_buf` NULL with non-zero `buf_capacity`) and `COG_ERROR_OVERFLOW` when the record does not fit `buf_capacity` (with `*out_len` = required capacity) |
@@ -175,8 +175,12 @@ conn=<id> state=<name> [endpoint=<e>] [provider=<p>] in=<n> out=<n> retries=<n> 
   context-owned scratch buffer; span and diagnostic calls touch only
   preallocated arrays; event emission only calls the sink.
 - **Static sinks.** Sinks come from a static const table at
-  construction; there is no runtime registration. A sink whose
-  `deliver` callback is NULL accepts nothing (defensive no-op).
+  construction; there is no runtime registration. Fail closed: a
+  configured sink whose `deliver` callback is NULL is rejected by
+  `cog_obs_new` with `COG_ERROR_INVALID_ARG` (a sink without a callback
+  could not deliver anything, and silently dropping every record would
+  hide a misconfiguration). The rejection matches the header's
+  `cog_obs_sink_t::deliver` and `cog_obs_new` contracts.
 - **Span ids** start at 1 and increment; `COG_OBS_SPAN_ID_NONE` (0) is
   never handed out. Id exhaustion (wrap to 0) makes `trace_begin`
   return `COG_ERROR_OVERFLOW`.
@@ -188,7 +192,8 @@ conn=<id> state=<name> [endpoint=<e>] [provider=<p>] in=<n> out=<n> retries=<n> 
 ## Error semantics
 
 - `new`: NULL `out` or `config` → `COG_ERROR_NULL_PTR`; severity out of
-  range, or a fields/sinks table with a NULL array and non-zero count →
+  range, a fields/sinks table with a NULL array and non-zero count, or
+  any configured sink with a NULL `deliver` callback →
   `COG_ERROR_INVALID_ARG`; allocation failure or size-wrap →
   `COG_ERROR_NOMEM`. `*out` is set to NULL before any validation, so it
   is NULL on every failure.
@@ -262,7 +267,8 @@ deterministic clock:
 - logging: NULL/severity/field validation, context filtering, exact
   record text for every field kind, string escaping, no-service
   records, sink threshold filtering, sink failure with remaining sinks
-  still offered the record, scratch overflow with no delivery;
+  still offered the record, construction rejection of a NULL
+  `deliver` callback (fail closed), scratch overflow with no delivery;
 - `log_to`: NULL-buffer rules, overflow with required-capacity
   reporting and successful retry, exact-fit boundary, filtered-out
   empty output, NULL `out_len`, sink text identical to the caller's
@@ -281,6 +287,16 @@ deterministic clock:
 - connection events: all seven kinds delivered with every field intact,
   no-sink no-op, NULL/invalid-kind validation, sink failure
   propagation.
+
+`tests/unit/test_obs_critic.c` (Critic regression suite, ticket 84edd97)
+adds: diag slot reuse after clear, update-in-place preserving slot
+position, `trace_begin`/`trace_end` stack-unchanged on clock failure,
+`trace_end` retry idempotence (no duplicate emission after close),
+log-only `log_to` delivery, NULL `deliver` rejection at construction,
+filtered-record field-validation precedence, and `conn_id == 0`
+connection events. All three obs tests are registered in
+`tests/unit/CMakeLists.txt` (`unit-obs`, `unit-obs-types`,
+`unit-obs-critic`).
 
 The tests build and pass under GCC and Clang with the project's strict
 warning set (`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion

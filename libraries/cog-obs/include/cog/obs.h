@@ -105,6 +105,11 @@ typedef struct cog_obs_sink {
      * text.  The callback must not retain the buffer past its return
      * and must not re-enter the same @c cog_obs_t.
      *
+     * Must be non-NULL: a configured sink whose @p deliver is NULL is
+     * rejected by @c cog_obs_new with @c COG_ERROR_INVALID_ARG.  A sink
+     * with no callback could not deliver anything, and silently
+     * discarding every record violates the fail-closed constraint.
+     *
      * @param[in] user       Opaque pointer from this descriptor.
      * @param[in] record     Formatted record text, NUL-terminated.
      * @param[in] record_len Length of @p record in bytes, excluding the
@@ -275,10 +280,11 @@ typedef struct cog_obs_config {
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p out or @p config is NULL.
  * @return COG_ERROR_INVALID_ARG if @p config->min_severity is outside
- *         the defined range, or if @p config->fields has a NULL
- *         @c fields pointer with a non-zero @c count, or if
+ *         the defined range, if @p config->fields has a NULL
+ *         @c fields pointer with a non-zero @c count, if
  *         @p config->sinks has a NULL @c sinks pointer with a non-zero
- *         @c count.
+ *         @c count, or if any configured sink has a NULL
+ *         @c cog_obs_sink_t::deliver callback.
  * @return COG_ERROR_NOMEM if allocation of the context or its owned
  *         tables fails.
  *

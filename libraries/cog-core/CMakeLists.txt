@@ -41,6 +41,31 @@ target_link_libraries(cog-core PUBLIC cog::ipc cog::obs)
 target_enable_warnings(cog-core)
 
 # -----------------------------------------------------------------------
+# cog-result — header-only contract target for <cog/result.h>
+# -----------------------------------------------------------------------
+#
+# cog/result.h is a pure value header (the cog_result_t enum) shared by
+# every library.  It is exposed as its own INTERFACE target so consumers
+# can take the cog-core include path and the C11 requirement without
+# linking the cog-core archive.  This breaks the static-library/export
+# cycle that existed when cog-obs linked cog::core while cog-core linked
+# cog::obs: cog-obs now links only the header-only cog::result, so the
+# target graph is acyclic (cog::core -> cog::obs -> cog::result).
+#
+# result.h itself is not moved and cog-core's own dependencies are
+# unchanged: cog-core still links cog::ipc and cog::obs for the headers
+# its public API includes.
+add_library(cog-result INTERFACE)
+add_library(cog::result ALIAS cog-result)
+
+target_include_directories(cog-result
+    INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+
+target_compile_features(cog-result INTERFACE c_std_11)
+
+# -----------------------------------------------------------------------
 # Install rules
 # -----------------------------------------------------------------------
 include(GNUInstallDirs)
@@ -48,7 +73,7 @@ include(GNUInstallDirs)
 install(DIRECTORY include/cog
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
-install(TARGETS cog-core
+install(TARGETS cog-core cog-result
     EXPORT cog-core-targets)
 
 install(EXPORT cog-core-targets

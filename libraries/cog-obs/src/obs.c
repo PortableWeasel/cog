@@ -388,9 +388,8 @@ static cog_result_t cog_obs_deliver(const cog_obs_t *obs,
         const cog_obs_sink_t *sink = &obs->sinks->sinks[i];
         cog_result_t r;
 
-        if (sink->deliver == NULL) {
-            continue; /* Defensive: a NULL callback accepts nothing. */
-        }
+        /* cog_obs_new rejects sinks without a deliver callback, so this
+         * loop only ever sees non-NULL callbacks. */
         if ((int)severity < (int)sink->min_severity) {
             continue; /* Record more verbose than this sink accepts. */
         }
@@ -435,6 +434,18 @@ cog_result_t cog_obs_new(cog_obs_t **out, const cog_obs_config_t *config)
     if (config->sinks != NULL && config->sinks->count > 0U &&
         config->sinks->sinks == NULL) {
         return COG_ERROR_INVALID_ARG;
+    }
+    /* Fail closed on a misconfigured sink: a configured sink must have a
+     * deliver callback.  The header documents this rejection; without it
+     * a NULL callback would silently drop every record. */
+    if (config->sinks != NULL) {
+        size_t sink_i;
+
+        for (sink_i = 0U; sink_i < config->sinks->count; ++sink_i) {
+            if (config->sinks->sinks[sink_i].deliver == NULL) {
+                return COG_ERROR_INVALID_ARG;
+            }
+        }
     }
 
     diag_capacity = (config->diag_capacity == 0U)
