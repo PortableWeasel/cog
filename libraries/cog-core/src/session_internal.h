@@ -47,6 +47,11 @@ struct cog_session_node {
     size_t child_count;
     size_t tool_args_len;          /* byte length, including embedded NULs */
     size_t tool_result_len;        /* byte length, including embedded NULs */
+    cog_message_t message;
+    void *payload;
+    bool used;
+    bool shared;
+    bool committed;
     bool prunable_counted;         /* counted in session.prunable_leaf_count */
 };
 
@@ -70,6 +75,19 @@ struct cog_session {
     cog_message_t *history;        /* owned cache for cog_session_get_history */
     size_t history_count;
     size_t history_capacity;
+    struct cog_session_node *nodes;
+    unsigned char *arena;
+    size_t arena_capacity;
+    size_t max_calls;
+    size_t ledger_capacity;
+    size_t ledger_count;
+    cog_tool_ledger_record_t *ledger;
+    cog_tool_audit_record_t *audits;
+    cog_node_data_t *snapshot_nodes;
+    uint64_t audit_high_water;
+    bool inspection_only;
+    bool forked;
+
 };
 
 /* ------------------------------------------------------------------ */

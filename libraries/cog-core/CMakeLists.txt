@@ -12,6 +12,7 @@
 # the cog_handler_fn signature but owns no implementation unit, so there is
 # deliberately no handler.c.
 add_library(cog-core STATIC
+    src/message.c
     src/session.c
     src/event.c
     src/state.c
