@@ -12,7 +12,7 @@ header gate because it must complete before K.
 | Package | Ticket | Deliverable | Prerequisites |
 |---|---|---|---|
 | A | `c5671b5` | Research: HTTPS lifecycle and event-loop PoC (integrated) | — |
-| B | `2e1cddf` | Research: JSON/SSE and OpenRouter wire fixtures | — |
+| B | `2e1cddf` | Research: JSON/SSE and OpenRouter wire fixtures (integrated) | — |
 | C | `5df3ba1` | Design: public headers pass 1 | A,B |
 | D | `345a536` | Design: scenario pass 2 and gap amendments | C |
 | E | `feb17b6` | GATE: header pass 3 and independent final review | D |
@@ -46,9 +46,9 @@ A failed review returns work to its owner; repeated failures require design
 reassessment per cog-dev. No user confirmation is needed for routine fixes.
 
 The parent stays in progress until release gate P passes. The planning
-baseline and independently reviewed transport research A are integrated;
-JSON/SSE research B, actual header passes, implementation and release
-validation remain outstanding. Credentials are accessible through the OpenRouter entry
+baseline and independently reviewed research A/B are integrated; actual header
+passes, implementation and release validation remain outstanding. Credentials
+are accessible through the OpenRouter entry
 in ~/.pi/agent/auth.json; no new key is presently required. Never include its
 contents in logs, shell arguments, tickets, fixtures or source control.
 
@@ -64,6 +64,15 @@ E must resolve DNS backend/latency and third-party allocation/OOM/memory-limit
 contracts before delivery adoption. Q must prove timer, IPC and cancellation
 progress while the core event queue remains nonempty; the PoC only uses a
 synthetic queue.
+
+Accepted protocol evidence is in the [JSON/SSE report](research/provider-wire.md):
+yyjson 0.12.0 with explicit fixed pools and separate depth preflight, three
+offline cases in Release and sanitizer builds, and two successful synthetic
+live requests only (512 output tokens each; no retries). Saved fixtures prove
+identified tool/result correlation and repeated finish metadata. Reasoning was
+disabled; opaque continuation ownership/serialization/persistence and recoverable
+delta capacity semantics remain mandatory header gates. Review is offline and
+must not repeat the already completed live smoke.
 
 Each package validates its contract and negative paths. Gates run strict
 GCC/Clang builds, standalone headers, deterministic scenarios and appropriate

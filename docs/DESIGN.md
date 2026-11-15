@@ -8,6 +8,9 @@
 > evidence only: allocation semantics and DNS backend acceptance remain header
 > gates, and the installed threaded resolver does not meet bounded cancellation.
 > Core fairness delivery Q must precede the real conversation-loop delivery K.
+> [Protocol research](research/provider-wire.md) selects private yyjson with
+> explicit pools and records two synthetic live requests; opaque continuation
+> and recoverable delta-capacity contracts remain required header work.
 
 This document captures the software blueprint for Cog, an LLM harness and
 agent framework written in C. It follows the Jeep Method: the fewest

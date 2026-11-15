@@ -47,10 +47,13 @@ provider matrix. These are follow-on scope, not silent release requirements.
    blocked handle removal for about 1.9 seconds. A reproducible follow-up
    report and an alternative such as c-ares remain required; ASYNCHDNS alone
    does not establish bounded cancellation.
-4. Keep JSON behind a private provider boundary. Compare a mature parser with
-   caller-supplied allocator/arena support against a small token parser.
-   Decide from escaping, Unicode, depth/size limits, OOM behavior, license,
-   packaging, and cleanup evidence. No ad hoc string concatenation for JSON.
+4. Keep JSON behind a private provider boundary. The accepted
+   [protocol research](research/provider-wire.md) selects yyjson 0.12.0 over
+   pinned jsmn, using explicit caller pools, strict parsing and separate
+   quote/escape-aware depth preflight. Parser and writer both use explicit
+   allocators; no fallback allocation or ad hoc JSON string concatenation.
+   Production workspace ownership, duplicate-key policy and dependency packaging
+   remain header/implementation decisions; the standalone PoC is not library code.
 5. Constructor-owned bounded workspaces hold asynchronous request copies,
    parser state and deltas. send() must not retain borrowed request pointers.
    Document third-party allocations and explicit handle lifetimes; measure
@@ -136,6 +139,27 @@ threaded resolver from bounded cancellation. DNS backend selection and
 third-party allocation semantics remain explicit header-gate decisions.
 Core scheduling delivery Q is separate from the synthetic fairness PoC.
 
+Protocol research B (`2e1cddf`) is also integrated and independently reviewed:
+[JSON/SSE and OpenRouter report](research/provider-wire.md) and
+[offline reproduction](../pocs/provider-wire/README.md). Release and
+ASan/UBSan/LSan builds passed all three offline cases, with additional critic
+tool-identity and capacity-boundary checks. Fixed-pool parser/writer OOM,
+Unicode, strict JSON, depth preflight, fragmented SSE and terminal tool
+assembly support the parser recommendation. These results do not establish
+recoverable delta capacity/retry semantics, schema validation, or persistence.
+
+The 2026-11-15 synthetic live smoke used exactly two generation requests to
+`deepseek/deepseek-v4-flash-0731`, each capped at 512 output tokens, with no
+retry or model substitution. Both returned HTTP 200: an identified echo tool
+call (`tool_calls`, 309 input / 50 output tokens), then its matching result
+and final text (`stop`, 111 input / 4 output tokens). Reported usage cost was
+USD 0.00006864 total. Sanitized semantic fixtures preserve tool/result
+correlation and repeated finish metadata; they do not preserve transport
+fragment boundaries. No further live run is needed for review. Reasoning was
+disabled and opaque continuation was absent in this experiment; production
+headers must still specify bounded owned continuation data and a persistence/
+replay fixture separately from visible text.
+
 Reviewed 2026-11-15:
 - [libcurl API overview](https://curl.se/libcurl/c/libcurl.html): multi interface
   supports concurrent transfers on one thread.
@@ -156,8 +180,8 @@ Record model/date/status/usage without credentials or private source text.
 Testing is preapproved. pass list has no OpenRouter entry, but the user identified pi login storage.
 The OpenRouter entry in ~/.pi/agent/auth.json is accessible. Read its key only
 into the test process memory; never print it or pass it as a shell argument.
-The transport PoC uses local fixtures; no authenticated provider test has been
-performed as part of that research.
+The transport PoC uses local fixtures; protocol research performed the bounded
+authenticated smoke recorded above. Tests must not rerun that smoke implicitly.
 
 ## Three planning passes and final review
 
