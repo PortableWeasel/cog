@@ -14,7 +14,7 @@
 > reviewed and integrated. Combined real-library Q/G check `b8a6fc1` is complete
 > ([acceptance evidence](../libraries/cog-core/contracts/session_store/CONTRACT.md#independent-acceptance-and-combined-gq-integration)); N/O protocol integration remains open.
 
-Status: implementation through K integrated at `42c5e15`, 2026-11-15. Parent ticket: `2b9d0ea`.
+Status: implementation through K integrated at `b8f28ad`, 2026-11-15. Parent ticket: `2b9d0ea`.
 The user authorized autonomous design decisions and testing. This supersedes
 Stage 14's earlier scope-confirmation requirement. Header and implementation
 gates remain technical requirements, not repeated user approval requests.

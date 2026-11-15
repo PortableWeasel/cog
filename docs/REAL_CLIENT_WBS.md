@@ -33,7 +33,7 @@ header gate because it must complete before K.
 | O | `0e35c23` | Headless reconnect and bounded subagents | Pending | N, replay primitive `91108c5` (complete) |
 | P | `77adfec` | Release packaging and full validation | Pending | O |
 
-Snapshot: 2026-11-15, integrated main `42c5e15`. The combined real-library Q/G
+Snapshot: 2026-11-15, integrated main `b8f28ad`. The combined real-library Q/G
 check `b8a6fc1` is complete: strict and ASan/UBSan targeted suites each passed
 27/27; see the [G/Q acceptance record](../libraries/cog-core/contracts/session_store/CONTRACT.md#independent-acceptance-and-combined-gq-integration).
 Earlier evidence reports retain their dated scope and then-open dependencies.
@@ -52,8 +52,9 @@ Release assertion preservation `0966ef0` is also integrated: PRIVATE test-only
 undefine flags, early explicit opt-in and executable-registration/forced-failure
 checks are documented in the [test assertion policy](../cmake/tests/README.md).
 This restores Release test workloads; it does not turn historical Release passes
-into new runtime evidence. Process-fixture determinism follow-up `b4c9ca3` remains
-in review, and O migration `d5280b7` remains open.
+into new runtime evidence. Process-fixture determinism follow-up `b4c9ca3` is
+integrated; its [scoped evidence](REAL_CLIENT_PROCESS_FIXTURE_EVIDENCE.md) preserves
+P full-profile validation as open. O migration `d5280b7` remains open.
 
 ## Scheduling and completion rules
 
