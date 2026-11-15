@@ -310,7 +310,6 @@ static void test_accessors(void)
     static int dummy_provider;
     static int dummy_obs;
     static int dummy_store;
-    static int dummy_ipc;
 
     CHECK(cog_session_new(&session, NULL) == COG_OK);
 
@@ -330,7 +329,6 @@ static void test_accessors(void)
     cfg.provider = (cog_provider_t *)&dummy_provider;
     cfg.obs = (cog_obs_t *)&dummy_obs;
     cfg.store = (cog_store_t *)&dummy_store;
-    cfg.ipc_endpoint = (cog_ipc_endpoint_t *)&dummy_ipc;
     cfg.local_peer_id = 7U;
 
     CHECK(cog_core_new(&core, &cfg) == COG_OK);
@@ -338,7 +336,8 @@ static void test_accessors(void)
     CHECK(cog_core_session(core) == session);
     CHECK(cog_core_state(core) == 0U);
     CHECK(!cog_core_is_running(core));
-    CHECK(cog_core_ipc(core) == (cog_ipc_endpoint_t *)&dummy_ipc);
+    /* No IPC endpoint is ever stored in this phase. */
+    CHECK(cog_core_ipc(core) == NULL);
     CHECK(cog_core_provider(core) == (cog_provider_t *)&dummy_provider);
     CHECK(cog_core_obs(core) == (cog_obs_t *)&dummy_obs);
     CHECK(cog_core_store(core) == (cog_store_t *)&dummy_store);
@@ -357,6 +356,35 @@ static void test_accessors(void)
     }
 
     cog_core_free(core);
+    cog_session_free(session);
+}
+
+/* ------------------------------------------------------------------ */
+/* IPC fail-closed guard                                               */
+/* ------------------------------------------------------------------ */
+
+static void test_ipc_fail_closed(void)
+{
+    cog_session_t *session = NULL;
+    cog_core_t *core = NULL;
+    cog_core_config_t cfg;
+    static int dummy_ipc;
+    static int poison;
+
+    CHECK(cog_session_new(&session, NULL) == COG_OK);
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.session = session;
+    cfg.dispatch_table = dispatch_table;
+    cfg.dispatch_table_size = sizeof(dispatch_table) / sizeof(dispatch_table[0]);
+    cfg.ipc_endpoint = (cog_ipc_endpoint_t *)&dummy_ipc;
+
+    /* A non-NULL IPC endpoint is rejected during the pre-IPC phase; the
+     * core takes no ownership and *out is set to NULL. */
+    core = (cog_core_t *)&poison;
+    CHECK(cog_core_new(&core, &cfg) == COG_ERROR_UNAVAILABLE);
+    CHECK(core == NULL);
+
     cog_session_free(session);
 }
 
@@ -846,6 +874,7 @@ int main(void)
     test_pending_injection();
     test_queue_message_size_max();
     test_shutdown_preserves_pending();
+    test_ipc_fail_closed();
 
     if (failures != 0) {
         fprintf(stderr, "test_core: %d failure(s)\n", failures);

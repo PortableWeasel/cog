@@ -32,6 +32,8 @@
 
 #include "cog/session.h"
 
+#include "session_internal.h"
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,39 +42,6 @@
 
 /** Default node cap when cog_session_config_t.max_nodes is zero. */
 #define COG_SESSION_DEFAULT_MAX_NODES ((size_t)1024)
-
-/* ------------------------------------------------------------------ */
-/* Internal structures                                                 */
-/* ------------------------------------------------------------------ */
-
-struct cog_session_node {
-    cog_node_data_t data;          /* public read-only view; owns strings */
-    cog_session_t *session;        /* owning session: O(1) containment */
-    struct cog_session_node *parent;
-    struct cog_session_node *first_child;
-    struct cog_session_node *last_child;
-    struct cog_session_node *prev_sibling;
-    struct cog_session_node *next_sibling;
-    size_t child_count;
-    size_t tool_args_len;          /* byte length, including embedded NULs */
-    size_t tool_result_len;        /* byte length, including embedded NULs */
-    bool prunable_counted;         /* counted in session.prunable_leaf_count */
-};
-
-struct cog_session {
-    char *id;
-    char *parent_id;
-    size_t max_nodes;
-    size_t node_count;
-    uint64_t next_node_id;
-    struct cog_session_node *root;
-    struct cog_session_node *active;
-    size_t prunable_leaf_count;    /* leaves other than root and active */
-    bool attached;                 /* set by the core integration layer only */
-    cog_message_t *history;        /* owned cache for cog_session_get_history */
-    size_t history_count;
-    size_t history_capacity;
-};
 
 /* ------------------------------------------------------------------ */
 /* Internal helpers                                                    */

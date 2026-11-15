@@ -13,10 +13,12 @@
  *
  * - The core owns its event queue and its pending-message FIFO.  The
  *   session, provider, obs, and store are borrowed (the caller retains
- *   ownership).  The IPC endpoint is owned by the core per the header,
- *   but its destructor (cog_ipc_endpoint_free) belongs to a later phase
- *   (cog-ipc is still header-only), so freeing the endpoint is deferred;
- *   the core stores the pointer for the accessor and does not release it.
+ *   ownership).  During the pre-IPC integration phase a non-NULL
+ *   config->ipc_endpoint is rejected by cog_core_new with
+ *   COG_ERROR_UNAVAILABLE (fail closed): the core never stores,
+ *   dereferences, owns, or frees an endpoint it cannot yet service.  Once
+ *   IPC integration is enabled, an accepted endpoint will be owned by the
+ *   core and drained during the event loop.
  * - The run loop pops one event, looks up the (state, event) row in the
  *   static dispatch table, invokes the handler, validates the requested
  *   transition against the row's allowed list, and applies it.  A
@@ -34,13 +36,15 @@
  *   have been processed).
  * - Session attachment: the core marks the session's private `attached`
  *   flag so cog_session_reset refuses while the core is alive, and
- *   clears it on cog_core_free.  Because the flag lives in session.c's
- *   private struct (there is no public attach API), core.c mirrors the
- *   struct layout; see the note below.
+ *   clears it on cog_core_free.  The flag lives in the private
+ *   session_internal.h layout shared with session.c (there is no public
+ *   attach API); see session_internal.h.
  */
 #define _POSIX_C_SOURCE 200809L
 
 #include "cog/core.h"
+
+#include "session_internal.h"
 
 #include <assert.h>
 #include <stddef.h>
@@ -54,35 +58,6 @@
 
 /** Default pending-message FIFO capacity (per the header: 8 messages). */
 #define COG_CORE_DEFAULT_PENDING_CAPACITY ((size_t)8)
-
-/* ------------------------------------------------------------------ */
-/* Session layout mirror                                               */
-/* ------------------------------------------------------------------ */
-
-/* The session's `attached` flag lives in session.c's private struct and
- * is documented there as "set by the core integration layer only".  The
- * public cog_session_t is opaque, so core.c mirrors the exact layout of
- * session.c's struct cog_session in order to set and clear that flag.
- * Both translation units define the same tag privately; the layouts must
- * stay in sync.  This is the standard opaque-type-sharing pattern and is
- * the only way to honour the header's session-attachment semantics
- * without a public attach API. */
-struct cog_session_node;
-
-struct cog_session {
-    char *id;
-    char *parent_id;
-    size_t max_nodes;
-    size_t node_count;
-    uint64_t next_node_id;
-    struct cog_session_node *root;
-    struct cog_session_node *active;
-    size_t prunable_leaf_count;
-    bool attached;
-    cog_message_t *history;
-    size_t history_count;
-    size_t history_capacity;
-};
 
 /* ------------------------------------------------------------------ */
 /* Internal structures                                                 */
@@ -258,6 +233,13 @@ cog_result_t cog_core_new(cog_core_t **out, const cog_core_config_t *config)
         return COG_ERROR_INVALID_ARG;
     }
 
+    /* Fail closed during the pre-IPC integration phase: a non-NULL IPC
+     * endpoint is not yet serviceable, so reject it without taking
+     * ownership, dereferencing, or freeing it.  *out is already NULL. */
+    if (config->ipc_endpoint != NULL) {
+        return COG_ERROR_UNAVAILABLE;
+    }
+
     core = (struct cog_core *)calloc(1U, sizeof(*core));
     if (core == NULL) {
         return COG_ERROR_NOMEM;
@@ -327,9 +309,10 @@ void cog_core_free(cog_core_t *core)
     free(core->injected_payload);
     cog_event_queue_free(core->event_queue);
 
-    /* The IPC endpoint is owned by the core per the header, but its
-     * destructor (cog_ipc_endpoint_free) is not yet implemented (cog-ipc
-     * is a later phase); releasing it is deferred. */
+    /* No IPC endpoint is ever stored in this phase (cog_core_new rejects
+     * a non-NULL endpoint with COG_ERROR_UNAVAILABLE), so there is
+     * nothing to release here.  Once IPC integration is enabled, an
+     * accepted endpoint will be owned by the core and freed here. */
 
     free(core);
 }

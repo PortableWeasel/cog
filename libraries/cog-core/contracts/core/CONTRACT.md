@@ -36,9 +36,9 @@ Guard: `COG_CORE_H`. The header includes the other cog-core public headers
 | `tool_table` | no | borrowed | May be NULL. |
 | `event_queue_capacity` | no | — | Zero selects a sensible default (64). |
 | `wait_fn` / `wait_arg` | no | borrowed | May be NULL (busy-wait with a short yield). |
-| `ipc_endpoint` | no | owned | If non-NULL the core takes ownership; release is deferred to the IPC phase (see Ownership). |
+| `ipc_endpoint` | no | rejected | Non-NULL is rejected with `COG_ERROR_UNAVAILABLE` during the pre-IPC phase (fail closed); once IPC integration is enabled an accepted endpoint is owned and drained by the core. |
 | `local_peer_id` | no | — | Zero = unidentified. |
-| `provider` | no | borrowed | Stored as-is; may be NULL. |
+| `provider` | no | borrowed | Optional; may be NULL for tests / no-provider operation. Stored as-is. |
 | `obs` | no | borrowed | May be NULL. |
 | `store` | no | borrowed | May be NULL. |
 
@@ -55,6 +55,7 @@ cog_result_t cog_core_new(cog_core_t **out, const cog_core_config_t *config);
 | `COG_OK` | A valid core was created; `*out` is set and owned by the caller. |
 | `COG_ERROR_NULL_PTR` | `out` or `config` is NULL. |
 | `COG_ERROR_INVALID_ARG` | `config->session` is NULL, `config->dispatch_table` is NULL, or `config->dispatch_table_size` is zero. |
+| `COG_ERROR_UNAVAILABLE` | `config->ipc_endpoint` is non-NULL before IPC integration is enabled. |
 | `COG_ERROR_NOMEM` | Allocation of the core, its event queue, or its pending FIFO fails. |
 
 - On failure `*out` is NULL and no resources are held.
@@ -64,9 +65,8 @@ cog_result_t cog_core_new(cog_core_t **out, const cog_core_config_t *config);
   `cog_session_reset` returns `COG_ERROR_INVALID_STATE` while the core is
   alive (see session.c).
 - `provider`, `obs`, and `store` are stored as-is (they may be NULL); the
-  header's `@return` list does not reject a NULL provider, so the
-  implementation does not either.  This is a deliberate reading of the
-  documented error contract; see the note at the end of this document.
+  provider is documented optional and may be NULL for tests or
+  no-provider operation.
 
 ### `cog_core_free`
 
@@ -79,9 +79,10 @@ void cog_core_free(cog_core_t *core);
   and the core struct.
 - Clears the session's `attached` flag so the session can be reset/freed
   independently.  The session itself is not freed (caller-owned).
-- The IPC endpoint is not released in this phase: its destructor
-  (`cog_ipc_endpoint_free`) belongs to the not-yet-implemented cog-ipc
-  library.  See Ownership.
+- No IPC endpoint is ever stored in this phase (`cog_core_new` rejects a
+  non-NULL endpoint with `COG_ERROR_UNAVAILABLE`), so there is nothing to
+  release.  Once IPC integration is enabled, an accepted endpoint will be
+  owned by the core and freed here.
 
 ### `cog_core_run`
 
@@ -142,7 +143,7 @@ cog_result_t cog_core_enqueue(cog_core_t *core, const cog_event_t *event);
 | `cog_core_session` | NULL | the configured session |
 | `cog_core_state` | `0` | the current state id |
 | `cog_core_is_running` | `false` | the running flag |
-| `cog_core_ipc` | NULL | the IPC endpoint (or NULL if single-process) |
+| `cog_core_ipc` | NULL | NULL (no endpoint is stored in this phase) |
 | `cog_core_provider` | NULL | the provider (or NULL if not configured) |
 | `cog_core_obs` | NULL | the obs context (or NULL if not configured) |
 | `cog_core_store` | NULL | the store (or NULL if not configured) |
@@ -222,29 +223,27 @@ queue. The pending-message functions are not thread-safe.
   wait hook.
 - **Owned:** event queue, pending FIFO (and each queued message), the
   injected-message payload while in flight.
-- **IPC endpoint:** the header says the core takes ownership, but
-  `cog_ipc_endpoint_free` belongs to the not-yet-implemented cog-ipc
-  library.  In this phase the core stores the endpoint pointer for the
-  accessor and does not release it; releasing it is deferred to the IPC
-  phase.  This is a documented, deliberate deviation forced by the
-  dependency order, not a leak in the final design.
+- **IPC endpoint:** during the pre-IPC phase a non-NULL endpoint is
+  rejected by `cog_core_new` with `COG_ERROR_UNAVAILABLE`; the core never
+  stores, dereferences, owns, or frees it.  Once IPC integration is
+  enabled, an accepted endpoint will be owned by the core and drained
+  during the event loop, and freed by `cog_core_free`.
 
 ## Session attachment
 
-`cog_core_new` sets the session's private `attached` flag (mirroring
-session.c's struct layout, since the public type is opaque and there is no
-public attach API). While attached, `cog_session_reset` returns
-`COG_ERROR_INVALID_STATE`. `cog_core_free` clears the flag. This is the
-cross-module effect verified by `tests/integration/test_core_session.c`.
+`cog_core_new` sets the session's private `attached` flag and
+`cog_core_free` clears it. The flag lives in the single private layout
+`libraries/cog-core/src/session_internal.h`, shared by session.c and
+core.c (the public type is opaque and there is no public attach API).
+While attached, `cog_session_reset` returns `COG_ERROR_INVALID_STATE`.
+This is the cross-module effect verified by
+`tests/integration/test_core_session.c`.
 
 ## Note on provider NULL
 
-The header's `cog_core_config_t::provider` documentation says the provider
-"Must be non-NULL", but the `cog_core_new` `@return` list does not include a
-provider-NULL error. The implementation follows the `@return` list exactly
-and stores a NULL provider as-is (the accessor then returns NULL). This
-keeps the documented error contract literal; if the Critic prefers rejecting
-NULL provider as `COG_ERROR_INVALID_ARG`, that is a one-line change.
+The provider is documented optional (may be NULL for tests or no-provider
+operation). The implementation stores a NULL provider as-is and the
+accessor returns NULL; no error is raised.
 
 ## Verification
 
@@ -254,10 +253,11 @@ queue capacity), NULL-free no-op, the inspectors/accessors for NULL and
 non-NULL cores, enqueue NULL/overflow, the run loop happy path (dispatch,
 handler invocation, transition application, wait-hook driving, clean stop),
 the already-running guard via a re-entrant `cog_core_run`, empty-queue stop,
-dispatch errors (NOT_FOUND, handler status, TRANSITION_DENIED), and the
-pending FIFO (NULL checks, FIFO order, round-trip, buffer sizing overflow,
-bounded-capacity overflow, not-found, per-session isolation, and automatic
-injection into session history).
+dispatch errors (NOT_FOUND, handler status, TRANSITION_DENIED), the IPC
+fail-closed guard (non-NULL endpoint rejected with `COG_ERROR_UNAVAILABLE`
+and `*out` NULL), and the pending FIFO (NULL checks, FIFO order,
+round-trip, buffer sizing overflow, bounded-capacity overflow, not-found,
+per-session isolation, and automatic injection into session history).
 
 `tests/integration/test_core_session.c` verifies the cross-module effects:
 session attachment (reset refused while attached, allowed after teardown),
