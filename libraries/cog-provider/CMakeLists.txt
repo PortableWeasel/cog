@@ -41,8 +41,7 @@ target_include_directories(cog-provider SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DI
 # contracts/CONTRACT.md)
 #
 # The test is registered here (not in tests/unit/CMakeLists.txt) because it
-# links the cog-provider archive and drives real loopback sockets through
-# cog-net; the shared wiring in tests/unit/CMakeLists.txt is owned by
+# links the cog-provider archive; actual HTTPS composition is registered below; the shared wiring in tests/unit/CMakeLists.txt is owned by
 # integration ticket 1433731.
 # -----------------------------------------------------------------------
 add_executable(test_provider
@@ -50,8 +49,7 @@ add_executable(test_provider
 )
 target_link_libraries(test_provider PRIVATE cog::provider cog::net)
 target_enable_warnings(test_provider)
-# The test drives a fake provider that embeds the private provider layout
-# (provider_internal.h), so it includes the cog-provider src directory.
+# The legacy include is a compatibility shim; the embedded base is public.
 target_include_directories(test_provider PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
@@ -115,7 +113,7 @@ if(BUILD_TESTING AND COG_NET_CURL_BUILD_DIR AND COG_NET_CURL_LIBRARY)
     target_enable_warnings(test_openrouter_https)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     add_test(NAME integration-openrouter-https COMMAND ${Python3_EXECUTABLE}
-        ${CMAKE_CURRENT_SOURCE_DIR}/tests-run-https.py $<TARGET_FILE:test_openrouter_https>)
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_https.py $<TARGET_FILE:test_openrouter_https>)
 endif()
 
 include(CMakePackageConfigHelpers)
@@ -125,3 +123,6 @@ configure_package_config_file(cmake/cog-provider-config.cmake.in
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/cog-provider-config.cmake"
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cog-provider)
 install(FILES src/vendor/LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/cog-provider RENAME yyjson-LICENSE)
+if(BUILD_TESTING)
+    target_compile_options(test_openrouter PRIVATE -UNDEBUG)
+endif()

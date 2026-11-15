@@ -41,7 +41,7 @@ static int failures = 0;
 static cog_result_t do_send(cog_provider_t *p, const char *model)
 {
     cog_provider_request_t req;
-    cog_message_t msg;
+    cog_message_t msg = {0};
 
     (void)memset(&req, 0, sizeof(req));
     req.model_id = model;
@@ -110,13 +110,11 @@ static void test_stream_chunks(void)
     CHECK(complete); /* last step of the pass */
 
     /* Exhausted: empty STOP completion. */
-    CHECK(do_receive(p, buf, sizeof(buf), &len, &complete) == COG_OK);
-    CHECK(len == 0U);
-    CHECK(complete);
+    CHECK(do_receive(p, buf, sizeof(buf), &len, &complete) == COG_ERROR_INVALID_STATE);
 
     CHECK(cog_mock_provider_state(p, &st) == COG_OK);
     CHECK_EQ_INT((long long)st.send_count, 1LL);
-    CHECK_EQ_INT((long long)st.receive_count, 3LL);
+    CHECK_EQ_INT((long long)st.receive_count, 2LL);
     CHECK_EQ_INT((long long)st.chunk_count, 2LL);
     CHECK(st.last_request != NULL);
     CHECK(st.last_request->model_id != NULL &&
@@ -158,7 +156,7 @@ static void test_error_retry_metadata(void)
     CHECK(st.last_error.retryable);
     CHECK_EQ_INT((long long)st.last_error.retry_after_ms, 5000LL);
     CHECK(st.last_error.message != NULL &&
-          strcmp(st.last_error.message, "rate limited") == 0);
+          strcmp(st.last_error.message, "mock turn failed") == 0);
 
     /* Retry (re-send) continues from the next step. */
     CHECK(do_send(p, "mock-model") == COG_OK);
@@ -291,7 +289,7 @@ static void test_endpoint_connect(void)
     static const cog_endpoint_t ep = {
         .name = "mock",
         .vtable = &cog_mock_provider_vtable,
-        .api_key = (const char *)(const void *)&script,
+        .implementation_config = &script,
     };
     cog_provider_t *p = NULL;
     char buf[256];
@@ -338,8 +336,64 @@ static void test_validation(void)
     CHECK(cog_mock_provider_new(NULL, NULL) == COG_ERROR_NULL_PTR);
 }
 
+
+static void test_typed_contract(void)
+{
+    static const unsigned char opaque[]="{\"reasoning_details\":[]}";
+    static const cog_provider_delta_t deltas[]={
+        {.kind=COG_PROVIDER_DELTA_TOOL_BEGIN,.tool_call_id="call_1",.tool_name="echo"},
+        {.kind=COG_PROVIDER_DELTA_TOOL_ARGUMENTS,.tool_call_id="call_1",.data="{}",.data_len=2U},
+        {.kind=COG_PROVIDER_DELTA_TOOL_END,.tool_call_id="call_1"},
+        {.kind=COG_PROVIDER_DELTA_OPAQUE,.opaque={"openrouter.chat-completions","json-v1",opaque,sizeof(opaque)-1U}},
+        {.kind=COG_PROVIDER_DELTA_FINISH,.finish_reason=COG_FINISH_REASON_TOOL_CALLS,.outcome=COG_OK}
+    };
+    cog_provider_t *p=NULL;char storage[256];size_t required=0U;
+    CHECK(cog_mock_provider_new_deltas(deltas,5U,&p)==COG_OK);
+    CHECK(do_send(p,"mock-model")==COG_OK);
+    cog_provider_delta_t d={0},before=d;
+    CHECK(cog_provider_next(p,&d,storage,1U,&required)==COG_ERROR_OVERFLOW);
+    CHECK(required==12U&&memcmp(&d,&before,sizeof(d))==0);
+    uint64_t deadline;CHECK(cog_provider_poll(p,10U,&deadline)==COG_OK);
+    for(size_t i=0U;i<5U;++i){
+        CHECK(cog_provider_next(p,&d,storage,sizeof(storage),&required)==COG_OK);
+        CHECK(d.kind==deltas[i].kind&&d.sequence==i+1U);
+    }
+    CHECK(cog_provider_next(p,&d,storage,sizeof(storage),&required)==COG_ERROR_INVALID_STATE);
+    CHECK(cog_provider_disconnect(p)==COG_OK);
+    CHECK(cog_mock_provider_new_deltas(deltas,5U,&p)==COG_OK);
+    CHECK(do_send(p,"mock-model")==COG_OK);
+    CHECK(cog_provider_next(p,&d,storage,1U,&required)==COG_ERROR_OVERFLOW);
+    CHECK(cog_provider_cancel(p)==COG_OK);
+    CHECK(cog_provider_next(p,&d,storage,sizeof(storage),&required)==COG_OK&&d.kind==COG_PROVIDER_DELTA_TOOL_BEGIN);
+    CHECK(cog_provider_next(p,&d,storage,sizeof(storage),&required)==COG_OK&&d.kind==COG_PROVIDER_DELTA_FINISH&&d.outcome==COG_ERROR_ABORTED);
+    CHECK(cog_provider_disconnect(p)==COG_OK);
+}
+
+static void test_poll_delay_and_request_copy(void)
+{
+    static const cog_mock_step_t steps[]={{COG_MOCK_STEP_CHUNK,"ready",COG_OK,0,false,0U,NULL}};
+    static const cog_mock_script_t script={steps,1U,0U,COG_OK,10U};
+    cog_provider_t *p=NULL;CHECK(cog_mock_provider_new(&script,&p)==COG_OK);
+    char content[]="before",model[]="mock-model";
+    cog_message_t message={.role=COG_MESSAGE_ROLE_USER,.content=content,.content_len=6U};
+    cog_provider_request_t r={.model_id=model,.messages=&message,.message_count=1U};
+    CHECK(cog_provider_send(p,&r)==COG_OK);memset(content,'X',6U);memset(model,'X',10U);
+    cog_mock_state_t state;CHECK(cog_mock_provider_state(p,&state)==COG_OK);
+    CHECK(strcmp(state.last_request->model_id,"mock-model")==0);
+    CHECK(strcmp(state.last_request->messages[0].content,"before")==0);
+    cog_provider_delta_t d;char storage[32];size_t required;uint64_t deadline;
+    CHECK(cog_provider_next(p,&d,storage,sizeof(storage),&required)==COG_ERROR_AGAIN);
+    CHECK(cog_provider_poll(p,9U,&deadline)==COG_OK&&deadline==10U);
+    CHECK(cog_provider_next(p,&d,storage,sizeof(storage),&required)==COG_ERROR_AGAIN);
+    CHECK(cog_provider_poll(p,10U,&deadline)==COG_OK);
+    CHECK(cog_provider_next(p,&d,storage,sizeof(storage),&required)==COG_OK&&strcmp(d.data,"ready")==0);
+    CHECK(cog_provider_next(p,&d,storage,sizeof(storage),&required)==COG_OK&&d.kind==COG_PROVIDER_DELTA_FINISH);
+    CHECK(cog_provider_disconnect(p)==COG_OK);
+}
 int main(void)
 {
+    test_poll_delay_and_request_copy();
+    test_typed_contract();
     test_stream_chunks();
     test_error_retry_metadata();
     test_scripted_cancel();

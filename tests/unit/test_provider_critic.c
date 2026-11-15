@@ -66,11 +66,20 @@ static cog_result_t counting_send(cog_provider_t *provider,
 static cog_result_t counting_receive(cog_provider_t *provider,
                                      cog_provider_response_t *response);
 
+static cog_result_t counting_poll(cog_provider_t *p,uint64_t now,uint64_t *deadline)
+{ (void)now; if(p==NULL||deadline==NULL)return COG_ERROR_NULL_PTR;*deadline=UINT64_MAX;return ((counting_provider_t *)p)->receive_result; }
+static cog_result_t counting_cancel(cog_provider_t *p)
+{ if(p==NULL)return COG_ERROR_NULL_PTR;return ((counting_provider_t *)p)->receive_result; }
+static cog_result_t counting_next(cog_provider_t *p,cog_provider_delta_t *d,void *s,size_t n,size_t *required)
+{ (void)s;(void)n;if(p==NULL||d==NULL||required==NULL)return COG_ERROR_NULL_PTR;*required=0U;return COG_ERROR_AGAIN; }
+static cog_result_t counting_error(const cog_provider_t *p,cog_provider_error_t *e)
+{ if(p==NULL||e==NULL)return COG_ERROR_NULL_PTR;return COG_ERROR_NOT_FOUND; }
 static const cog_provider_vtable_t counting_vtable = {
     counting_connect,
     counting_disconnect,
     counting_send,
     counting_receive,
+    counting_poll, counting_cancel, counting_next, counting_error,
 };
 
 /* The script for the next counting_connect.  Single-threaded test. */
@@ -89,9 +98,8 @@ static cog_result_t counting_connect(const cog_endpoint_t *endpoint,
     g_next = NULL;
     (*p->connect_calls)++;
     if (p->connect_result != COG_OK) {
-        /* Deliberately do NOT set *out_provider: documents that the
-         * wrapper forwards the provider's result verbatim and does not
-         * itself zero the out pointer. */
+        /* Deliberately leave the backend output untouched: generic connect
+         * must still publish NULL on every failure. */
         return p->connect_result;
     }
     *out_provider = &p->base;
@@ -140,8 +148,8 @@ static const cog_model_t critic_models[] = {
 static const cog_model_table_t critic_model_table = { critic_models, 1U };
 
 static const cog_endpoint_t critic_endpoints[] = {
-    { "ep-a", NULL, NULL, NULL, &counting_vtable, &critic_model_table },
-    { "ep-b", NULL, NULL, NULL, &counting_vtable, &critic_model_table },
+    { "ep-a", NULL, NULL, NULL, &counting_vtable, &critic_model_table, NULL, 0U },
+    { "ep-b", NULL, NULL, NULL, &counting_vtable, &critic_model_table, NULL, 0U },
 };
 static const cog_endpoint_table_t critic_endpoint_table = {
     critic_endpoints, 2U,
@@ -297,7 +305,7 @@ static void test_connect_failure_propagation(void)
     /* The wrapper does not itself zero *out_provider; the provider's
      * connect_fn is responsible for that per its @post.  Document the
      * actual behavior: the pointer is left as the caller set it. */
-    CHECK(prov == (cog_provider_t *)&p);
+    CHECK(prov == NULL);
 }
 
 /* ------------------------------------------------------------------ */
