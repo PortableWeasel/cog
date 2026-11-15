@@ -62,15 +62,12 @@ LLM Response         Handler           Toolkit           Tool A    Tool B    Too
 | Result status | `cog_toolkit_result_is_ok()` | `toolkit_result.h` | ✅ |
 | Tool result event | `COG_EVENT_TOOL_RESULT` | `event.h` | ✅ |
 
-## Gaps Found
+## Gaps Found → FIXED
 
-1. **Timeout error representation** — when a tool times out, what does its result look like? The contract says `status != COG_OK` but doesn't specify a timeout error code. **Fix: add `COG_ERROR_TIMEOUT` to `cog_result_t`.**
-
-2. **Partial result semantics** — `cog_toolkit_execute_all` returns a collection even when some tools fail. The contract should clarify: "The collection always contains exactly `call_count` results. Failed tools have `status != COG_OK` and an error message."
-
-3. **Cancellation propagation** — `cog_toolkit_call_cancel()` sets a flag, but the tool must check it. The contract should require tools to periodically check for cancellation. **Document in `tool.h`: "Tools should check for cancellation periodically and return COG_ERROR_ABORTED if cancelled."**
+1. ✅ **Timeout error code** — added `COG_ERROR_TIMEOUT` to `cog_result_t`
+2. **Partial result semantics** — collection always contains exactly `call_count` results. Failed tools have `status != COG_OK` and an error message.
+3. **Cancellation propagation** — tools should check for cancellation periodically and return `COG_ERROR_ABORTED`.
 
 ## Verdict
 
-Headers cover the flow. One amendment needed:
-- Add `COG_ERROR_TIMEOUT` to `cog_result_t` in `result.h`
+✅ Gap fixed. Headers fully cover the flow.

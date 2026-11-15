@@ -55,15 +55,12 @@ Main Core         Aux Core 1         Aux Core 2        Subagent A    Subagent B
 | IPC payload | `cog_event_ipc_t` | `event.h` | ✅ (6h) |
 | Unregister | `cog_ipc_unregister_session()` | `ipc.h` | ✅ (6k) |
 
-## Gaps Found
+## Gaps Found → FIXED
 
-1. **Message deserialization** — the IPC layer delivers raw bytes. The handler must deserialize the message into the appropriate type. The contract doesn't specify a serialization format. **Decision needed:** use a simple length-prefixed format with a type tag, or let the application define the serialization. The `cog_event_ipc_t` struct carries `msg_type` and `msg_payload` — the application interprets the payload based on `msg_type`.
-
-2. **Session discovery** — how does subagent A know subagent B's session id? The spawn API returns an agent id, not a session id. **Fix: add `cog_agent_session_id()` to get the session id for an agent.**
-
-3. **Bidirectional routing** — both aux cores need to register their sessions with the IPC fabric. The main core (listener) maintains the mapping. **Document that aux cores register sessions on connect.**
+1. ✅ **Session discovery** — added `cog_agent_session_id()` to `agent.h`
+2. **Message deserialization** — `cog_event_ipc_t` carries `msg_type` and `msg_payload`; application interprets based on type
+3. **Bidirectional routing** — aux cores register sessions on connect via `cog_ipc_register_session()`
 
 ## Verdict
 
-Headers cover the flow. One amendment needed:
-- Add `cog_agent_session_id()` accessor to `agent.h`
+✅ Gap fixed. Headers fully cover the flow.

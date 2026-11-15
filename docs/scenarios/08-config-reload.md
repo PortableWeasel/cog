@@ -53,16 +53,12 @@ Admin           Config Tree        Validators        Core            Provider
 | Rollback on failure | `cog_config_rollback()` | `config.h` | ✅ |
 | Get values | `cog_config_get()` | `config.h` | ✅ |
 
-## Gaps Found
+## Gaps Found → FIXED
 
-1. **Change notification** — after commit, how do subsystems know the config changed? There's no `cog_config_on_change()` callback or event. **Fix: add `COG_EVENT_CONFIG_CHANGED` event kind, or a `cog_config_watch()` function.**
-
-2. **Provider registry rebuild** — the provider registry needs to rebuild its endpoint table from the new config. But there's no `cog_provider_registry_reload()` function. **Fix: add `cog_provider_registry_from_config()` or document that the application handles this.**
-
-3. **In-flight request isolation** — requests already in flight use the old provider/endpoint. The contract should state: "In-flight provider instances are not affected by config changes. New requests use the new endpoint table."
+1. ✅ **Change notification** — added `COG_EVENT_CONFIG_CHANGED` event kind
+2. **Provider registry rebuild** — application handles this via config change event
+3. **In-flight request isolation** — documented: in-flight requests are unaffected
 
 ## Verdict
 
-Headers cover the flow. One amendment needed:
-- Add `COG_EVENT_CONFIG_CHANGED` event kind
-- Document that in-flight requests are unaffected by config changes
+✅ Gap fixed. Headers fully cover the flow.

@@ -62,15 +62,12 @@ Provider         cog-net           Main Core           UI
 | UI notification | `cog_ipc_endpoint_send()` | `ipc.h` | ✅ |
 | Status event | `COG_EVENT_STATUS_UPDATE` | `event.h` | ✅ (6h) |
 
-## Gaps Found
+## Gaps Found → FIXED
 
-1. **Who initiates retry?** The contract says cog-net has `max_retries`, but doesn't specify whether the net layer retries autonomously or the state machine drives it. **Decision needed:** cog-net should retry autonomously up to `max_retries`, then emit `COG_EVENT_NETWORK_STALL`. The state machine handles higher-level recovery (reconnect, resend).
-
-2. **Resume vs restart** — after recovery, does the provider resume the same request or start over? The contract doesn't say. **Decision needed:** for simplicity, the provider restarts the request. The session history is intact, so the LLM sees the full conversation. The UI may see duplicate content if the previous partial response was already displayed.
-
-3. **Retry-After header** — HTTP 429 (rate limit) includes a `Retry-After` header. The net layer should respect this. **Gap:** `cog_net_response_t` doesn't expose headers. **Fix: add `const char *headers` field.**
+1. ✅ **Retry-After header** — added `headers` field to `cog_net_response_t`
+2. **Retry initiation** — cog-net retries autonomously up to `max_retries`, then emits `COG_EVENT_NETWORK_STALL`. State machine handles higher-level recovery.
+3. **Resume vs restart** — provider restarts the request. Session history is intact.
 
 ## Verdict
 
-Headers cover the flow. One amendment needed:
-- Add `const char *headers` to `cog_net_response_t` for Retry-After parsing.
+✅ Gap fixed. Headers fully cover the flow.

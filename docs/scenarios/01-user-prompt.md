@@ -74,18 +74,13 @@ User          UI Process         IPC Fabric         Main Core           Provider
 | LLM chunk event | `COG_EVENT_LLM_CHUNK` | `event.h` | ✅ (6h) |
 | LLM complete event | `COG_EVENT_LLM_COMPLETE` | `event.h` | ✅ (6h) |
 
-## Gaps Found
+## Gaps Found → FIXED
 
-1. **`cog_core_provider()`** — declared in the design discussion but not yet added to `core.h`. Handlers need access to the active provider to make LLM calls. **Fix: add to core.h.**
-
-2. **Provider in config** — `cog_core_config_t` doesn't have a `provider` field. The caller must set the active provider before calling `cog_core_new()`. **Fix: add `cog_provider_t *provider` to config.**
-
-3. **Event loop integration** — the core's run loop needs to poll both the IPC endpoint and the network context. The current contract says "drain local queue" but doesn't specify how IPC/network events enter the queue. **Fix: document that the run loop calls `cog_ipc_endpoint_poll()` and `cog_net_poll()` between queue pops.**
-
-4. **State machine states** — the scenario assumes states IDLE, AWAITING_LLM. These are application-defined, not core-defined. The core only provides the dispatch mechanism. **This is correct — no gap.**
+1. ✅ **`cog_core_provider()`** — added to `core.h`
+2. ✅ **Provider in config** — added `cog_provider_t *provider` to `cog_core_config_t`
+3. ✅ **Obs context in config** — added `cog_obs_t *obs` to `cog_core_config_t` and `cog_core_obs()` accessor
+4. **State machine states** — application-defined, not core-defined. Correct as-is.
 
 ## Verdict
 
-Headers cover the flow with two amendments needed:
-- Add `cog_provider_t *provider` to `cog_core_config_t`
-- Add `cog_provider_t *cog_core_provider(cog_core_t *core)` accessor
+✅ All gaps fixed. Headers fully cover the flow.
