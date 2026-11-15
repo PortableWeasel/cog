@@ -11,31 +11,35 @@
  *   A. In-flight turn: a prompt is submitted and then shutdown is
  *      requested.  The USER_INPUT handler starts the turn (appending the
  *      user message and sending to the provider), then the SHUTDOWN
- *      event stops the loop.  The submitted user message is preserved
- *      (no loss of user work), run returns COG_OK (no hang), and the
- *      app frees cleanly (no leak).
+ *      handler cancels the in-flight provider request, discards the
+ *      partial assistant turn, and stops the loop.  The submitted user
+ *      message is preserved (no loss of user work), the request is
+ *      cancelled (not abandoned), the state machine returns to IDLE, run
+ *      returns COG_OK (no hang), and the app frees cleanly (no leak).
  *
  *   B. Nothing pending: shutdown is requested on an idle app.  Run
- *      returns COG_OK promptly (no hang).
+ *      returns COG_OK promptly (no hang) and the app stays IDLE.
  *
  *   C. Pending queued message: a prompt is submitted, a second message
  *      is queued for the next turn, and shutdown is requested.  The
- *      loop stops before the queued message is processed; the submitted
- *      user message is preserved and run returns COG_OK.
+ *      in-flight turn is cancelled, the loop stops before the queued
+ *      message is processed (no duplicate send), the submitted user
+ *      message is preserved, and run returns COG_OK.
  *
  * In every path the app is freed afterwards; ASan/UBSan report any leak
  * or use-after-free.
  *
- * @note The current single-process CLI's SHUTDOWN handler stops the run
- *       loop immediately rather than draining in-flight LLM work to
- *       completion.  The submitted user message is preserved, so there
- *       is no loss of user work, but an in-flight assistant response is
- *       not produced.  Draining in-flight work to completion is the
- *       orchestrator layer's job (Stage 12.5) and is not yet integrated;
- *       this test pins the current graceful-shutdown contract (no loss
- *       of user input, no hang, no leak).
+ * @note The single-process CLI's SHUTDOWN handler (cli_on_shutdown in
+ *       applications/cog-cli/src/cli.c) cancels in-flight provider work
+ *       (arming cog_mock_provider_request_cancel and draining the abort)
+ *       and discards the partial assistant turn so the state machine
+ *       returns to IDLE before the run loop stops.  Draining in-flight
+ *       work to completion is the orchestrator layer's job (Stage 12.5)
+ *       and is not yet integrated; this test pins the graceful-shutdown
+ *       contract (cancel in-flight work, no loss of user input, no
+ *       duplicate sends, no hang, no leak).
  *
- * Ticket: fe958ce (Stage 12.6b — Scenario tests 01-05).
+ * Ticket: fe958ce (Stage 12.6b — Scenario tests 01-05), review fc9db9a.
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -124,6 +128,7 @@ static void scenario_shutdown_inflight(void)
     cog_cli_app_t *app = NULL;
     cog_message_t hist[8];
     size_t n;
+    cog_mock_state_t st;
 
     (void)memset(&opts, 0, sizeof(opts));
     opts.script = &script;
@@ -131,21 +136,31 @@ static void scenario_shutdown_inflight(void)
     CHECK(app != NULL);
 
     /* Submit the prompt (in-flight turn), then request shutdown.  The
-     * USER_INPUT handler starts the turn; the SHUTDOWN event then stops
-     * the loop before streaming completes.  The submitted user message
-     * is preserved (no loss of user work). */
+     * USER_INPUT handler starts the turn; the SHUTDOWN handler then
+     * cancels the in-flight request, discards the partial turn, and
+     * stops the loop.  The submitted user message is preserved (no loss
+     * of user work). */
     CHECK(cog_cli_app_submit(app, "finish me", 9U) == COG_OK);
     CHECK(cog_cli_app_shutdown(app) == COG_OK);
     CHECK(cog_cli_app_run(app) == COG_OK);
 
-    /* No loss: the submitted user message is preserved.  The in-flight
-     * assistant response is not produced (shutdown stops promptly; see
-     * the file header note). */
+    /* The in-flight turn was actually started: the provider was asked. */
+    CHECK(cog_mock_provider_state(cog_cli_app_provider(app), &st) == COG_OK);
+    CHECK_EQ_INT((long long)st.send_count, 1LL);
+
+    /* The in-flight request was cancelled, not abandoned. */
+    CHECK(st.cancel_requested || st.cancel_count > 0U);
+
+    /* No loss: the submitted user message is preserved.  The partial
+     * assistant turn is discarded (shutdown cancels in-flight work). */
     n = fixture_history(app, hist, 8U);
     CHECK_EQ_INT((long long)n, 1LL);
     CHECK(hist[0].role == COG_MESSAGE_ROLE_USER);
     CHECK(hist[0].content_len == 9U);
     CHECK(memcmp(hist[0].content, "finish me", 9U) == 0);
+
+    /* Consistent final state: the turn is closed, not left mid-flight. */
+    CHECK(cog_cli_app_state(app) == (cog_state_t)0); /* IDLE */
 
     cog_cli_app_free(app);
 }
@@ -202,12 +217,15 @@ static void scenario_shutdown_pending(void)
     CHECK(cog_cli_app_run(app) == COG_OK);
 
     /* The submitted user message is preserved; the queued second message
-     * was not processed (the loop stopped first). */
+     * was not processed (the loop stopped first, so no duplicate send).
+     * The in-flight turn was cancelled and the state machine is back in
+     * IDLE. */
     n = fixture_history(app, hist, 8U);
     CHECK_EQ_INT((long long)n, 1LL);
     CHECK(hist[0].role == COG_MESSAGE_ROLE_USER);
     CHECK(hist[0].content_len == 5U);
     CHECK(memcmp(hist[0].content, "first", 5U) == 0);
+    CHECK(cog_cli_app_state(app) == (cog_state_t)0); /* IDLE */
 
     cog_cli_app_free(app);
 }
