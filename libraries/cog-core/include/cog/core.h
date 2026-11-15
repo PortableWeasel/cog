@@ -28,12 +28,14 @@
 #include <cog/handler.h>
 #include <cog/ipc.h>
 #include <cog/obs.h>
-#include <cog/provider_vtable.h>
 #include <cog/result.h>
 #include <cog/session.h>
 #include <cog/session_store.h>
 #include <cog/state.h>
 #include <cog/tool.h>
+
+/* Forward declaration — full definition in cog-provider/provider_vtable.h */
+typedef struct cog_provider cog_provider_t;
 
 #include <stdbool.h>
 #include <stddef.h>
