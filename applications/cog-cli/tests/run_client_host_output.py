@@ -58,7 +58,13 @@ def full_pipe(cli, root, env, destination, sig, write_first):
             def completed_or_blocked():
                 if proc.poll() is not None:
                     return "completed"
-                syscall = pathlib.Path(f"/proc/{proc.pid}/syscall").read_text().split()
+                try:
+                    syscall = pathlib.Path(f"/proc/{proc.pid}/syscall").read_text().split()
+                except (PermissionError, ProcessLookupError, FileNotFoundError):
+                    # LSan's exit-time tracer can briefly own ptrace access.
+                    # Wait for actual waitpid completion within the same bound;
+                    # inaccessible proc data is never counted as readiness.
+                    return False
                 fd = 1 if destination == "stdout" else 2
                 if len(syscall) >= 2 and syscall[0] == "1" and int(syscall[1], 16) == fd:
                     return "blocked"
