@@ -219,9 +219,27 @@ int main(int argc,char **argv)
     CHECK(session_online(&f,&replacement) && replacement.client->lease!=lease);
     CHECK(record(f.host,replacement.client->lease)!=NULL && record(f.host,replacement.client->lease)->controller);
     CHECK(session_write(&controller,"expired-mutation\n")==COG_OK);
-    cog_result_t rejected=COG_OK;deadline=headless_fixture_clock_ms()+3000U;
-    while(rejected==COG_OK && headless_fixture_clock_ms()<deadline){rejected=session_tick(&f,&controller,&replacement);}
-    CHECK(rejected==COG_ERROR_DENIED || rejected==COG_ERROR_INVALID_STATE);
+    cog_result_t rejected=COG_OK;bool replayed_expired=false;
+    /* control.h UI discovery and HEADLESS_CONTROL section UI lease expiry
+       require uniformly stale refusal before lookup/admission, without requiring
+       a negative HELLO receipt. The finite IO below proves delivery failure only;
+       the absent old lease/receipt and unchanged authority prove refusal. Replay the exact earlier command on this client's authenticated new link;
+       it must not allocate a receipt or acquire the new controller's identity. */
+    deadline=headless_fixture_clock_ms()+3200U;
+    while(rejected==COG_OK && headless_fixture_clock_ms()<deadline){
+        rejected=session_tick(&f,&controller,&replacement);
+        if(rejected==COG_OK && !replayed_expired && controller.client->authenticated && controller.client->hello.sent){
+            cog_ipc_message_t bytes={original,original_length,original_length};
+            primary=cog_ipc_endpoint_send(controller.client->endpoint,&bytes);
+            CHECK(primary==COG_OK || primary==COG_ERROR_AGAIN);
+            if(primary==COG_OK)replayed_expired=true;
+            primary=COG_OK;
+        }
+    }
+    CHECK(replayed_expired && rejected==COG_ERROR_IO && record(f.host,lease)==NULL);
+    for(size_t i=0U;i<f.host->bounds.command_records;++i)
+        CHECK(f.host->commands[i].phase==CLI_COMMAND_FREE || f.host->commands[i].lease!=lease);
+    CHECK(controller.client->lease==lease && controller.client->hello.phase!=CLI_CLIENT_REQUEST_ACKED);
     CHECK(!f.host->shutdown && f.host->primary==COG_OK);
     CHECK(cog_cli_projection_snapshot(f.host->projection,&current)==COG_OK && current.policy_count==0U);
     /* The client's own refusal is expected; retain success for cleanup. */
