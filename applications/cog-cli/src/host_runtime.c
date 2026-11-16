@@ -1541,7 +1541,7 @@ static cog_result_t host_reply_send(cog_cli_host_runtime_t *r, cog_worker_id_t w
 {
     uint64_t wire = frame == &lane->final_reply ? lane->final_reply_wire : lane->provisional_wire;
     /* An already copied valid successor retires older response delivery. */
-    if (wire < lane->copied_wire) return COG_ERROR_AGAIN;
+    if (wire < lane->copied_wire || wire < lane->pending_reply_wire) return COG_ERROR_AGAIN;
     lane->pending_reply_wire = wire;
     cog_result_t rc = host_copied_send(r, worker, frame, wire,
         &lane->copied_wire, &lane->next_send_ms, false);

@@ -84,6 +84,8 @@ static void copied_schedule(cog_ipc_endpoint_t *sender,cog_ipc_endpoint_t *recei
     reply->final_reply_wire=6U;
     assert(host_reply_send(&worker,managed.id,reply,&reply->final_reply)==COG_ERROR_AGAIN);
     assert(reply->pending_reply_wire==6U);
+    assert(host_reply_send(&worker,managed.id,reply,&reply->provisional_reply)==COG_ERROR_AGAIN);
+    assert(reply->pending_reply_wire==6U);
     service(sender,receiver);assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_OK);
     assert(host_retained_sends(&worker,&step)==COG_OK && reply->copied_wire==6U);
     assert(host_reply_send(&worker,managed.id,reply,&reply->provisional_reply)==COG_ERROR_AGAIN);
