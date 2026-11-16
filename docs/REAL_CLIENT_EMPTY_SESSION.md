@@ -207,6 +207,23 @@ cases use explicit MOCK and claim no independent real-transport packaging closur
 that remains the separate R18 fixture. Third-party shared dependencies are the
 approved ordinary Release builds.
 
-Different final implementation review is pending the coherent evidence checkpoint;
-its independent scoped checks/mutation controls are recorded by the reviewer.
+Different final implementation review passed coherent checkpoint `fef09ab` in an
+isolated managed review worktree. Independent all-target strict GCC14.2 Release,
+Clang19.1 Release and Clang ASan/UBSan/LSan builds passed with the admitted shipped
+dependency profile. Each profile passed 54 store/session/CLI checks plus four
+additional original scenarios (08/14/15/20): **58 unique checks per profile,
+174 total**. This includes both committed empty-session fixtures.
+
+Six independent optimized negative controls removed fresh checkpoint publication,
+disabled owner-only repair or allowed absent-owner adoption, under both GCC and
+Clang. Every variant failed its intended fixture assertion (lines 97/126/107).
+An additional real constructor failure after checkpoint publication (invalid log
+destination) preserved the committed empty snapshot and released its guard; a
+later explicit RESUME advanced the epoch without changing the checkpoint. That
+probe passed under all three profiles. Review logs and reproducible temporary
+probes are retained under `/tmp/cog-empty-review-{gcc,clang,asan}`,
+`/tmp/cog-empty-review-negatives` and `/tmp/cog-empty-review-probes`; ticket
+`cd3d092` records the exact independent verdict. No production or fixture change
+was required by final review.
+
 This focused fix does not close M, O, all38 or release P. No paid requests.
