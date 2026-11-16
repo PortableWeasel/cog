@@ -87,6 +87,16 @@ static int abort_case(bool previous_failure)
         inner.checkpoint.generation=3U;
         REQUIRE(cog_orchestrator_handoff_encode(&inner,body,sizeof(body),&length)==COG_OK);
     }
+    if(!previous_failure) {
+        cli_control_lane_t *policy=&out[COG_CLI_LANE_POLICY-1U];
+        policy->pending_valid=true;policy->pending_wire=42U;
+        REQUIRE(handoff_receive(&host,&slot,&request,total)==COG_ERROR_AGAIN);
+        REQUIRE(slot.pending_profile!=NULL && !lane->final_valid);
+        unsigned char answer[21]={0};answer[4]=2U;
+        cog_cli_control_message_t accepted=request;accepted.kind=COG_CLI_CONTROL_COMMAND_RESULT;
+        accepted.lane=COG_CLI_LANE_POLICY;accepted.reply_to=42U;accepted.payload=answer;accepted.payload_len=sizeof(answer);
+        REQUIRE(policy_result(&slot,&accepted)==COG_OK && policy->retired_through==42U);
+    }
     cog_result_t actual=handoff_receive(&host,&slot,&request,total);
     if(!previous_failure) REQUIRE(slot.pending_profile==NULL && slot.profile.source==NULL);
 
