@@ -278,3 +278,21 @@ GCC14/Clang19 C11 and G++14/Clang++19 C++11 pass, including a compile-time128-by
 owned-session-array assertion. Only host_internal.h and this document changed;
 no .c/shared CMake/configuration/O6 edit. Different independent re-review remains
 required before the layout gate closes.
+
+## Approved private-layout-only O integration
+
+Root-authorized no-ff62bc2c8 retains approved dabcf8e layout and its three-pass
+history plus the independently accepted per-exchange probe amendment. This
+merge follows separately approved O6 integration946d31c, so opaque configuration
+getter/finish_host declarations coexist without importing O6 private state.
+Exact946d31c→62bc2c8 delta is only the three new implementation headers,
+app_internal's opaque owned pointer and this layout record: no .c/CMake/public
+or behavior changes. All18 affected strict GCC/Clang C11 plus G++/Clang++ C++11
+standalone/repeated/combined/reversed checks PASS after the merge, including
+compile-time sizeof(exchange.probe.session_id)==128 in each combined case.
+Existing app_internal C11-only atomic contract is unchanged.
+
+Closing ONLY layout860d5cc and amendment08d1b54 under root authorization. O4
+parent/body/review/integration/finalize and ALL missing primitive/runtime gates
+remain open; private layout approval never dispatches bodies by itself. Main
+remainsMdacbd199, no frozen profile/build_user/installation changes or paid calls.
