@@ -2641,7 +2641,9 @@ static cog_result_t host_worker_slice(cog_cli_host_runtime_t *r, bool *done, uin
         if (rc == COG_ERROR_AGAIN || rc == COG_ERROR_NOT_FOUND) continue;
         if (rc != COG_OK) return host_first(primary, rc);
         if (event.kind == COG_ORCHESTRATOR_MESSAGE) rc = host_worker_message(r, &event);
-        else if (event.kind == COG_ORCHESTRATOR_DISCONNECTED || event.kind == COG_ORCHESTRATOR_OWNERSHIP_LOST ||
+        else if ((event.kind == COG_ORCHESTRATOR_DISCONNECTED &&
+            (!r->shutdown || (event.outcome != COG_OK && event.outcome != COG_ERROR_IO))) ||
+            event.kind == COG_ORCHESTRATOR_OWNERSHIP_LOST ||
             (event.kind == COG_ORCHESTRATOR_REAPED && !r->shutdown)) {
             rc = event.outcome == COG_OK ? COG_ERROR_IO : event.outcome;
             for (size_t i = 2U; i < r->bounds.executors; ++i) {
