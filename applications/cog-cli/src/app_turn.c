@@ -300,7 +300,11 @@ static cog_handler_result_t input(cog_core_t *core, const cog_event_t *event)
     r.status = cog_cli_save(app);
     if (r.status == COG_OK && app->headless != NULL) {
         reset_turn(app);
-        r.status = cli_execution_barrier(app, CLI_AFTER_USER_SAVE, CLI_MODEL, &r.transition);
+        if (app->headless->kind == COG_CLI_EXECUTION_LOCAL_CHILD ||
+            app->headless->kind == COG_CLI_EXECUTION_REMOTE_CHILD) {
+            r.status = cog_cli_begin_request(app, false);
+            if (r.status == COG_OK) r.transition = CLI_MODEL;
+        } else r.status = cli_execution_barrier(app, CLI_AFTER_USER_SAVE, CLI_MODEL, &r.transition);
     } else if (r.status == COG_OK) {
         r.status = cog_cli_begin_request(app, true);
         if (r.status == COG_OK) r.transition = CLI_MODEL;

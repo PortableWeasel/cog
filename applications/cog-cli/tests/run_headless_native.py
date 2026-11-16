@@ -14,6 +14,7 @@ import threading
 
 def main():
     harness, executable, build = (Path(value).resolve() for value in sys.argv[1:4])
+    mode = sys.argv[4] if len(sys.argv) > 4 else "success"
     scratch = build / "tmp"
     scratch.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="native-", dir=scratch) as directory:
@@ -39,11 +40,18 @@ def main():
                         round_number = int(task.split()[-1])
                         if messages[-1]["role"] == "tool":
                             print("parent TOOL result:", messages[-1]["content"], flush=True)
+                            if mode == "limit":
+                                assert "status=limit" in messages[-1]["content"]
+                                assert "side_effects_possible=false" in messages[-1]["content"]
+                                assert not list(workspace.glob("effect-*"))
+                                delta, finish = {"content": "PARENT_REFUSED"}, "stop"
+                            else:
+                                delta, finish = {"content": f"PARENT_DONE_{round_number}"}, "stop"
                             for kind in ["local", "native"]:
                                 token = f"{kind}-{round_number}"
-                                assert (workspace / ("effect-" + token)).read_text() == "once"
-                                assert "CHILD_DONE_" + token in messages[-1]["content"]
-                            delta, finish = {"content": f"PARENT_DONE_{round_number}"}, "stop"
+                                if mode != "limit":
+                                    assert (workspace / ("effect-" + token)).read_text() == "once"
+                                    assert "CHILD_DONE_" + token in messages[-1]["content"]
                         else:
                             arguments = {"tasks": [{"task": f"child {kind} {round_number}"} for kind in ["local", "native"]]}
                             delta = {"tool_calls": [{"index": 0, "id": f"delegate-{round_number}", "type": "function",
@@ -86,10 +94,10 @@ def main():
             env = {key: value for key, value in os.environ.items() if not key.startswith("COG_")}
             env.update(COG_NATIVE_KEY="synthetic-native", TMPDIR=str(scratch))
             process = subprocess.Popen([str(harness), str(executable), str(cert), f"https://localhost:{server.server_port}/v1",
-                str(workspace), str(root / "store"), str(root / "ipc")], env=env, start_new_session=True)
+                str(workspace), str(root / "store"), str(root / "ipc"), mode], env=env, start_new_session=True)
             status = process.wait(timeout=65)
             assert status == 0, (status, errors, len(requests))
-            assert len(requests) == 12 and not errors, (len(requests), errors)
+            assert len(requests) == (2 if mode == "limit" else 12) and not errors, (len(requests), errors)
         finally:
             if process is not None:
                 try:

@@ -398,3 +398,8 @@ add_test(NAME cli-headless-native COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
     $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR})
 set_tests_properties(cli-headless-native PROPERTIES TIMEOUT 70)
+
+add_test(NAME cli-headless-native-limit COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
+    $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} limit)
+set_tests_properties(cli-headless-native-limit PROPERTIES TIMEOUT 70)
