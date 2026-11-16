@@ -4,6 +4,7 @@
 #include "codec_internal.h"
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
 #include <string.h>
 
 static bool host_product(size_t a, size_t b, size_t *value)
@@ -435,4 +436,313 @@ cog_result_t cli_runtime_start(cog_cli_host_runtime_t *r,
     }
     g->gate_open = true; g->phase = CLI_GROUP_RUNNING;
     return COG_OK;
+}
+
+static cli_control_lane_t *host_client_lane(cog_cli_host_runtime_t *r,
+    const cli_client_record_t *client, cog_cli_control_lane_t lane)
+{
+    size_t index = (size_t)(client - r->clients);
+    return &r->lanes[(r->bounds.executors + index) * (2U * CLI_HOST_LANES) +
+        CLI_HOST_LANES + (size_t)lane - 1U];
+}
+
+static cog_result_t host_ui_result(cog_cli_host_runtime_t *r,
+    cog_cli_control_lane_t lane, uint64_t answer, uint64_t lease,
+    cog_result_t outcome, cli_host_bytes_t *out, uint64_t *wire)
+{
+    if (r->next_nonce == 0U || r->next_nonce == UINT64_MAX) return COG_ERROR_LIMIT;
+    unsigned char body[21];
+    cli_wire_writer_t w = {body, 0U, true};
+    cli_wire_put(&w, (uint32_t)outcome, 4U); cli_wire_put(&w, 2U, 1U);
+    cli_wire_put(&w, 0U, 8U); cli_wire_put(&w, lease, 8U);
+    cog_cli_control_message_t message = {.kind = COG_CLI_CONTROL_COMMAND_RESULT,
+        .lane = lane, .runtime_incarnation = r->runtime_incarnation,
+        .sender_incarnation = r->runtime_incarnation, .wire_id = r->next_nonce,
+        .reply_to = answer, .session_id = r->primary_session,
+        .payload = body, .payload_len = sizeof(body)};
+    size_t length;
+    cog_result_t rc = cog_cli_control_encode(&message, out->data, out->capacity, &length);
+    if (rc != COG_OK) return rc;
+    out->length = length; *wire = r->next_nonce++;
+    return COG_OK;
+}
+
+static bool host_bytes_equal(const cli_host_bytes_t *bytes, const void *frame, size_t length)
+{ return bytes->length == length && memcmp(bytes->data, frame, length) == 0; }
+
+static cog_result_t host_client_queue(cli_client_record_t *client, const cli_host_bytes_t *frame)
+{
+    if (client->send.length != 0U) {
+        return host_bytes_equal(&client->send, frame->data, frame->length) ? COG_OK : COG_ERROR_AGAIN;
+    }
+    if (frame->length > client->send.capacity) return COG_ERROR_LIMIT;
+    memcpy(client->send.data, frame->data, frame->length);
+    client->send.length = frame->length;
+    return COG_OK;
+}
+
+static cog_result_t host_ui_hello(cog_cli_host_runtime_t *r, const cog_event_ipc_t *event,
+    const cog_cli_control_message_t *message)
+{
+    if (message->lane != COG_CLI_LANE_COMMAND || message->reply_to != 0U ||
+        message->payload_len != 18U) return COG_ERROR_PROTOCOL;
+    cli_wire_reader_t reader = {message->payload, message->payload_len, 0U, true};
+    uint64_t version = cli_wire_get(&reader, 1U), role = cli_wire_get(&reader, 1U);
+    uint64_t generation = cli_wire_get(&reader, 8U), sequence = cli_wire_get(&reader, 8U);
+    if (version != 1U || (role != 1U && role != 2U)) return COG_ERROR_PROTOCOL;
+    cog_cli_projection_view_t view;
+    cog_result_t rc = cog_cli_projection_snapshot(r->projection, &view);
+    if (rc != COG_OK) return rc;
+    bool initial = message->runtime_incarnation == 0U && message->session_id[0] == '\0';
+    if (!initial && (message->runtime_incarnation != r->runtime_incarnation ||
+        strcmp(message->session_id, r->primary_session) != 0)) return COG_ERROR_INVALID_STATE;
+    cli_client_record_t *client = NULL, *vacant = NULL;
+    bool controller = false;
+    for (size_t i = 0U; i < r->bounds.clients; ++i) {
+        cli_client_record_t *c = &r->clients[i];
+        if (!c->used) { if (vacant == NULL) vacant = c; continue; }
+        if (c->controller && (c->connected || r->now_ms < c->controller_until_ms)) controller = true;
+        if ((initial && c->hello.initial_nonce == message->sender_incarnation) ||
+            (!initial && c->logical_lease == message->sender_incarnation)) client = c;
+    }
+    if (client != NULL) {
+        if (client->connected && client->peer != event->peer) return COG_ERROR_DENIED;
+        cli_client_hello_record_t *h = &client->hello;
+        if (h->request_wire == message->wire_id && h->request_sender == message->sender_incarnation) {
+            if (!host_bytes_equal(&h->original, event->msg_payload, event->msg_payload_len))
+                return COG_ERROR_PROTOCOL;
+            client->peer = event->peer; client->proof = event->peer_info; client->connected = true;
+            return host_client_queue(client, &h->reply);
+        }
+        if (initial || !h->acknowledged || message->wire_id <= h->retired_through ||
+            message->wire_id <= h->request_wire) return COG_ERROR_INVALID_STATE;
+    } else {
+        if (!initial) return COG_ERROR_NOT_FOUND;
+        if (vacant == NULL || r->next_client_lease == 0U ||
+            r->next_client_lease == UINT64_MAX) return COG_ERROR_LIMIT;
+        client = vacant;
+    }
+    cli_client_hello_record_t *h = &client->hello;
+    if (event->msg_payload_len > h->original.capacity || r->next_nonce > UINT64_MAX - 16U)
+        return COG_ERROR_LIMIT;
+    uint64_t lease = client->used ? client->logical_lease : r->next_client_lease;
+    uint64_t wire;
+    rc = host_ui_result(r, COG_CLI_LANE_COMMAND, message->wire_id, lease, COG_OK, &h->reply, &wire);
+    if (rc != COG_OK) return rc;
+    if (!client->used) {
+        client->used = true; client->logical_lease = r->next_client_lease++;
+        client->controller = role == 1U && !controller;
+        h->initial_nonce = message->sender_incarnation;
+    }
+    h->retired_through = h->ack_wire > h->request_wire ? h->ack_wire : h->request_wire;
+    memcpy(h->original.data, event->msg_payload, event->msg_payload_len);
+    h->original.length = event->msg_payload_len;
+    h->request_sender = message->sender_incarnation; h->request_wire = message->wire_id;
+    h->result_wire = wire; h->pending = true; h->final_valid = true; h->acknowledged = false;
+    h->ack_wire = 0U; h->ack_result_wire = 0U; h->ack_reply.length = 0U;
+    client->peer = event->peer; client->proof = event->peer_info; client->connected = true;
+    client->rendered_generation = generation; client->rendered_sequence = sequence;
+    client->queued_sequence = sequence;
+    client->awaiting_resync = initial || generation != view.display.generation ||
+        sequence > view.display.through_sequence;
+    client->receipts_until_ms = r->now_ms + r->fixed.client_receipt_ms;
+    return host_client_queue(client, &h->reply);
+}
+
+static cog_result_t host_ui_ack(cog_cli_host_runtime_t *r, cli_client_record_t *client,
+    const cog_event_ipc_t *event, const cog_cli_control_message_t *m)
+{
+    if (m->payload_len != 0U || m->reply_to == 0U ||
+        (m->lane != COG_CLI_LANE_COMMAND && m->lane != COG_CLI_LANE_CANCEL)) return COG_ERROR_PROTOCOL;
+    cli_client_hello_record_t *h = &client->hello;
+    if (m->lane == COG_CLI_LANE_COMMAND && h->final_valid && m->reply_to == h->result_wire) {
+        if (h->acknowledged) {
+            if (m->wire_id != h->ack_wire) return COG_ERROR_PROTOCOL;
+            return host_client_queue(client, &h->ack_reply);
+        }
+        cog_result_t rc = host_ui_result(r, m->lane, m->wire_id, 0U, COG_OK,
+            &h->ack_reply, &h->ack_result_wire);
+        if (rc != COG_OK) return rc;
+        h->ack_wire = m->wire_id; h->acknowledged = true; h->pending = false;
+        return host_client_queue(client, &h->ack_reply);
+    }
+    cli_control_lane_t *lane = host_client_lane(r, client, m->lane);
+    if (lane->final_valid && m->wire_id == lane->final_answered_wire) {
+        if (!host_bytes_equal(&lane->final_original, event->msg_payload, event->msg_payload_len))
+            return COG_ERROR_PROTOCOL;
+        return host_client_queue(client, &lane->final_reply);
+    }
+    for (size_t i = 0U; i < r->bounds.command_records; ++i) {
+        cli_command_record_t *command = &r->commands[i];
+        if (command->phase != CLI_COMMAND_FINAL || command->lease != client->logical_lease ||
+            command->result_wire != m->reply_to) continue;
+        if (command->original.length < 6U || command->original.data[5] != (unsigned char)m->lane)
+            return COG_ERROR_PROTOCOL;
+        if (event->msg_payload_len > lane->final_original.capacity) return COG_ERROR_LIMIT;
+        uint64_t wire;
+        cog_result_t rc = host_ui_result(r, m->lane, m->wire_id, 0U, COG_OK, &lane->final_reply, &wire);
+        if (rc != COG_OK) return rc;
+        memcpy(lane->final_original.data, event->msg_payload, event->msg_payload_len);
+        lane->final_original.length = event->msg_payload_len;
+        lane->final_valid = true; lane->final_answered_wire = m->wire_id; lane->final_reply_wire = wire;
+        if (command->request_wire > lane->retired_through) lane->retired_through = command->request_wire;
+        command->phase = CLI_COMMAND_FREE;
+        return host_client_queue(client, &lane->final_reply);
+    }
+    return COG_ERROR_NOT_FOUND;
+}
+
+static cog_result_t host_ui_command(cog_cli_host_runtime_t *r, cli_client_record_t *client,
+    const cog_event_ipc_t *event, const cog_cli_control_message_t *m)
+{
+    if (m->reply_to != 0U || (m->lane != COG_CLI_LANE_COMMAND && m->lane != COG_CLI_LANE_CANCEL))
+        return COG_ERROR_PROTOCOL;
+    cli_command_record_t *vacant = NULL;
+    for (size_t i = 0U; i < r->bounds.command_records; ++i) {
+        cli_command_record_t *record = &r->commands[i];
+        if (record->phase == CLI_COMMAND_FREE) { if (vacant == NULL) vacant = record; continue; }
+        if (record->lease == client->logical_lease && record->request_wire == m->wire_id) {
+            if (!host_bytes_equal(&record->original, event->msg_payload, event->msg_payload_len))
+                return COG_ERROR_PROTOCOL;
+            return record->phase == CLI_COMMAND_FINAL ? host_client_queue(client, &record->reply) : COG_ERROR_AGAIN;
+        }
+    }
+    cli_control_lane_t *lane = host_client_lane(r, client, m->lane);
+    if (m->wire_id <= lane->retired_through) return COG_ERROR_INVALID_STATE;
+    if (vacant == NULL || event->msg_payload_len > vacant->original.capacity ||
+        r->next_nonce > UINT64_MAX - 16U) return COG_ERROR_LIMIT;
+    cog_cli_command_t command;
+    size_t required;
+    cog_result_t rc = cog_cli_command_decode(m->payload, m->payload_len, &command,
+        vacant->decoded_storage.data, vacant->decoded_storage.capacity, &required);
+    if (rc != COG_OK) return rc;
+    if ((command.kind == COG_CLI_COMMAND_CANCEL) != (m->lane == COG_CLI_LANE_CANCEL))
+        return COG_ERROR_PROTOCOL;
+    cog_cli_projection_view_t view;
+    rc = cog_cli_projection_snapshot(r->projection, &view);
+    if (rc != COG_OK) return rc;
+    cog_result_t refusal = COG_OK;
+    if (!client->hello.acknowledged) refusal = COG_ERROR_INVALID_STATE;
+    else if (command.kind != COG_CLI_COMMAND_RESYNC && !client->controller) refusal = COG_ERROR_DENIED;
+    else if (command.kind != COG_CLI_COMMAND_RESYNC &&
+        (client->awaiting_resync || client->rendered_generation != command.observed_generation ||
+         client->rendered_sequence < command.observed_sequence ||
+         command.observed_generation != view.display.generation ||
+         command.observed_sequence != view.display.through_sequence)) refusal = COG_ERROR_INVALID_STATE;
+    else if (command.kind != COG_CLI_COMMAND_RESYNC && (r->admission_frozen || r->shutdown))
+        refusal = COG_ERROR_ABORTED;
+    memcpy(vacant->original.data, event->msg_payload, event->msg_payload_len);
+    vacant->original.length = event->msg_payload_len;
+    vacant->lease = client->logical_lease; vacant->request_wire = m->wire_id;
+    vacant->observed_generation = command.observed_generation;
+    vacant->observed_sequence = command.observed_sequence; vacant->nonce = command.nonce;
+    vacant->owner = r->primary_owner; vacant->result = refusal;
+    vacant->phase = CLI_COMMAND_COPIED;
+    if (refusal != COG_OK) {
+        rc = host_ui_result(r, m->lane, m->wire_id, 0U, refusal, &vacant->reply, &vacant->result_wire);
+        if (rc != COG_OK) return rc;
+        vacant->phase = CLI_COMMAND_FINAL;
+        return host_client_queue(client, &vacant->reply);
+    }
+    return COG_OK;
+}
+
+static cog_result_t host_ui_ingress(cog_cli_host_runtime_t *r, const cog_event_ipc_t *event)
+{
+    if (!event->peer_info_valid || event->peer_info.peer_id != event->peer ||
+        event->peer_info.user_id != (uint64_t)geteuid() || event->peer_info.process_id == 0U)
+        return COG_ERROR_DENIED;
+    cog_cli_control_message_t m;
+    size_t required;
+    cog_result_t rc = cog_cli_control_decode(event->msg_payload, event->msg_payload_len,
+        &m, r->decode.data, r->decode.capacity, &required);
+    if (rc != COG_OK) return rc;
+    if (m.worker.incarnation != 0U || m.worker.number != 0U || m.owner_peer != 0U ||
+        m.agent_id != 0U || m.execution_epoch != 0U) return COG_ERROR_DENIED;
+    if (m.kind == COG_CLI_CONTROL_UI_HELLO) return host_ui_hello(r, event, &m);
+    if (m.runtime_incarnation != r->runtime_incarnation || strcmp(m.session_id, r->primary_session) != 0)
+        return COG_ERROR_INVALID_STATE;
+    cli_client_record_t *client = NULL;
+    for (size_t i = 0U; i < r->bounds.clients; ++i)
+        if (r->clients[i].used && r->clients[i].logical_lease == m.sender_incarnation &&
+            r->clients[i].connected && r->clients[i].peer == event->peer) client = &r->clients[i];
+    if (client == NULL) return COG_ERROR_NOT_FOUND;
+    switch (m.kind) {
+    case COG_CLI_CONTROL_UI_COMMAND: return host_ui_command(r, client, event, &m);
+    case COG_CLI_CONTROL_COMMAND_ACK: return host_ui_ack(r, client, event, &m);
+    default: return COG_ERROR_DENIED;
+    }
+}
+
+/** Protected core ingress: retain intent/config bytes before their lease ends. */
+cog_handler_result_t cli_host_dispatch(cog_core_t *core, const cog_event_t *event)
+{
+    cog_handler_result_t result = {COG_TRANSITION_SELF, COG_OK};
+    if (core == NULL || event == NULL) { result.status = COG_ERROR_NULL_PTR; return result; }
+    cog_cli_host_runtime_t *r = cog_core_user(core);
+    if (r == NULL) { result.status = COG_ERROR_INVALID_STATE; return result; }
+    if (event->kind == COG_EVENT_SUBAGENT_SPAWN || event->kind == COG_EVENT_SUBAGENT_CANCEL) {
+        if (event->payload == NULL || event->payload_len != sizeof(cog_event_agent_intent_t)) {
+            result.status = COG_ERROR_PROTOCOL; return result;
+        }
+        cog_event_agent_intent_t intent;
+        memcpy(&intent, event->payload, sizeof(intent));
+        cli_executor_slot_t *slot = host_agent(r, intent.agent_id);
+        if (slot == NULL || intent.action != event->kind || intent.agent_id != event->source_id ||
+            intent.execution_epoch != slot->attempt || intent.owner_peer != slot->owner_peer) {
+            result.status = COG_ERROR_PROTOCOL; return result;
+        }
+        if (event->kind == COG_EVENT_SUBAGENT_CANCEL) { slot->cancel_latched = true; return result; }
+        cog_agent_config_t config;
+        size_t required;
+        result.status = cog_agent_copy_config(core, slot->agent, &config,
+            (char *)slot->task.data, slot->task.capacity, &required);
+        if (result.status != COG_OK) return result;
+        if (config.owner_peer != slot->owner_peer || config.execution_epoch != slot->attempt ||
+            config.group_id != slot->group || config.parent_session_id == NULL ||
+            strcmp(config.parent_session_id, slot->parent_session) != 0) {
+            result.status = COG_ERROR_PROTOCOL; return result;
+        }
+        slot->task.length = strlen(config.task);
+        const char *session = NULL;
+        result.status = cog_agent_session_id(core, slot->agent, &session);
+        if (result.status != COG_OK) return result;
+        size_t n = strlen(session);
+        if (n >= sizeof(slot->session)) { result.status = COG_ERROR_LIMIT; return result; }
+        memcpy(slot->session, session, n + 1U);
+        bool cancelled;
+        result.status = cog_agent_is_cancelled(core, slot->agent, &cancelled);
+        if (result.status != COG_OK) return result;
+        slot->cancel_latched = slot->cancel_latched || cancelled;
+        slot->phase = CLI_SLOT_PROFILE; /* no app/task effects in ingress */
+        return result;
+    }
+    if (event->kind == COG_EVENT_IPC_CONNECTED || event->kind == COG_EVENT_IPC_MESSAGE ||
+        event->kind == COG_EVENT_IPC_DISCONNECTED) {
+        if (event->payload == NULL || event->payload_len != sizeof(cog_event_ipc_t)) {
+            result.status = COG_ERROR_PROTOCOL; return result;
+        }
+        const cog_event_ipc_t *ipc = event->payload;
+        if (event->kind == COG_EVENT_IPC_MESSAGE) {
+            /* Complete application-frame refusals are isolated. Actual Q driver
+             * failures propagate from core_step independently of this return. */
+            cog_result_t rc = host_ui_ingress(r, ipc);
+            if (rc == COG_ERROR_IO || rc == COG_ERROR_NOMEM || rc == COG_ERROR_INDETERMINATE)
+                result.status = rc;
+        } else if (event->kind == COG_EVENT_IPC_DISCONNECTED) {
+            for (size_t i = 0U; i < r->bounds.clients; ++i) {
+                cli_client_record_t *client = &r->clients[i];
+                if (!client->used || client->peer != ipc->peer) continue;
+                client->connected = false;
+                client->controller_until_ms = r->now_ms + r->fixed.controller_reconnect_ms;
+                client->receipts_until_ms = r->now_ms + r->fixed.client_receipt_ms;
+                client->send.length = 0U;
+            }
+        }
+        return result;
+    }
+    /* Agent notifications are copied/acknowledged by bounded owner service. */
+    if (event->kind != COG_EVENT_SUBAGENT_RESULT && event->kind != COG_EVENT_SUBAGENT_STATUS)
+        result.status = COG_ERROR_PROTOCOL;
+    return result;
 }
