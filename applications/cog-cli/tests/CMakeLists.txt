@@ -461,3 +461,12 @@ add_test(NAME cli-headless-native-handoff-timeout COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
     $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} handoff-timeout)
 set_tests_properties(cli-headless-native-handoff-timeout PROPERTIES TIMEOUT 145)
+# Includes the actual coordinator source. Link real orchestrator and Q implementations.
+add_executable(test_coordinator_send_schedule coordinator-leaf/test_send_schedule.c)
+target_link_libraries(test_coordinator_send_schedule PRIVATE cog-cli-lib)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(test_coordinator_send_schedule PRIVATE -ffunction-sections -fdata-sections)
+  target_link_options(test_coordinator_send_schedule PRIVATE -Wl,--gc-sections)
+endif()
+add_test(NAME unit-cli-coordinator-send-schedule
+  COMMAND test_coordinator_send_schedule coordinator-send.sock)

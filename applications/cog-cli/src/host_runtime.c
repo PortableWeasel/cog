@@ -1518,6 +1518,10 @@ static cog_result_t host_copied_send(cog_cli_host_runtime_t *r, cog_worker_id_t 
     if (wire == 0U || frame->length == 0U) return COG_ERROR_INVALID_STATE;
     if (*copied == wire && (one_way || r->now_ms < *next)) return COG_ERROR_AGAIN;
     if (!one_way && r->now_ms > UINT64_MAX - CLI_CONTROL_RETRY_MS) return COG_ERROR_LIMIT;
+    /* Missed heartbeat is not a lost native reservation. Service owns its
+     * escalation; retain the exact exchange and its original deadline. */
+    if (cog_orchestrator_health(r->orchestrator, worker) == COG_HEALTH_DEGRADED)
+        return COG_ERROR_AGAIN;
     cog_ipc_message_t bytes = {.data = frame->data, .len = frame->length, .capacity = frame->capacity};
     cog_result_t rc = cog_orchestrator_send(r->orchestrator, worker, &bytes);
     if (rc == COG_OK) {
@@ -1537,7 +1541,7 @@ static cog_result_t host_reply_send(cog_cli_host_runtime_t *r, cog_worker_id_t w
 {
     uint64_t wire = frame == &lane->final_reply ? lane->final_reply_wire : lane->provisional_wire;
     /* An already copied valid successor retires older response delivery. */
-    if (wire < lane->copied_wire) return COG_ERROR_AGAIN;
+    if (wire < lane->copied_wire || wire < lane->pending_reply_wire) return COG_ERROR_AGAIN;
     lane->pending_reply_wire = wire;
     cog_result_t rc = host_copied_send(r, worker, frame, wire,
         &lane->copied_wire, &lane->next_send_ms, false);
@@ -2941,6 +2945,10 @@ cog_result_t cog_cli_host_runtime_step(cog_cli_host_runtime_t *r,
         }
         bool handoff_done = r->handoff == NULL || r->handoff->phase == CLI_HANDOFF_IDLE ||
             (r->handoff->phase == CLI_HANDOFF_FROZEN && r->handoff->pending.length == 0U);
+        /* The deadline is a fallback, not a minimum lifetime. Keep ingress
+         * until native/local ownership has drained, then stop the control core. */
+        if (local_done && native_done && handoff_done && !r->control_drive_ended)
+            cog_core_stop(r->control_core);
         r->done = local_done && native_done && r->control_drive_ended && handoff_done;
         if (r->shutdown_deadline_ms < out.next_deadline_ms) out.next_deadline_ms = r->shutdown_deadline_ms;
     }
