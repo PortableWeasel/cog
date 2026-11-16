@@ -419,3 +419,22 @@ set_tests_properties(cli-worker-receipt-owned cli-delegation-callbacks PROPERTIE
 
 add_test(NAME cli-worker-handoff-critic COMMAND test_worker_handoff_critic)
 set_tests_properties(cli-worker-handoff-critic PROPERTIES TIMEOUT 10)
+# Additive registration for the shared CMake owner. This leaf includes the real
+# coordinator translation unit to exercise its private retained-receipt path;
+# section GC selects that path, and cog::cli supplies real linked dependencies.
+add_executable(test_cli_coordinator_receipt coordinator-leaf/test_receipt_pressure.c)
+target_link_libraries(test_cli_coordinator_receipt PRIVATE cog::cli)
+target_include_directories(test_cli_coordinator_receipt PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_options(test_cli_coordinator_receipt PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_cli_coordinator_receipt PRIVATE -Wl,--gc-sections)
+target_enable_warnings(test_cli_coordinator_receipt)
+add_test(NAME cli-coordinator-receipt COMMAND test_cli_coordinator_receipt)
+set_tests_properties(cli-coordinator-receipt PROPERTIES LABELS "unit;cli;headless")
+add_executable(test_cli_coordinator_identity coordinator-leaf/test_stream_identity_critic.c)
+target_link_libraries(test_cli_coordinator_identity PRIVATE cog::cli)
+target_include_directories(test_cli_coordinator_identity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_options(test_cli_coordinator_identity PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_cli_coordinator_identity PRIVATE -Wl,--gc-sections)
+target_enable_warnings(test_cli_coordinator_identity)
+add_test(NAME cli-coordinator-identity COMMAND test_cli_coordinator_identity)
+set_tests_properties(cli-coordinator-identity PROPERTIES LABELS "unit;cli;headless")
