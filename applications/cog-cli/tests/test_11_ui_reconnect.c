@@ -72,7 +72,7 @@ static cog_result_t lose_final(headless_fixture_t *f,session_client_t *c,
     while(!found && headless_fixture_clock_ms()<deadline){
         cog_result_t rc=session_tick(f,NULL,NULL);if(rc!=COG_OK)return rc;
         ssize_t n=recv(ep->fd,bytes+used,sizeof(bytes)-used,MSG_DONTWAIT);
-        if(n<0){if(errno==EAGAIN || errno==EWOULDBLOCK || errno==EINTR)continue;return COG_ERROR_IO;}
+        if(n<0){if(errno==EAGAIN || errno==EINTR)continue;return COG_ERROR_IO;}
         if(n==0)return COG_ERROR_IO;
         used+=(size_t)n;
         while(used-parsed>=4U){
@@ -106,7 +106,7 @@ static cog_result_t lose_final(headless_fixture_t *f,session_client_t *c,
     size_t discarded=0U;
     for(;;){ssize_t n=recv(ep->fd,bytes,sizeof(bytes),MSG_DONTWAIT);
         if(n==0)break;
-        if(n<0){if(errno==EINTR)continue;if(errno==EAGAIN || errno==EWOULDBLOCK)break;return COG_ERROR_IO;}
+        if(n<0){if(errno==EINTR)continue;if(errno==EAGAIN)break;return COG_ERROR_IO;}
         discarded+=(size_t)n;if(discarded>1024U*1024U)return COG_ERROR_LIMIT;
     }
     return COG_OK;
