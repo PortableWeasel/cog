@@ -115,7 +115,9 @@ struct cog_cli_worker_host {
     cog_ipc_endpoint_t *parent;
     cog_ipc_peer_info_t parent_proof;
     bool authenticated, startup_ready, in_step, shutdown, done;
-    bool stepped; /**< First valid step began; distinguishes never-stepped close. */
+    bool stepped; /**< False at construction; set before first valid outer step.
+       Invalid/reentrant calls do not set it. Close permits !stepped or done,
+       never a connected-but-live owner merely because all executor slots idle. */
     cog_result_t primary;
     uint64_t runtime_incarnation, now_ms, shutdown_deadline_ms;
     uint64_t next_heartbeat_ms, startup_deadline_ms;

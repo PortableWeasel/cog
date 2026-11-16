@@ -325,3 +325,19 @@ when drive_end returns the retained fatal status, preserve first error, and stop
 all later core steps/end/restart. Separate started executor/provider/native drain
 continues, then normal borrowed-session/guard/registry cleanup. Successful stop
 needs the same flag: coordinator_failed is not a substitute for driver retirement.
+
+Pass3 consistency: four constructor-owned scalar fields only. No pointer/arena
+ownership, count limit, secret/profile copy or wire identity changes. Invalid
+NULL/reentrant step calls leave stepped unchanged; valid first-step clock failure
+uses existing failure/done handling, not a fake never-stepped cleanup exemption.
+Close refuses stepped&&!done even when no executor slots are active. Construction
+unwind and never-stepped close release only explicit owned resources; borrowed
+signal fd and host template stay caller-owned. Neither timer grants native proof,
+bootstrap readiness or execution permission. Driver retirement remains distinct
+from executor cleanup and whole-runtime done. Other frozen helpers remain intact;
+no source/CMake body is included in this amendment.
+
+Amendment verification:12/12 strict GCC/Clang C11 and G++/Clang++ C++11
+standalone/combined/reversed+repeated include checks PASS. Exact commands/results
+are in impl-headless-app/build-layout-5ff5ec8/checks.log (TMPDIR local there).
+Independent final review remains required before any body consumes these fields.
