@@ -728,6 +728,81 @@ The Process Orchestrator manages auxiliary core lifecycle:
 
 ## Next steps
 
+Stage14.N now refines headless/subagent composition against the completed M
+single-process client. Its [design inventory](REAL_CLIENT_HEADLESS_CONTRACTS.md)
+keeps UI and worker-control fabrics under separate single owners and consumes
+the shipped Q/G/CGA1/CGR1/CGD1 primitives. Required amendments include authenticated
+owned-child binding, cooperative app execution, canonical replay anchoring and
+explicit staged handoff; no implementation is authorized by this inventory.
+Three header passes and a different final gate precede O bodies. Existing live-
+handle/cross-host migration, uncertain-effect replay and unbounded growth remain
+unsupported.
+The first foundation subset adds kernel-origin peer queries/directed sends,
+explicit bounded core begin/step/end using the existing clock/dispatch engine,
+and an exact local agent-session execution borrow. These are draft contracts
+for incremental review, not implemented headless or child behavior.
+Managed process reservations now have a separate strong incarnation/number
+identity; nonblocking spawn and pre-auth stop/kill cannot masquerade as actual
+listener peers. Ready placement and CGA1/CGH1/routes retain actual fabric-scoped
+peer IDs. Immutable native spawn PID, kernel credentials and matching managed
+bootstrap identity are all required before worker readiness.
+The draft private host runtime keeps one coordinator/child registry alive across
+primary executor handoff. Explicit parent-session IDs link actual execution;
+local child apps borrow the registry's exact tree, while remote registry records
+are status/identity shadows. Only the coordinator publishes the canonical replay
+projection; an executor's standalone display counter is not a wire cursor.
+Resolved executor admission separates STAGED preparation from owner CAS/guard/
+activation and suppresses startup prompt/queue replay. A published runtime owns
+all native child lifetimes: construction never forks, and checked cooperative
+drain precedes consuming close. These remain pass1 declarations, not O behavior.
+Handoff separates QUIESCE from CHECKPOINTED because the guarded source save
+creates its exact immutable token. PREPARED precedes source guard release and
+exact CAS; target guarded READY precedes route publication and ACTIVATE. Trusted
+local peer0 participates explicitly; old epochs/startup input cannot be restored
+on failure. The gated O ownership matrix keeps shared app glue serial while
+IPC/core/pure codecs and later leaf modules use disjoint source locks.
+The private CGL1 protocol has static role/kind ingress and distinct wire IDs,
+semantic CGA sequences, command receipts and replay cursors. Resolved credential
+bootstrap travels only coordinator-to-authenticated-worker in dedicated wiped
+arenas/IPC TX storage, outside UI/replay/generic event or receipt caches. Worker
+configuration never rereads startup sources or retains resolver authority.
+Explicit primary reload resolves at the coordinator and preserves R12's exact
+three-field transaction and whole-turn pinning at the owning executor. Aborted
+handoff always requires a fresh epoch; no pre-CAS old-guard thaw is authorized.
+Headless visible mutations enter a private publication barrier before later
+ordinary effects; coordinator atomically commits full CGV1 conversation/control
+projections to existing CGR1. Client GAP resync includes current correlated ASK
+nonces and cannot replay input/effects. Static application tool-table references
+reuse original workspace descriptors alongside bounded delegation/mailbox tools;
+failed partial group reservation drains nonexecuting registry prefixes. Dedicated
+worker/client step hosts retain one endpoint reader and explicit cleanup owners.
+The [N iteration map](REAL_CLIENT_HEADLESS_PASSES.md) and
+[process/authority diagram](headless-integration.svg) assemble the pass1 surface
+and all20/R13/R14 call paths. Native worker management is library-owned CGW1;
+private CGL1 uses independently reserved per-attempt lanes, authoritative global
+pre-STARTED reservation and actual pinned generation facts. Primary ASK is
+resynchronized; child ASK deliberately denies noninteractively with durable
+identified no-effect results. Child SYSTEM context records real provenance before
+effects, but volatile receipt/prefix/placement state is never claimed recoverable
+after coordinator crash. No automatic replay/rebind or live migration is added.
+The full N pass2 retrace closes the actual Q opaque-frame discriminator, early
+cancel latch/finite attempt watermark, server-issued UI lease/receipt retirement,
+and final-command render/admission distinctions. Headless MOCK remains UI-only;
+actual child acceptance uses offline REAL TLS. Handoff carries consumed R12
+attempt budget as well as active generation, including failed attempts. Group
+and mailbox result capacity is proven before STARTED/copy, with no hidden text
+truncation. Direct bounded drain units replace nested app-drain waits after core
+drive completion. The full pass3 audit records authorization at valid-lease forwarding, actual
+executor version checks, independent cancel/state receipts and checked consuming
+cleanup. Gated per-file O tickets preserve one shared app source lane, disjoint
+pure codecs/profiles/projection and different critics. All three writer passes
+are complete; the different final N gate remains open, with no bodies authorized.
+N's per-peer application refusal applies only after Q delivered a valid complete
+frame. Malformed CGL/schema/stale identity does not kill headless work; propagated
+Q framing/core-ceiling PROTOCOL/LIMIT or other driver failure retains existing
+core freeze/drain behavior. Normal disconnect handling stays unchanged; no new
+transport-fault isolation is implied by the UI replay contract.
+
 Stage 6 — Headers first. Design all public APIs as headers before any
 implementation. Three iterations:
 1. Initial headers from this design

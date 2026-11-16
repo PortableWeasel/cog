@@ -15,7 +15,8 @@
  * destructors, and configuration tables are supplied by the caller.
  *
  * Threading model: a single @c cog_core_t instance is intended to be
- * driven by a single thread calling @c cog_core_run.  @c cog_core_stop
+ * driven by a single thread calling @c cog_core_run or the explicit manual
+ * drive lifecycle. @c cog_core_stop
  * may be called from another thread or a signal handler to request a
  * graceful exit.  Multi-threaded operation may be layered on top later
  * via external locking or the IPC fabric.
@@ -54,6 +55,7 @@ typedef struct cog_core cog_core_t;
 
 /**
  * @brief Hook called by @c cog_core_run when the event queue is empty.
+ * Manual core_step never invokes a wait hook.
  *
  * The hook may block until a new event arrives, yield the CPU, or poll an
  * external source.  It must return promptly after @c cog_core_stop has
@@ -241,6 +243,14 @@ typedef struct cog_core_config {
     size_t pending_session_capacity; /**< Reserved pending FIFO owners; default 17. */
     size_t pending_messages_per_session; /**< Reserved entries/owner; default 8. */
     size_t pending_message_bytes; /**< Bytes/entry including NUL; default 65536. */
+    size_t step_event_limit; /**< Cooperative step dispatch ceiling; zero=16,
+       valid1..1024. Service/IPC retain their constructor quantum limits. */
+    bool require_peer_credentials; /**< Capture kernel-origin immutable peer
+       identity before IPC_CONNECTED/MESSAGE admission; reserve per-peer metadata
+       at construction. Unsupported/query failure refuses that peer. Default
+       false preserves generic IPC without trusted identity; headless sets true.
+       Every emitted IPC event copies proof through its handler lease even after
+       EOF/endpoint removal. It is not application role/worker authorization. */
 } cog_core_config_t;
 
 /**
@@ -253,7 +263,8 @@ typedef struct cog_core_config {
  * @return COG_ERROR_INVALID_ARG if @p config->session is NULL, if
  *         @p config->dispatch_table is NULL, or if
  *         @p config->dispatch_table_size is zero, or legacy wait_fn is combined
- *         with service_fn/idle_fn (unbounded legacy waiting is incompatible).
+ *         with service_fn/idle_fn (unbounded legacy waiting is incompatible),
+ *         or nonzero step_event_limit exceeds1024.
  * @return COG_ERROR_NOMEM if allocation fails.
  *
  * @post On success, @p *out is a valid core and the caller owns it.  If
@@ -279,7 +290,9 @@ cog_result_t cog_core_new(cog_core_t **out, const cog_core_config_t *config);
  * Threading: not thread-safe.  @p core must not be running when this
  * function is called. Queued agent intents are discarded and their leases
  * released before registry storage is destroyed; caller first fences/drains
- * all already-started owned work. No queued intent is executed by destruction.
+ * all already-started owned work and returns every child execution-session
+ * borrow. These are destruction preconditions, not an implicit cancel/join.
+ * No queued intent is executed by destruction.
  */
 void cog_core_free(cog_core_t *core);
 
@@ -325,6 +338,66 @@ void cog_core_free(cog_core_t *core);
  */
 cog_result_t cog_core_run(cog_core_t *core);
 
+/** @brief One bounded cooperative drive result, never an execution lease. */
+typedef struct cog_core_step_info {
+    size_t dispatched; /**< Completed dispatch count, at most step_event_limit. */
+    bool done; /**< Stop/fatal result latched; drive_end is required. */
+    uint64_t next_deadline_ms; /**< Absolute CLOCK_MONOTONIC ms or UINT64_MAX. */
+    uint32_t max_wait_ms; /**< Finite idle ceiling, never above max_idle_wait_ms.
+       Zero if dispatch/pending injection/service/IPC work can advance now. */
+} cog_core_step_info_t;
+/**
+ * @brief Begin explicit cooperative driving without dispatching/waiting.
+ * @param[in,out] core Inactive core, owner thread outside its callbacks.
+ * @return OK; NULL_PTR; INVALID_STATE if run/another drive active or callback
+ * reentry. Failure changes no drive/queue/lease/stop state.
+ * @post OK resets stop exactly as run entry, enters active manual drive and
+ * marks service due before first dispatch. State/queued work remains. No
+ * allocation. Only one active driver, including run(), may own this core.
+ */
+cog_result_t cog_core_drive_begin(cog_core_t *core);
+/**
+ * @brief Execute one constructor-bounded fair nonblocking drive slice.
+ * @param[in,out] core Active manual drive, owner thread outside callbacks.
+ * @param[out] info Required by-value result.
+ * @return OK for progress/idle/normal stop; NULL_PTR; INVALID_STATE wrong driver/
+ * reentry/already done; otherwise first service/dispatch/IPC/save/checked-clock
+ * error. Valid-work failure fills info.done=true and latches that error until
+ * drive_end. Invalid-call outputs/state remain unchanged.
+ * @note Uses the SAME checked CLOCK_MONOTONIC-ms clock and dispatch/service
+ * engine as run, sampling between bounded units. At most step_event_limit
+ * dispatches. Service interval, IPC/local rotation and deadlines persist across
+ * slices. Service precedes first dispatch and existing fairness/deadline points,
+ * including continuously queued work. No wait_fn, idle_fn, nanosleep, positive
+ * poll or nested run. Budget/fairness yield with queued immediate work reports
+ * max_wait_ms=0 and next_deadline_ms<=the sampled current time. Never suggest
+ * sleeping while known dispatch/pending-injection/due service/ready IPC remains.
+ * Host waits once outside all cores at the MINIMUM returned finite max_wait_ms
+ * and absolute deadline, reduced by its own readiness/stop sources, then rotates
+ * cores. UINT64_MAX never permits unbounded sleep: latent external readiness
+ * receives the configured finite idle poll interval. Hooks retaining immediately
+ * actionable work return a due deadline even when enqueue is temporarily full.
+ * Hooks/handlers must obey bounded-work contracts.
+ * Popped IPC/agent/event leases release after handler on EVERY path; budget yield
+ * never acknowledges/drops unprocessed work. No allocation. Stop is still the
+ * sole cross-thread/signal-safe operation and is checked between units.
+ * App-owned asynchronous work remains owned and must explicitly drain.
+ */
+cog_result_t cog_core_step(cog_core_t *core, cog_core_step_info_t *info);
+/**
+ * @brief End a stopped/failed manual drive; release only driver ownership.
+ * @param[in,out] core Manual drive with done reported, outside callbacks.
+ * @return Latched work result/OK after ending; NULL_PTR; INVALID_STATE wrong
+ * driver/not done/reentry (no state change in these invalid calls).
+ * @post Restores an unprocessed injected FIFO lease exactly as run exit; queued
+ * intents remain leased. Core becomes inactive even when returning latched work
+ * error. No implicit cancellation/free/new begin. Host cancels/drains/reaps its
+ * own work; ending this driver alone does not make context destruction safe.
+ * run() uses the same engine internally with its checked clock/bounded wait
+ * hooks; manual APIs from run callbacks always fail INVALID_STATE.
+ */
+cog_result_t cog_core_drive_end(cog_core_t *core);
+
 /**
  * @brief Request the run loop to exit.
  *
@@ -353,6 +426,10 @@ void cog_core_stop(cog_core_t *core);
  * @return COG_ERROR_INVALID_ARG for SUBAGENT_SPAWN/CANCEL kinds, which only
  * agent_spawn/cancel may originate through atomic leased admission. This does
  * not reserve their numeric dispatch IDs for unrelated application events.
+ * Also INVALID_ARG for malformed IPC_* payload descriptors or any external
+ * IPC_* descriptor claiming peer_info_valid=true; only protected core ingress
+ * can originate kernel proof. Untrusted generic IPC descriptors remain usable
+ * by other applications with peer_info_valid=false, never as headless authority.
  *
  * @post The event is copied into the core's queue.
  *

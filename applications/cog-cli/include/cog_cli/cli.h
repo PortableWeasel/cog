@@ -291,6 +291,10 @@ typedef struct cog_cli_display_snapshot {
  * then requests DATA after it. On another gap repeat snapshot; never skip data
  * silently. App constructors reserve snapshot items/text within context/output
  * limits; exhaustion fails clearly instead of returning a partial snapshot.
+ * This is the APP-local anchor. A composing headless host may publish a copied
+ * projection under its separate canonical replay generation/sequence; its wire
+ * client must use that committed projection's anchor, never mix raw app counters
+ * with a coordinator replay ring. Text/items still come from this actual view.
  */
 cog_result_t cog_cli_app_display_snapshot(cog_cli_app_t *app,
                                           cog_cli_display_snapshot_t *snapshot);

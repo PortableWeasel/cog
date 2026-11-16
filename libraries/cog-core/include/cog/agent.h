@@ -95,7 +95,11 @@ typedef struct cog_agent_config {
  * validated bounded remote protocol; core does not know or silently send it.
  * Core gains no provider/orchestrator implementation dependency.
  *
- * @param[in,out] core   Core instance that owns the parent session.
+ * @param[in,out] core   Registry-host core. The explicit parent_session_id may
+ * name an application session hosted by another executor; core does not borrow,
+ * load, mutate or claim ownership of that parent through the string. The child
+ * session is owned by THIS registry core until release/core_free. Keep this core
+ * alive through all child execution borrows, copied terminal delivery and ack.
  * @param[in]     config Subagent configuration; must be non-NULL.
  * @param[out]    out_id Receives the new agent id on success.
  * @return COG_OK on success.
@@ -139,6 +143,41 @@ cog_result_t cog_agent_copy_config(const cog_core_t *core, cog_agent_id_t agent_
                                     cog_agent_config_t *out_config,
                                     char *storage, size_t capacity,
                                     size_t *out_required);
+
+/**
+ * @brief Borrow the exact registry-owned local child session for one executor.
+ * @param[in,out] core Parent registry owner, one thread; may be called in this
+ * record's leased spawn handler, not recursively for the same record.
+ * @param[in] agent_id Retained local(owner_peer=0), nonterminal child record.
+ * @param[out] session Mutable borrowed session, unchanged on failure.
+ * @return OK; NULL_PTR; NOT_FOUND; ABORTED cancellation already admitted;
+ * INVALID_STATE remote/terminal/already borrowed. No allocation, execution,
+ * update/ack or intent consumption. Exactly one execution borrow at a time.
+ * @post Child app/core uses THIS object and its exact copied ID/parent link,
+ * never a replacement tree with the same ID. It borrows, never destroys it.
+ * Parent release cannot consume this record while borrowed. core_free requires
+ * all execution borrows returned after work drains, as it already requires
+ * local/remote work fenced/drained. No native pointer is transferred remotely;
+ * remote execution uses copied identity and its own guarded store context.
+ * Borrow is a storage-lifetime lease, NOT a new execution/admission grant.
+ * Returning it cannot authorize restarting the same accepted task; application
+ * attempt/receipt state retains one-shot execution and terminal ownership.
+ */
+cog_result_t cog_agent_session_borrow(cog_core_t *core, cog_agent_id_t agent_id,
+                                       cog_session_t **session);
+/**
+ * @brief Return one local execution borrow after complete child cleanup.
+ * @param[in,out] core Live parent registry owner, one thread.
+ * @param[in] agent_id Exact borrowed record.
+ * @param[in] session Exact borrowed pointer; never freed by the child.
+ * @return OK; NULL_PTR; NOT_FOUND; INVALID_STATE mismatch/no borrow. Failure
+ * changes no borrow. OK does not release/ack the record or result.
+ * @pre No child app/core/provider/tool/store guard or callback still borrows
+ * this session: cancel/drain/reap, consuming provider/config cleanup and child
+ * core destruction have completed. No allocation or effects.
+ */
+cog_result_t cog_agent_session_return(cog_core_t *core, cog_agent_id_t agent_id,
+                                       cog_session_t *session);
 
 /**
  * @brief Cancel a running subagent.
@@ -363,7 +402,7 @@ cog_result_t cog_agent_ack_update(cog_core_t *core, cog_agent_id_t agent_id,
  * @param[in,out] core Owner. @param[in] agent_id Terminal, notification acked,
  * with no queued/in-dispatch spawn/cancel intent lease.
  * @return OK; NULL_PTR; NOT_FOUND; INVALID_STATE if active, pending notification
- * or any intent lease remains (including inside its own handler). No change on
+ * or any intent/execution-session lease remains (including inside its own handler). No change on
  * failure; retry after handler return. Queued payload storage cannot be freed.
  * @note Owner thread. IDs are never reused; invalidates query views, not copied
  * event payloads. core_free requires remote/local owned work fenced/drained.
