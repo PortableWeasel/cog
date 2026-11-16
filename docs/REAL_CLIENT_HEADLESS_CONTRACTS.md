@@ -184,3 +184,20 @@ claimed proof; otherwise a public producer could forge OS provenance. Generic
 non-authenticated IPC remains available with proof=false. The headless handler
 requires protected ingress plus its own retained authenticated role/attempt
 binding, and validates the event's semantic kind before its payload.
+
+## Incremental managed worker identity
+
+Nonblocking spawn returns strong `cog_worker_id_t{incarnation,number}` before
+there is a connected socket. Stop/kill/health use that managed identity so they
+work before authentication. `core_info` exposes BOTH it and the actual transport
+peer (zero until ready), plus immutable owned PID and explicit reap status.
+Placement, CGA1 owner_peer, CGH1 source/target and owner routes keep actual peer
+identities. No cast or connect-order coincidence bridges these namespaces.
+
+Kernel PID/UID must match the still-unreaped spawn and the worker must echo its
+exact trusted-startup managed identity before readiness. HELLO contains no PID
+authority. Counter exhaustion fails before fork; old/foreign IDs cannot select a
+new worker. An already reaped record never signals its old PID, even if reused.
+No socket disconnect alone proves descendants/effects stopped. Management/app
+message ownership and bounded event delivery follow in the next subset; these
+signature changes deliberately require O consumer/fixture migration.

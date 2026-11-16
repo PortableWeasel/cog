@@ -33,6 +33,17 @@ extern "C" {
  */
 typedef struct cog_orchestrator cog_orchestrator_t;
 
+/** @brief Managed process reservation, distinct from a transport peer ID.
+ * Both fields are nonzero. Incarnation is constructor-owned and fresh for this
+ * orchestrator lifetime; number is monotonic and never reused, including after
+ * reap. Zero initialization is invalid. Equality requires BOTH fields.
+ * A worker may exist before any socket is connected/authenticated. Never cast
+ * this identity to cog_peer_id_t or use a wire PID as managed ownership. */
+typedef struct cog_worker_id {
+    uint64_t incarnation;
+    uint64_t number;
+} cog_worker_id_t;
+
 /**
  * @brief Health status of a core process.
  */
@@ -47,12 +58,17 @@ typedef enum cog_health {
  * @brief Information about a managed core process.
  */
 typedef struct cog_core_info {
-    cog_peer_id_t peer_id;        /**< IPC peer identifier. */
-    int pid;                      /**< OS process id. */
+    cog_peer_id_t peer_id;        /**< ACTUAL control-fabric connection ID; zero
+       until authenticated ready, never a managed worker number. */
+    int pid;                      /**< Immutable native PID returned by owned
+       spawn; no HELLO/message/task field may replace it. Never signal after reap. */
     cog_health_t health;          /**< Current health status. */
     size_t active_subagents;      /**< Number of running subagents. */
     size_t capacity;              /**< Maximum subagent capacity. */
     uint64_t last_heartbeat_ms;   /**< Timestamp of last heartbeat. */
+    cog_worker_id_t worker_id;    /**< Managed lifecycle identity from spawn. */
+    bool reaped;                 /**< Native owned child reaped, not merely a
+       disconnected/unhealthy socket or proof all descendant effects stopped. */
 } cog_core_info_t;
 
 /**
@@ -118,35 +134,46 @@ void cog_orchestrator_free(cog_orchestrator_t *orch);
 /**
  * @brief Spawn an auxiliary core process.
  *
- * Forks and execs the given binary with the IPC socket path as an
- * argument without waiting for connection/identity handshake. Reserves an
- * owner ID before return; service drives connection and health becomes HEALTHY
- * only after validation. No session task is admitted on UNKNOWN readiness.
+ * Reserves a managed worker identity and forks/execs a trusted binary without
+ * waiting for connection. Fixed startup arguments include the control socket
+ * and exact managed identity, never tasks/credentials. service binds an actual
+ * socket only after kernel peer PID/UID matches this live UNREAPED owned child
+ * and HELLO echoes the exact managed incarnation/number. Connection order and
+ * user-provided PID text grant nothing. HEALTHY/placement require validated
+ * readiness; no session task is admitted on UNKNOWN readiness.
+ *
+ * A late connection/HELLO from a reaped worker cannot bind its replacement even
+ * if an OS PID is recycled. Endpoint/role references close on retirement; worker
+ * IDs never reuse. Pre-auth stop/kill uses the owned reservation's native PID.
  *
  * @param[in,out] orch       Orchestrator.
  * @param[in]     binary_path Path to the cog core binary.
- * @param[out]    out_peer_id Receives the peer id of the new core.
+ * @param[out]    out_worker_id Managed process reservation, unchanged on failure.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p orch, @p binary_path, or
- *         @p out_peer_id is NULL.
+ *         @p out_worker_id is NULL.
  * @return COG_ERROR_OVERFLOW if max_aux_cores is reached.
- * @return COG_ERROR_IO if fork/exec fails.
+ * @return LIMIT if managed identity space is exhausted, checked before fork.
+ * @return IO for known prepublication fork/exec-setup failure. Exec failure after
+ * successful publication is reported through service/health/reap, never by
+ * silently discarding an already returned owned worker. No blocking waitpid.
  *
  * Threading: not thread-safe.
  */
 cog_result_t cog_orchestrator_spawn(cog_orchestrator_t *orch,
                                      const char *binary_path,
-                                     cog_peer_id_t *out_peer_id);
+                                     cog_worker_id_t *out_worker_id);
 
 /**
  * @brief Gracefully stop an auxiliary core.
  *
- * Admits a nonblocking shutdown intent/deadline for this owned peer. service
+ * Admits a nonblocking shutdown intent/deadline for this managed owned worker,
+ * including before authentication/connection. service
  * drives acknowledgement, KILL if needed, and nonblocking reap; do not assume
  * the process is gone merely because stop returned OK.
  *
  * @param[in,out] orch    Orchestrator.
- * @param[in]     peer_id Core to stop.
+ * @param[in]     worker_id Exact managed reservation, not transport identity.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p orch is NULL.
  * @return COG_ERROR_NOT_FOUND if the peer does not exist.
@@ -154,15 +181,17 @@ cog_result_t cog_orchestrator_spawn(cog_orchestrator_t *orch,
  * Threading: not thread-safe.
  */
 cog_result_t cog_orchestrator_stop(cog_orchestrator_t *orch,
-                                    cog_peer_id_t peer_id);
+                                    cog_worker_id_t worker_id);
 
 /**
  * @brief Force kill an auxiliary core.
  *
- * Sends SIGKILL.  Use when graceful stop fails.
+ * Sends SIGKILL only to the immutable still-owned, UNREAPED native child. Use
+ * when graceful stop fails. Repeated kill of an already reaped reservation is
+ * OK and never signals its old numeric PID. service still performs WNOHANG reap.
  *
  * @param[in,out] orch    Orchestrator.
- * @param[in]     peer_id Core to kill.
+ * @param[in]     worker_id Exact managed reservation, even before connection.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p orch is NULL.
  * @return COG_ERROR_NOT_FOUND if the peer does not exist.
@@ -170,7 +199,7 @@ cog_result_t cog_orchestrator_stop(cog_orchestrator_t *orch,
  * Threading: not thread-safe.
  */
 cog_result_t cog_orchestrator_kill(cog_orchestrator_t *orch,
-                                    cog_peer_id_t peer_id);
+                                    cog_worker_id_t worker_id);
 
 /* ── Health ─────────────────────────────────────────────────────── */
 
@@ -178,14 +207,14 @@ cog_result_t cog_orchestrator_kill(cog_orchestrator_t *orch,
  * @brief Query the health of a peer.
  *
  * @param[in] orch    Orchestrator; may be NULL.
- * @param[in] peer_id Peer to query.
+ * @param[in] worker_id Managed reservation to query, including UNKNOWN startup.
  * @return Current health status, or COG_HEALTH_UNKNOWN if @p orch
  *         is NULL or the peer is unknown.
  *
  * Threading: not thread-safe.
  */
 cog_health_t cog_orchestrator_health(const cog_orchestrator_t *orch,
-                                      cog_peer_id_t peer_id);
+                                      cog_worker_id_t worker_id);
 
 /**
  * @brief List all managed cores.
@@ -230,6 +259,10 @@ cog_result_t cog_orchestrator_heartbeat(cog_orchestrator_t *orch,
  * Uses health and capacity to select the best core.  Returns
  * COG_PEER_ID_INVALID (0) if the subagent should run locally in
  * the main core.
+ * Returns only an authenticated READY ACTUAL control-fabric peer ID, never a
+ * managed worker identity. Parent agent placement/CGA1/CGH1 and owner routes
+ * continue using actual peers scoped by this orchestrator's fabric. Placement
+ * is advisory capacity selection, not admission/permission/guard ownership.
  *
  * @param[in] orch           Orchestrator; may be NULL.
  * @param[in] estimated_load Estimated resource usage (0 = light).

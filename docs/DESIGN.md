@@ -741,6 +741,11 @@ The first foundation subset adds kernel-origin peer queries/directed sends,
 explicit bounded core begin/step/end using the existing clock/dispatch engine,
 and an exact local agent-session execution borrow. These are draft contracts
 for incremental review, not implemented headless or child behavior.
+Managed process reservations now have a separate strong incarnation/number
+identity; nonblocking spawn and pre-auth stop/kill cannot masquerade as actual
+listener peers. Ready placement and CGA1/CGH1/routes retain actual fabric-scoped
+peer IDs. Immutable native spawn PID, kernel credentials and matching managed
+bootstrap identity are all required before worker readiness.
 
 Stage 6 — Headers first. Design all public APIs as headers before any
 implementation. Three iterations:
