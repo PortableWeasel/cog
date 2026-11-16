@@ -1100,15 +1100,17 @@ static cog_result_t acquire(cog_store_t *s, const char *id, cog_store_owner_t ex
     cog_result_t rc = valid_id(id); if (rc != COG_OK) return rc;
     if (!s->require_owner || !fenced(s->backend)) return COG_ERROR_UNSUPPORTED;
     if (find_guard(s, id) != NULL) return COG_ERROR_AGAIN;
+    cog_store_owner_guard_t *g = NULL;
+    if (s->backend != &cog_store_file_backend) {
+        g = calloc(1U, sizeof(*g));
+        if (g == NULL) return COG_ERROR_NOMEM;
+    }
     void *handle = NULL;
     rc = recovery ? s->backend->owner_acquire_recovery(s->context, id, expected, &handle) :
         s->backend->owner_acquire(s->context, id, expected, &handle);
-    if (rc != COG_OK) return rc;
-    cog_store_owner_guard_t *g;
+    if (rc != COG_OK) { free(g); return rc; }
     if (s->backend == &cog_store_file_backend) g = handle;
     else {
-        g = calloc(1U, sizeof(*g));
-        if (g == NULL) { (void)s->backend->owner_release(s->context, handle); return COG_ERROR_NOMEM; }
         g->store = s; g->backend_guard = handle; g->owner = expected; g->recovery = recovery;
         (void)memcpy(g->id, id, strlen(id) + 1U);
     }
@@ -1144,7 +1146,7 @@ cog_result_t cog_store_owner_release(cog_store_owner_guard_t *g)
     cog_store_t *s = g->store;
     if (s->backend == &cog_store_file_backend) return file_release(s, g);
     cog_result_t rc = s->backend->owner_release(s->context, g->backend_guard);
-    if (rc != COG_OK) return rc;
+    if (rc == COG_ERROR_INVALID_STATE) return rc;
     cog_store_owner_guard_t **p = &s->guards;
     while (*p != NULL && *p != g) p = &(*p)->next;
     assert(*p == g); *p = g->next; free(g); return rc;

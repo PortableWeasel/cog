@@ -289,9 +289,12 @@ cog_result_t cog_cli_execution_release_source(cog_cli_app_t *app, cog_store_chec
     if (h == NULL || h->in_step || !h->checkpoint_saved || token.generation != h->checkpoint.generation)
         return COG_ERROR_INVALID_STATE;
     if (h->authority == CLI_AUTH_SOURCE_RELEASED) return COG_OK;
-    if (h->authority != CLI_AUTH_SOURCE_FROZEN || app->guard == NULL) return COG_ERROR_INVALID_STATE;
+    if (h->authority != CLI_AUTH_SOURCE_FROZEN) return COG_ERROR_INVALID_STATE;
+    if (app->guard == NULL) return h->primary != COG_OK ? h->primary : COG_ERROR_INVALID_STATE;
     cog_result_t rc = cog_store_owner_release(app->guard);
-    if (rc == COG_OK) { app->guard = NULL; h->source_released = true; h->authority = CLI_AUTH_SOURCE_RELEASED; }
+    if (rc != COG_ERROR_INVALID_STATE) app->guard = NULL;
+    if (rc == COG_OK) { h->source_released = true; h->authority = CLI_AUTH_SOURCE_RELEASED; }
+    else if (rc != COG_ERROR_INVALID_STATE) (void)remember(app, rc);
     return rc;
 }
 cog_result_t cog_cli_execution_stage_guard(cog_cli_app_t *app, cog_store_owner_t next,

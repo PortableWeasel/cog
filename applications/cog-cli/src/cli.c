@@ -368,6 +368,7 @@ cog_result_t cli_app_dispose(cog_cli_app_t **owner, cog_result_t primary)
             (void)fprintf(stderr, "cog-cli: active execution must be drained before app_free\n");
             return primary != COG_OK ? primary : released;
         }
+        app->execution = NULL;
     }
     if (app->headless != NULL && app->headless->delegation != NULL) {
         cog_result_t released = cog_cli_delegation_context_free(app->headless->delegation);
@@ -375,6 +376,8 @@ cog_result_t cli_app_dispose(cog_cli_app_t **owner, cog_result_t primary)
     }
     if (app->workspace != NULL) {
         cog_result_t released = cog_workspace_free(app->workspace);
+        if (released == COG_ERROR_INVALID_STATE) return primary != COG_OK ? primary : released;
+        app->workspace = NULL;
         if (primary == COG_OK) primary = released;
     }
     if (app->core != NULL) { cog_core_free(app->core); app->core = NULL; }
@@ -393,8 +396,9 @@ cog_result_t cli_app_dispose(cog_cli_app_t **owner, cog_result_t primary)
     if (primary == COG_OK) primary = observed;
     if (app->guard != NULL) {
         cog_result_t released = cog_store_owner_release(app->guard);
-        if (released != COG_OK) return primary != COG_OK ? primary : released;
+        if (released == COG_ERROR_INVALID_STATE) return primary != COG_OK ? primary : released;
         app->guard = NULL;
+        if (primary == COG_OK) primary = released;
     }
     if (app->obs != NULL) cog_obs_free(app->obs);
     if (app->store != NULL) cog_store_free(app->store);
