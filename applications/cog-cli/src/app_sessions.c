@@ -84,8 +84,16 @@ static cog_result_t admit(cog_cli_app_t *app, cog_store_owner_t old,
         cog_session_id(app->session), owner, &app->guard) :
         cog_store_owner_acquire(app->store, cog_session_id(app->session), owner, &app->guard);
 }
+static cog_result_t save_empty(cog_cli_app_t *app)
+{
+    cog_store_checkpoint_t checkpoint = {0};
+    cog_result_t rc = cog_store_checkpoint_save(app->store, app->session, app->guard, &checkpoint);
+    if (rc == COG_ERROR_INDETERMINATE) app->recovery = true;
+    return rc;
+}
 cog_result_t cog_cli_sessions_open(cog_cli_app_t *app)
 {
+    if (app == NULL) return COG_ERROR_NULL_PTR;
     bool fresh = app->opts.session_action == COG_CLI_SESSION_NEW;
     if (fresh) {
         cog_session_config_t config = session_config(app, app->opts.session_id);
@@ -107,12 +115,22 @@ cog_result_t cog_cli_sessions_open(cog_cli_app_t *app)
     if (rc != COG_OK) return rc;
     if (fresh) {
         if (owner.epoch != 0U || checkpoint.generation != 0U) return COG_ERROR_INVALID_STATE;
-        return admit(app, owner, checkpoint, false);
+        rc = admit(app, owner, checkpoint, false);
+        return rc == COG_OK ? save_empty(app) : rc;
     }
     cog_session_t *loaded = NULL;
     cog_store_load_report_t report = {0};
     if (checkpoint.generation == 0U) {
         rc = cog_store_load_ex(app->store, id, COG_STORE_LOAD_REPLAY, &loaded, &report);
+        if (rc == COG_ERROR_NOT_FOUND && owner.epoch != 0U && owner.instance_id != 0U &&
+            app->opts.session_action == COG_CLI_SESSION_RESUME) {
+            /* G's checked legacy absence plus exact CAS/guard are conjunctive:
+               a read alone never authorizes recreating an empty reservation. */
+            cog_session_config_t config = session_config(app, id);
+            rc = cog_session_new(&app->session, &config);
+            if (rc == COG_OK) rc = admit(app, owner, checkpoint, false);
+            return rc == COG_OK ? save_empty(app) : rc;
+        }
         if (rc != COG_OK) return rc;
         if (app->opts.session_action == COG_CLI_SESSION_RECOVER) rc = COG_ERROR_INVALID_STATE;
         else if (!app->opts.previous_processes_fenced) rc = COG_ERROR_DENIED;

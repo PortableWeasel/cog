@@ -688,6 +688,16 @@ Sessions are persisted via a pluggable backend (`cog_store_vtable_t`):
 The store supports incremental saves (`append`), full saves, loads, deletes,
 and listing. Auto-save after each exchange is configurable.
 
+The application commits an empty durable checkpoint before exposing a fresh app,
+so idle shutdown before first input is resumable. Explicit RESUME can repair an
+old owner-only checkpoint0 reservation only after checked absence of legacy data,
+exact owner/0 CAS to a fresh epoch, normal guard acquisition and successful empty
+checkpoint save. This performs no model/tool/input work and invents no historical
+model/config provenance. Initial save failure exposes no app and never resets or
+deletes durable authority; a later explicit construction re-reads that state.
+NEW collisions and uncertain-effect recovery remain separate. The
+[contract and evidence](REAL_CLIENT_EMPTY_SESSION.md) trace this admission rule.
+
 ---
 
 ## Network Transport

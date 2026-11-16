@@ -168,6 +168,19 @@ node IDs, tool/results/audits and opaque bytes remain intact. Selecting a nonlea
 alone does not overwrite the active leaf or durably create a branch. Active or
 queued work refuses selection, and unresolved/unsafe history cannot be forked.
 
+Fresh DURABLE construction commits an empty checkpoint under its normal guard
+before publishing an app, even before the first input. Idle EOF/signals therefore
+leave a resumable session. An old interrupted owner-only reservation (validated
+nonzero owner, checkpoint0) may be repaired only by explicit RESUME: public replay
+load must report NOT_FOUND, exact owner/0 CAS must admit a fresh incarnation/epoch,
+the normal guard must acquire and empty checkpoint save must succeed. G refuses
+recognized legacy remnants instead of claiming they are absent. Reads alone never
+grant authority; stale/live/failed admission never falls back or retries implicitly.
+There is no model/tool/input execution or invented historical config during repair.
+NEW collisions still refuse and FORK/RECOVER cannot fabricate an empty source.
+Any initial-save error leaves no app; a durable owner/checkpoint may remain and
+the next explicit RESUME re-reads it. No deletion, owner reset or effect replay.
+
 Unowned v1/v2 adoption requires `--fenced`, the operator assertion that old writers
 are quiescent and prior command processes stopped/reaped or externally fenced.
 The application does not verify or perform that cleanup from an opaque owner ID.
