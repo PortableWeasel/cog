@@ -10,7 +10,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define CHECK(x) do { if (!(x)) { fprintf(stderr,"scenario07:%d: %s\n",__LINE__,#x); primary=COG_ERROR_PROTOCOL;goto finish; } } while(0)
+#define CHECK(x) do { if (!(x)) { fprintf(stderr,"scenario07:%d: %s\n",__LINE__,#x); if(primary==COG_OK)primary=COG_ERROR_PROTOCOL;goto finish; } } while(0)
 
 static bool exists(const char *root,const char *name)
 {
@@ -47,8 +47,8 @@ int main(int argc,char **argv)
     CHECK(after || strcmp(argv[7],"crash-before")==0);
     const char *paths[6]={argv[1],argv[2],argv[3],argv[4],argv[5],argv[6]};
     CHECK(headless_fixture_init(&f,paths,1U,2U)==COG_OK);
-    CHECK(headless_fixture_open(&f)==COG_OK);
-    CHECK(headless_fixture_ready(&f,10000U)==COG_OK);
+    primary=headless_fixture_open(&f);CHECK(primary==COG_OK);
+    primary=headless_fixture_ready(&f,10000U);CHECK(primary==COG_OK);
     cog_cli_host_runtime_t *h=f.host;
     cog_cli_app_t *parent=h->executors[h->primary_slot].app;CHECK(parent!=NULL);
     CHECK(cog_cli_app_queue(parent,"delegate round 1",16U)==COG_OK);

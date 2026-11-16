@@ -9,7 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define CHECK(x) do { if (!(x)) { fprintf(stderr,"scenario03:%d: %s\n",__LINE__,#x); primary=COG_ERROR_PROTOCOL;goto finish; } } while (0)
+#define CHECK(x) do { if (!(x)) { fprintf(stderr,"scenario03:%d: %s\n",__LINE__,#x); if(primary==COG_OK)primary=COG_ERROR_PROTOCOL;goto finish; } } while (0)
 
 static bool saved_delegate(cog_session_t *session,unsigned int round,bool cancel)
 {
@@ -41,8 +41,8 @@ int main(int argc,char **argv)
     bool cancel=strcmp(argv[7],"cancel")==0;
     CHECK(cancel || strcmp(argv[7],"success")==0);
     CHECK(headless_fixture_init(&f,paths,1U,2U)==COG_OK);
-    CHECK(headless_fixture_open(&f)==COG_OK);
-    CHECK(headless_fixture_ready(&f,10000U)==COG_OK);
+    primary=headless_fixture_open(&f);CHECK(primary==COG_OK);
+    primary=headless_fixture_ready(&f,10000U);CHECK(primary==COG_OK);
     cog_cli_host_runtime_t *h=f.host;
     cog_cli_app_t *parent=h->executors[h->primary_slot].app;
     CHECK(parent!=NULL);
