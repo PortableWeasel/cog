@@ -58,3 +58,26 @@ empty buffers. Every adapter-only descriptor closes on setup/final failure.
 The existing public error/lifetime contract supports this implementation; no
 new public API, store/tool policy or network behavior is required. Runtime and
 independent-review evidence will follow in this document.
+
+## Pass 3: consistency and error boundary
+
+Only the main-owned context carries adapter state. The callback's dispatch table
+is static const, and the constructor is the sole allocation boundary. Both stream
+objects must construct successfully before either standard binding changes.
+Failed setup and final close consume every new object once. Unopened/closed
+contexts close safely; inherited descriptors and FILE objects are never owned.
+
+The cookie write convention returns zero on error, including a short accepted
+prefix; its sticky slot status prevents another libc flush/close from replaying
+that prefix. Any final output error makes host success fail, while a nonOK primary
+work result remains the primary diagnostic. Checked app write/flush failures
+reach ordinary cancel/drain immediately. Existing best-effort secondary error
+diagnostics are bounded but their adapter failure may be observed only at final
+close; this fix does not claim a general new embedding admission callback.
+
+Authorization prompts need checked write AND flush before treating an answer as
+meaningful. The initial and repeated ASK sites are the only additional app paths
+under investigation with the acceptance writer/critic; any confirmed correction
+will preserve existing IO dispatch failure semantics and deny effects during drain.
+The main fix remains independent of that probe: a full FIFO/socket can no longer
+block masked-signal service or final cleanup inside the installed output adapter.

@@ -43,7 +43,8 @@ typedef struct cog_cli_host_output {
  */
 cog_result_t cog_cli_host_output_open(cog_cli_host_output_t *output);
 /** Checked final stdout flush/close before app teardown; restores original stdout
- * first. Idempotent. No subsequent host/app stdout writes are permitted.
+ * first. Idempotent, including an unopened zero-initialized context. No subsequent
+ * host/app stdout writes are permitted.
  * @return NULL_PTR; otherwise this slot's first IO error or OK. */
 cog_result_t cog_cli_host_output_close_stdout(cog_cli_host_output_t *output);
 /** After app/net cleanup and final diagnostic, flush/close remaining adapter,
