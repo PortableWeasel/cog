@@ -198,8 +198,33 @@ static void attached(void)
     stop(&f);drop(&f);
     assert(cog_ipc_endpoint_free(server)==COG_OK && cog_ipc_endpoint_free(listener)==COG_OK);
 }
+/* Fatal framing cannot wait for an ordinary descriptor: otherwise a step
+ * executes ordinary handlers after transport corruption was already observed. */
+static void saturated_fatal(void)
+{
+    fixture_t f={0};char path[108];f.fill=true;f.protected_ingress=true;
+    create(&f,listen_new(path));
+    int fd=socket(AF_UNIX,SOCK_STREAM,0);assert(fd>=0);
+    struct sockaddr_un address={0};address.sun_family=AF_UNIX;
+    memcpy(address.sun_path,path,strlen(path)+1U);
+    assert(connect(fd,(const struct sockaddr *)&address,sizeof(address))==0);
+    const unsigned char prefix[]={0U,0U,0U,17U};
+    assert(write(fd,prefix,sizeof(prefix))==(ssize_t)sizeof(prefix));
+    assert(cog_core_drive_begin(f.core)==COG_OK);
+    cog_core_step_info_t info;
+    cog_result_t rc=cog_core_step(f.core,&info);
+    if(rc==COG_OK) {
+        assert(f.core->ipc_client_count==1U && f.core->ipc_clients[0].proof_valid);
+        assert(f.core->ipc_clients[0].endpoint->failure==COG_ERROR_LIMIT);
+    }
+    fprintf(stderr,"saturated fatal: rc=%d done=%d dispatched=%zu\n",
+            (int)rc,(int)info.done,info.dispatched);
+    assert(rc==COG_ERROR_LIMIT && info.done && info.dispatched==0U);
+    assert(cog_core_drive_end(f.core)==COG_ERROR_LIMIT);
+    assert(close(fd)==0);drop(&f);
+}
 int main(void)
 {
-    saturated();rejected_or_generic(true);rejected_or_generic(false);attached();
+    saturated_fatal();saturated();rejected_or_generic(true);rejected_or_generic(false);attached();
     puts("protected IPC proof under event/arena pressure PASS");return 0;
 }
