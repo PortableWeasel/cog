@@ -43,8 +43,15 @@ typedef struct cog_cli_execution_admission {
        already copied in registry admission, not an arbitrary worker choice. */
     const char *task; /**< LOCAL/REMOTE_CHILD only, bounded copied task admitted
        once after initial checkpoint/guard. Never inherited root prompt/queue. */
+    const char *provenance; /**< Child-only host-generated bounded SYSTEM context
+       (≤4095 UTF-8 bytes, no NUL): real parent call/group/attempt/members. Copied
+       and saved with initial child checkpoint before any task/model/tool. */
+    size_t provenance_len;
     uint64_t configuration_generation; /**< Pinned parent admission generation,
        nonzero; no relabel on later parent reload. */
+    uint32_t reload_attempts_used; /**< STAGED exact inherited logical R12 count,
+       0..64 including FAILED attempts. ROOT/CHILD0. Constructor tree seeds
+       effective values but never resets this remaining global attempt budget. */
     uint64_t absolute_deadline_ms; /**< Finite child monotonic deadline; capped
        by remaining parent turn/tool deadline, never restarted on receipt/retry.
        ROOT/STAGED zero: existing per-turn K deadline begins on fresh input. */
@@ -90,8 +97,24 @@ cog_result_t cog_cli_execution_begin(cog_cli_app_t *app);
  * Applies existing whole-turn reload pinning, durable result barriers and
  * accepted-output retention. Host input/policy/projection are explicit bounded
  * commands, not competing FILE readers. No yield discards an input/event lease.
+ * Once core step reports done, call drive_end ONCE then enter private DRAINING;
+ * never call core_step again or restart it to finish cleanup. The direct bounded
+ * drain helper below drives retained provider/tool work independently.
  */
 cog_result_t cog_cli_execution_step(cog_cli_app_t *app, cog_core_step_info_t *info);
+
+/** @brief One direct cancel/drain unit after core driver ownership ends.
+ * @param[in,out] app DRAINING executor. @param[out] info done only after actual
+ * provider/tool/process/result work disposed or explicit frozen recovery error.
+ * @return OK; AGAIN; NULL_PTR; INVALID_STATE wrong phase; retained primary error.
+ * Poll at most one provider delta/tool unit and close at most one unstarted call
+ * per invocation; no positive poll/sleep/while-until-done, allocation or next
+ * model/tool admission. Preserve actual accepted incomplete text/result and
+ * existing durable barriers. Public run/drain may loop the SAME helper with its
+ * existing bounded host wait; multi-context host never invokes that loop.
+ */
+cog_result_t cog_cli_execution_drain_step(cog_cli_app_t *app,
+    cog_core_step_info_t *info);
 
 /** @brief End a done drive and return retained primary status.
  * @param[in,out] app Done executor, still owned until app_free.
@@ -155,6 +178,11 @@ cog_result_t cog_cli_execution_stage_activate(cog_cli_app_t *app,
  * @param[in,out] app Ordinary primary owner, not child/staged/frozen.
  * @param[in,out] candidate Owned already-resolved generation, consumed and NULL
  * on EVERY return. net belongs to this app; no resolver authority is transferred.
+ * @param[in] attempt Authoritative eligible coordinator attempt1..64, greater
+ * than previously observed; candidate generation must equal attempt+1. Local
+ * failed prepares may consume IDs without reaching worker; never require every
+ * unused generation to arrive. Preserve count through handoff. Reject stale/
+ * over-budget before provider work, exact wire retry answered from cached result.
  * @param[out] published Generation only on success, unchanged on failure.
  * @return Existing R12 errors, INVALID_ARG if any field outside the THREE
  * reloadable fields differs. Same candidate tree validation/provider prepare/
@@ -165,7 +193,7 @@ cog_result_t cog_cli_execution_stage_activate(cog_cli_app_t *app,
  * generation or provider. Cleanup error freezes the owner and reaches runtime.
  */
 cog_result_t cog_cli_execution_reload_resolved(cog_cli_app_t *app,
-    cog_cli_configuration_t **candidate, uint64_t *published);
+    cog_cli_configuration_t **candidate, uint32_t attempt, uint64_t *published);
 
 /** @brief Borrow one actual retained executor view between dispatch slices.
  * @param[in,out] app Begun primary executor with publication_pending.
@@ -221,10 +249,11 @@ cog_result_t cog_cli_execution_copy_policy(const cog_cli_app_t *app,
 /** @brief Copy real active/published R12 generation identities, never infer from
  * a publication ACK. @param[in] app Owner. @param[out] active Current pinned
  * provider generation; @param[out] published Future if present else current.
+ * @param[out] attempts_used Logical attempts including failed/discarded candidates.
  * @return OK; NULL_PTR. No callbacks/allocation/mutation. Remote view/delegate
  * frames carry these facts so old-turn delegation clones the OLD pinned mirror. */
 cog_result_t cog_cli_execution_copy_configuration(const cog_cli_app_t *app,
-    uint64_t *active, uint64_t *published);
+    uint64_t *active, uint64_t *published, uint32_t *attempts_used);
 
 /** @brief Apply one independently role-checked/deduped executor command.
  * @param[in,out] app Current owner, outside callbacks; never staged/frozen source.

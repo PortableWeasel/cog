@@ -70,7 +70,7 @@ typedef struct cog_cli_control_message {
     uint64_t runtime_incarnation; /**< Fresh nonzero coordinator lifetime, checked
        entropy, never restored from PID/time/store/client claim. UI_HELLO may
        use0 to discover it; all other messages require the known exact value. */
-    uint64_t sender_incarnation; /**< Nonzero logical UI client incarnation,
+    uint64_t sender_incarnation; /**< Nonzero server-issued UI logical lease,
        coordinator incarnation or worker's managed incarnation, role checked. */
     uint64_t wire_id; /**< Fresh increasing nonzero sender-stream ID, not CGA
        sequence, display cursor, config generation or durable owner epoch. */
@@ -141,6 +141,10 @@ cog_result_t cog_cli_command_decode(const void *input, size_t input_len,
  * Discovery exception: UI_HELLO alone permits runtime0/session empty(length0),
  * worker/owner/agent/attempt0. Client knows only socket; server's authenticated
  * response supplies actual root session/runtime before any bound command.
+ * Fresh HELLO sender is only a client nonce; response assigns a monotonically
+ * nonreused server logical lease used as sender by all later UI frames. Known
+ * reconnect uses exact session/runtime/lease; retired lease is stale, never a
+ * new admission. Client never retargets old command bytes to a new lease.
  * All message/view/required/input/output regions must be nonoverlapping.
  * Codec checks envelope scalars, NOT nested payload or authorization. The static
  * ingress handler validates the exact nested schema before retaining/admitting.

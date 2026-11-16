@@ -785,6 +785,14 @@ resynchronized; child ASK deliberately denies noninteractively with durable
 identified no-effect results. Child SYSTEM context records real provenance before
 effects, but volatile receipt/prefix/placement state is never claimed recoverable
 after coordinator crash. No automatic replay/rebind or live migration is added.
+The full N pass2 retrace closes the actual Q opaque-frame discriminator, early
+cancel latch/finite attempt watermark, server-issued UI lease/receipt retirement,
+and final-command render/admission distinctions. Headless MOCK remains UI-only;
+actual child acceptance uses offline REAL TLS. Handoff carries consumed R12
+attempt budget as well as active generation, including failed attempts. Group
+and mailbox result capacity is proven before STARTED/copy, with no hidden text
+truncation. Direct bounded drain units replace nested app-drain waits after core
+drive completion. These remain declarations pending pass3/different final gate.
 
 Stage 6 — Headers first. Design all public APIs as headers before any
 implementation. Three iterations:

@@ -133,10 +133,12 @@ typedef struct cog_orchestrator_event {
     size_t data_len;
 } cog_orchestrator_event_t;
 
-/** Native management frames use this type; app-private frames use any other
- * permitted type (headless CGL1 uses APPLICATION_TYPE), never guessed text. */
-enum { COG_ORCHESTRATOR_CONTROL_TYPE = 0x7f01,
-       COG_ORCHESTRATOR_APPLICATION_TYPE = 0x7f02 };
+/** Native management is identified by CGW prefix INSIDE Q's opaque length-framed
+ * payload. Q has NO message type field. A complete CGW1 payload is exactly37
+ * bytes; CGW-other-version is native UNSUPPORTED, not application fallback.
+ * Other payload prefixes are copied application events (headless uses CGL1).
+ * max_frame_bytes counts the entire payload including magic, excluding Q's
+ * existing length prefix. No invented second framing/type is required. */
 typedef enum cog_worker_control_kind {
     COG_WORKER_HELLO = 1, COG_WORKER_HEARTBEAT,
     COG_WORKER_SHUTDOWN, COG_WORKER_SHUTDOWN_ACK

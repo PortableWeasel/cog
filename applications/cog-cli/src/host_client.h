@@ -23,7 +23,8 @@ typedef struct cog_cli_host_client_config {
 /** @brief Reserve client decode/render/pending command arenas, connect no wait.
  * @param[out] out NULL on failure; @param[in] config Copied except borrows.
  * @return OK; NULL_PTR; INVALID_ARG; LIMIT; NOMEM; IO; UNSUPPORTED profile.
- * Fresh checked entropy client incarnation; endpoint_service drives readiness.
+ * Fresh checked entropy HELLO nonce; authenticated server assigns logical lease.
+ * Endpoint_service drives readiness; retired lease never retargets pending input.
  * No config/credential resolver/net/provider/store constructor or task dispatch. */
 cog_result_t cog_cli_host_client_new(cog_cli_host_client_t **out,
     const cog_cli_host_client_config_t *config);
@@ -35,8 +36,11 @@ cog_result_t cog_cli_host_client_new(cog_cli_host_client_t **out,
  * Retained same-runtime command retransmits SAME bytes/identity; new runtime
  * marks pending result uncertain and never converts it to a fresh command.
  * EOF/signal detaches client; not server shutdown/ALLOW/implicit continuation.
- * Final unterminated explicit command is parsed once before detach, consistent
- * with M host EOF. Explicit /shutdown is the only client shutdown command.
+ * Final unterminated explicit command is parsed once before detach, then wait
+ * under finite reconnect deadline for final admission result and ACK-of-ACK.
+ * Signal/timeout before final result reports INDETERMINATE (outcome unknown),
+ * never success from send-OK; after known result missing receipt cleanup is IO.
+ * Explicit /shutdown is the only client shutdown command.
  */
 cog_result_t cog_cli_host_client_step(cog_cli_host_client_t *client,
     cog_cli_host_runtime_step_t *info);

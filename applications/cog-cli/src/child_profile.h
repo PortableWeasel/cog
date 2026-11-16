@@ -59,9 +59,11 @@ typedef struct cog_cli_bootstrap_probe {
  * @param[in] now_ms Checked current clock. @param[in] parent_deadline_ms Finite
  * remaining parent turn/tool bound, strictly after now. Child absolute deadline
  * is min(parent, now+requested timeout), overflow checked. No reset on retries.
- * @param[in] net Child-specific borrowed transport, NULL only explicit MOCK.
+ * @param[in] net Child-specific borrowed REAL transport, required.
  * @param[out] deadline_ms Child absolute deadline, unchanged on failure.
- * @return OK; NULL_PTR; INVALID_ARG; TIMEOUT expired parent; LIMIT; NOMEM.
+ * @return OK; NULL_PTR; INVALID_ARG; TIMEOUT expired parent; LIMIT; NOMEM;
+ * UNSUPPORTED for MOCK child execution. Headless MOCK root supports UI fixtures
+ * only; it never restarts a parent's borrowed script cursor as a child task.
  * Copy resolved secret without calling resolver, even same reference. Fixed
  * backend/model/endpoint/workspace/store/environment/policy ceilings persist;
  * command environment remains explicit allowlist without credentials. Clear

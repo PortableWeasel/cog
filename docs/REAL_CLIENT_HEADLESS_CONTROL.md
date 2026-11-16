@@ -26,7 +26,10 @@ cannot re-execute. Full command reservations reject new admission before copying
 effects; duplicates remain answerable. Accepting a command does not mean its
 later execution succeeded. A new coordinator incarnation cannot restore volatile
 dedup from a client's claim: full resync, old pending command marked uncertain,
-no automatic retransmission as a new command. Disconnect never undoes admission.
+no automatic retransmission as a new command. Already-applied/queued ordinary
+input remains owned after disconnect. A copied-but-not-applied POLICY/CONTINUE
+still needs its original controller role at owner validation; role expiry refuses
+that pending authorization, never transfers it to the replacement controller.
 
 UI_HELLO alone permits runtime_incarnation0 and EMPTY session_id(length0).
 --attach/--watch know only socket and never guess IDs or read store/config. The
@@ -36,8 +39,10 @@ traffic until this discovery is complete. A reconnecting already-bound client
 refuses another root session, never retargets its pending command/view to it.
 It carries version1 u8, role u8
 (controller1/watch2), replay generation u64, replay after_sequence u64. Header
-sender_incarnation is the fresh nonzero client incarnation; a new client chooses
-it with checked OS entropy. Matching retained identity/controller reservation is
+sender_incarnation is a fresh nonzero client nonce on initial discovery only.
+Server returns a monotonic nonreused logical lease; all later UI sender fields use
+that lease. A known reconnect uses exact session/runtime/lease and cannot treat
+a retired lease as fresh discovery/rewrite old command bytes. Matching retained identity/controller reservation is
 checked before replacing its disconnected link. Server replies COMMAND_RESULT
 with its runtime and canonical snapshot/replay state. Wrong generation receives
 GAP/full resync rather than executing input to rebuild display.
@@ -60,25 +65,25 @@ illegal zero/correlation or extra bytes fail PROTOCOL before any admission.
 | Kind | Exact body / static role |
 |---|---|
 | UI_COMMAND | opcode u8, observed generation u64, observed sequence u64, opcode suffix below; controller→coordinator only |
-| COMMAND_RESULT | result signed i32 (known Cog code), result state u8 (pending1/final2), related agent u64 (0 absent); server→UI, reply_to exact command/HELLO |
+| COMMAND_RESULT | result signed i32(known Cog code),state u8(pending1/final2),related agent u64(0 absent),assigned client lease u64(nonzero HELLO success only); server→UI/executor,reply_to exact command/HELLO/ACK |
 | COMMAND_ACK | empty; UI→server, reply_to exact final result envelope; receipt record identifies original command |
 | REPLAY | exact CGR1; server→UI DATA/GAP, UI→server CURSOR only; DATA body is CGV1 full projection, no raw unanchored app chunks |
-| BOOTSTRAP | purpose u8(initial1/child2/handoff3/reload4), then exact CGB1 resolved profile below; coordinator→authenticated worker only; child purpose requires exact admitted agent/attempt, others agent/attempt0 |
+| BOOTSTRAP | purpose u8(initial1/child2/handoff3/reload4),logical reload attempts-used u32(initial/child0,handoff0..64,reload1..64),then exact CGB1 resolved profile; coordinator→authenticated worker only; child purpose requires exact admitted agent/attempt, others agent/attempt0 |
 | BOOTSTRAP_ACK | result i32, configuration generation u64, state u8(copied1/published2); worker→coordinator, reply_to exact bootstrap; copied is not task/guard execution, published is R12 publication not activation |
-| CHILD_START | session parent string, task string, pinned configuration generation u64, absolute deadline u64, group u64, member count u16 then exactly those member agent u64 IDs; parent→worker, exact admitted agent/attempt/owner; copied task only once |
+| CHILD_START | parent session string,parent assistant node u64,call ordinal u16,full call ID string,task string,pinned config u64,absolute deadline u64,group u64,max status/result bytes u32,member count u16 then actual member agent u64 IDs; parent→worker,exact admitted agent/attempt/owner; copied task only once |
 | CHILD_CANCEL | absolute drain deadline u64; coordinator→worker, exact attempt; duplicate never extends deadline |
 | CHILD_UPDATE | one exact CGA1 update, agreeing with outer agent/attempt/owner; worker→coordinator |
 | UPDATE_RECEIPT | exact55-byte private receipt; coordinator→worker; all outer/inner identities agree; not durable parent TOOL-save proof |
 | CHILD_MESSAGE | destination agent u64, copied text string; sender exact current child attempt; coordinator relays only same current fan-out group/parent, to admitted bounded mailbox |
 | MESSAGE_RESULT | known result i32, state u8(pending1/final2); reply_to exact CHILD_MESSAGE; OK means one mailbox copy, not execution/new turn; AGAIN is provisional, retains same pending wire |
-| EXECUTOR_VIEW | mutation serial u64, exact owner epoch/instance u64,active/published config u64 then CGD1 bytes; current primary executor→coordinator; serial separate from canonical CGR cursor; old owner cannot publish after handoff |
+| EXECUTOR_VIEW | mutation serial u64,exact owner epoch/instance u64,active/published config u64,reload attempts-used u32,then CGD1; current primary executor→coordinator; serial separate from canonical CGR cursor; old owner cannot publish after handoff |
 | VIEW_COMMIT | mutation serial u64, exact owner epoch/instance u64, canonical generation u64, through_sequence u64; coordinator→exact executor; no effect authority beyond unblocking this matching retained view |
 | HANDOFF | exact CGH1; coordinator/source/target role+phase table and exact tuples additionally checked |
 | DELEGATE_START | parent owner epoch/instance u64,reservation ID u64,pinned active config u64,STARTED checkpoint u64,assistant node u64,immutable call ordinal u16,call ID string,absolute deadline u64,task count u16 then task strings; remote PRIMARY→coordinator only, never child or UI |
 | DELEGATE_RESULT | group u64,aggregate outcome i32,submitted count u16 then member presence u8:1=actual child(agent/attempt u64,status u8,outcome i32,session string,result string,effects-uncertain u8);0=uncreated member negative outcome i32 only; coordinator→primary, reply_to exact delegate start, immutable final output |
 | DELEGATE_RESULT_ACK | group u64, parent result checkpoint u64; primary→coordinator only AFTER exact TOOL result+terminal ledger durable save, not CGA/local ACK |
 | MAILBOX_POLL | empty; current child→coordinator, exact identified receive tool wire request; copied bounded mailbox batch consumes once |
-| MAILBOX_RESULT | result i32, count u16 then source agent u64 and text string; exact poll response, cached bytes; no new turn or policy input |
+| MAILBOX_RESULT | result i32,more-pending u8(0/1),count u16 then source agent u64 and text string; exact poll response,cached whole-message prefix; no new turn or policy input |
 | EXECUTOR_COMMAND | original client incarnation/request u64, current owner epoch/instance u64, executor prompt serial u64(0 except POLICY), then exact UI_COMMAND body; trusted coordinator→current primary or exact child CANCEL only |
 | EXECUTOR_COMMAND_RESULT | result i32,state u8(pending1/final2); reply_to exact EXECUTOR_COMMAND; same immutable duplicate/final-copy/COMMAND_ACK rules, no double input admission |
 | POLICY_STATE | presence u8(pending1/retired2), executor prompt serial u64, assistant node u64, call ordinal u16,pinned generation u64,absolute deadline u64,static tool name string; exact current executor→coordinator; duplicate pending serial reuses nonce, retired serial cannot reappear |
@@ -188,9 +193,12 @@ openrouter, base URL satisfies J's HTTPS/no-userinfo rules, credential reference
 is copied provenance only (env: references still require valid NAME). Tool policy
 and mask are known enum/subset; no startup selectors/borrowed callback/script.
 Profile is REAL/OpenRouter only initially; remote MOCK/unknown provider is
-UNSUPPORTED before worker/task admission, never a fallback. Local MOCK still uses
-explicit borrowed test script data with its documented host lifetime. Literal
-request fixture scripts are not serialized as production protocol.
+UNSUPPORTED before worker/task admission, never a fallback. Headless MOCK root
+supports UI/replay fixtures only; child delegation is not advertised/admitted
+for MOCK, so it cannot restart a parent's borrowed script/delta cursor as child
+execution. Actual local/worker child fixtures use offline REAL TLS. Existing
+standalone typed mock constructor/borrows remain unchanged. Literal request
+fixture scripts are not serialized as production protocol.
 
 Workspace/store paths are canonical absolute trusted same-host paths resolved
 from validated startup directories, not child model choices. The supported host
@@ -272,12 +280,28 @@ replacement records including anchor, never ambiguous repeated plain-text append
 ## Bounded lanes, control leases and compound reservations
 
 Disconnected controller role expires after constructor controller_reconnect_ms
-(default3s,max30s); clean detach relinquishes it immediately. Accepted command
+(default3s,max30s); all socket EOF uses this finite rule, no invented clean-detach
+message. Accepted command
 receipts remain separate. After expiry a new controller uses fresh incarnation/
 IDs and resynchronized prompt state, never inherits queued ALLOW/CONTINUE. Old
 client may query retained outcomes read-only but cannot reclaim a replacement's
-role. Unacknowledged receipts consume finite slots, never unsafe eviction; new
-mutation gets LIMIT while watch/resync/shutdown retain independent reservations.
+role. Exact-original duplicate lookup and COMMAND_ACK remain read-only permitted
+for a retained old lease after role loss; NEW mutations denied. Copied pending
+POLICY/CONTINUE that never reached owner validation is refused on role expiry;
+already-applied grant/input/result is unchanged and cannot be inherited.
+At client_receipt_ms(default30s,max300s), disconnected/nonacknowledging logical
+lease is retired with its command receipts. A global issued-lease counter never
+reuses IDs; known retired lease is uniformly stale before lookup/admission, not
+a new client or identity reset. Pending/active executions stay owned even if
+their delivery outcome becomes unknown. New client resyncs and requires fresh
+input; old pending commands never rebind to its new lease. Thus bounded records
+can reclaim dead clients without duplicate effects or unbounded tombstone sets.
+
+COMMAND_ACK receives an exact COMMAND_RESULT(final OK,reply_to ACK) after server
+reclaims receipt; one bounded latest ACK/result is retained for duplicate ACK.
+Client EOF final line waits for actual final admission result and this ACK-of-ACK
+under finite deadline, not send-OK. Signal/timeout before final result returns
+INDETERMINATE/unknown; after known result, missing cleanup receipt reports IO.
 
 Lane is encoded after CGL1 kind. Full stream key is(runtime,sender,managed worker,
 session,agent,attempt,lane). COMMAND1 handles UI/executor commands/results/ACK;
@@ -312,11 +336,29 @@ fabricated agent/session. Aggregate OK iff all completed OK; any uncertain effec
 requires aggregate INDETERMINATE. First known failure cancels remaining members,
 preserving already completed factual results in submission order.
 
+Global reservation also proves full parent TOOL output fits before STARTED:
+reserve128 bytes group overhead+1024 per member, then at most6x per-child result
+bytes for worst-case JSON escaping. Negotiated child result cap is the checked
+minimum of (core_result_bytes-1) and remaining_output/(6*count), at least256
+payload bytes; reserve payload_cap+1 for NUL, otherwise LIMIT before any task.
+Carry max status/result to worker in
+CHILD_START. Oversized actual child final text yields factual delivery FAILED/
+LIMIT with a bounded explanation and real child session reference, never silently
+truncated COMPLETED; full actual child conversation remains durable. Parent
+result includes every actual/absent member within its proven capture ceiling.
+
+Mailbox admission proves each WHOLE text can fit destination receive capture
+under same escaping/metadata bound (maximum4095 bytes, lower when receiver's
+fixed output reservation is smaller). Oversized item LIMIT before copy, full
+mailbox AGAIN accepts none. Receive returns only a whole-message prefix that fits
+its immutable cached result, more-pending=true for remaining messages; no dropped/
+split/truncated message and no second dequeue when output copy/save retries.
+
 Actual active/published configuration facts travel in EXECUTOR_VIEW; delegation
 names active generation explicitly. G2-published/G1-active turn clones G1 mirror,
 never latest by assumption. Unknown/retired generation refuses. Child conversation
 is real durable K state; PRIMARY only uses conversation replay barrier. Child
-status/result/policy use CGA/POLICY_STATE, not fake root history or undeclared
+status/result use CGA, child ASK denies noninteractively; no fake root history or undeclared
 child conversation ACK. Core/local ACK, remote receipt and durable parent TOOL
 result ACK remain separate. A returned execution borrow is not task admission.
 
@@ -329,9 +371,11 @@ are allowed. Partially decoded/rendered resync cannot enable input/approval.
 
 ## Native worker management and failed handoff
 
-Public CGW1 encode/decode in orchestrator.h is separate from private CGL1. Q frame
-type0x7f01 carries native HELLO/heartbeat/shutdown/ACK; type0x7f02 carries CGL1.
-Worker_host_step is sole reader and static kind dispatcher, never old hello-PID
+Public CGW1 encode/decode in orchestrator.h is separate from private CGL1. Q
+frames length+opaque bytes only, NO type field. Payload prefix CGW selects native
+management/version validation, CGL1 selects headless app protocol. CGW1's37 bytes
+include its magic; Q's existing outer length is separate. Worker_host_step is
+sole reader and static magic/kind dispatcher, never old hello-PID
 text. Orchestrator consumes native management and copies application MESSAGE
 events without including application headers. Kernel PID/UID+owned live spawn+
 exact managed identity precede READY. Exec environment PATH/LC_ALL only, blocked
@@ -381,3 +425,39 @@ A crash before those writes can leave unknown placement/member set; this is
 explicit unknown effect/recovery state, not a claim all attempts can be enumerated
 or their prefix restored. Existing explicit --sessions/inspect/recover/fencing
 supports operator investigation; no automatic child replay or fabricated k0.
+
+### Cancel before remote start and finite attempt retirement
+
+Initial worker profile ACK precedes every per-attempt frame. Parent preserves
+ascending agent-ID order of FIRST admission frames to each worker (child profile
+or early CANCEL); unrelated continuing lanes remain fair. Worker keeps one scalar
+opened-agent high watermark plus bounded live attempt slots. Lookup exact active
+record first; unknown ID<=watermark is stale forever, never a new task. A new
+higher ID can allocate one slot only under authenticated current parent/placement
+with exact nonzero attempt/session; parent cannot reorder first-admission frames.
+Terminal receipt/cleanup reclaims slot, retaining the scalar watermark instead
+of an unbounded tombstone log. Active lower-ID attempts still match their slots.
+
+CANCEL for a valid not-yet-started attempt latches cancellation in that slot,
+even before its per-child profile/START is processed. Late profile/START gets
+exact ABORTED acknowledgement, never new task/user/model/tool admission. It may
+discard metadata/secret frame after wiping, but cannot evade the cancel latch.
+Worker emits one actual no-effect CANCELLED sequence1 if no earlier update; if
+there is an in-flight update, independent receipt rules establish last accepted
+prefix and the new drained terminal's admissible slot. Tombstone/slot remains
+until semantic terminal receipt and actual local cleanup; then watermark rejects
+all delayed starts/cancels for retired attempt. Cancel after actual start drains
+owned work and preserves factual effects; no claim that cancellation undid them.
+Parent checks cancellation before EVERY not-yet-accepted start/profile send and
+never starts an already-cancelled queued intent. If no start/profile was ever
+accepted into transport, parent can close that known unstarted attempt locally
+without fabricating a worker execution. send-OK uncertainty is never 'unsent'.
+
+Handoff imports logical R12 attempts-used including failed candidates, not just
+active generation. Coordinator owns the global0..64 counter; source/target report
+it and BOOTSTRAP handoff carries it into staged admission. Fresh target control
+tree storage does not replenish budget. Explicit resolved reload names reserved
+attempt, candidate generation==attempt+1. Coordinator-local failure may burn an
+ID without worker construction, so received count may advance over unused IDs;
+it cannot regress, exceed64 or create a third logical generation. Exact duplicate
+wire gets cached result, no second resolver/attempt/provider constructor.

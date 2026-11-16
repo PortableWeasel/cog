@@ -42,7 +42,7 @@ no cross-host/live migration are deliberate finite release boundaries.
 | A12 | pending view overwritten by drain; one dispatch still runs send/start inline | dedicated immutable copy+dirty marker; split internal handler phases |
 | A13 | unknown root ID prevents first attach discovery | HELLO-only runtime0/empty session; authenticated response binds root; reconnect refuses retarget |
 | A14 | GAP empty payload cannot carry full view | explicit RESYNC_VIEW after GAP, exact committed anchor, CURSOR after checked render |
-| A15 | controller disconnect can strand role | finite role reconnect lease/clean detach; accepted receipts independent |
+| A15 | controller disconnect can strand role | finite role reconnect lease; accepted receipts independent (pass2 pins all EOF) |
 | A16 | remote primary input/policy lacked typed directional path | EXECUTOR_COMMAND/result,POLICY_STATE,copy_policy/apply_command,nonce+serial; child ASK explicitly noninteractive DENY |
 | A17 | remote G1 active/G2 published delegation ambiguous | actual active/published facts and explicit pinned generation in reserve/start |
 | A18 | remote constructor cannot reserve global credit before STARTED | nonblocking PREPARE + reserve/grant before STARTED, then exact start reservation |
@@ -50,7 +50,7 @@ no cross-host/live migration are deliberate finite release boundaries.
 | A20 | one whole-worker pending frame blocks sibling mailbox poll | per-attempt/session lane keys, independent control/update/mailbox reservations |
 | A21 | child has no way to learn sibling IDs | bounded host SYSTEM context with actual canonical decimal group IDs; unchanged task follows |
 | A22 | private config reread/secret cache/active probe race | resolved clone; dedicated outbound bootstrap wiping; exact immutable INSPECT probe separate current owner; no latest-token comparison |
-| A23 | worker native HELLO/heartbeat bytes undeclared | public CGW1 literal codecs/type, no app-header library dependency |
+| A23 | worker native HELLO/heartbeat bytes undeclared | public CGW1 literal codecs, no app-header library dependency |
 | A24 | QUIESCE token unknown/new phases and staged constructor absent | checkpoint0→CHECKPOINTED→PREPARED/release/CAS→guarded READY→route→ACTIVATE |
 | A25 | abort/source old-guard thaw contradicts stronger G | no thaw, exact checked+1 epoch; shutdown then explicit L RESUME/RECOVER reclaim |
 | A26 | lost ACTIVATE reply could repeat authority/work | retained exact activation receipt, no fresh input forward until ACK |
@@ -90,7 +90,9 @@ walks follow in pass2; original historical substitutes are not accepted evidence
 
 ### Pass2/Pass3 gate status
 
-Pass2 full sequential all20+R13/R14 traversal is PENDING. Pass3 full consistency/
+Pass2 full sequential all20+R13/R14 traversal is recorded in
+[the pass2 retrace](REAL_CLIENT_HEADLESS_PASS2.md), including A29–A40 amendments.
+Pass3 full consistency/
 NULL/overflow/clock/OOM/lifetime/dependency/self-containment review is PENDING.
 Then one more DIFFERENT final critic must approve exact coherent checkpoint.
 No O implementation ticket is ready merely because a row exists here.

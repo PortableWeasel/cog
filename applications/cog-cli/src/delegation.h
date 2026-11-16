@@ -71,8 +71,9 @@ cog_result_t cog_cli_delegation_prepare(cog_cli_delegation_context_t *context,
  * may be lower), no placement/config/policy/path/model fields. Primary only.
  * send_message: {"agent_id":STRING,"message":STRING}, canonical1..20 digit
  * nonzero decimal uint64 (no leading zero; overflow checked), admitted sibling
- * ID in same group/parent only. receive_messages: {} copies current bounded
- * mailbox once, no wait/new model turn. Child only; no recursive delegate.
+ * ID in same group/parent only; message≤4095 bytes and destination whole-message
+ * capture bound. receive_messages: {} copies one fitting whole-message prefix
+ * with more-pending flag, no wait/new model turn. Child only; no recursion.
  * Text bounds use argument/mailbox constructor capacities; JSON depth bounded.
  * @note Private table REFERENCE composition, not flattened descriptor copies:
  * app uses static const pointers {&cog_workspace_tools,&cog_cli_delegation_tools},
