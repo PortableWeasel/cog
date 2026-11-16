@@ -48,3 +48,46 @@ PREPARED; actual source release/its correlated PREPARED echo; one exact CAS at
 that checkpoint; actual target READY; exact publish_owner; actual ACTIVATE echo.
 It does not forward fresh commands or drive target ordinary work before that last
 acknowledgment. Source stays frozen after quiesce regardless of later failures.
+
+## Pass2 — duplicate, pressure and ordering traces
+
+1. Local source to remote target: direct quiesce yields tokenT while retaining
+   source guard. Purpose3 copied ACK is followed by CHECKPOINTED(T) to target.
+   PREPARED must name that request and native target. Direct source release(T)
+   returning OK permits exact CAS; COMMIT/READY, route, ACTIVATE/echo follow.
+   No transport ACK is invented for the local source.
+2. Remote source to local target: QUIESCE/CHECKPOINTED yields T. Local staged
+   constructor consumes only its resolved candidate and exact T without a guard.
+   Coordinator sends PREPARED(T) to the source and waits for the source's actual
+   release echo. An old target PREPARED or send-OK cannot permit CAS. Actual local
+   stage_guard after CAS permits route; actual local stage_activate completes
+   activation. Source remains frozen under its retained one-shot execution state.
+3. Remote source to different remote target: two PREPARED responses are retained
+   in different full stream keys and matched against distinct pending request
+   wires. Even numerically equal wire IDs cannot cross those peer/key boundaries.
+   A forged target echo addressed as source is rejected before any authority bit.
+4. Lost source-release response: source already consumed its guard and retained
+   success. Exact PREPARED retransmission replays the same immutable response;
+   execution_release_source's idempotent exact state does not reacquire or save.
+   Coordinator does not CAS before receiving that correlated response. A changed
+   checkpoint/owner/body under the same wire is a conflicting duplicate.
+5. Lost target preparation, READY or ACTIVATE response: exact request retry uses
+   existing pending bytes/wire and original deadline. Receiver first checks its
+   retained exact request/result; it does not construct another target, acquire
+   another guard, save, restore input or begin a second drive. Lost ACTIVATE echo
+   cannot cause another coordinator CAS or route publication phase. Activated
+   target still receives no fresh coordinator input until the echo is accepted.
+6. Pressure: AGAIN copied-send accepts nothing, retains exact pending bytes and
+   original absolute deadline. The next service slice retries one existing frame.
+   Other control/drain lanes continue. No loop waits for a remote response. A
+   response cannot be consumed before its bytes/correlation are independently
+   retained. Retired unknown wires are uniformly stale; no erased proof is
+   reconstructed by reading the latest owner or checkpoint.
+
+At each receive, authenticated coordinator/source/target role and exact current
+phase precede operation dispatch. Runtime incarnation, managed identity, original
+peer binding, root session, source/target peer tuple, expected owner, next owner
+and immutable checkpoint agree with the retained handoff. Initial QUIESCE alone
+has token0; only its correlated CHECKPOINTED response introduces nonzeroT. Every
+later request/reply echoes T. PREPARED from target authorizes only the coordinator
+to request release, not the source to accept an unauthenticated target command.
