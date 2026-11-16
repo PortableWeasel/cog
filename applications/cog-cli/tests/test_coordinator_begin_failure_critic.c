@@ -66,9 +66,11 @@ int main(int argc, char **argv)
         .credential_ref = "env:COG_NATIVE_KEY", .base_url = "https://localhost:1/v1",
         .workspace_root = argv[1], .store_dir = argv[2], .store_mode = COG_CLI_STORE_DURABLE,
         .tool_policy = COG_CLI_TOOL_POLICY_DENY,
+        .max_context_bytes = 65536U, .max_tool_output_bytes = 8192U,
         .explicit_options = COG_CLI_OPT_BACKEND | COG_CLI_OPT_MODEL | COG_CLI_OPT_CREDENTIAL |
             COG_CLI_OPT_BASE_URL | COG_CLI_OPT_WORKSPACE | COG_CLI_OPT_STORE_DIR |
-            COG_CLI_OPT_STORE_MODE | COG_CLI_OPT_POLICY};
+            COG_CLI_OPT_STORE_MODE | COG_CLI_OPT_POLICY | COG_CLI_OPT_CONTEXT |
+            COG_CLI_OPT_TOOL_OUTPUT};
     cog_cli_host_options_t opts = {.runtime = {.root_options = &app, .ui_socket = ui,
         .worker_socket = worker, .workers = 2U, .children = 2U, .shutdown_ms = 1000U}};
     cog_net_config_t net = {.host_runtime_initialized = true,

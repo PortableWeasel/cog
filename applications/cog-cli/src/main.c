@@ -33,8 +33,11 @@ static cog_result_t run_coordinator(cog_cli_host_options_t *options, int signal_
     options->runtime.diagnostic = stderr;
     cog_cli_host_runtime_t *host = NULL;
     cog_result_t primary = cog_cli_host_runtime_new(&host, &options->runtime);
-    if (primary == COG_OK) primary = cog_cli_host_runtime_begin(host);
     if (primary == COG_OK) {
+        primary = cog_cli_host_runtime_begin(host);
+        /* Begin may own a successfully spawned prefix even when a later
+           startup operation fails. Keep that owner through bounded drain. */
+        if (primary != COG_OK) (void)cog_cli_host_runtime_request_shutdown(host);
         bool done = false;
         while (!done) {
             cog_cli_host_runtime_step_t step = {0};

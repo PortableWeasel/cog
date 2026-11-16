@@ -517,3 +517,16 @@ target_link_options(test_handoff_release_again_critic PRIVATE
 add_test(NAME cli-handoff-release-again-critic COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/run_execution_tools.py
     $<TARGET_FILE:test_handoff_release_again_critic> ${CMAKE_BINARY_DIR})
+
+add_executable(test_coordinator_begin_failure_critic
+    test_coordinator_begin_failure_critic.c ../src/host_output.c)
+target_include_directories(test_coordinator_begin_failure_critic PRIVATE ../src)
+target_link_libraries(test_coordinator_begin_failure_critic PRIVATE cog::cli)
+target_enable_warnings(test_coordinator_begin_failure_critic)
+target_link_options(test_coordinator_begin_failure_critic PRIVATE
+    -Wl,--wrap=cog_orchestrator_spawn -Wl,--wrap=cog_cli_host_runtime_new
+    -Wl,--wrap=cog_cli_host_runtime_close)
+add_test(NAME cli-coordinator-begin-failure COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_coordinator_begin_failure.py
+    $<TARGET_FILE:test_coordinator_begin_failure_critic> ${CMAKE_BINARY_DIR})
+set_tests_properties(cli-coordinator-begin-failure PROPERTIES TIMEOUT 20)
