@@ -29,6 +29,7 @@ function(cog_add_scenario target ctest_name source)
             ${CMAKE_CURRENT_SOURCE_DIR}/run_agent_scenarios.py
             $<TARGET_FILE:${target}> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} ${native_mode})
         set(native_timeout 90)
+        set_tests_properties(scenario-${ctest_name} PROPERTIES RESOURCE_LOCK cog-native-scenarios)
     else()
         add_test(NAME scenario-${ctest_name}
             COMMAND ${target}
@@ -55,8 +56,7 @@ foreach(test IN LISTS COG_CLI_SCENARIO_TESTS)
     target_link_libraries(${test} PRIVATE cog::cli)
 endforeach()
 
-# Scenario 03 drives private subagent lifecycle transitions through the
-# same white-box hooks as its unit tests.
+# Scenario03 observes actual registry linkage while REAL child attempts run.
 target_include_directories(test_03_subagent_lifecycle PRIVATE
     ${PROJECT_SOURCE_DIR}/libraries/cog-core/src)
 
@@ -65,16 +65,12 @@ cog_add_scenario(test_06_parallel_tools test_06_parallel_tools
 target_link_libraries(test_06_parallel_tools PRIVATE
     cog::core cog::toolkit Threads::Threads)
 
-# Scenarios 07 and 10 share the orchestrator's owned aux_core fixture.
-# Only PIDs created through those orchestrators are signalled or reaped.
+# Canonical07/10 use actual installed workers through the shared REAL fixture.
 cog_add_scenario(test_07_aux_crash test_07_aux_crash test_07_aux_crash.c)
 target_link_libraries(test_07_aux_crash PRIVATE cog::cli cog::orchestrator)
 target_include_directories(test_07_aux_crash PRIVATE
     ${PROJECT_SOURCE_DIR}/libraries/cog-core/src
     ${PROJECT_SOURCE_DIR}/libraries/cog-orchestrator/src)
-target_compile_definitions(test_07_aux_crash PRIVATE
-    COG_AUX_CORE_BIN="$<TARGET_FILE:aux_core>")
-add_dependencies(test_07_aux_crash aux_core)
 
 cog_add_scenario(test_08_config_reload test_08_config_reload
     test_08_config_reload.c)
@@ -94,9 +90,6 @@ target_link_libraries(test_10_fan_out_fan_in PRIVATE
 target_include_directories(test_10_fan_out_fan_in PRIVATE
     ${PROJECT_SOURCE_DIR}/libraries/cog-core/src
     ${PROJECT_SOURCE_DIR}/libraries/cog-orchestrator/src)
-target_compile_definitions(test_10_fan_out_fan_in PRIVATE
-    COG_AUX_CORE_BIN="$<TARGET_FILE:aux_core>")
-add_dependencies(test_10_fan_out_fan_in aux_core)
 
 set_tests_properties(scenario-test_05b_shutdown_cancel_contract PROPERTIES
     LABELS "scenario;regression")
@@ -128,7 +121,8 @@ function(cog_add_native_scenario_mode target mode)
         ${CMAKE_CURRENT_SOURCE_DIR}/run_agent_scenarios.py
         $<TARGET_FILE:${target}> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} ${mode})
     set_tests_properties(scenario-${target}-${mode} PROPERTIES
-        LABELS "scenario" TIMEOUT 90 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+        LABELS "scenario" TIMEOUT 90 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+        RESOURCE_LOCK cog-native-scenarios)
 endfunction()
 cog_add_native_scenario_mode(test_03_subagent_lifecycle cancel)
 cog_add_native_scenario_mode(test_07_aux_crash crash-after)
