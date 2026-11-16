@@ -350,3 +350,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang
         ${CMAKE_BINARY_DIR} $<TARGET_FILE:test_empty_session>)
     set_tests_properties(cli-installed-empty-session PROPERTIES TIMEOUT 30)
 endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(test_configuration_clone test_configuration_clone.c)
+    target_link_libraries(test_configuration_clone PRIVATE cog-cli-config)
+    target_link_options(test_configuration_clone PRIVATE -Wl,--wrap=calloc -Wl,--wrap=free)
+    target_enable_warnings(test_configuration_clone)
+    add_test(NAME cli-configuration-clone COMMAND test_configuration_clone)
+endif()
