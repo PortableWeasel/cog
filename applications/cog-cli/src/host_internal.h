@@ -162,6 +162,7 @@ typedef struct cli_executor_slot {
     cog_cli_configuration_t *pending_profile; /**< Owned until transfer/free. */
     cog_session_t *borrowed_session; /**< Exact local registry lease, never owned. */
     bool borrow_live, started, cancel_latched, effects_uncertain;
+    bool first_admission_sent; /**< First profile/CANCEL send OK, NOT mere queue intent. */
     bool local_done, terminal_copied, terminal_acked, parent_result_saved;
     uint64_t deadline_ms, drain_deadline_ms;
     cog_result_t primary;

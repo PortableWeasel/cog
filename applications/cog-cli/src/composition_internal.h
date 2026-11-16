@@ -66,6 +66,8 @@ struct cog_cli_host_runtime {
        root_options=NULL after new, no resolver/caller-source authority. */
     cog_net_config_t net_template;
     char *ui_path, *worker_path, *executable, *ca_bundle;
+    char *canonical_workspace, *canonical_store;
+    int workspace_directory_fd, store_directory_fd; /**< Owned pins; -1 if absent. */
     cli_host_reservations_t bounds;
     cog_result_t primary;
     bool begun, done, shutdown, in_step, admission_frozen, coordinator_failed;
@@ -80,7 +82,7 @@ struct cog_cli_host_runtime {
     char primary_session[128];
     cog_session_t *control_session; /**< Owned registry/control tree, NOT root history. */
     cog_core_t *control_core; /**< Owns UI listener and its accepted endpoints. */
-    cog_ipc_endpoint_t *ui_alias; /**< Borrow after successful core transfer. */
+    cog_ipc_endpoint_t *ui_alias; /**< Owned before core_new success, borrowed after. */
     bool ui_transferred;
     cog_store_t *catalog; /**< Independently owned; outlives orch/handoff. */
     cog_orchestrator_t *orchestrator; /**< Sole worker fabric reader. */
@@ -119,7 +121,13 @@ struct cog_cli_worker_host {
     cli_secret_exchange_t startup_profile;
     cog_cli_configuration_t *startup_configuration;
     cog_cli_bootstrap_probe_t probe;
-    cli_host_bytes_t ingress, decode, native_control;
+    /* Parent→worker may carry CGB1. Entire incoming frame/decode arena is
+       secret-capable and wiped after copy, on failure and explicit disposal.
+       Only validated NONsecret payloads may enter generic lane/handle caches. */
+    unsigned char *receive_secret, *decode_secret;
+    size_t receive_capacity, decode_capacity;
+    cli_host_bytes_t native_control[3]; /**< HELLO, heartbeat, shutdown-ACK reserves. */
+    bool native_pending[3];
 };
 
 typedef enum cli_delegation_operation {
@@ -153,6 +161,8 @@ struct cli_delegation_handle {
     cli_host_bytes_t arguments, output, codec, pending, reply;
     uint64_t reservation, group, request_wire, deadline_ms;
     cog_agent_id_t destination;
+    const char *message; /**< Borrow into this handle's copied argument arena. */
+    size_t message_length;
     bool prepared, started, cancelled, done, output_cached, result_saved;
     cog_tool_output_t result;
 };
@@ -191,7 +201,7 @@ struct cog_cli_handoff {
  * primary/call/generation/deadline, borrowed through call and copied on OK.
  * @param[out] reservation Nonzero on OK only. @return OK exact duplicate grant;
  * NULL_PTR; INVALID_STATE stale/frozen; LIMIT capacity/credit/output; PROTOCOL
- * conflicting duplicate; NOMEM only named admission constructors before effects.
+ * conflicting duplicate. Reservation uses only existing constructor storage.
  * Full reservation/output escaping proof before mutation; no child execution.
  */
 cog_result_t cli_runtime_reserve(cog_cli_host_runtime_t *runtime,
@@ -213,6 +223,16 @@ cog_result_t cli_runtime_start(cog_cli_host_runtime_t *runtime,
  */
 cog_result_t cli_runtime_release(cog_cli_host_runtime_t *runtime,
     uint64_t reservation);
+/** @brief host_runtime.c authoritative SEND/RECEIVE mailbox operation.
+ * @param[in,out] runtime Coordinator. @param[in,out] handle Identified admitted
+ * child operation; source/group from trusted context, never wire sender text.
+ * @return OK progress/result copied once; AGAIN full queue/pending accepts none;
+ * NULL_PTR; NOT_FOUND/INVALID_STATE foreign/stale; LIMIT whole capture cannot fit.
+ * No allocation/new turn, pointer to worker-local mailbox, repeated dequeue or
+ * prefix truncation. Retain immutable reply until consumed under MAILBOX lane.
+ */
+cog_result_t cli_runtime_mailbox_step(cog_cli_host_runtime_t *runtime,
+    cli_delegation_handle_t *handle);
 /** @brief delegation.c observe exact parent's TOOL+terminal-ledger save.
  * @param[in,out] context Owner app bridge, retained handle/result.
  * @param[in] node/ordinal Exact original parent call; @param[in] checkpoint

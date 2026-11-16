@@ -78,3 +78,81 @@ per GCC/Clang,3 standalone+combined C++11 per G++/Clang++, repeated/reversed
 orders. Existing app_internal C11 atomics remain C-only; no C++ promise added.
 No source body/test or runtime conformance claim. Pass2 now traces actual
 retention/cancel/grant/publication/handoff/cleanup edges and amends layout only.
+
+## Pass2 — targeted state/ownership walks and amendments
+
+1. **03/10 pre-STARTED reservation and prefix failure:** toolkit new_ copies
+   strict arguments and reserves capture/schema pools. app_tools PREPARE binds
+   real owner/node/ordinal/full call ID/pinned generation/tasks/deadline, calls
+   delegation_prepare. Local goes to cli_runtime_reserve; remote retains exact
+   RESERVE/grant wire. No grant means no durable STARTED. Successful guarded
+   STARTED token reaches cli_runtime_start once. Group gate remains false while
+   admitted prefix records/app constructors exist. Failure sets ROLLBACK, cancels
+   and disposes queued leases incrementally; actual/absent members remain
+   distinct. Started groups never refund unknown credit. Read-only native health
+   plus separate reserved_slots supports fair local/worker placement; no fake
+   heartbeat progress. Group/result cannot be recycled until child cleanup,
+   borrow return, pending leases/updates and actual parent result save allow it.
+2. **R14 early CANCEL and retained terminal:** slot lookup matches full active
+   attempt before high watermark. Initial worker profile ACK precedes attempt
+   frames. Added first_admission_sent per slot: send-OK, not local intent/AGAIN.
+   Host picks ascending first admissions per worker; an unsent cancelled attempt
+   can end locally only if this flag is false. Early CANCEL slot latches before
+   child profile/start. Late frames get exact ABORTED, no task admission; retained
+   terminal receipt plus actual cleanup precede scalar watermark retirement.
+   Factual child ledger/status and parent's accepted prefix stay distinct;
+   CANCEL_CONSUMED frees only matching wire, then drained terminal uses a new
+   wire in the same unaccepted semantic slot. Original final receipt/original
+   bytes remain through loss; after reclaim no fabricated conflict comparison.
+3. **09 mailbox pressure:** delegated SEND/RECEIVE adapters do not manipulate
+   coordinator-owned mailbox fields directly. Added cli_runtime_mailbox_step
+   owner helper and explicit message view into handle-owned arguments. All
+   frames/responses use per-attempt MAILBOX lane; no blocked sibling/global
+   request slot. Full accepts none; whole-item fit checked before copy. Reply
+   prefix is immutable in its own capture; output copy/save retries never
+   dequeue again. Worker relays only; no invented independent mailbox.
+4. **05/07 fatal/drain:** core drive_end occurs once, then cli_turn_drain_one
+   advances actual provider/tool/unstarted cleanup without core_step/restart.
+   Host/native stop continues after first error. Checked close refuses live work,
+   then destroys handles/context before app/store/guard. Local registry borrow
+   stays live until app consumption and is returned before agent release or
+   fatal coordinator core_free. Fatal core queued intent leases are disposed by
+   existing destructor only after all separate started executors/borrows drain.
+   Worker PID reap alone cannot certify descendants stopped; uncertainty stays
+   durable recovery-only. No raw event/arena pointer survives dispatch.
+5. **08/R12 pin and failed-attempt handoff:** current/future mirrors name exactly
+   two logical generations. Child clone/bootstrap pins active G even with a
+   published future. Getter mask is copied, not inferred from policy. Global
+   reload_attempts_used includes failures/skips; source view, BOOTSTRAP and staged
+   admission retain it. A new target's tree cannot replenish64 tries. Consuming
+   provider disconnect returns before matching config/secret retirement; no
+   extra provider/mirror callback authority or automatic source resolution.
+6. **11/R13 publication and command lease loss:** in-handler completed user/text/
+   assistant/tool mutations call barrier before next ordinary effect, including
+   direct handler subphases. Existing static PUBLICATION row waits exact canonical
+   commit; it never polls stdin/direct FILE output. Drain during an outstanding
+   copy sets newer_view_dirty, preserves bytes and continuation, and later copies
+   actual new state. Commands retain canonical anchor and executor serial
+   separately. Forwarded op copies outlive UI lease/receipt retirement; CANCEL
+   owns an independent slot. Pre-forward send AGAIN rechecks lease, send OK
+   commits that exact authorization, not replacement controller approval.
+7. **17 staged authority:** source freeze retains guard/token; target constructor
+   does exact-token load/preflight only. Actual PREPARED permits release; actual
+   exact owner CAS permits target normal guard; actual READY permits route;
+   exact ACTIVATE/ACK opens fresh-input admission. Driver and authority axes
+   prevent accidentally beginning staged or restarting stopped source. Catalog
+   remains independently owned beyond source app disposal. Abort freezes without
+   old-epoch rollback. Added owned canonical directory copies/FD pins to make
+   finish_host's actual host identity/stability precondition concrete.
+8. **Secret ingress/unwind:** trace found generic worker ingress/decode arenas
+   could receive credential-bearing CGB1 before kind discrimination. Replaced
+   them with secret-capable full-frame/decode arenas; only validated nonsecret
+   traffic can be copied to generic records. Wipe complete reservations on every
+   retirement/failure, including partial new unwind; never copy into event/receipt
+   originals or UI. Native HELLO/heartbeat/shutdown-ACK now have three independent
+   fixed control reservations so ordinary queues cannot consume shutdown capacity.
+
+No public/behavior gap or new protocol was introduced by these layout amendments.
+N's source/target, exact native binding and per-call resolver authority remain
+unchanged. Repeated strict include checks pass18/18 after the amendments. This
+is declaration/ownership validation, not runtime tests or O4 body authorization.

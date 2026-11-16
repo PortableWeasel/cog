@@ -92,7 +92,8 @@ cog_result_t cli_app_dispose(cog_cli_app_t **app, cog_result_t primary);
  * @return OK (including standalone no-barrier); NULL_PTR; INVALID_STATE;
  * LIMIT exhausted serial/copy bound. Capture full actual snapshot into dedicated
  * reserved storage before returning; never overwrite an outstanding frozen view.
- * Later drain mutations set newer_view_dirty. No provider/tool/input admission,
+ * If a prior copy is outstanding, drain marks newer_view_dirty and preserves
+ * its bytes/continuation instead of replacing it. No provider/tool/input admission,
  * direct output or canonical replay append. Handler propagates errors honestly.
  */
 cog_result_t cli_execution_barrier(cog_cli_app_t *app,
