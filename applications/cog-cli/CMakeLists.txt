@@ -28,6 +28,10 @@ target_enable_warnings(cog-cli-config)
 add_library(cog-cli-lib STATIC
     src/cli.c
     src/execution.c
+    src/host_runtime.c
+    src/worker_host.c
+    src/delegation.c
+    src/handoff.c
     src/control.c
     src/control_receipt.c
     src/projection_codec.c
