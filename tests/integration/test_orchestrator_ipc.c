@@ -28,6 +28,19 @@ static cog_result_t fx_service(cog_orchestrator_t *o)
     FX_CHECK(rc==COG_OK||rc==COG_ERROR_AGAIN||rc==COG_ERROR_TIMEOUT);
     return rc;
 }
+/* Failed prerequisites drain every owned lifetime before stopping this test.
+ * Never continue a stress iteration with an all-zero identity or PID. */
+static void fx_abort(cog_orchestrator_t *o)
+{
+    if(o!=NULL) {
+        bool done=false;uint64_t deadline,end=fx_now()+4000;
+        (void)cog_orchestrator_request_shutdown(o,fx_now(),1);
+        while(!done&&fx_now()<end) { (void)cog_orchestrator_service(o,fx_now(),&done,&deadline);fx_pause(); }
+        if(done) cog_orchestrator_free(o);
+        else (void)fprintf(stderr,"fixture fatal: native cleanup did not complete\n");
+    }
+    exit(EXIT_FAILURE);
+}
 static cog_core_info_t fx_info(cog_orchestrator_t *o,cog_worker_id_t id)
 {
     cog_core_info_t info[16],found={0};size_t count=0;
@@ -82,13 +95,17 @@ static cog_orchestrator_t *fx_new(char *path,size_t capacity,bool replace)
     cfg.health_interval_ms=200;cfg.unhealthy_threshold=3;cfg.default_core_capacity=8;
     cfg.shutdown_timeout_ms=200;cfg.auto_replace=replace;
     cfg.max_frame_bytes=256;cfg.message_bytes=4096;cfg.message_events=8;
-    cog_orchestrator_t *o=NULL;FX_CHECK(cog_orchestrator_new(&o,&cfg)==COG_OK);return o;
+    cog_orchestrator_t *o=NULL;
+    cog_result_t rc=cog_orchestrator_new(&o,&cfg);FX_CHECK(rc==COG_OK);
+    if(rc!=COG_OK||o==NULL) fx_abort(o);
+    return o;
 }
 static cog_worker_id_t fx_spawn(cog_orchestrator_t *o)
 {
     cog_worker_id_t id={0};
-    FX_CHECK(cog_orchestrator_spawn(o,COG_AUX_CORE_BIN,&id)==COG_OK);
-    FX_CHECK(id.incarnation!=0&&id.number!=0);FX_CHECK(fx_wait(o,id,false));
+    cog_result_t rc=cog_orchestrator_spawn(o,COG_AUX_CORE_BIN,&id);FX_CHECK(rc==COG_OK);
+    if(rc!=COG_OK||id.incarnation==0||id.number==0) fx_abort(o);
+    bool ready=fx_wait(o,id,false);FX_CHECK(ready);if(!ready) fx_abort(o);
     cog_core_info_t info=fx_info(o,id);FX_CHECK(info.peer_id!=0&&info.pid>0&&info.capacity==8);
     return id;
 }
@@ -116,7 +133,7 @@ static cog_worker_id_t fx_replacement(cog_orchestrator_t *o,cog_worker_id_t old)
         if(count==1&&!fx_same(infos[0].worker_id,old)&&infos[0].health==COG_HEALTH_HEALTHY) return infos[0].worker_id;
         fx_pause();
     } while(fx_now()<end);
-    FX_CHECK(false);return (cog_worker_id_t){0};
+    FX_CHECK(false);fx_abort(o);return (cog_worker_id_t){0};
 }
 
 static void test_spawn_health_place(void)
