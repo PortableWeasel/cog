@@ -23,7 +23,8 @@ repurposed. Use CLI_CONTROL_RETRY_MS=1000 milliseconds for request/reply retries
 A new retained wire unequal to copied_wire is immediately eligible. Before each
 send, owner/native/role authorization checks still apply. AGAIN accepts nothing:
 retain exact bytes and eligibility, then retry on later fair service slices. OK
-sets copied_wire to that outer wire and next_send_ms to checked now+1000; inability
+sets copied_wire to that outer wire. For request/reply frames it also sets
+next_send_ms to checked now+1000; inability
 to represent the future time is LIMIT before accepting a new copy. Subsequent
 request/reply sends of that wire are ineligible until that time. Repeated valid
 caller requests, duplicate responses, zero max-wait loops and PROFILE callbacks
@@ -90,3 +91,36 @@ cross-binding replay. Bodies remain gated on independent review.
    transaction deadline has expired; it must not clamp retry time to that past
    deadline and thereby recreate a busy resend loop. Native termination remains
    bounded by its existing deadline and supplies no fictitious cleanup receipt.
+
+## Pass 3: consistency and exhaustion audit
+
+| Boundary | Required result |
+|---|---|
+| Full stream identity | Compare/validate actual native binding and immutable current frame before scheduling. copied_wire alone is never authorization or a substitute for full key/byte correlation. |
+| Fresh / AGAIN / copied | Zero or different copied_wire permits the retained current wire; AGAIN preserves ownership; OK records one transport copy. No pending semantic flag is cleared merely to throttle sends. |
+| Exact retries | Same retained wire/body/probe and original operation deadline; no fresh nonce, operation attempt, CAS, provider call or resolution. A due retry is still subject to existing semantic/owner checks. |
+| RETRY / duplicate reply | May preserve or re-arm existing pending work, but cannot move next_send_ms earlier. No tight echo/resend loop. |
+| One-way copied frame | Stop submitting copies after OK; keep terminal facts/receipt storage until their separate real retirement predicates. No invented response or acknowledgement. |
+| New valid successor | Fresh wire may send immediately; previous schedule is irrelevant only after ordinary successor admission. The same physical key/wire never gains new bytes. |
+| Timeout / cancellation | Earliest operation/native deadline remains separately reported and enforced. Cleanup sends have eligibility clocks but never gain extra operation/native lifetime. |
+| Poll/service fairness | While retained delivery is pending and ineligible, report next_send_ms as a wake-up bound alongside other earlier timers; continue native service, inbound receipts, other lanes and executor drain. No spin solely to resubmit an accepted copy. |
+| Overflow | Check now+1000 before an accepted request/reply copy; LIMIT/frozen handling on overflow, no wrap or clamp to an already expired timestamp. One-way copies need no future retry timestamp. |
+| Retirement/reuse | Clear send scalars only with factual stream/key retirement; preserve them when retained proof survives PROFILE or same-key physical reuse. Never rebind a previously copied request to a new process. |
+| Failure receipt | Negative PROFILE R contains no credentials. Re-arming it preserves its existing outer wire and send schedule; consumed failed candidate proof is never reconstructed. |
+
+Constructor accounting uses the actual enlarged sizeof of existing metadata.
+At current fixed maxima the coordinator has42 keys*20 lane records plus26 secret
+exchanges; a worker has18*20 lanes plus19 secret exchanges. Added scalar payload
+is16 bytes per record, i.e.13856 bytes per coordinator and6064 per worker, before
+any ABI padding already included by sizeof. Buffer counts/capacities, request
+credits, frame ceilings and semantic limits do not change. No mutable globals or
+implicit allocation/constructor is added. Static dispatch stays unchanged.
+
+This amendment grants no native failover, transparent replay, deadline increase,
+or semantic ACK shortcut. Required writer oracles: actual accepted-send counts
+stay bounded under repeated zero-wait slices; AGAIN retries eventually copy;
+retained reply loss triggers exact retry only when eligible; one-way cancellation
+and terminal confirmation do not queue duplicate accepted copies; actual native
+cancel completes within the existing5s cleanup oracle; actual moves complete
+within the existing15s transaction deadline with exact CAS/READY/route/ACTIVATE
+and retained disposal receipts. Full runtime acceptance remains separate.
