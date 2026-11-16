@@ -193,6 +193,10 @@ def main():
                 env=env, capture_output=True, text=True, timeout=10)
             assert resumed.returncode == 1 and "indeterminate" in resumed.stderr, (resumed.returncode, resumed.stdout, resumed.stderr)
             assert len(fixture.requests) == count and not fixture.errors, "unsafe resume sent a request"
+            if mode == "crash-after":
+                assert (fixture.workspace / "effect-native-1").read_text() == "once"
+            else:
+                assert not (fixture.workspace / "effect-native-1").exists()
         print("finite actual TLS scenario:", mode, "PASS")
 
 
