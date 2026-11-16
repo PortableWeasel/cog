@@ -37,6 +37,13 @@ typedef struct cog_cli_host_options {
  * Headless --socket/--workers/--worker-socket/--children/--child-requests/
  * --child-tools/--child-policy use host bounds in HOST_RUNTIME/CONTROL contracts.
  * Attach/watch accept only socket, finite reconnect/output bounds and help;
+ * Internal worker grammar (all seven options required exactly once):
+ * --worker --control-socket PATH --worker-incarnation U64 --worker-number U64
+ * --parent-pid U64 --executor-slots N --frame-bytes N. U64 identities/PID and
+ * frame bytes are nonzero; executor slots1..18, frame bytes<=UINT32_MAX. PID is
+ * parsed metadata, never authority to signal/admit without kernel proof. No
+ * task/secret/config/provider flags, mixed roles, duplicate or unknown worker
+ * option is accepted. Role-looking values of ordinary options remain values.
  * worker accepts only exact trusted startup identity/reservations. Role flags
  * cannot be supplied through config/env or untrusted model/control payload.
  * Standalone delegates unchanged public options_parse. Output never echoes raw
