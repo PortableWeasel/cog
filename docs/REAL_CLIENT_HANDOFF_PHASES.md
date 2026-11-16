@@ -91,3 +91,58 @@ and immutable checkpoint agree with the retained handoff. Initial QUIESCE alone
 has token0; only its correlated CHECKPOINTED response introduces nonzeroT. Every
 later request/reply echoes T. PREPARED from target authorizes only the coordinator
 to request release, not the source to accept an unauthenticated target command.
+
+## Pass3 — failure, authority and lifetime audit
+
+A mismatched or late reply never advances a phase. An exact known duplicate may
+replay its existing reply; a retired phase without retained proof is refused.
+The sender cannot turn a receiver refusal into successful release/guard proof.
+A FAILED response echoes the exact request correlation and current CGH tuple;
+it is a failure, never a source-release or target-readiness acknowledgment. The
+first actual failure remains primary while owned cleanup continues.
+
+Source quiesce/save failure freezes source and may leave its guard retained;
+no CHECKPOINTED success is emitted for an unknown save outcome. Target prepare
+failure leaves source frozen and guarded. Source release refusal retains the
+source guard and cannot emit successful PREPARED echo. After successful release,
+CAS mismatch/error never reacquires the old source epoch. INDETERMINATE CAS stays
+frozen without inferring commit from owner_read. Target acquisition failure or
+missing READY cannot publish a route. Route failure cannot activate target.
+ACTIVATE timeout cannot thaw source, repeat startup, or authorize new input by
+assuming the target observed the request.
+
+ABORT retains the same exact handoff tuple/token and cancels the receiving
+side's owned handoff resources; it does not mean rollback or immediate cleanup.
+Source stays frozen whether or not CAS occurred. Actual guard release waits for
+its normal borrow/cleanup preconditions. Target cleanup drains any owned work
+and releases resources under existing checked execution close ordering. A
+transport send/receive or process reap alone is not proof all descendants or
+borrowers ended. No abort acknowledgment is used to manufacture a successful
+phase transition. Failure recovery remains checked host shutdown/close followed
+by explicit fresh-epoch resume or fenced recovery, as the approved N profile
+already requires.
+
+Identity exhaustion is checked before quiesce and before any fresh phase wire
+that would consume reserved final/cleanup identities. A request/reply never wraps
+or resets a lane. Timeout is the original admitted minimum; a duplicate cannot
+extend it. The source and target apps, their configuration/probe owners, native
+records and dedicated immutable pending/reply buffers remain owned until their
+actual use/cleanup ends. No raw event pointer escapes the ingress lease.
+
+Consistency audit: unchanged public CGH values and literal encoding; COMMIT
+still exclusively permits target acquisition, READY still means guarded/staged,
+route still precedes ACTIVATE, and source is never thawed. No new body fields or
+allocation are needed: handoff phase/flags and existing per-executor HANDOFF
+pending/final caches hold the exact exchanges. The shared handoff coordinator's
+pending/reply buffers are nonsecret; purpose3 credentials stay in the dedicated
+profile reservation with its original probe and full-capacity wiping. A approved
+narrow prose edit to handoff.h is the sole shared-header delta. All implementation
+source in earlier commits is unrelated group/mailbox work, not dependent handoff
+body acceptance.
+
+Verification:12/12 strict standalone/repeated/combined/reversed handoff and
+composition include checks pass GCC14/Clang19 C11 and G++14/Clang++19 C++11.
+Evidence is in impl-headless-coordinator/build-handoff-headers, including each
+actual source and compiler log. These are declaration checks, not runtime phase
+or whole O4 acceptance. Different independent review remains required before
+coordinator/worker bodies may depend on this clarification.
