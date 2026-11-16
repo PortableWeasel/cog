@@ -205,7 +205,8 @@ static void loss_and_pressure(const char *binary)
     cog_orchestrator_free(o);
 
     o=make(path,1U);assert(cog_orchestrator_spawn(o,binary,&id)==COG_OK);ready(o,id);
-    cog_core_info_t child=info(o,id);assert(kill(child.pid,SIGKILL)==0);
+    cog_core_info_t child=info(o,id);assert(child.pid>0 && !child.reaped && !child.ownership_lost);
+    assert(kill(child.pid,SIGKILL)==0);
     int status;assert(waitpid(child.pid,&status,0)==child.pid); /* Deliberate host-profile violation. */
     assert(cog_orchestrator_kill(o,id)==COG_ERROR_IO);
     assert(info(o,id).ownership_lost && !info(o,id).reaped);
