@@ -90,7 +90,7 @@ illegal zero/correlation or extra bytes fail PROTOCOL before any admission.
 |---|---|
 | UI_COMMAND | opcode u8, observed generation u64, observed sequence u64, opcode suffix below; controller→coordinator only |
 | COMMAND_RESULT | result signed i32(known Cog code),state u8(pending1/final2),related agent u64(0 absent),assigned client lease u64(nonzero HELLO success only); server→UI/executor,reply_to exact command/HELLO/ACK |
-| COMMAND_ACK | empty; UI→server, reply_to exact final result envelope; receipt record identifies original command |
+| COMMAND_ACK | empty; ordinary command lane UI/executor→server, reply_to exact final result envelope; additionally worker→coordinator UPDATE lane terminal-receipt consumption only under REAL_CLIENT_UPDATE_RETIREMENT, reply_to exact final UPDATE_RECEIPT envelope; no semantic ACK or recursive response |
 | REPLAY | exact CGR1; server→UI DATA/GAP, UI→server CURSOR only; DATA body is CGV1 full projection, no raw unanchored app chunks |
 | BOOTSTRAP | purpose u8(initial1/child2/handoff3/reload4),logical reload attempts-used u32(initial/child0,handoff0..64,reload1..64),then exact CGB1 resolved profile; coordinator→authenticated worker only; child purpose requires exact admitted agent/attempt, others agent/attempt0 |
 | BOOTSTRAP_ACK | result i32, configuration generation u64, state u8(copied1/published2); worker→coordinator, reply_to exact bootstrap; copied is not task/guard execution, published is R12 publication not activation |
