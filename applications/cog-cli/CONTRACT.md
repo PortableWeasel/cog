@@ -231,3 +231,27 @@ already-admitted/final unterminated input retains ordinary execution semantics.
 Provider getters expose the current borrowed instance and must be reacquired
 after mutating/drive calls. [R12 evidence](../../docs/REAL_CLIENT_RELOAD_EVIDENCE.md)
 records the scoped checks and remaining review/release gates.
+
+Application observability now uses the approved numeric net observer and existing
+typed obs APIs. The standalone host explicitly reserves four rows and eighteen
+queue entries before net construction. Its callback only captures checked time,
+numeric facts and prepared safe scope; owner-thread drain performs formatting,
+diagnostic publication and sink delivery after every provider operation. Row
+labels are owned copies, remain pinned across reload and are cleared only after
+their request ID is released. External apps keep their host's configured observer.
+
+Static provider/tool spans and typed completion/usage records report real duration
+and status. Unknown tokens/cost and unavailable labels are explicit and omit their
+numeric/string values. Optional labels have at most127 safe ASCII bytes and are
+screened inside their configuration owner against its credential bytes/reference.
+Transport records contain no raw URL, header, body, tool argument/output, model
+text or opaque continuation. Normal UI output is unchanged; `--verbose` or an
+explicit log path opts into DEBUG records.
+
+Observation failure freezes later admission without rewriting a completed wire
+or tool outcome. Raw net callback error and deferred sink/timing error are checked
+separately; AGAIN from a failed observer becomes fatal IO at the app/core boundary.
+Primary work failure wins while ordinary cancel/drain/reap and durable tool result
+recording still run. Before consuming app/obs, final teardown clears borrowed
+diagnostics and ends the target borrow; it never cancels unrelated shared-net IDs.
+The bridge stays host-owned until every borrowing net is destroyed.
