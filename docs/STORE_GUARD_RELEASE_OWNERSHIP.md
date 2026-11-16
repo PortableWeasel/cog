@@ -45,7 +45,7 @@ layout change or automatic adapter hides this compatibility obligation.
    returns IO (or another cleanup error). Public wrapper removes/frees its own
    guard under the same rule. Callback count stays one; store destruction does
    not repeat the release. A custom INVALID_STATE refusal instead keeps both
-   owners intact. Constructor unwind uses the same consuming callback contract.
+   owners intact. Wrapper storage is reserved before either acquire callback; no allocation-failure rollback can strand a nonconsumingly refused backend handle.
 4. **Partial app disposal.** Owned tool/delegation/workspace/provider/config
    resources are consumed in declared order and each alias immediately cleared.
    Consuming guard IO is recorded; remaining observation/store/session/buffers
@@ -83,7 +83,7 @@ layout change or automatic adapter hides this compatibility obligation.
 | Earlier app primary failure | First error wins; app output pointer still truthfully distinguishes complete consumption from retained cleanup-only ownership. |
 | Partial app cleanup refusal | Every consumed pointer is NULL; remaining owner/guard cannot run work, but may complete cleanup after refusal resolution. |
 | Exact source retry | Existing frozen failure remains failure; a cleared consumed guard never grants release success or CAS. |
-| Constructor rollback | Backend handle construction failure creates no owner; wrapper allocation failure after successful acquire invokes the same consuming release discipline. |
+| Constructor failure | Reserve wrapper/bookkeeping before normal or recovery acquire callback. Reservation NOMEM invokes no callback; callback failure yields no backend handle. After success, infallible publication cannot need release rollback. |
 | Context/store destruction | Store outlives guards; consumed guards are absent from its bookkeeping even on cleanup error, so later store free cannot revisit them. |
 | ABI and migration | No slot/signature/layout/version changes; nevertheless custom callback error semantics are explicitly amended and require audit/conformance updates. |
 
@@ -101,3 +101,28 @@ G++/Clang++ C++11 with Werror. Commands/results are retained under
 build-store-release-contract/checks.log. This is a header-only gate: source fixes
 and real file/custom-backend fault regressions remain required after independent
 approval. The existing fae1e27 failing regression is not claimed fixed here.
+
+## Critic follow-up: constructor failure cannot strand a refused release
+
+The cc06933 constructor trace incorrectly assumed release after a late wrapper
+allocation failure must consume the backend handle. INVALID_STATE is expressly
+nonconsuming, so that order could lose an acquired backend owner. Both normal and
+recovery constructors instead reserve all wrapper/bookkeeping before the custom
+acquire callback. This changes no API, fields or allocation bound.
+
+- Wrapper reservation OOM: public output is NULL, existing store/live guards and
+  backend ownership are unchanged, neither acquire nor release callback runs.
+- Callback failure: callback output is NULL and no backend resource is retained;
+  wrapper reservation is freed, public output remains NULL, actual error returns.
+- Callback success: one backend handle exists; binding the already-reserved
+  wrapper, linking it and publishing public output are infallible/nonallocating.
+  There is no post-success allocation and no release-as-rollback call whose
+  INVALID_STATE refusal could lose ownership.
+- Recovery acquisition follows the identical order. Invalid caller inputs and
+  missing backend support still reject before callback, with output NULL whenever
+  the output slot itself is valid. Callers must supply an empty output slot; a
+  constructor must not overwrite an existing owned guard.
+
+The independent critic must approve this clarification before implementation.
+The original cc06933 gate was not approved; its failing rollback assumption is
+superseded here. Targeted strict header checks are repeated at this revision.

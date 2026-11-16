@@ -199,6 +199,13 @@ typedef struct cog_store_vtable {
                                            cog_store_owner_t expected,
                                            cog_store_owner_t next,
                                            cog_store_checkpoint_t checkpoint);
+    /** Normal and recovery acquire callbacks are invoked only AFTER public
+     * wrapper/bookkeeping storage is reserved. Reservation NOMEM invokes neither
+     * callback and leaves public output NULL. Callback failure leaves backend
+     * output NULL with no retained handle/resource; callback success returns one
+     * owned handle. No fallible wrapper allocation follows successful callback,
+     * so constructor rollback never relies on a possibly refused owner_release.
+     * Applies identically to owner_acquire_recovery below. */
     cog_result_t (*owner_acquire)(void *store, const char *id,
                                   cog_store_owner_t expected, void **out_guard);
     /** Release an admitted backend guard; exact public owner_release lifetime.
@@ -559,6 +566,12 @@ cog_result_t cog_store_owner_compare_exchange(cog_store_t *store, const char *id
  * crashed STARTED/INDETERMINATE effect intent or uncertain manifest durability;
  * NOMEM/IO;
  * NULL_PTR; UNSUPPORTED absent independent-open-description locking/backend.
+ * @post Reserve public wrapper/bookkeeping BEFORE invoking a custom normal or
+ * recovery acquire callback. Reservation failure returns NOMEM, output NULL,
+ * and invokes no backend acquire/release callback. Backend failure retains no
+ * backend handle and leaves output NULL; release only the reserved wrapper.
+ * After backend success, wrapping/linking/output publication cannot fail or
+ * allocate, and does not call owner_release as a rollback mechanism.
  * @note Acquisition validates/fsync-confirms durable owner and current ledger
  * UNDER the lock. Coherent PROPOSED calls are proven unstarted and do not
  * require a recovery guard: ordinary ownership may resume their explicit policy
@@ -584,6 +597,8 @@ cog_result_t cog_store_owner_acquire(cog_store_t *store, const char *id,
  * @param[in] expected Newly admitted current incarnation/epoch after old owned
  * process groups are fenced/reaped; never impersonate the dead incarnation.
  * @param[out] out_guard Owned recovery guard, NULL on failure; release normally.
+ * @post Same pre-callback wrapper reservation and no-fallible-post-success
+ * publication as owner_acquire; failure exposes no partial guard or ownership.
  * @return OK; AGAIN lock busy; INVALID_STATE stale tuple/no recovery needed;
  * NULL_PTR; NOMEM; IO; PROTOCOL corrupt authoritative data; UNSUPPORTED backend.
  * @note Takes the same independently opened lock and durably confirms owner as
