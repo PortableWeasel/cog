@@ -69,6 +69,8 @@ typedef struct cog_core_info {
     cog_worker_id_t worker_id;    /**< Managed lifecycle identity from spawn. */
     bool reaped;                 /**< Native owned child reaped, not merely a
        disconnected/unhealthy socket or proof all descendant effects stopped. */
+    bool ownership_lost;          /**< ECHILD/out-of-profile reap loss: permanently
+       forbids signalling this PID. Driver failure, never a new execution grant. */
 } cog_core_info_t;
 
 /**
@@ -97,7 +99,37 @@ typedef struct cog_orchestrator_config {
     uint32_t shutdown_timeout_ms; /**< Per-stop grace; zero defaults 1000. */
     cog_store_t *store; /**< Borrowed same-host require_owner store for durable
        migration; optional only for non-migrating fixture/process-only use. */
+    size_t message_events; /**< Reserved application-message events; zero=16. */
+    size_t message_bytes; /**< Reserved copied message bytes; zero=4 MiB. */
+    size_t max_frame_bytes; /**< Control/application frame ceiling; zero=1 MiB,
+       <=UINT32_MAX and <=message_bytes. No truncation or runtime growth. */
 } cog_orchestrator_config_t;
+
+/** @brief Independent bounded delivery classes; control progress cannot depend
+ * on freeing an ordinary message slot. Each class preserves capture order. */
+typedef enum cog_orchestrator_event_class {
+    COG_ORCHESTRATOR_CONTROL_EVENTS = 1,
+    COG_ORCHESTRATOR_MESSAGE_EVENTS
+} cog_orchestrator_event_class_t;
+/** @brief Control transitions have fixed per-worker reservations. */
+typedef enum cog_orchestrator_event_kind {
+    COG_ORCHESTRATOR_READY = 1,
+    COG_ORCHESTRATOR_DISCONNECTED,
+    COG_ORCHESTRATOR_REAPED,
+    COG_ORCHESTRATOR_MESSAGE,
+    COG_ORCHESTRATOR_OWNERSHIP_LOST
+} cog_orchestrator_event_kind_t;
+/** @brief Copied event metadata, no borrowed endpoint/native handle. */
+typedef struct cog_orchestrator_event {
+    uint64_t event_id; /**< Nonzero, never reused within orchestrator incarnation. */
+    cog_orchestrator_event_kind_t kind;
+    cog_worker_id_t worker_id;
+    cog_peer_id_t peer_id; /**< Actual bound fabric peer, or0 if never bound. */
+    cog_ipc_peer_info_t peer_info; /**< Cached kernel snapshot if peer_id!=0. */
+    cog_result_t outcome;
+    const void *data; /**< Application frame in caller storage, NULL for control. */
+    size_t data_len;
+} cog_orchestrator_event_t;
 
 /* ── Lifecycle ──────────────────────────────────────────────────── */
 
@@ -110,6 +142,13 @@ typedef struct cog_orchestrator_config {
  * @return COG_ERROR_NULL_PTR if @p out or @p config is NULL.
  * @return COG_ERROR_INVALID_ARG if @p config->socket_path is NULL.
  * @return COG_ERROR_NOMEM if allocation fails.
+ * @return IO if fresh nonzero incarnation entropy/setup fails (no PID/time
+ * fallback); UNSUPPORTED without kernel peer identity or supported child-reap
+ * profile. Validate SIGCHLD is neither SIG_IGN nor SA_NOCLDWAIT before fork.
+ * @pre For every owned child lifetime the host leaves that disposition stable
+ * and gives this context exclusive reap ownership of its exact native PIDs.
+ * No foreign waitpid(-1)/handler reaper may consume them. Other host children
+ * remain independent; this context never changes SIGCHLD or installs a reaper.
  *
  * Threading: not thread-safe.
  */
@@ -120,7 +159,8 @@ cog_result_t cog_orchestrator_new(cog_orchestrator_t **out,
  * @brief Destroy an orchestrator.
  *
  * Releases constructor resources after asynchronous shutdown has completed.
- * @pre request_shutdown/service reports all owned children reaped. No implicit
+ * @pre request_shutdown/service reports all owned children reaped or permanently
+ * disowned with explicit ownership_lost/IO. No implicit
  * blocking peer wait or abandoned child is permitted; store outlives orch.
  *
  * @param[in,out] orch Orchestrator to destroy; may be NULL (no-op).
@@ -188,7 +228,13 @@ cog_result_t cog_orchestrator_stop(cog_orchestrator_t *orch,
  *
  * Sends SIGKILL only to the immutable still-owned, UNREAPED native child. Use
  * when graceful stop fails. Repeated kill of an already reaped reservation is
- * OK and never signals its old numeric PID. service still performs WNOHANG reap.
+ * OK while that record is retained and never signals its old numeric PID.
+ * Retired/foreign IDs return NOT_FOUND, never select a reused slot. Before EVERY
+ * signal, exact-PID waitpid(WNOHANG) confirms ownership. ECHILD permanently
+ * disowns the record and returns IO with no signal. With the supported exclusive
+ * reap/disposition lifetime precondition, an exit between check and signal stays
+ * an unreaped zombie and cannot recycle PID; no guarantee is made against a
+ * foreign thread violating that precondition. No waitpid(-1)/blocking reap.
  *
  * @param[in,out] orch    Orchestrator.
  * @param[in]     worker_id Exact managed reservation, even before connection.
@@ -215,6 +261,66 @@ cog_result_t cog_orchestrator_kill(cog_orchestrator_t *orch,
  */
 cog_health_t cog_orchestrator_health(const cog_orchestrator_t *orch,
                                       cog_worker_id_t worker_id);
+
+/**
+ * @brief Retire a bounded managed record after its process/event/route lifetime.
+ * @param[in,out] orch Owner thread. @param[in] worker_id Exact retained ID.
+ * @return OK; NULL_PTR; NOT_FOUND; INVALID_STATE while child still owned/live,
+ * pending copied events/unacknowledged messages or routes remain. Lost ownership
+ * is a permanent reported failure; it never permits old-PID signalling/rebind.
+ * @post OK frees only the bounded slot; its incarnation/number is never reused.
+ * Old stop/kill/health/query cannot target a later worker occupying that slot.
+ * No task/effect replay, guard release or semantic agent ack is implied.
+ */
+cog_result_t cog_orchestrator_release_worker(cog_orchestrator_t *orch,
+                                              cog_worker_id_t worker_id);
+
+/**
+ * @brief Queue one copied private application frame to an authenticated worker.
+ * @param[in,out] orch Single owner of worker fabric.
+ * @param[in] worker_id Exact HEALTHY/READY reservation.
+ * @param[in] message Bounded caller frame, copied on OK.
+ * @return OK exactly once; AGAIN full queue accepts nothing; NULL_PTR;
+ * NOT_FOUND; INVALID_STATE not authenticated/ready; LIMIT above max_frame_bytes.
+ * No allocation/wait; service flushes partial bytes. App verifies its own role,
+ * permission, session/attempt/config protocol; process readiness is not a guard.
+ */
+cog_result_t cog_orchestrator_send(cog_orchestrator_t *orch,
+                                    cog_worker_id_t worker_id,
+                                    const cog_ipc_message_t *message);
+
+/**
+ * @brief Copy oldest retained event in one class without consuming it.
+ * @param[in] orch Owner. @param[in] event_class Control or application messages.
+ * @param[out] event Metadata; data points only into caller storage on OK.
+ * @param[out] storage Payload bytes; NULL iff capacity=0. No NUL is appended.
+ * @param[in] capacity Writable bytes. @param[out] required Exact payload size.
+ * @return OK; AGAIN empty class; NULL_PTR; INVALID_ARG; OVERFLOW changes only
+ * required and retains event/bytes. Repeated copies safe; no allocation.
+ * @note Constructor reserves three independent control transitions per worker
+ * (READY/DISCONNECTED/REAPED-or-OWNERSHIP_LOST), separate from message storage.
+ * A full message class pauses that peer's application receive, never owner
+ * timer/reap/native shutdown progress. FIFO head-of-line pressure can delay
+ * incoming heartbeat/acks and is not proof of process death; wire shutdown still
+ * has the owned-PID TERM/KILL deadline path. Control may overtake app delivery; app must
+ * resolve already-retained final updates/notifications before projecting a
+ * fenced failure. Reap/socket loss never overwrites an accepted agent terminal.
+ * Kernel/worker proof is copied at ingress and survives endpoint EOF until ack.
+ */
+cog_result_t cog_orchestrator_copy_event(const cog_orchestrator_t *orch,
+                                          cog_orchestrator_event_class_t event_class,
+                                          cog_orchestrator_event_t *event,
+                                          void *storage, size_t capacity,
+                                          size_t *required);
+/**
+ * @brief Acknowledge one independently copied/processed retained event.
+ * @param[in,out] orch Owner. @param[in] event_id Exact retained event identity.
+ * @return OK (latest duplicate ack idempotent); NULL_PTR; NOT_FOUND stale/retired;
+ * INVALID_STATE not the oldest retained event in its class. No mutation on error.
+ * No native endpoint buffer is borrowed after return. This frees transport event
+ * storage ONLY, never acknowledges/applies a CGA1 update or durable tool result.
+ */
+cog_result_t cog_orchestrator_ack_event(cog_orchestrator_t *orch, uint64_t event_id);
 
 /**
  * @brief List all managed cores.
@@ -321,13 +427,20 @@ cog_result_t cog_orchestrator_sessions(const cog_orchestrator_t *orch,
 /**
  * @brief Advance bounded child connection/heartbeat/shutdown/reap work, no wait.
  * @param[in,out] orch Owner thread. @param[in] now_ms Nondecreasing clock.
- * @param[out] out_shutdown_done True iff a requested shutdown has reaped all
- * owned children (false when shutdown not requested).
+ * @param[out] out_shutdown_done True iff requested shutdown has disposed all
+ * owned lifetimes (reaped or explicit permanent ownership_lost/IO); false before
+ * shutdown. Lost ownership is NEVER successful cleanup/proof descendants stopped.
  * @param[out] out_deadline_ms Earliest absolute timer or UINT64_MAX.
- * @return OK; AGAIN no progress; NULL_PTR; INVALID_ARG clock; IO/PROTOCOL.
+ * @return OK; AGAIN no progress; NULL_PTR; INVALID_ARG clock; IO/PROTOCOL/LIMIT/
+ * NOMEM/UNSUPPORTED driver failure. Failure retains owned state; later service
+ * still advances shutdown/reap while admission is frozen, reporting first error.
  * @note Bounded by constructor service_quantum even with continuous traffic.
  * No blocking handshake/waitpid or foreign-PID signals. Dead owner sessions
  * stay failed/frozen; auto_replace creates idle capacity, never replays tools.
+ * At most one actual transport binds each managed worker. Disconnect ends that
+ * attempt: no new peer ID may reattach immutable owner_peer. UI reconnect is a
+ * separate fabric. Accepted endpoint construction is explicit and peer-bounded;
+ * NOMEM is a checked driver failure, never table/buffer growth.
  */
 cog_result_t cog_orchestrator_service(cog_orchestrator_t *orch, uint64_t now_ms,
                                        bool *out_shutdown_done,
@@ -338,8 +451,9 @@ cog_result_t cog_orchestrator_service(cog_orchestrator_t *orch, uint64_t now_ms,
  * @param[in] timeout_ms Finite graceful deadline before owned-child KILL/reap.
  * @return OK; NULL_PTR; INVALID_ARG. Idempotent, never extends earlier deadline.
  * @note No peer wait; service reports TIMEOUT only with out_shutdown_done=true
- * after all owned children are reaped. Other driver errors retain owned state
- * for explicit cleanup and do not make free safe.
+ * after all owned children are reaped. Lost ownership reports IO with done once
+ * no owned lifetime remains; it never authorizes failover or effect replay.
+ * Other errors retain ownership for explicit cleanup and do not make free safe.
  */
 cog_result_t cog_orchestrator_request_shutdown(cog_orchestrator_t *orch,
                                                 uint64_t now_ms,

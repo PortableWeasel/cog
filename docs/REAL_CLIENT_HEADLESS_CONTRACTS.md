@@ -201,3 +201,32 @@ new worker. An already reaped record never signals its old PID, even if reused.
 No socket disconnect alone proves descendants/effects stopped. Management/app
 message ownership and bounded event delivery follow in the next subset; these
 signature changes deliberately require O consumer/fixture migration.
+
+## Incremental orchestrator delivery bridge
+
+Orchestrator alone receives/services worker sockets. Copied application events
+and exact send-to-managed-worker provide the app bridge; no second endpoint
+reader is exposed. Normal message events use constructor-count/byte reservations.
+Three per-worker control transitions are independently reserved, so full ordinary
+storage cannot prevent timers, native shutdown and reap. Wire FIFO pressure may
+delay heartbeat/ACK frames; no contract pretends it can skip a retained large
+frame. Native TERM/KILL deadlines remain the cancellation escape, with all
+affected attempts frozen and descendant/effect uncertainty preserved.
+
+The supported host keeps SIGCHLD neither ignored nor SA_NOCLDWAIT, unchanged
+while managed children exist, and grants exclusive exact-PID reap ownership.
+Constructor/spawn validate disposition without installing a handler. Every
+signal first checks waitpid(exactPID,WNOHANG); ECHILD permanently loses ownership,
+forbids signalling/rebinding and reports IO. With the honored lifetime condition,
+exit between check/signal leaves an unreaped zombie, preventing PID reuse. This
+is an explicit profile, not magical protection against a violating foreign
+thread. No waitpid(-1) consumes unrelated host children. Tests cover unsupported
+disposition, external-reap/ECHILD refusal, unrelated child and retired ID reuse.
+
+Reaped records remain bounded: kill is idempotent only while the exact reaped
+record is retained; release_worker requires no remaining events/routes. Retired
+IDs are NOT_FOUND and never select a recycled slot. Fresh constructor incarnation
+has checked entropy/setup failure, no PID/time fallback. A managed worker binds
+one actual transport; loss ends that attempt with retained/frozen uncertainty,
+not worker reattachment under a fresh peer ID. Receipt/header subset300e835 is
+independently reviewed before N-only integration; it does not add rebind authority.
