@@ -53,11 +53,36 @@ That source belongs to dff0484/d5280b7. It was neither changed nor stubbed here.
 The Clang build was scoped to real O2 dependencies; no whole-project pass is
 claimed. Whole O/P all-target and joined scenario validation awaits O3/O4/O9.
 
-## Remaining independent gate
+## Independent R1 correction and fresh rerun
 
-These are writer results, not independent acceptance. The critic is checking
-lifecycle-observer reentry and whether a saturated queue/arena can defer a fatal
-IPC service result contrary to the approved first-error contract. No interface
-weakening is proposed; a confirmed regression requires a source correction and
-fresh affected validation before acceptance. No live provider calls, main
-changes or integration were performed.
+Review 8ffb926 cycle 1 rejected 8549003: an authenticated oversized frame set
+the endpoint's LIMIT failure while a full descriptor queue let core_step return
+OK and dispatch an ordinary event. Bug 23e3a16 records the correction under the
+already approved fail-closed contract. Critic regression c306e02 was imported as
+4f36bee, including lifecycle-observer begin/end/error/free reentry and manual
+service-error queued-work preservation checks.
+
+35c7049 checks the service result before CONNECTED or receive reservation
+admission: non-OK/AGAIN/IO failures retire the exact endpoint and immediately
+return the first fatal error. Ordinary IO/EOF still drains retained complete
+frames normally. Already queued descriptors keep their copied proof/payload
+owners after endpoint retirement. The core driver latches the failure before
+ordinary dispatch; explicit rebegin cannot rediscover the retired fatal peer.
+
+c81ffc3 extends the existing proof regression across both descriptor and arena
+pressure for LIMIT (oversized declared frame) and PROTOCOL (partial prefix then
+EOF). All four assert fatal/done, zero dispatch, retained preexisting payload
+ownership, retirement and clean rebegin. Existing ordinary EOF cases remain
+enabled. 9bce457 only corrects the nearby explanatory comment.
+
+Fresh affected target rebuilds and tests passed after the correction: GCC 10/10,
+Clang 10/10, ASan/UBSan/LSan 10/10 and TSan 5/5. The profile/options and real
+target scopes are unchanged from the table above; logs are
+`build-o2-*/r1-scoped-build.log` and `build-o2-*/r1-scoped-test.log`. No failures
+were skipped. Header signatures/layout remain unchanged, and the earlier strict
+header validation remains applicable. Full O/P build limitations remain as
+recorded above.
+
+Independent re-review of this final correction remains required; these are
+writer results, not acceptance. No live provider calls, main changes or
+integration were performed.
