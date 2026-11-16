@@ -42,3 +42,19 @@ authored fixtures. Add `critic_mutations` to the README's codec target loop afte
 the four real sources join `cog::cli`; register its negative CHECK control under
 the maintained expected-failure policy. The standalone runner remains usable
 before unfinished app/orchestrator sources link. No test skip is authorized.
+
+## Approved O-branch integration
+
+Root authorized O5-only integration after the independent PASS. Source history
+is retained by no-ff merge `65a0875`; critic-only `83900cd` is retained by
+cherry-pick `0c98a7f4768710410046aea8d851165cf083d891`. Exact codec source remains
+writer `86f73b4`; no production changes accompanied the merge. Main remains
+`dacbd19975661d338478a30597aa3455d71c7787`.
+
+The exact composed `0c98a7f` tree passes `run_critic.py` again with GCC O3,
+Clang O3, and Clang O3 ASan+UBSan+LSan, using separate
+`/tmp/cog-o5-postmerge-{gcc,clang,asan}` directories. Each profile passes all five
+positive fixtures, all five intentional CHECK-failure controls and120000 mutation
+cases; allocation-import checks also pass. Shared CMake/app registration remains
+the O4 integration owner's recorded task, including the critic fixture. This
+closes O5 source/review/integration/finalization only, not whole O or P.
