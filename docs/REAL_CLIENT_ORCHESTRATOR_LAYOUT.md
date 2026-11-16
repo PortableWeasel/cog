@@ -80,8 +80,11 @@ The installed headless coordinator supports C<=16 and P<=18; it checks its
 profile before spawn. Its physical slots partition as one primary, one staged
 handoff, and C child slots. Primary/staged roles are exclusive reservations,
 not spare child slots; only children contribute to CGW1 active_subagents and
-placement. STAGED has no guard/effect authority until the already specified
-handoff activation. This partition does not authorize two live primary owners.
+placement. STAGED preparation has no guard authority before COMMIT. After the
+source releases its guard and exact owner CAS succeeds, COMMIT permits the
+target to acquire its guard while remaining staged. READY reports this guarded
+staged state; exact route publication precedes ACTIVATE, which alone permits
+effect admission. This partition does not authorize two live primary owners.
 O6's syntactic worker parser remains physical1..18: parsing alone is not semantic
 startup approval. Worker-host setup validates the two reserved roles and its
 supported child profile before HELLO/readiness; P below3 cannot represent a
@@ -188,7 +191,7 @@ sequenceDiagram
 | Route | Public publish_owner/session_owner/forget_owner; `orch_route_t` | Advisory route, not durable store/guard authority |
 | Disconnect | worker bound_once/proof; frozen route | No new peer binding or automatic task replay |
 | Release | Public release_worker; route/event references | Refuse live/reference-bearing reservation; stale ID NOT_FOUND |
-| Handoff | CGH public codecs; O4 coordinator | Library contains no save/CAS/guard/activation engine |
+| Handoff | CGH public codecs; O4 coordinator | COMMIT permits staged guard acquisition; guarded READY and exact route publication precede ACTIVATE/effects. Library contains no transaction engine |
 
 No new gap. All20 original scenario contracts remain unchanged; the targeted
 03/04/05/07/09/10/13/17/19/20 paths exercise these private structures. The other
@@ -225,3 +228,11 @@ layout gap. A different critic must review the final tree, including the public
 capacity/error prose and supported installed profile, before this layout is
 accepted. O2 finalization separately gates O3 bodies. Neither this document nor
 the three design commits closes those gates or P release acceptance.
+
+## Independent review correction — staged guard boundary
+
+The critic found pass1 prose incorrectly deferred both guard and effects until
+activation. Corrected the slot-partition paragraph and trace C to retain N
+ordering: source guard release, exact CAS, COMMIT, staged target guard acquire,
+READY, exact route publication, ACTIVATE, effects. Adjacent route and helper
+contracts retain their advisory-only boundary. No header, body or wire change.
