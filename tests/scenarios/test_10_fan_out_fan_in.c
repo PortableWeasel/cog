@@ -138,6 +138,16 @@ static void fx_ack(cog_orchestrator_t *o)
         FX_CHECK(rc==COG_ERROR_AGAIN);
     }
 }
+static cog_result_t fx_release(cog_orchestrator_t *o,cog_worker_id_t id)
+{
+    cog_result_t rc;uint64_t end=fx_now()+2000;
+    do {
+        fx_ack(o);rc=cog_orchestrator_release_worker(o,id);
+        if(rc!=COG_ERROR_INVALID_STATE) return rc;
+        (void)fx_service(o);fx_pause();
+    } while(fx_now()<end);
+    return rc;
+}
 static void fx_command(cog_orchestrator_t *o,cog_worker_id_t id,unsigned char mode,unsigned char active)
 {
     unsigned char bytes[6]={'F','X','M','1',mode,active};
@@ -193,12 +203,7 @@ static void fx_close_at(cog_orchestrator_t *o,char *path,cog_result_t expected,c
         FX_CHECK(infos[i].reaped&&!infos[i].ownership_lost);
         /* Native done is not logical endpoint/event retirement. Continue the
            actual owner service and ACK copied events before bounded release. */
-        cog_result_t released;uint64_t retire_end=fx_now()+2000;
-        do {
-            fx_ack(o);released=cog_orchestrator_release_worker(o,infos[i].worker_id);
-            if(released!=COG_ERROR_INVALID_STATE) break;
-            (void)fx_service(o);fx_pause();
-        } while(fx_now()<retire_end);
+        cog_result_t released=fx_release(o,infos[i].worker_id);
         if(released!=COG_OK) (void)fprintf(stderr,"%s release worker %llu: actual %d reaped %d lost %d\n",test,(unsigned long long)infos[i].worker_id.number,(int)released,(int)infos[i].reaped,(int)infos[i].ownership_lost);
         FX_CHECK(released==COG_OK);
     }
@@ -320,9 +325,16 @@ static void *peer_thread(void *arg)
     cog_result_t rc=cog_ipc_endpoint_connect(ep,p->path,NULL);
     if(rc!=COG_OK&&rc!=COG_ERROR_AGAIN) { (void)cog_ipc_endpoint_free(ep);return NULL; }
     unsigned char data[64];cog_ipc_message_t msg={.data=data,.capacity=sizeof(data)};
-    uint64_t end=fx_now()+4000;
+    uint64_t end=fx_now()+4000;bool connected=false;
     do {
-        (void)ipc_step(ep);rc=cog_ipc_endpoint_recv(ep,&msg);
+        (void)ipc_step(ep);
+        if(!connected) {
+            cog_peer_id_t peer=0;rc=cog_ipc_endpoint_get_peer_id(ep,&peer);
+            if(rc==COG_OK&&peer!=0) connected=true;
+            else if(rc!=COG_ERROR_INVALID_STATE) break;
+            if(!connected) { fx_pause();continue; }
+        }
+        rc=cog_ipc_endpoint_recv(ep,&msg);
         if(rc==COG_OK) {
             if(msg.len<sizeof(p->received)) { memcpy(p->received,data,msg.len);p->received[msg.len]='\0';p->ok=1; }
             break;
