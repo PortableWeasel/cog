@@ -617,9 +617,13 @@ cog_result_t cog_orchestrator_request_shutdown(cog_orchestrator_t *o,uint64_t no
     uint64_t deadline=deadline_add(now,timeout);
     o->now_ms=now;o->clock_set=true;
     if(!o->shutting_down || deadline<o->shutdown_deadline_ms) o->shutdown_deadline_ms=deadline;
+    bool first=!o->shutting_down;
     o->shutting_down=true;
-    for(size_t i=0U;i<o->bounds.workers;++i) if(o->workers[i].used)
-        request_stop(o,&o->workers[i],o->shutdown_deadline_ms);
+    for(size_t i=0U;i<o->bounds.workers;++i) if(o->workers[i].used) {
+        orch_worker_t *w=&o->workers[i];
+        if(w->native_state==ORCH_NATIVE_OWNED) request_stop(o,w,o->shutdown_deadline_ms);
+        else if(first) w->terminate_deadline_ms=0U; /* No timer in this shutdown. */
+    }
     return COG_OK;
 }
 cog_result_t cog_orchestrator_service(cog_orchestrator_t *o,uint64_t now,bool *done,uint64_t *deadline)
@@ -653,7 +657,7 @@ cog_result_t cog_orchestrator_service(cog_orchestrator_t *o,uint64_t now,bool *d
                 deadline_add(w->last_heartbeat_ms,o->config.health_interval_ms);
             if(due<next) next=due;
         }
-        if(w->stop_requested && w->kill_sent) timed_out=true;
+        if(w->stop_requested && w->kill_sent && w->terminate_deadline_ms!=0U) timed_out=true;
     }
     /* Timers belong to every retained link, even outside this service quantum.
      * Native proof alone is not HELLO readiness and cannot hold a slot forever. */
@@ -665,7 +669,7 @@ cog_result_t cog_orchestrator_service(cog_orchestrator_t *o,uint64_t now,bool *d
     o->shutdown_done=o->shutting_down && disposed;
     if(o->shutdown_done && timed_out && o->primary==COG_OK) (void)remember(o,COG_ERROR_TIMEOUT);
     *done=o->shutdown_done;*deadline=next;o->in_service=false;
-    return o->primary!=COG_OK?o->primary:progress?COG_OK:COG_ERROR_AGAIN;
+    return o->primary!=COG_OK?o->primary:(progress || o->shutdown_done)?COG_OK:COG_ERROR_AGAIN;
 }
 cog_result_t cog_orchestrator_shutdown(cog_orchestrator_t *o,uint32_t timeout)
 {
