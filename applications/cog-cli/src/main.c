@@ -1,6 +1,7 @@
 /** @file main.c @brief Linux CLI host: explicit transport and signal lifecycle. */
 #define _GNU_SOURCE
 #include "app_internal.h"
+#include "host_output.h"
 #include <curl/curl.h>
 #include <signal.h>
 #include <stdio.h>
@@ -16,12 +17,16 @@ int main(int argc, char **argv)
     cog_net_ctx_t *net = NULL;
     cog_cli_observer_t *observer = NULL;
     cog_cli_configuration_t *candidate = NULL;
+    cog_cli_host_output_t output = {0};
+    cog_result_t written;
     sigset_t signals, old_mask;
     struct sigaction old_pipe, ignore_pipe = {0};
     ignore_pipe.sa_handler = SIG_IGN;
     (void)sigemptyset(&ignore_pipe.sa_mask);
     if (sigaction(SIGPIPE, &ignore_pipe, &old_pipe) != 0) return 1;
-    cog_result_t rc = cog_cli_options_parse(&options, argc, argv, &status);
+    cog_result_t rc = cog_cli_host_output_open(&output);
+    if (rc != COG_OK) { (void)sigaction(SIGPIPE, &old_pipe, NULL); return 1; }
+    rc = cog_cli_options_parse(&options, argc, argv, &status);
     if (rc == COG_ERROR_ABORTED) { rc = COG_OK; goto done; }
     if (rc != COG_OK) { status = 2; goto done; }
     /* Resolve backend before creating a real transport: explicit/configured
@@ -70,7 +75,8 @@ int main(int argc, char **argv)
     }
     rc = cog_cli_app_run(app);
 done:
-    if (fclose(stdout) != 0 && rc == COG_OK) rc = COG_ERROR_IO;
+    written = cog_cli_host_output_close_stdout(&output);
+    if (rc == COG_OK) rc = written;
     cog_cli_configuration_free(candidate);
     cog_cli_app_free(app);
     if (observer != NULL) {
@@ -85,10 +91,12 @@ done:
         while (read(signal_fd, &info, sizeof(info)) == (ssize_t)sizeof(info)) {}
         (void)close(signal_fd);
     }
-    if (masked) (void)sigprocmask(SIG_SETMASK, &old_mask, NULL);
-    (void)sigaction(SIGPIPE, &old_pipe, NULL);
     if (rc != COG_OK) {
         (void)fprintf(stderr, "cog-cli: %s\n", cog_cli_result_name(rc)); status = 1;
     }
+    rc = cog_cli_host_output_close(&output, rc);
+    if (rc != COG_OK) status = 1;
+    if (masked) (void)sigprocmask(SIG_SETMASK, &old_mask, NULL);
+    (void)sigaction(SIGPIPE, &old_pipe, NULL);
     return status;
 }

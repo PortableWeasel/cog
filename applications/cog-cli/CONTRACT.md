@@ -16,6 +16,19 @@ Teardown drains the app, releases transport, cleans up the dependency runtime,
 closes the signal descriptor and restores the host mask. Embedders instead
 provide `opts.net` with their own explicit dependency lifetime.
 
+Before parsing, the installed Linux host explicitly constructs bounded stdout/
+stderr adapters. FIFO/terminal writes use an independently opened nonblocking
+description; socket writes use per-call nonblocking sends. Parent/shared file
+status flags are never modified. Regular-file writes share the original offset
+and append semantics; ordinary filesystem latency remains outside this bound.
+Unsupported/unavailable independent endpoints fail at startup. Saturation, short
+write or output error fails as IO, with no waiting, retry or output replay. The
+host checks final output closure while preserving a prior work error, restores
+standard FILE bindings and keeps SIGPIPE ignored through the final diagnostic.
+Embedding applications retain their existing FILE behavior. Initial/repeated
+ASK prompts must write and flush successfully before a later answer can authorize
+execution; prompt failure takes ordinary IO cleanup before STARTED/effects.
+
 REAL is the default and requires an explicit model and usable credential
 reference. Configuration errors never select MOCK. `--mock` is an explicit
 fixture selection. CLI > environment > config file > defaults and presence bits

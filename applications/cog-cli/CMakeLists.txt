@@ -51,7 +51,7 @@ target_link_libraries(cog-cli-lib PUBLIC cog::core cog::provider cog::obs cog::t
 
 target_enable_warnings(cog-cli-lib)
 
-add_executable(cog-cli src/main.c)
+add_executable(cog-cli src/main.c src/host_output.c)
 target_link_libraries(cog-cli PRIVATE cog::cli)
 target_enable_warnings(cog-cli)
 
