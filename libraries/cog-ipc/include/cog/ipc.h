@@ -135,10 +135,13 @@ typedef struct cog_ipc_endpoint_config {
     size_t max_routes; /**< Default 64 copied session routes; ID max 127 bytes. */
     uint32_t connect_timeout_ms; /**< Default 1000; asynchronous handshake timer. */
     bool wipe_buffers; /**< Default false. Private authenticated bootstrap
-       fabrics set true: wipe each retired copied send/receive payload and every
-       reserved payload buffer before disconnect/free, including partial/error
-       paths. No payload logging, extra allocation or changed send/recv outcome.
-       Caller separately wipes its own encoded/decoded credential storage. */
+       fabrics set true: wipe copied payloads on LOGICAL queue retirement, and
+       all payload storage on explicit disconnect/free/constructor unwind.
+       Socket EOF/service error alone preserves committed complete readable RX
+       frames until recv retirement; never wipe readable retained bytes merely
+       because physical I/O ended. Discarded partial RX/TX/error payloads wipe on
+       abandonment. No logging/allocation or changed send/recv outcome. Caller
+       separately wipes its owned encoded/decoded credential storage. */
 } cog_ipc_endpoint_config_t;
 /**
  * @brief Reserve bounded framing/routing storage; all sockets are nonblocking.

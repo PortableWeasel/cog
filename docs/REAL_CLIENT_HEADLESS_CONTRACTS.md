@@ -230,3 +230,9 @@ has checked entropy/setup failure, no PID/time fallback. A managed worker binds
 one actual transport; loss ends that attempt with retained/frozen uncertainty,
 not worker reattachment under a fresh peer ID. Receipt/header subset300e835 is
 independently reviewed before N-only integration; it does not add rebind authority.
+Global event identity exhaustion cannot consume mandatory control delivery:
+ordinary capture and spawn leave enough nonreused IDs for every outstanding
+READY/disconnect/final transition, as well as independent byte slots. Before
+fork/capture, LIMIT freezes new admission rather than stealing those final IDs.
+Sensitive IPC copies wipe on logical retirement/explicit abandonment; complete
+retained frames remain intact across physical EOF until copied/retired.

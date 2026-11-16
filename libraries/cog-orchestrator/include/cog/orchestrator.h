@@ -121,7 +121,8 @@ typedef enum cog_orchestrator_event_kind {
 } cog_orchestrator_event_kind_t;
 /** @brief Copied event metadata, no borrowed endpoint/native handle. */
 typedef struct cog_orchestrator_event {
-    uint64_t event_id; /**< Nonzero, never reused within orchestrator incarnation. */
+    uint64_t event_id; /**< Nonzero, never reused within orchestrator incarnation.
+       Ordinary capture/spawn must preserve outstanding mandatory control IDs. */
     cog_orchestrator_event_kind_t kind;
     cog_worker_id_t worker_id;
     cog_peer_id_t peer_id; /**< Actual bound fabric peer, or0 if never bound. */
@@ -194,6 +195,8 @@ void cog_orchestrator_free(cog_orchestrator_t *orch);
  *         @p out_worker_id is NULL.
  * @return COG_ERROR_OVERFLOW if max_aux_cores is reached.
  * @return LIMIT if managed identity space is exhausted, checked before fork.
+ * Also LIMIT before fork if event identity space cannot reserve this worker's
+ * three mandatory control transitions in addition to existing reservations.
  * @return IO for known prepublication fork/exec-setup failure. Exec failure after
  * successful publication is reported through service/health/reap, never by
  * silently discarding an already returned owned worker. No blocking waitpid.
@@ -306,6 +309,12 @@ cog_result_t cog_orchestrator_send(cog_orchestrator_t *orch,
  * resolve already-retained final updates/notifications before projecting a
  * fenced failure. Reap/socket loss never overwrites an accepted agent terminal.
  * Kernel/worker proof is copied at ingress and survives endpoint EOF until ack.
+ * Identity capacity is reserved as well as storage: ordinary event capture
+ * cannot consume IDs needed for outstanding READY/DISCONNECTED/final transitions.
+ * LIMIT occurs before new ordinary capture/fork, never wraps or steals a final
+ * reservation. Control transitions consume their reserved identities; unused
+ * reservations release only when that worker becomes terminal. Fatal ordinary
+ * admission still permits native cleanup and publication of reserved final state.
  */
 cog_result_t cog_orchestrator_copy_event(const cog_orchestrator_t *orch,
                                           cog_orchestrator_event_class_t event_class,
