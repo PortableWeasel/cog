@@ -64,3 +64,34 @@ readiness means a later ordinary service unit can discover the existing terminal
 result; the query itself does not fail or close the endpoint for revents bits.
 Only a failed poll syscall produces IO or transient AGAIN. Output commits only
 after successful validation/query, including a ready=false result.
+
+## Pass3 — authority, nonmutation and boundedness audit
+
+Rechecked the truth table against ipc_handshake/read_unit/write_unit and the
+single-unit service dispatch. Queued ready work may require alternating past an
+idle direction, but remains bounded actionable work and must not authorize sleep.
+No attempt to publish, receive, send, capture proof or advance a clock is hidden
+inside this query. It reports potential progress, never promises a syscall's
+later success in the presence of external peer changes. A readiness race falls
+back to the existing nonblocking AGAIN result without changed authority.
+
+The core separately applies endpoint deadlines and its constructor finite idle
+ceiling. Lack of a due timer never authorizes unbounded sleep. A due timer is not
+an IPC readiness query side effect. Listener IDs retain their existing scope of
+one listen-to-disconnect fabric, not a stronger new-to-free object identity.
+Neither this helper nor rebegin may overwrite an already admitted event proof.
+
+Planned focused tests: idle writable socket false; queued copied TX true; drained
+TX false; actual inbound prefix true; partial prefix/payload with no more bytes
+false; parsed-prefix and payload-publication local units true; retained/full RX
+and terminal EOF true; connecting/client/accepted fragmented handshake interests;
+listener pending acceptance vs idle listener; exact output preservation for null,
+unbound, injected poll IO/EINTR; endpoint byte/queue/identity state unchanged after
+every query; unrelated accepted peer does not make an idle listener ready.
+A loopback socket may change kernel readiness concurrently, so tests assert local
+nonmutation and concrete queued/readable facts, not frozen external fd state.
+
+Verification: private core_ipc.h compiles standalone/repeated include under full
+strict GCC/Clang C11 and G++/Clang++ C++11 (4/4). No body has changed. Separate
+IPC helper implementation/runtime approval and O integration are required before
+dependent core bodies, in addition to the core/agent private-layout gate.
