@@ -43,6 +43,8 @@ cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
  * retain only declared net/script/delta borrows with their original lifetimes.
  * Never reread argv/environment/config/credential sources or invoke a resolver;
  * no provider/store/tool/transport effects. No diagnostics expose credentials.
+ * Cached safe labels are recomputed against the copied secret/reference using
+ * existing screening rules; no source diagnostic or raw secret getter is added.
  * Provider binding/model/endpoint/adapter aliases are NOT copied: the new owner
  * is unbound and must use configuration_bind before provider construction.
  * Clone does not grant startup finish_host authority, even if current is an
