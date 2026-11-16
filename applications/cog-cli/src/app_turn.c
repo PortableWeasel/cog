@@ -419,7 +419,10 @@ cog_result_t cog_cli_service(void *arg, uint64_t now, uint64_t *deadline)
     if (app->active && now - app->started_at >= app->opts.max_turn_ms && !app->cancelling) {
         app->deferred_error = COG_ERROR_TIMEOUT;
         app->cancelling = true;
-        if (app->provider_active) rc = cog_provider_cancel(app->provider);
+        if (app->provider_active) {
+            rc = cog_provider_cancel(app->provider);
+            rc = cog_cli_observation_check(app, rc);
+        }
         if (rc == COG_OK && app->execution != NULL) rc = cog_cli_tools_cancel(app);
         if (rc != COG_OK) return rc;
     }
@@ -437,8 +440,8 @@ cog_result_t cog_cli_service(void *arg, uint64_t now, uint64_t *deadline)
             rc = cog_provider_next(app->provider, &app->delta, app->delta_storage,
                 app->delta_capacity, &required);
             if (rc == COG_OK) app->delta_ready = true;
-            else if (rc != COG_ERROR_AGAIN) return rc == COG_ERROR_OVERFLOW ? COG_ERROR_LIMIT : rc;
-            cog_result_t observed = cog_cli_observation_check(app, COG_OK);
+            cog_result_t observed = cog_cli_observation_check(app,
+                rc == COG_ERROR_AGAIN ? COG_OK : (rc == COG_ERROR_OVERFLOW ? COG_ERROR_LIMIT : rc));
             if (observed != COG_OK) return observed;
         }
         if (app->delta_ready) return schedule(app, COG_EVENT_LLM_CHUNK);
