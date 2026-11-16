@@ -61,6 +61,10 @@ int main(int argc,char **argv)
                 cog_agent_status_t state;CHECK(cog_agent_status(h->control_core,s->agent,&state)==COG_OK);
                 if(state==COG_AGENT_STATUS_RUNNING)running[k]=true;
                 if(s->terminal_acked && !terminal[k]) {
+                    if(state!=(cancel?COG_AGENT_STATUS_CANCELLED:COG_AGENT_STATUS_COMPLETED))
+                        fprintf(stderr,"scenario10 terminal role=%s state=%d accepted=%d primary=%d started=%d first_sent=%d cancel_requested=%d cancel_latched=%d peer=%llu\n",
+                            roles[k],(int)state,(int)s->accepted_status,(int)s->primary,(int)s->started,
+                            (int)s->first_admission_sent,(int)cancelled,(int)s->cancel_latched,(unsigned long long)s->owner_peer);
                     CHECK(state==(cancel?COG_AGENT_STATUS_CANCELLED:COG_AGENT_STATUS_COMPLETED));
                     if(!cancel)CHECK(k==2U-completions);
                     terminal[k]=true;++completions;

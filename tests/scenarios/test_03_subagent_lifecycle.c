@@ -81,8 +81,11 @@ int main(int argc,char **argv)
                 }
                 if(cancel && k==1U && !cancelled) {
                     char entered[4096];CHECK(snprintf(entered,sizeof(entered),"%s/native-entered",argv[4])>0);
-                    if(access(entered,F_OK)==0) {
-                        CHECK(a->status==COG_AGENT_STATUS_RUNNING);
+                    /* A real provider request may arrive before its copied
+                     * RUNNING update reaches the coordinator registry. Cancel
+                     * only after both independent facts have been observed. */
+                    if(access(entered,F_OK)==0 && a->status==COG_AGENT_STATUS_RUNNING) {
+                        CHECK(s->first_admission_sent && s->started);
                         CHECK(cog_agent_cancel(h->control_core,s->agent)==COG_OK);
                         CHECK(cog_agent_cancel(h->control_core,s->agent)==COG_OK);
                         cancelled=true;
