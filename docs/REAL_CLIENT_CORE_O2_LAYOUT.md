@@ -55,3 +55,87 @@ borrowed/remote/terminal records refuse; admitted cancellation refuses ABORTED.
 Return requires the exact record/pointer and completed child cleanup; it only
 clears the lifetime lease. Terminal release also refuses an outstanding borrow.
 Registry destruction requires all borrows returned, never an implicit child join.
+
+## Pass2 — all20 traces and lifecycle amendments
+
+| Scenario | O2 boundary checked |
+|---|---|
+|01 prompt|same static dispatch, successful transition/save, pending injection and IPC/local rotation in run and step|
+|02 stall|service retains its own deadline; finite idle result never waits inside step|
+|03 child|spawn intent lease admits one exact local session borrow; child cleanup precedes return|
+|04 cold start|no dispatch/wait/allocation in begin; first slice services before first dispatch|
+|05 shutdown|stop checked between units; stopped driver ends once; host drains external work|
+|06 parallel tools|one single-thread owner per core; separate cores rotate bounded slices|
+|07 aux failure|capture proof before next service, retained complete frame before EOF disposal|
+|08 reload|same borrowed provider setter/whole-turn ownership; no new provider lifetime transfer|
+|09 messages|copied kernel proof is fabric-scoped, generic external enqueue cannot forge it|
+|10 fan-out|queued spawn/cancel leases survive budget/error and discard without executing at free|
+|11 reconnect|listener accepted slots/proof move together; replacement links never inherit cache|
+|12 backoff|elapsed checked clock and due deadlines survive slice boundaries; no reset per step|
+|13 persistence|same exact save timing/error; drive end does not imply durable recovery or work drain|
+|14 fork|existing session/branch state preserved across begin/end; no injected item retargeting|
+|15 tool round|handler error releases popped event/intent/IPC lease once; no retry of effects|
+|16 errors|first fatal work result latched, no subsequent dispatch, end consumes ownership even on error|
+|17 migration|local child borrows block parent record release until child teardown; no pointer migration|
+|18 observability|same run-start/stop/error labels at driver boundaries, no false per-slice restarts|
+|19 connection facts|identity remains kernel establishment snapshot, never refreshed native liveness|
+|20 interrupt|only lock-free existing atomic stop/running fields cross thread/signal boundary|
+
+R13/R14 retain the same proof/queue/attempt restrictions. O2 adds neither remote
+execution nor application role authentication; those remain orchestrator/app work.
+
+### Exact first-proof and pressure ordering
+
+A newly accepted record initializes proof=false, connected_queued=false. An
+already-connected transferred endpoint uses an embedded record and preserves the
+existing attached-endpoint path (no newly invented CONNECTED notification);
+its connected_queued starts true, but protected MESSAGE still requires proof.
+Before any service on an already-ready link, cache its native proof. Otherwise
+drive exactly one handshake unit, then capture immediately if its nonzero ID and
+published handshake permit query. Do not place an event/arena-capacity check
+between that unit and capture. A client whose assigned ID is not yet published
+is still pending; do not query zero and misclassify INVALID_ARG as native failure.
+
+After capture, a full event queue may defer CONNECTED, but it cannot defer proof.
+Complete RX and EOF can arrive meanwhile; CONNECTED then MESSAGE then DISCONNECTED
+are published in the existing retained order when capacity permits. Each copied
+descriptor owns proof by value. A failed/unsupported native query refuses that
+peer without forged CONNECTED/DISCONNECTED proof. Actual Q PROTOCOL/LIMIT remains
+a fatal driver result under N A48, not a new per-peer isolation policy; ordinary
+EOF/IO follows existing peer cleanup. Service and receive results stay distinct
+so an AGAIN due to arena pressure cannot erase a propagated fatal framing error.
+
+### Rebegin and disposal
+
+Amendment: driver end/begin resets ONLY driver-owned scheduling/stop state, not
+peer proof or CONNECTED publication state. A stop before frame dispatch must not
+lose proof for already-retained RX or duplicate CONNECTED on rebegin. Proof ends
+when its endpoint record is removed; event copies remain valid afterward. A
+listener peer ID is unique only during listen→disconnect. Endpoint ownership
+transferred at successful core_new forbids callers relistening behind the core;
+no stronger new→free identity is promised. If core itself retires its attached
+endpoint, its metadata is cleared together with disabling that ingress path.
+
+A popped event records whether it came from the private IPC queue. Only such an
+owned arena slice is released; a generic external IPC-shaped descriptor does not
+acquire arena ownership merely by carrying a matching-looking pointer. All agent
+intents enter only through the existing private leased path; free drains queued
+intents through lease-release bookkeeping before destroying their records.
+Free requires inactive driver and returned session borrows, as debug invariants,
+without pretending to cancel or join any externally owned operation.
+
+### Borrow/return and readiness details
+
+Return checks exact record/pointer/current borrow; an attached child core is a
+detectable unfinished-cleanup violation and returns INVALID_STATE. An unattached
+session alone does not prove provider/tool/guard cleanup; caller retains that
+precondition. Return changes no terminal snapshot, notification ACK, intent lease
+or one-shot task state. Borrow again after a valid return is only another storage
+lease if otherwise eligible, never automatic task re-execution authorization.
+
+Readiness combines queued descriptors, pending injection, due service/deadline
+and the approved read-only IPC helper. A budget/fairness yield with actionable
+work returns max_wait_ms0 and deadline<=sampled now. Idle writable sockets alone
+do not count. Any transient readiness-query AGAIN gives a bounded immediate
+retry; permanent query/clock errors latch normal fatal driver failure. Only the
+run wrapper waits; manual slices never invoke wait_fn/idle_fn/nanosleep/poll>0.

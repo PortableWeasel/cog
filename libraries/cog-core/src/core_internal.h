@@ -36,7 +36,8 @@ typedef struct core_peer {
     cog_peer_id_t id;
     cog_ipc_peer_info_t proof;
     bool proof_valid;
-    bool connected_queued;
+    bool connected_queued; /**< Accepted peers defer until proof/event capacity;
+         transferred attached endpoint starts true (legacy no CONNECTED event). */
 } core_peer_t;
 
 typedef struct core_pending_owner {
@@ -61,7 +62,7 @@ struct cog_core {
     core_drive_state_t drive;
     size_t step_event_limit;
     bool clock_seen;
-    uint64_t last_now;
+    uint64_t last_now; /**< Checked clock continuity survives drive end/begin. */
     cog_wait_fn wait_fn;
     void *wait_arg;
     cog_service_fn service_fn;

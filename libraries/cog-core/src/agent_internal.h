@@ -56,7 +56,8 @@ typedef struct cog_agent_entry {
     cog_session_t *session;         /**< Owned child session. */
     bool execution_borrowed;        /**< Exact local session lifetime lease;
          separate from intent leases/notification ACK and execution authority.
-         Release/reset requires return after all child users/guards are gone. */
+         Release/reset requires return after all child users/guards are gone.
+         Return refuses an attached child core; other cleanup is caller-owned. */
     char *task;                   /**< Reserved copied task. */
     char *result;                   /**< Reserved final result bytes. */
     size_t status_capacity, result_capacity; /**< Per-agent configured ceilings. */
