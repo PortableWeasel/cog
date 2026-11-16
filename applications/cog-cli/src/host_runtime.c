@@ -2945,6 +2945,10 @@ cog_result_t cog_cli_host_runtime_step(cog_cli_host_runtime_t *r,
         }
         bool handoff_done = r->handoff == NULL || r->handoff->phase == CLI_HANDOFF_IDLE ||
             (r->handoff->phase == CLI_HANDOFF_FROZEN && r->handoff->pending.length == 0U);
+        /* The deadline is a fallback, not a minimum lifetime. Keep ingress
+         * until native/local ownership has drained, then stop the control core. */
+        if (local_done && native_done && handoff_done && !r->control_drive_ended)
+            cog_core_stop(r->control_core);
         r->done = local_done && native_done && r->control_drive_ended && handoff_done;
         if (r->shutdown_deadline_ms < out.next_deadline_ms) out.next_deadline_ms = r->shutdown_deadline_ms;
     }
