@@ -403,3 +403,19 @@ add_test(NAME cli-headless-native-limit COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
     $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} limit)
 set_tests_properties(cli-headless-native-limit PROPERTIES TIMEOUT 70)
+# Lane A owns shared CMake; append these real-source private branch fixtures.
+foreach(name IN ITEMS worker_receipt_owned delegation_callbacks worker_handoff_critic)
+    add_executable(test_${name} test_${name}.c)
+    target_link_libraries(test_${name} PRIVATE cog::cli)
+    target_include_directories(test_${name} PRIVATE ../src ../../../libraries/cog-ipc/private)
+    target_compile_options(test_${name} PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(test_${name} PRIVATE -Wl,--gc-sections)
+    target_enable_warnings(test_${name})
+endforeach()
+add_test(NAME cli-worker-receipt-owned COMMAND test_worker_receipt_owned
+    ${CMAKE_BINARY_DIR}/worker-receipt.sock)
+add_test(NAME cli-delegation-callbacks COMMAND test_delegation_callbacks)
+set_tests_properties(cli-worker-receipt-owned cli-delegation-callbacks PROPERTIES TIMEOUT 10)
+
+add_test(NAME cli-worker-handoff-critic COMMAND test_worker_handoff_critic)
+set_tests_properties(cli-worker-handoff-critic PROPERTIES TIMEOUT 10)
