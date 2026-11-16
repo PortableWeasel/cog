@@ -135,3 +135,9 @@ This is approval of the focused acceptance joins and host correction, not a
 full-suite or original-scenario gate. It does not close the separately routed
 empty-session issue `cd3d092`, the M live smoke, or N/O remote orchestration and
 P release validation. No paid requests or real credentials were used.
+
+Integration retained the approved source history and cherry-picked only the
+independent evidence. The resulting `7f686f0` tree exactly matched the reviewed
+tree. A fresh GCC Release all-target build from main in
+`/tmp/cog-acceptance-main` passed the same **41/41** CLI/header tests, including
+the genuine installed output and existing EPIPE/recovery checks.
