@@ -27,3 +27,45 @@ whole slot before descriptor reuse; short writes and receive OVERFLOW preserve
 retained bytes. Physical failure wipes abandoned TX/partial RX while keeping all
 complete RX frames readable. Explicit disconnect/free/constructor unwind wipes
 all allocated payload buffers before release, including never-used capacity.
+
+## Pass2 — scenario and boundary retrace
+
+Rechecked N pass2/all20 against this IPC-only delta. Scenarios01/03/04/09/10
+use accepted native identity, complete handshake, exact fabric-scoped directed
+send and copied FIFO admission. Scenario07 retains copied proof before physical
+EOF; IPC query does not resurrect a closed link. Scenarios05/16/20 preserve
+complete RX while abandoning partial input/output and later wipe on teardown.
+Scenarios08/11/17 and R13/R14 preserve exact connection IDs across logical
+leases; replacement accepted connections get new IDs, never reused by a stale
+query/directed send. Scenarios02/06/12/13/14/15/18/19 introduce no IPC interface
+changes: bounded service/queue pressure, no hidden retry, no proof from stored
+metadata and no credential logging remain existing obligations.
+
+Concrete trace: two peers share listener, client1 queues a secret then mutates
+its source; service delivers the original copied bytes to only peer1. Full queue
+returns AGAIN with no slot/descriptor mutation, retry after drain admits once.
+Wrong fabric/numeric ID has no cross-listener authority. Directed send before
+identity handshake completes is INVALID_STATE, not implicit handshake progress.
+
+Complete-frame+EOF trace: RX publishes frame A, begins partial B, observes EOF.
+Failure wipes B and all abandoned TX, retains A and cached establishment facts;
+OVERFLOW retry still sees A unchanged, successful recv wipes only its slot.
+The complete queue may be full: failure must not wipe its head as a presumed
+partial slot. If physical failure occurs after the last payload read but before
+publication, that frame is not yet committed and is abandoned. Core O2 owns its
+by-value proof before IPC_CONNECTED/MESSAGE admission and endpoint removal;
+a fresh post-EOF peer_info query intentionally returns NOT_FOUND.
+
+Amendments: initialize native_peer_result to AGAIN explicitly (calloc zero is
+OK and cannot mean captured credentials). Connected-side pre-publication query
+returns AGAIN; once an ID is published, mismatched IDs return NOT_FOUND. Capture
+is attempted once after native connection succeeds, even when the identity
+prefix is fragmented. Accepted-side known ID is still query-AGAIN until its
+identity handshake completes. Capture failure never changes caller output.
+
+Test matrix: actual parent/child socket PID/UID/GID in both directions; false
+wire identity/PID payload cannot alter proof; query null/zero/unbound/unknown/
+handshake/error/unsupported and unchanged output; foreign listener and retired
+ID; exact directed output/no broadcast; copied source and capacity retry;
+short write, complete+partial EOF, overflow preservation, all slot retirement,
+explicit abandonment and constructor unwind with optimizer-safe wipe oracles.

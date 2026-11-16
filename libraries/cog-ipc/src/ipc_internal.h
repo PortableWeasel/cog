@@ -11,12 +11,16 @@
  * publishing handshake readiness; accepted sockets capture before publication.
  * A failed/unsupported capture is retained, not replaced with HELLO/caller PID.
  * Generic unauthenticated IPC remains usable; peer_info fails closed.
+ * Constructor explicitly starts native_peer_result at AGAIN, never calloc OK.
  * No credential-query syscall occurs in the public metadata query.
+ * Query requires live socket and published handshake; retained facts do not
+ * resurrect a disconnected link. Core owns any already-admitted proof copy.
  *
  * Queue retirement: when wipe_buffers is true, volatile byte stores clear the
  * full reserved slot (including prefix/tail) after complete TX flush or successful
  * RX copy, then clear its descriptor. OVERFLOW/AGAIN never retires a slot.
- * Physical failure abandons all TX and only incomplete RX scratch. Complete RX
+ * Physical failure abandons all TX and only incomplete RX scratch (none when
+ * rx_count equals receive_frames; that slot is a complete retained head). Complete RX
  * slots and the immutable native snapshot survive until explicit retirement.
  * Explicit disconnect/free/unwind clears all allocated payload reservations.
  * Caller-owned message buffers remain caller-owned; no implicit wipe is added.
