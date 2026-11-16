@@ -27,6 +27,7 @@
 
 #include <cog/result.h>
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -133,6 +134,11 @@ typedef struct cog_ipc_endpoint_config {
     size_t service_quantum; /**< Default 16 bounded read/write/frame units. */
     size_t max_routes; /**< Default 64 copied session routes; ID max 127 bytes. */
     uint32_t connect_timeout_ms; /**< Default 1000; asynchronous handshake timer. */
+    bool wipe_buffers; /**< Default false. Private authenticated bootstrap
+       fabrics set true: wipe each retired copied send/receive payload and every
+       reserved payload buffer before disconnect/free, including partial/error
+       paths. No payload logging, extra allocation or changed send/recv outcome.
+       Caller separately wipes its own encoded/decoded credential storage. */
 } cog_ipc_endpoint_config_t;
 /**
  * @brief Reserve bounded framing/routing storage; all sockets are nonblocking.
