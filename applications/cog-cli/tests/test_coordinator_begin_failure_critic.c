@@ -9,9 +9,20 @@ int embedded_cli_main(int argc, char **argv);
 #include <assert.h>
 #include <sys/wait.h>
 #include <string.h>
+#include <dirent.h>
 
 static cog_cli_host_runtime_t *retained;
 static unsigned spawn_calls;
+static bool verified_reaped;
+static size_t descriptors(void)
+{
+    DIR *directory = opendir("/proc/self/fd");
+    assert(directory != NULL);
+    size_t count = 0U;
+    while (readdir(directory) != NULL) ++count;
+    assert(closedir(directory) == 0);
+    return count;
+}
 cog_result_t __real_cog_orchestrator_spawn(cog_orchestrator_t *, const char *, cog_worker_id_t *);
 cog_result_t __wrap_cog_orchestrator_spawn(cog_orchestrator_t *, const char *, cog_worker_id_t *);
 cog_result_t __wrap_cog_orchestrator_spawn(cog_orchestrator_t *o, const char *path, cog_worker_id_t *out)
@@ -32,6 +43,12 @@ cog_result_t __real_cog_cli_host_runtime_close(cog_cli_host_runtime_t **, cog_re
 cog_result_t __wrap_cog_cli_host_runtime_close(cog_cli_host_runtime_t **, cog_result_t);
 cog_result_t __wrap_cog_cli_host_runtime_close(cog_cli_host_runtime_t **owner, cog_result_t primary)
 {
+    if (*owner != NULL && *owner == retained && retained->done) {
+        cog_core_info_t workers[2]; size_t count = 0U;
+        assert(cog_orchestrator_list(retained->orchestrator, workers, 2U, &count) == COG_OK);
+        assert(count == 1U && workers[0].pid > 0 && workers[0].reaped && !workers[0].ownership_lost);
+        verified_reaped = true;
+    }
     cog_result_t rc = __real_cog_cli_host_runtime_close(owner, primary);
     if (*owner == NULL) retained = NULL;
     return rc;
@@ -41,6 +58,7 @@ int main(int argc, char **argv)
     if (argc > 1 && strcmp(argv[1], "--worker") == 0) return embedded_cli_main(argc, argv);
     assert(argc == 4);
     assert(curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK);
+    size_t before = descriptors();
     char ui[4096], worker[4096];
     assert(snprintf(ui, sizeof(ui), "%s/ui.sock", argv[3]) > 0);
     assert(snprintf(worker, sizeof(worker), "%s/worker.sock", argv[3]) > 0);
@@ -72,6 +90,8 @@ int main(int argc, char **argv)
         (void)cog_cli_host_runtime_close(&retained, COG_ERROR_IO);
         assert(retained == NULL);
     }
+    assert(verified_reaped);
+    assert(descriptors() == before);
     curl_global_cleanup();
     fprintf(stderr, "prefix startup calls=%u result=%d consumed=%d\n", spawn_calls, (int)result, (int)consumed);
     assert(spawn_calls == 2U);
