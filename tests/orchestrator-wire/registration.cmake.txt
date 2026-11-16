@@ -1,0 +1,12 @@
+# Additive instructions for the runtime/integration owner; not auto-included.
+# In libraries/cog-orchestrator/CMakeLists.txt's existing source list add:
+#   src/orchestrator_wire.c
+# In the test registration scope (after cog::orchestrator exists) add:
+add_executable(test_orchestrator_wire
+    ${PROJECT_SOURCE_DIR}/tests/orchestrator-wire/test_orchestrator_wire.c)
+target_link_libraries(test_orchestrator_wire PRIVATE cog::orchestrator)
+target_enable_warnings(test_orchestrator_wire)
+target_link_options(test_orchestrator_wire PRIVATE
+    -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+add_test(NAME unit-orchestrator-wire COMMAND test_orchestrator_wire)
+set_tests_properties(unit-orchestrator-wire PROPERTIES LABELS "unit;orchestrator" TIMEOUT 20)
