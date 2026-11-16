@@ -100,7 +100,7 @@ int main(int argc,char **argv)
     const char *paths[6]={argv[1],argv[2],argv[3],argv[4],argv[5],argv[6]};
     CHECK(headless_fixture_init(&f,paths,1U,1U)==COG_OK);
     f.config.shutdown_ms=timeout?3000U:15000U;
-    CHECK(headless_fixture_open(&f)==COG_OK);CHECK(headless_fixture_ready(&f,10000U)==COG_OK);
+    primary=headless_fixture_open(&f);CHECK(primary==COG_OK);CHECK(headless_fixture_ready(&f,10000U)==COG_OK);
     char output[4096];CHECK(snprintf(output,sizeof(output),"%s/migration.ndjson",argv[4])>0);
     CHECK(session_client_open(&client,f.ui_path,output,false)==COG_OK);
     uint64_t deadline=headless_fixture_clock_ms()+3000U;
@@ -189,7 +189,8 @@ int main(int argc,char **argv)
                 CHECK(f.host->admission_frozen && h->source_released && h->cas_committed && !h->guard_acquired && !h->route_published && !h->activation_acked);
                 cli_executor_slot_t *source=&f.host->executors[h->source_slot];
                 CHECK(source->app!=NULL && source->app->guard==NULL && source->app->headless->authority==CLI_AUTH_SOURCE_RELEASED);
-                CHECK(cog_cli_app_queue(source->app,"forbidden replay",16U)==COG_ERROR_INVALID_STATE);
+                cog_cli_command_t forbidden={.kind=COG_CLI_COMMAND_SUBMIT,.text="forbidden replay",.text_len=16U};
+                CHECK(cog_cli_execution_apply_command(source->app,&forbidden,h->expected,source->app->headless->mutation_serial)==COG_ERROR_INVALID_STATE);
                 cog_store_owner_t actual;cog_store_checkpoint_t checkpoint;
                 CHECK(cog_store_owner_read(f.host->catalog,identity,&actual,&checkpoint)==COG_OK && owner_equal(actual,h->next) && checkpoint.generation==h->checkpoint.generation);
                 expected_timeout=true;break;

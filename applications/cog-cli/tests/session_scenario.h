@@ -71,7 +71,8 @@ static inline bool session_contains(const session_client_t *c,const char *text)
     if(c->client==NULL || !c->client->have_view)return false;
     const cog_cli_display_snapshot_t *v=&c->client->banks[c->client->current].view.display;
     for(size_t i=0U;i<v->item_count;++i)
-        if(v->items[i].text!=NULL && strcmp(v->items[i].text,text)==0)return true;
+        if(v->items[i].node_id!=0U && v->items[i].role==COG_MESSAGE_ROLE_ASSISTANT &&
+           v->items[i].status==COG_MESSAGE_COMPLETE && v->items[i].text!=NULL && strcmp(v->items[i].text,text)==0)return true;
     return false;
 }
 static inline cog_result_t session_client_close(session_client_t *c,cog_result_t primary)
