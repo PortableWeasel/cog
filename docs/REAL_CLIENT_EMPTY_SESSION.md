@@ -173,5 +173,40 @@ INDETERMINATE, so uncertainty is never reduced to one error spelling. Existing
 first-user-save injection semantics remain intact because initial persistence
 uses the explicit checkpoint operation, not ordinary turn save.
 
-Full compiler/sanitizer checks and the different final implementation verdict
-follow. This focused fix does not close M, O, all38 or release P. No paid requests.
+## Writer validation and final review handoff
+
+All-target strict GCC14 Release, Clang19 Release and Clang19 RelWithDebInfo
+ASan/UBSan builds pass. The same **56/56** selected CTests pass for each profile
+(**168/168** total), including both new fixtures, existing session/store/fencing
+tests, all CLI tests, original08/13/14/15/17/20 and the preserved output/ASK and
+observability regression fixtures. No assertion policy or unrelated package is
+weakened. ASan enables leak detection and halt-on-error; UBSan enables
+halt-on-error/stack traces. Build/log names are `build-empty-{gcc,clang,asan}`
+and `/tmp/cog-empty-{gcc,clang,asan}-{configure,build,tests}.log`.
+
+Each fresh profile uses the accepted final installed dependency artifact and
+its genuine audited cache:
+
+```sh
+cmake -S . -B BUILD -DCOG_ENABLE_WERROR=ON -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=/tmp/cog-relocatable-profile/shipped/curl-build/install \
+  -DCURL_DIR=/tmp/cog-relocatable-profile/shipped/curl-build/install/lib/cmake/CURL \
+  -DCURL_LIBRARY=/tmp/cog-relocatable-profile/shipped/curl-build/install/lib/libcurl.so \
+  -DCOG_NET_CURL_BUILD_DIR=/tmp/cog-relocatable-profile/shipped/curl-build \
+  -DCOG_NET_CURL_LIBRARY=/tmp/cog-relocatable-profile/shipped/curl-build/install/lib/libcurl.so
+cmake --build BUILD -j5
+ctest --test-dir BUILD --output-on-failure -j4 \
+  -R '^(unit-session.*|unit-store.*|cli-|scenario-test_(08|13|14|15|17|20))'
+```
+
+Clang adds `-DCMAKE_C_COMPILER=clang`; a separate ASan directory uses
+`-DCMAKE_BUILD_TYPE=RelWithDebInfo -DCOG_ENABLE_ASAN=ON` and runs CTest with
+`ASAN_OPTIONS=detect_leaks=1:halt_on_error=1` plus
+`UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`. The installed runtime-component
+cases use explicit MOCK and claim no independent real-transport packaging closure;
+that remains the separate R18 fixture. Third-party shared dependencies are the
+approved ordinary Release builds.
+
+Different final implementation review is pending the coherent evidence checkpoint;
+its independent scoped checks/mutation controls are recorded by the reviewer.
+This focused fix does not close M, O, all38 or release P. No paid requests.
