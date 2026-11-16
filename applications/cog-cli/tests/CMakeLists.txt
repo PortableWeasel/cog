@@ -441,3 +441,13 @@ set_tests_properties(cli-coordinator-identity PROPERTIES LABELS "unit;cli;headle
 
 add_test(NAME cli-worker-reload-failure COMMAND test_worker_reload_failure)
 set_tests_properties(cli-worker-reload-failure PROPERTIES TIMEOUT 10)
+
+add_test(NAME cli-headless-native-single COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
+    $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} single)
+set_tests_properties(cli-headless-native-single PROPERTIES TIMEOUT 70)
+
+add_test(NAME cli-headless-native-handoff COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
+    $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} handoff)
+set_tests_properties(cli-headless-native-handoff PROPERTIES TIMEOUT 145)

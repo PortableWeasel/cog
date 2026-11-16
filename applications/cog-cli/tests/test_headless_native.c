@@ -37,7 +37,7 @@ int main(int argc,char **argv)
 {
     cog_cli_host_runtime_t *host=NULL;cog_result_t primary=COG_OK;bool curl_ready=false;
     CHECK(argc==8); /* executable, CA, URL, workspace, store, socket prefix, mode */
-    bool reject=strcmp(argv[7],"limit")==0;
+    bool reject=strcmp(argv[7],"limit")==0,move=strcmp(argv[7],"handoff")==0;
     CHECK(curl_global_init(CURL_GLOBAL_DEFAULT)==CURLE_OK);curl_ready=true;
     char ui[4096],workers[4096];
     CHECK(snprintf(ui,sizeof(ui),"%s.ui",argv[6])>0);
@@ -63,7 +63,7 @@ int main(int argc,char **argv)
     while(!host->workers[0].profile_ready && clock_ms()<deadline){primary=advance(host,&done);CHECK(primary==COG_OK&&!done);}
     CHECK(host->workers[0].profile_ready && host->workers[0].native.peer_id!=0U);
     bool native_seen=false;
-    for(unsigned int round=1U;round<=(reject?1U:2U);++round){
+    for(unsigned int round=1U;round<=((reject || move || strcmp(argv[7],"single")==0)?1U:2U);++round){
         char task[64],expected[64];
         CHECK(snprintf(task,sizeof(task),"delegate round %u",round)>0);
         if(reject)CHECK(snprintf(expected,sizeof(expected),"PARENT_REFUSED")>0);
@@ -97,6 +97,28 @@ int main(int argc,char **argv)
         CHECK(free_groups);
     }
     CHECK(reject?!native_seen:native_seen);
+    if(move) for(unsigned int i=0U;i<4U;++i) {
+        cog_store_owner_t before=host->primary_owner;
+        cog_worker_id_t target=i%2U==0U?host->workers[0].id:(cog_worker_id_t){0};
+        deadline=clock_ms()+10000U;cog_result_t requested=COG_ERROR_AGAIN;
+        while(requested==COG_ERROR_AGAIN && clock_ms()<deadline) {
+            requested=cog_cli_handoff_request(host->handoff,target);
+            if(requested==COG_ERROR_AGAIN){primary=advance(host,&done);CHECK(primary==COG_OK&&!done);}
+        }
+        CHECK(requested==COG_OK);
+        deadline=clock_ms()+20000U;
+        while(host->handoff->phase!=CLI_HANDOFF_IDLE && clock_ms()<deadline) {
+            primary=advance(host,&done);CHECK(primary==COG_OK&&!done);
+        }
+        CHECK(host->handoff->phase==CLI_HANDOFF_IDLE && host->handoff->primary==COG_OK);
+        CHECK(host->primary_owner.epoch==before.epoch+1U && host->primary_owner.instance_id!=before.instance_id);
+        CHECK(host->primary_worker.incarnation==target.incarnation && host->primary_worker.number==target.number);
+        cog_store_owner_t actual;cog_store_checkpoint_t checkpoint;
+        CHECK(cog_store_owner_read(host->catalog,host->primary_session,&actual,&checkpoint)==COG_OK);
+        CHECK(actual.epoch==host->primary_owner.epoch && actual.instance_id==host->primary_owner.instance_id);
+        CHECK(i%2U==0U?host->executors[host->primary_slot].app==NULL:host->executors[host->primary_slot].app!=NULL);
+        fprintf(stderr,"native handoff %u complete epoch=%llu\n",i+1U,(unsigned long long)actual.epoch);
+    }
 finish:
     if(host!=NULL){
         (void)cog_cli_host_runtime_request_shutdown(host);bool drained=host->done;uint64_t until=clock_ms()+10000U;

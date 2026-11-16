@@ -95,9 +95,9 @@ def main():
             env.update(COG_NATIVE_KEY="synthetic-native", TMPDIR=str(scratch))
             process = subprocess.Popen([str(harness), str(executable), str(cert), f"https://localhost:{server.server_port}/v1",
                 str(workspace), str(root / "store"), str(root / "ipc"), mode], env=env, start_new_session=True)
-            status = process.wait(timeout=65)
+            status = process.wait(timeout=140 if mode == "handoff" else 65)
             assert status == 0, (status, errors, len(requests))
-            assert len(requests) == (2 if mode == "limit" else 12) and not errors, (len(requests), errors)
+            assert len(requests) == (2 if mode == "limit" else 6 if mode in ["single", "handoff"] else 12) and not errors, (len(requests), errors)
         finally:
             if process is not None:
                 try:
