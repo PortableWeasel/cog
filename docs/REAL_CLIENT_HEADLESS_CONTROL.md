@@ -28,7 +28,13 @@ later execution succeeded. A new coordinator incarnation cannot restore volatile
 dedup from a client's claim: full resync, old pending command marked uncertain,
 no automatic retransmission as a new command. Disconnect never undoes admission.
 
-UI_HELLO alone permits runtime_incarnation0. It carries version1 u8, role u8
+UI_HELLO alone permits runtime_incarnation0 and EMPTY session_id(length0).
+--attach/--watch know only socket and never guess IDs or read store/config. The
+same-UID authenticated server replies with its actual root session/runtime in
+COMMAND_RESULT header before any session-bound command; client rejects other
+traffic until this discovery is complete. A reconnecting already-bound client
+refuses another root session, never retargets its pending command/view to it.
+It carries version1 u8, role u8
 (controller1/watch2), replay generation u64, replay after_sequence u64. Header
 sender_incarnation is the fresh nonzero client incarnation; a new client chooses
 it with checked OS entropy. Matching retained identity/controller reservation is
@@ -64,10 +70,15 @@ illegal zero/correlation or extra bytes fail PROTOCOL before any admission.
 | CHILD_UPDATE | one exact CGA1 update, agreeing with outer agent/attempt/owner; worker→coordinator |
 | UPDATE_RECEIPT | exact55-byte private receipt; coordinator→worker; all outer/inner identities agree; not durable parent TOOL-save proof |
 | CHILD_MESSAGE | destination agent u64, copied text string; sender exact current child attempt; coordinator relays only same current fan-out group/parent, to admitted bounded mailbox |
-| MESSAGE_RESULT | known result i32; reply_to exact CHILD_MESSAGE; OK means one mailbox copy, not execution/new turn |
-| EXECUTOR_VIEW | mutation serial u64 then exact CGD1 bytes; current primary executor→coordinator; serial separate from canonical CGR cursor |
-| VIEW_COMMIT | mutation serial u64, canonical generation u64, through_sequence u64; coordinator→exact executor; no effect authority beyond unblocking this matching retained view |
+| MESSAGE_RESULT | known result i32, state u8(pending1/final2); reply_to exact CHILD_MESSAGE; OK means one mailbox copy, not execution/new turn; AGAIN is provisional, retains same pending wire |
+| EXECUTOR_VIEW | mutation serial u64, exact owner epoch/instance u64 then CGD1 bytes; current primary executor→coordinator; serial separate from canonical CGR cursor; old owner cannot publish after handoff |
+| VIEW_COMMIT | mutation serial u64, exact owner epoch/instance u64, canonical generation u64, through_sequence u64; coordinator→exact executor; no effect authority beyond unblocking this matching retained view |
 | HANDOFF | exact CGH1; coordinator/source/target role+phase table and exact tuples additionally checked |
+| DELEGATE_START | parent owner epoch/instance u64, STARTED checkpoint u64, assistant node u64, immutable call ordinal u16, call ID string, absolute deadline u64, task count u16 then task strings; remote PRIMARY→coordinator only, never child or UI |
+| DELEGATE_RESULT | group u64, count u16 then submitted-order child records(agent/attempt u64,status u8,outcome i32,session string,result string,effects-uncertain u8); coordinator→primary, reply_to exact delegate start, immutable final output |
+| DELEGATE_RESULT_ACK | group u64, parent result checkpoint u64; primary→coordinator only AFTER exact TOOL result+terminal ledger durable save, not CGA/local ACK |
+| MAILBOX_POLL | empty; current child→coordinator, exact identified receive tool wire request; copied bounded mailbox batch consumes once |
+| MAILBOX_RESULT | result i32, count u16 then source agent u64 and text string; exact poll response, cached bytes; no new turn or policy input |
 
 UI opcodes1..8 are SUBMIT, CONTINUE, POLICY, CANCEL, RELOAD, HANDOFF, SHUTDOWN,
 RESYNC. SUBMIT suffix is text string. During active work it queues with K's
@@ -92,6 +103,27 @@ schema and kind/role table before retaining or dispatching. Oversized input is
 LIMIT, malformed input PROTOCOL, stale/foreign identity is refused without state
 change. Primary error takes precedence over diagnostic/cleanup error.
 
+DELEGATE_START uses the authenticated current PRIMARY executor binding and exact
+parent guard/STARTED call correlation, not an arbitrary child claim. Trusted
+executor code sends only after its actual K guarded STARTED checkpoint. The
+coordinator's registry owns all created records and its group gate prevents any
+SPAWN handler from executing a prefix until full reservation succeeds. If the
+nth single-record agent_spawn fails, prefix remains nonexecuting rollback work:
+cancel, dispatch/release intent leases, apply/copy/ack terminal failure, release.
+No new batch API/hidden blocking rollback; capacity remains charged until actual
+cleanup. A started group may produce partial effects on later failure, reported
+honestly in immutable results. Root private delegate tool schema takes only
+bounded task strings; host chooses placement/permissions/limits. No UI command
+can bypass the parent's identified durable tool STARTED barrier.
+
+Terminal CGA notification is independently copied/queued before local ACK and
+remote semantic receipt. Parent delegate output remains retained separately
+until actual parent TOOL save/DELEGATE_RESULT_ACK. Lost result/ACK resends the same
+bytes, never creates another group or consumes mailbox again. Group/result ID
+exhaustion reserves final cleanup identities and refuses new tasks. Parent crash
+has no volatile-prefix restoration protocol: old worker attempts freeze/drain;
+uncertain descendant effects remain identified recovery-only, never auto replay.
+
 ## Resolved private bootstrap and wiping ownership
 
 Parent creates a separate immutable profile for each executor under fixed J
@@ -112,7 +144,14 @@ shared store root, followed by probe session string, owner epoch u64, owner
 instance u64 and exact checkpoint generation u64 (all nonzero). Optional
 workspace length0 disables tools. Other fields
 nonempty; credential is opaque non-NUL bytes (not Unicode), maximum16383 bytes.
-Other strings obey J validation/max4095 bytes; aggregate copied strings≤64KiB.
+Credential bytes must also satisfy J's exact predicate: each byte>32 and!=127;
+reject whitespace/control/NUL before provider construction. Other strings obey
+J validation/max4095 bytes; aggregate copied strings≤64KiB. All limits are nonzero
+except retries may be0, u64 byte limits must fit SIZE_MAX and existing checked app
+allocation/provider arithmetic. Model is valid UTF-8 token, endpoint exactly
+openrouter, base URL satisfies J's HTTPS/no-userinfo rules, credential reference
+is copied provenance only (env: references still require valid NAME). Tool policy
+and mask are known enum/subset; no startup selectors/borrowed callback/script.
 Profile is REAL/OpenRouter only initially; remote MOCK/unknown provider is
 UNSUPPORTED before worker/task admission, never a fallback. Local MOCK still uses
 explicit borrowed test script data with its documented host lifetime. Literal
@@ -125,8 +164,14 @@ while executors exist; this is not protection against a violating same-UID host.
 If canonical identity
 cannot be established through the supported host profile, bootstrap refuses.
 The worker validates the fixed shared-store profile by exact existing root-session
-checkpoint/owner probe supplied at trusted initialization, before accepting jobs;
-probe is read-only and never acquires/adopts the root session. Handoff cannot
+checkpoint/owner probe supplied at trusted initialization, before accepting jobs.
+This is an explicit caller-owned G read after bootstrap_new, which does no IO:
+load the immutable exact probe token with INSPECT and independently confirm current
+root owner tuple. Do NOT compare probe token to latest checkpoint; normal active
+turn saves may advance it. Initial workers finish bootstrap before root startup
+input; later child/reload profiles use the stable current owner while admission
+excludes handoff. Token proves configured shared-store bytes, never execution
+admission authority. Probe is read-only and never acquires/adopts root. Handoff cannot
 select another store/workspace through CGH1. Child effective tool mask/policy and
 finite limits are intersected with the parent; timeout inherits remaining absolute
 deadline, zero is never an unlimited reset. Root ASK granted for delegate does not

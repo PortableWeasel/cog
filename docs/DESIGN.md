@@ -769,6 +769,13 @@ configuration never rereads startup sources or retains resolver authority.
 Explicit primary reload resolves at the coordinator and preserves R12's exact
 three-field transaction and whole-turn pinning at the owning executor. Aborted
 handoff always requires a fresh epoch; no pre-CAS old-guard thaw is authorized.
+Headless visible mutations enter a private publication barrier before later
+ordinary effects; coordinator atomically commits full CGV1 conversation/control
+projections to existing CGR1. Client GAP resync includes current correlated ASK
+nonces and cannot replay input/effects. Static application tool-table references
+reuse original workspace descriptors alongside bounded delegation/mailbox tools;
+failed partial group reservation drains nonexecuting registry prefixes. Dedicated
+worker/client step hosts retain one endpoint reader and explicit cleanup owners.
 
 Stage 6 — Headers first. Design all public APIs as headers before any
 implementation. Three iterations:

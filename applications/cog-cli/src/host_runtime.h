@@ -13,6 +13,7 @@
 #define COG_CLI_HOST_RUNTIME_H
 #include <cog_cli/cli.h>
 #include <cog/orchestrator.h>
+#include "child_profile.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -47,11 +48,17 @@ typedef struct cog_cli_host_runtime_config {
        Reserve worst-case (rounds+1)*(retries+1) BEFORE child admission, checked
        arithmetic; no refund from unknown usage and no fan-out multiplication.
        Credit exhaustion refuses admission before STARTED/spawn, never truncates. */
+    cog_cli_child_profile_t child_profile; /**< Immutable child ceiling. Zero
+       tool mask means text-only children. CLI --child-tools explicitly selects
+       read/search/edit/command subset; never enables anything parent forbids. */
     size_t ui_clients; /**< Default4, max16; one controller, others read-only. */
     size_t command_records; /**< Default64, max1024; bounded accepted-command
        receipts. Saturation refuses new commands, not old duplicate lookup. */
     size_t replay_records; /**< Default64, max4096; existing CGR1 bounded ring. */
-    size_t replay_bytes; /**< Default4MiB, max64MiB. A full replacement projection
+    size_t projection_bytes; /**< Default8MiB,max16MiB. Constructor proves full
+       display≤5*context + tool output + node/row codec overhead, using checked
+       arithmetic and actual status/result ceilings, fits this SINGLE frame. */
+    size_t replay_bytes; /**< Default16MiB, max64MiB. A full replacement projection
        must fit ONE record and reserved resync/send storage; reject impossible
        combinations at construction, never publish partial view or drop text. */
     uint32_t shutdown_ms; /**< Default3000, finite; does not prove descendants

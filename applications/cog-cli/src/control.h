@@ -33,7 +33,12 @@ typedef enum cog_cli_control_kind {
     COG_CLI_CONTROL_MESSAGE_RESULT,
     COG_CLI_CONTROL_EXECUTOR_VIEW,
     COG_CLI_CONTROL_VIEW_COMMIT,
-    COG_CLI_CONTROL_HANDOFF
+    COG_CLI_CONTROL_HANDOFF,
+    COG_CLI_CONTROL_DELEGATE_START,
+    COG_CLI_CONTROL_DELEGATE_RESULT,
+    COG_CLI_CONTROL_DELEGATE_RESULT_ACK,
+    COG_CLI_CONTROL_MAILBOX_POLL,
+    COG_CLI_CONTROL_MAILBOX_RESULT
 } cog_cli_control_kind_t;
 
 /** Every field is copied/validated before ingress can acquire a role. Bind this
@@ -75,7 +80,11 @@ typedef struct cog_cli_control_message {
  * Literal layout: magic CGL1(4), kind u8, runtime/sender/wire/reply u64, worker
  * incarnation/number u64, owner_peer/agent/attempt u64, session-length u8 then
  * session UTF-8 bytes, payload-length u32 then payload; all integers big-endian.
- * Kind values1..16 above are pinned. No padding/trailing/native pointers.
+ * Kind values1..21 above are pinned. No padding/trailing/native pointers.
+ * Discovery exception: UI_HELLO alone permits runtime0/session empty(length0),
+ * worker/owner/agent/attempt0. Client knows only socket; server's authenticated
+ * response supplies actual root session/runtime before any bound command.
+ * All message/view/required/input/output regions must be nonoverlapping.
  * Codec checks envelope scalars, NOT nested payload or authorization. The static
  * ingress handler validates the exact nested schema before retaining/admitting.
  */
@@ -88,7 +97,10 @@ cog_result_t cog_cli_control_encode(const cog_cli_control_message_t *message,
  * @param[out] storage Copied session+NUL followed by payload, NULL iff capacity0.
  * @param[in] capacity Writable bytes; @param[out] required Exact storage bytes.
  * @return OK; NULL_PTR; PROTOCOL malformed scalars/UTF-8/length/trailing bytes;
- * UNSUPPORTED magic/kind; OVERFLOW changes required only; LIMIT arithmetic.
+ * PROTOCOL bad prefix, zero/unknown kind or malformed envelope; UNSUPPORTED
+ * recognizable CGL version other than1; OVERFLOW changes required only;
+ * LIMIT arithmetic. Check pointers, version/prefix, full envelope scalars and
+ * lengths, then caller capacity. Other errors leave required unchanged.
  * Every other output is unchanged on all failures. Nonoverlapping regions.
  * No peer query, allocation, dedup cursor advance, dispatch or state mutation.
  */

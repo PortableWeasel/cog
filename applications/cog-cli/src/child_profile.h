@@ -44,8 +44,9 @@ typedef struct cog_cli_child_profile {
 /** Read-only shared-store probe, not an ownership/guard transfer. */
 typedef struct cog_cli_bootstrap_probe {
     char session_id[128]; /**< Valid existing root ID with initial checkpoint. */
-    cog_store_owner_t owner;
-    cog_store_checkpoint_t checkpoint;
+    cog_store_owner_t owner; /**< Expected current tuple, independent of token. */
+    cog_store_checkpoint_t checkpoint; /**< Immutable identity probe, may be
+       older than latest root checkpoint. Never execution admission authority. */
 } cog_cli_bootstrap_probe_t;
 
 /** @brief Clone the immutable effective generation for one admitted child.
@@ -74,7 +75,7 @@ cog_result_t cog_cli_configuration_child_new(cog_cli_configuration_t **out,
 
 /** @brief Encode resolved fixed bootstrap, including secret, into caller arena.
  * @param[in] configuration Resolved child/primary target profile, REAL only.
- * @param[in] probe Exact current root checkpoint/owner, copied by codec.
+ * @param[in] probe Immutable root identity probe/current owner, copied by codec.
  * @param[out] output Secret arena, NULL iff capacity0; @param[in] capacity Bytes.
  * @param[out] required Exact bytes; @return OK; NULL_PTR; INVALID_ARG; LIMIT;
  * OVERFLOW changes required only; UNSUPPORTED mock/provider/host profile.
@@ -94,8 +95,12 @@ cog_result_t cog_cli_configuration_bootstrap_encode(
  * @param[in] input Secret body; @param[in] input_len Exact bytes.
  * @param[in] net Explicit worker-created transport, borrowed through disconnect.
  * @param[out] probe Copied store probe, unchanged on failure. Worker opens the
- * fixed configured store and validates exact owner/checkpoint before ACK/jobs;
- * a startup race changing probe authority refuses bootstrap rather than guessing.
+ * fixed configured store, loads exact token with INSPECT, checks current owner
+ * tuple before ACK/jobs; latest checkpoint need not equal immutable probe. Initial
+ * workers bootstrap before root startup input; later profile validation does not
+ * race normal checkpoint advancement. Handoff/reload/child admission gates keep
+ * current owner stable through that profile phase. This G IO is CALLER-owned,
+ * never hidden in bootstrap_new; failures discard the owned generation safely.
  * @return OK; NULL_PTR; PROTOCOL malformed/unknown fields; LIMIT; NOMEM;
  * UNSUPPORTED profile. Never getenv/file-read/argv-resolve/call resolver.
  * Authentication, managed incarnation, same-host shared-store probe and fixed

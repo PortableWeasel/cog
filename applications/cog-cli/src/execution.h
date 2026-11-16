@@ -165,6 +165,36 @@ cog_result_t cog_cli_execution_stage_activate(cog_cli_app_t *app,
 cog_result_t cog_cli_execution_reload_resolved(cog_cli_app_t *app,
     cog_cli_configuration_t **candidate, uint64_t *published);
 
+/** @brief Borrow one actual retained executor view between dispatch slices.
+ * @param[in,out] app Begun primary executor with publication_pending.
+ * @param[out] mutation_serial Exact nonreused local serial, not CGR cursor.
+ * @param[out] view Complete actual history+active/incomplete snapshot.
+ * @return OK; NULL_PTR; AGAIN no pending view; LIMIT actual view cannot fit.
+ * View is immutable until exact commit or app cleanup; encode/copy before step.
+ * A private static PUBLICATION state gates headless effects: save/stage new user,
+ * accepted TEXT, terminal assistant/result and policy/control changes, then
+ * yield before provider send/tool start/next input. One-dispatch headless slices
+ * leave no second ordinary handler between mutation and capture. Do not fwrite
+ * uncommitted headless text. Existing standalone rendering remains unchanged.
+ * Control/cancel/provider/tool drain and deadlines still make bounded progress;
+ * lost projection feed cannot strand teardown or permit further ordinary work.
+ */
+cog_result_t cog_cli_execution_copy_view(cog_cli_app_t *app,
+    uint64_t *mutation_serial, cog_cli_display_snapshot_t *view);
+
+/** @brief Commit only the exact pending view after canonical replay append.
+ * @param[in,out] app Owner. @param[in] mutation_serial Exact copied view.
+ * @param[in] generation Canonical coordinator lifetime. @param[in] sequence
+ * Exact committed CGR1 sequence, neither guessed nor raw app display counter.
+ * @return OK (exact duplicate idempotent); NULL_PTR; INVALID_STATE mismatch;
+ * PROTOCOL conflicting duplicate. No allocation/effect/input in this call;
+ * static publication event resumes next ordinary action on a later owner slice.
+ * Identity exhaustion freezes without dropping accepted output; source app view
+ * remains inspectable/durable even if no successful wire publication occurred.
+ */
+cog_result_t cog_cli_execution_commit_view(cog_cli_app_t *app,
+    uint64_t mutation_serial, uint64_t generation, uint64_t sequence);
+
 #ifdef __cplusplus
 }
 #endif
