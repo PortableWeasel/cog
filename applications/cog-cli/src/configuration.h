@@ -33,7 +33,8 @@ cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
                                        const cog_cli_options_t *input,
                                        uint64_t generation);
 /** @brief Independently own an exact resolved generation without source IO.
- * @param[out] out Owned unbound copy, NULL on failure; configuration_free matches.
+ * @param[out] out Empty output slot for owned unbound copy, NULL on failure;
+ * configuration_free matches. Must not overwrite the caller's current owner slot.
  * @param[in] current Resolved immutable owner, bound or unbound, unchanged.
  * @return OK; NULL_PTR; NOMEM; LIMIT existing constructor storage bounds.
  * Preserve generation, effective options, tool mask, selected backend and ROOT
@@ -44,6 +45,9 @@ cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
  * no provider/store/tool/transport effects. No diagnostics expose credentials.
  * Provider binding/model/endpoint/adapter aliases are NOT copied: the new owner
  * is unbound and must use configuration_bind before provider construction.
+ * Clone does not grant startup finish_host authority, even if current is an
+ * unfinished startup owner: finish the original before cloning host mirrors.
+ * Preserve exact net pointer, including NULL; never create/free/rebind net.
  * No resolver callback/argument authority is retained. Allocation/secret copy
  * is explicit here and all partial storage is cleared/freed on failure.
  */
