@@ -76,6 +76,12 @@ cog_result_t cog_cli_handoff_request(cog_cli_handoff_t *handoff,
  * existing slot HANDOFF cache OUTSIDE the disposed app until consumption.
  * Coordinator cannot reuse the old physical executor slot before matching
  * successful final ABORT receipt (local source requires actual checked close).
+ * Physical resource reuse is NOT receipt retirement: preserve HANDOFF key,
+ * counters/original/reply through reuse. Subsequent PROFILE/bootstrap may use
+ * disposed resources but NEVER consumes/overwrites that distinct lane proof;
+ * only a higher valid SAME HANDOFF stream request after final consumption or
+ * native lifetime retirement can retire it. No unrelated-key slot rebind while
+ * the proof is retained; pressure refuses new work rather than erasing proof.
  */
 cog_result_t cog_cli_handoff_step(cog_cli_handoff_t *handoff, bool *done,
     uint64_t *deadline_ms);
