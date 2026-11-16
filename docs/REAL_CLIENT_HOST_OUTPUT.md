@@ -76,8 +76,11 @@ diagnostics are bounded but their adapter failure may be observed only at final
 close; this fix does not claim a general new embedding admission callback.
 
 Authorization prompts need checked write AND flush before treating an answer as
-meaningful. The initial and repeated ASK sites are the only additional app paths
-under investigation with the acceptance writer/critic; any confirmed correction
-will preserve existing IO dispatch failure semantics and deny effects during drain.
+meaningful. The acceptance writer's actual service-wrapper/stdio-failure probe
+confirms both initial and repeated ASK failures on baseline84e2272: app_run returns
+IO only after an explicit later allow has produced a tool effect and STARTED.
+Both exact sites must return IO on failed fprintf OR fflush, before publishing
+initial prompt state or accepting another line. Existing IO dispatch failure and
+ordinary drain deny the still-PROPOSED call; no public contract changes.
 The main fix remains independent of that probe: a full FIFO/socket can no longer
 block masked-signal service or final cleanup inside the installed output adapter.
