@@ -77,9 +77,9 @@ The outer common envelope establishes every identity before any of these traces.
 | 2. Pending parent notification | Parent accepted RUNNING1 but its notification is pending. After cancel, COMPLETED2 is rejected. CANCEL_CONSUMED reports k1; drained CANCELLED2 may get AGAIN until the parent owns a copied/queued notification1 and local-ACKs1. Worker retries CANCELLED2 unchanged. It must not skip3 or fabricate ack2. If ingress itself succeeded before notification delivery blocked, RETRY may report the new accepted prefix; it still retains the wire bytes. |
 | 3. Terminal arbitration | Parent accepts COMPLETED2 before cancel: cancel returns INVALID_STATE and terminal2 wins. Exact accepted retry gets ACCEPTED after the copy/ACK gate; a different pending update gets TERMINAL_FIXED after that same gate. No CANCELLED3. Worker-only physical completion is different: if the parent had not accepted it before cancel, the worker preserves factual child ledger/result, confirms drain, and reports cancellation in the still-unaccepted slot without claiming effects undone. |
 | 4. Lost acceptance / duplicate ACK | Parent accepted n, but ACCEPTED was lost. Identical wire retry is idempotent: core's duplicate check precedes cancel/terminal rejection, including an accepted RUNNINGn retried after cancel. Re-send the retained immutable receipt. Local ack_update is only for current n, never an old wire ACK after advance. Worker matches the exact pending wire; an older ACK cannot free n+1, regress its known prefix or undo cancel. RETRY carrying accepted-terminal metadata still does not release storage before notification delivery/local ACK. |
-| 5. Lost negative receipt / late old wire | CANCEL_CONSUMED lost: worker retries exact rejected bytes; parent repeats the retained rejection, with no semantic movement. Once new wire11/CANCELLED1 is accepted, delayed wire10/RUNNING1 must be handled by its retired-wire identity before core ingress, not submitted as a conflicting same-sequence terminal duplicate. Exact accepted-terminal retry is OK; different bytes are PROTOCOL and later semantic sequences INVALID_STATE. Duplicate cancellation never extends drain time. |
+| 5. Lost negative receipt / late old wire | CANCEL_CONSUMED lost: worker retries exact rejected bytes; parent compares its retained original envelope and repeats the retained rejection, with no semantic movement. While that identity is pending/cached, different bytes with the same wire ID are PROTOCOL. Once original bytes/receipt are reclaimed, covered old wire IDs are uniformly stale-rejected before core ingress, with no claim of byte-conflict detection. Thus delayed wire10/RUNNING1 never conflicts with replacement wire11/CANCELLED1 in the core. Exact accepted-terminal retry can remain idempotent only while its wire identity/bytes are still retained; later semantic updates cannot replace a terminal. Duplicate cancellation never extends drain time. |
 | 6. Worker crash | Parent uses its own accepted k, not worker's last sent n. Only after adequate attempt/descendant fencing/drain may it synthesize FAILED/TIMEOUT k+1, still respecting any pending notification k. Reaping a worker PID alone does not prove all descendants/effects stopped: uncertain durable intent remains recovery-only. An already accepted terminal is never replaced by death. |
-| 7. Parent crash / reconnect | Disconnect is not a receipt. Worker neither discards pending bytes nor resets sequence or starts another attempt. Same live parent/attempt may reconnect with authenticated monotonic receipt state. A restarted parent has a new runtime incarnation; old receipt claims cannot restore volatile registry/accepted-prefix authority. Without an explicit durable correlated restoration path, old execution stays fenced/uncertain and uses existing recovery, not worker claims, k0 reset or effect replay. |
+| 7. Parent crash / worker disconnect | Disconnect is not a receipt. Worker neither discards pending bytes nor resets sequence or starts another attempt. A new IPC connection gets a fresh actual peer ID, which cannot silently replace the admitted immutable agent.owner_peer. No transparent same-attempt reattachment is supplied here; absent a separately approved outer identity mapping contract, retain/freeze pending state and follow bounded drain policy. A restarted parent also has a new runtime incarnation; old receipt claims cannot restore volatile registry/accepted-prefix authority. Without an explicit durable correlated restoration path, old execution stays fenced/uncertain and uses existing recovery, not worker claims, k0 reset or effect replay. Required UI reconnect is a separate composition. |
 
 Only CANCEL_CONSUMED retires a **rejected** update and permits the new wire to
 fill its unaccepted semantic slot. Acknowledging transport consumption is not
@@ -98,8 +98,9 @@ restart a timer. Drain completion remains a runtime fact, not a codec result.
 
 All identity checks precede retirement: exact fabric, parent role/runtime,
 session, admitted worker placement, actual owner peer, agent/attempt and pending
-wire. Reject wrong peers/epochs, conflicting reused wire IDs, unverified higher
-prefixes and malformed data. Neither stale traffic nor a receipt prefix alone
+wire. Reject wrong peers/epochs, byte conflicts for retained wire identities,
+uniformly stale reclaimed IDs, unverified higher prefixes and malformed data.
+Neither stale traffic nor a receipt prefix alone
 can authorize slot retirement, new effects, semantic skipping or recovery.
 
 ## Pass 3: bounded storage, literal codec and consistency review
@@ -154,22 +155,32 @@ between two final dispositions for the same wire ID fails closed.
 
 The runtime reserves bounded per-attempt state: an exact pending worker update,
 space for a drain terminal, the parent notification copy/queue reservation, a
-retained final receipt and retired-wire identity tracking. Stop-and-wait admits
+retained final receipt, its original answered immutable envelope bytes and
+retired-wire identity tracking. The parent keeps original bytes with pending
+or unconsumed final-cache identity, including the full CGA1 payload and bound
+envelope identity fields. Matching IDs alone is insufficient to replay a cached
+ACCEPTED or any other final disposition: compare those exact bytes first, even
+if the core has since advanced. This subset requires a bounded byte copy rather
+than introducing an unspecified digest/collision profile. Stop-and-wait admits
 at most one unresolved worker update per attempt. A later valid fresh worker
 item is the agreed proof that the previous final disposition was consumed;
 only then can its receipt be reclaimed and its wire ID covered by a retired
 watermark. Until that proof, lost receipt retries must remain answerable.
 
-Late IDs covered by the retired watermark are rejected **before** semantic
-ingress. If the exact original final receipt is still cached, it may be replayed;
-otherwise common-envelope stale/error handling applies, without a new ACCEPTED
-claim or core ACK. Such an older frame cannot be the current pending item of a
+While the original envelope/final receipt remain cached, an exact byte retry
+may replay that receipt, and a different byte string under the same retained
+wire ID is PROTOCOL. Once reclaimed into the retired watermark, original bytes
+are unavailable: all covered late IDs are uniformly stale-rejected **before**
+semantic ingress through common-envelope stale/error handling. Do not claim
+to distinguish exact retry from conflicting bytes, reconstruct old bytes from
+the current core snapshot, replay a discarded receipt or issue a new ACCEPTED
+claim/core ACK. Such an older frame cannot be the current pending item of a
 conforming stop-and-wait sender: admission of its successor proved retirement.
 A restarted sender cannot treat that observation as authority to restore its
 old volatile state. This avoids both unbounded tombstone history and allowing
 late RUNNINGn to conflict with its replacement CANCELLEDn.
 
-If a required pending/receipt/notification/resolution slot cannot be reserved,
+If a required pending/receipt/original-envelope/notification/resolution slot cannot be reserved,
 do not accept another item, discard old bytes, claim success, or evict the last
 unconsumed final receipt. Use existing owner backpressure and bounded deadlines;
 permanent capacity exhaustion freezes new admission and reports LIMIT through
@@ -180,6 +191,15 @@ wire ID and semantic k+1. No counter wraps or identity is recycled; impossible
 next-ID exhaustion is not repaired by rewriting a pending frame or accepted
 terminal. These storage/deadline requirements are inputs to the architect's
 common constructor bounds, not a separate allocator API in this header.
+
+Targeted review retrace: retain wire40/bodyA and its unconsumed ACCEPTED receipt.
+Even if the core subsequently fixes another terminal, wire40/bodyB cannot get
+that cached ACCEPTED merely by matching IDs: original bodyA is still available
+and the conflict is PROTOCOL. After valid successor admission proves receipt
+consumption and both original bytes/receipt are reclaimed, delayed bodyA and
+bodyB under wire40 are indistinguishably stale, never re-applied or newly ACKed.
+The original-byte reservation must exist before semantic acceptance; exhaustion
+cannot be repaired by keeping only IDs and then returning cached success.
 
 In particular, do not emit an ordinary RUNNING update at semantic UINT64_MAX:
 acceptance would leave no following terminal slot. A proposed COMPLETED may use

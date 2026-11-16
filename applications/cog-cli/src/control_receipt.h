@@ -85,13 +85,24 @@ typedef enum cog_cli_control_receipt_disposition {
  * TERMINAL_FIXED requires a verified accepted terminal at the reported prefix;
  * it never semantically accepts the pending payload. An older receipt for a
  * different wire item cannot free the current item, regress prefix, forget a
- * verified accepted terminal or undo admitted cancellation. A conflicting
- * duplicate worker wire ID is a protocol error.
+ * verified accepted terminal or undo admitted cancellation. While pending or
+ * final-cache state is retained, the parent also retains the exact answered
+ * immutable envelope bytes, including CGA1 payload and bound identity fields.
+ * Compare those bytes before replaying a cached receipt: same retained worker
+ * wire ID with different bytes is a protocol error, even after core state has
+ * advanced. After that state is reclaimed into a retired-wire watermark,
+ * reject all covered old IDs uniformly as stale before semantic ingress; no
+ * original bytes remain to establish an exact-byte conflict or replay ACCEPTED.
+ * These bounded reservations belong to the common envelope owner, not the codec.
  *
  * These receipts never certify a durable parent TOOL save, release its guard,
  * prove descendants fenced, or claim factual child effects were rolled back.
  * The parent's accepted core terminal and the child's factual durable ledger
  * stay immutable even if parent tool-result persistence later fails.
+ * No reconnect/rebind authority is supplied: a fresh IPC peer cannot silently
+ * replace immutable owner_peer. Without a separately approved outer identity
+ * mapping contract, disconnect retains pending state and freezes/drains the
+ * attempt rather than transparently resuming it. UI reconnect is separate.
  */
 typedef struct cog_cli_control_receipt {
     uint64_t parent_runtime_incarnation; /**< Parent process lifetime, not display
