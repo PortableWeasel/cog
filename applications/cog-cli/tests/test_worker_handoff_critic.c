@@ -37,6 +37,10 @@ static int profile_replay(void)
     cog_result_t actual=bootstrap(&host,&request,total);
     printf("purpose3 exact duplicate: actual=%d expected=%d\n",actual,COG_OK);
     REQUIRE(slots[1].pending_profile==config);
+    body[length+4U]^=1U;
+    REQUIRE(cog_cli_control_encode(&request,raw,sizeof(raw),&total)==COG_OK);
+    REQUIRE(bootstrap(&host,&request,total)==COG_ERROR_PROTOCOL);
+    REQUIRE(slots[1].pending_profile==config && exchange->source==config);
     secret_free(exchange);cog_cli_configuration_free(config);
     return actual==COG_OK?0:1;
 }
@@ -83,6 +87,16 @@ static int abort_case(bool previous_failure)
         inner.checkpoint.generation=3U;
         REQUIRE(cog_orchestrator_handoff_encode(&inner,body,sizeof(body),&length)==COG_OK);
     }
+    if(!previous_failure) {
+        cli_control_lane_t *policy=&out[COG_CLI_LANE_POLICY-1U];
+        policy->pending_valid=true;policy->pending_wire=42U;
+        REQUIRE(handoff_receive(&host,&slot,&request,total)==COG_ERROR_AGAIN);
+        REQUIRE(slot.pending_profile!=NULL && !lane->final_valid);
+        unsigned char answer[21]={0};answer[4]=2U;
+        cog_cli_control_message_t accepted=request;accepted.kind=COG_CLI_CONTROL_COMMAND_RESULT;
+        accepted.lane=COG_CLI_LANE_POLICY;accepted.reply_to=42U;accepted.payload=answer;accepted.payload_len=sizeof(answer);
+        REQUIRE(policy_result(&slot,&accepted)==COG_OK && policy->retired_through==42U);
+    }
     cog_result_t actual=handoff_receive(&host,&slot,&request,total);
     if(!previous_failure) REQUIRE(slot.pending_profile==NULL && slot.profile.source==NULL);
 
@@ -94,6 +108,26 @@ static int abort_case(bool previous_failure)
         kind=inner.kind;
     }
     printf("%s: actual rc=%d kind=%d expected kind=%d\n",previous_failure?"consuming failure then fresh ABORT":"bootstrap-only ABORT",actual,(int)kind,previous_failure?COG_HANDOFF_FAILED:COG_HANDOFF_ABORT);
+    if(previous_failure) {
+        REQUIRE(slot.primary==COG_ERROR_IO);
+        bool duplicate=false;
+        REQUIRE(lane_duplicate(lane,request.wire_id,raw,total,&duplicate)==COG_OK && duplicate);
+        request.wire_id=21U;
+        REQUIRE(cog_cli_control_encode(&request,raw,sizeof(raw),&total)==COG_OK);
+        REQUIRE(handoff_receive(&host,&slot,&request,total)==COG_OK);
+        cog_cli_control_message_t response;char session[128];size_t needed;
+        REQUIRE(cog_cli_control_decode(final,lane->final_reply.length,&response,decode,sizeof(decode),&needed)==COG_OK);
+        REQUIRE(cog_orchestrator_handoff_decode(response.payload,response.payload_len,&inner,session,sizeof(session),&needed)==COG_OK);
+        REQUIRE(inner.kind==COG_HANDOFF_FAILED && slot.primary==COG_ERROR_IO && response.reply_to==21U);
+        host.startup_ready=true;host.executors=&slot;
+        /* Purpose3 addresses reserved physical slot1. */
+        cli_executor_slot_t slots[2]={0};slots[1]=slot;host.executors=slots;
+        unsigned char profile[17]={3U};
+        cog_cli_control_message_t fresh=request;fresh.kind=COG_CLI_CONTROL_BOOTSTRAP;
+        fresh.lane=COG_CLI_LANE_PROFILE;fresh.wire_id=22U;fresh.payload=profile;fresh.payload_len=sizeof(profile);
+        REQUIRE(bootstrap(&host,&fresh,0U)==COG_ERROR_INVALID_STATE);
+        REQUIRE(slots[1].primary==COG_ERROR_IO && slots[1].pending_profile==NULL);
+    }
     return actual==COG_OK && kind==(previous_failure?COG_HANDOFF_FAILED:COG_HANDOFF_ABORT)?0:1;
 }
 int main(void)

@@ -366,6 +366,43 @@ static bool secret_matches(const cli_secret_exchange_t *exchange,const cog_cli_c
         exchange->key.agent==message->agent_id && exchange->key.attempt==message->execution_epoch &&
         strcmp(exchange->key.session,message->session_id)==0 && exchange->wire==message->wire_id;
 }
+static bool secret_stream_matches(const cli_secret_exchange_t *exchange,const cog_cli_control_message_t *message)
+{
+    return exchange->key.lane==message->lane && exchange->key.runtime==message->runtime_incarnation &&
+        exchange->key.sender==message->sender_incarnation && same_worker(exchange->key.worker,message->worker) &&
+        exchange->key.owner_peer==message->owner_peer && exchange->key.agent==message->agent_id &&
+        exchange->key.attempt==message->execution_epoch && strcmp(exchange->key.session,message->session_id)==0;
+}
+static bool retired_profile(cog_cli_worker_host_t *worker,const cog_cli_control_message_t *message)
+{
+    for(size_t i=0U;i<=worker->executor_capacity;++i) {
+        cli_secret_exchange_t *exchange=i==worker->executor_capacity?&worker->startup_profile:&worker->executors[i].profile;
+        if(message->wire_id>exchange->retired_through || !secret_stream_matches(exchange,message)) continue;
+        /* No original secret bytes remain. This is uniform stale bookkeeping,
+           not an exact-byte duplicate or fresh acceptance of changed payload. */
+        if(message->wire_id==exchange->wire && exchange->purpose==4U && exchange->source==NULL &&
+           exchange->body_length!=0U) exchange->pending=true;
+        return true;
+    }
+    return false;
+}
+static cog_result_t reload_profile(cli_executor_slot_t *slot,cli_secret_exchange_t *exchange,
+    cog_cli_configuration_t **configuration)
+{
+    const cog_cli_configuration_t *admitted=*configuration;
+    exchange->source=NULL; /* The consuming call may free this generation. */
+    uint64_t published=0U;
+    cog_result_t rc=cog_cli_execution_reload_resolved(slot->app,configuration,exchange->reload_attempts_used,&published);
+    if(rc==COG_OK) exchange->source=admitted; /* Exact executor-owned generation. */
+    else {
+        exchange->retired_through=exchange->wire;
+        memset(&exchange->probe,0,sizeof(exchange->probe));
+        worker_wipe(exchange->frame,exchange->frame_capacity);
+        worker_wipe(exchange->scratch,exchange->scratch_capacity);
+        exchange->frame_length=0U;
+    }
+    return rc;
+}
 static cog_result_t bootstrap_duplicate(cog_cli_worker_host_t *worker,cli_secret_exchange_t *exchange,
     const cog_cli_control_message_t *message,size_t original_length)
 {
@@ -404,8 +441,9 @@ static cog_result_t bootstrap_reply(cog_cli_worker_host_t *worker,cli_secret_exc
 static cog_result_t bootstrap(cog_cli_worker_host_t *worker,const cog_cli_control_message_t *message,
     size_t original_length)
 {
-    if(message->lane!=COG_CLI_LANE_PROFILE || message->reply_to!=0U || message->payload_len<17U)
-        return COG_ERROR_PROTOCOL;
+    if(message->lane!=COG_CLI_LANE_PROFILE || message->reply_to!=0U) return COG_ERROR_PROTOCOL;
+    if(retired_profile(worker,message)) return COG_OK;
+    if(message->payload_len<17U) return COG_ERROR_PROTOCOL;
     cli_wire_reader_t reader={message->payload,message->payload_len,0U,true};
     uint8_t purpose=(uint8_t)cli_wire_get(&reader,1U);
     uint32_t attempts=(uint32_t)cli_wire_get(&reader,4U);
@@ -435,6 +473,7 @@ static cog_result_t bootstrap(cog_cli_worker_host_t *worker,const cog_cli_contro
     if(message->wire_id<=exchange->retired_through || exchange->pending ||
        (exchange->source!=NULL && !(purpose==4U && exchange->acknowledged && message->wire_id>exchange->wire)))
         return COG_ERROR_INVALID_STATE;
+    if(exchange->replied_wire==UINT64_MAX) return COG_ERROR_LIMIT;
     const unsigned char *profile=(const unsigned char *)message->payload+5U;
     size_t profile_length=message->payload_len-5U;
     cog_cli_configuration_t *configuration=NULL;cog_cli_bootstrap_probe_t probe={0};
@@ -455,9 +494,7 @@ static cog_result_t bootstrap(cog_cli_worker_host_t *worker,const cog_cli_contro
         if(purpose==1U) {
             worker->startup_configuration=configuration;worker->probe=probe;worker->startup_ready=true;
         } else if(purpose==4U) {
-            uint64_t published=0U;
-            outcome=cog_cli_execution_reload_resolved(slot->app,&configuration,attempts,&published);
-            if(outcome!=COG_OK) exchange->source=NULL;
+            outcome=reload_profile(slot,exchange,&configuration);
         } else {
             slot->pending_profile=configuration;slot->configuration_generation=number;
             slot->phase=CLI_SLOT_PROFILE;
@@ -834,6 +871,8 @@ static cog_result_t handoff_receive(cog_cli_worker_host_t *worker,cli_executor_s
     case COG_HANDOFF_CHECKPOINTED:
         if(slot!=&worker->executors[1] || slot->owner_peer!=request.target_peer || slot->app!=NULL ||
            slot->pending_profile==NULL || slot->profile.purpose!=3U ||
+           slot->outbound[COG_CLI_LANE_VIEW-1U].pending_valid ||
+           slot->outbound[COG_CLI_LANE_POLICY-1U].pending_valid ||
            strcmp(slot->profile.probe.session_id,session)!=0 || !same_owner(slot->profile.probe.owner,request.expected) ||
            slot->profile.probe.checkpoint.generation!=request.checkpoint.generation)
             return COG_ERROR_INVALID_STATE;
@@ -849,7 +888,13 @@ static cog_result_t handoff_receive(cog_cli_worker_host_t *worker,cli_executor_s
                 cog_cli_delegation_context_t *bridge;
                 rc=cog_cli_delegation_context_new(&bridge,slot->app,NULL,worker,0U,0U,0U,0U);
             }
-            if(rc==COG_OK) { slot->kind=COG_CLI_EXECUTION_STAGED;slot->phase=CLI_SLOT_PREPARED;response.kind=COG_HANDOFF_PREPARED; }
+            if(rc==COG_OK) {
+                /* These serials belong to the newly constructed executor, not
+                   the retained native stream. Wire receipts/counters survive. */
+                slot->outbound[COG_CLI_LANE_VIEW-1U].provisional_prefix=0U;
+                slot->outbound[COG_CLI_LANE_POLICY-1U].provisional_prefix=0U;
+                slot->kind=COG_CLI_EXECUTION_STAGED;slot->phase=CLI_SLOT_PREPARED;response.kind=COG_HANDOFF_PREPARED;
+            }
         }
         break;
     case COG_HANDOFF_PREPARED:
@@ -905,6 +950,16 @@ static cog_result_t handoff_receive(cog_cli_worker_host_t *worker,cli_executor_s
             }
         }
         if(slot->app!=NULL && !slot->local_done) return COG_ERROR_AGAIN;
+        /* Ordered final disposal must follow consumption of old executor state.
+           Otherwise an unsent old POLICY (which has no owner epoch field) could
+           survive resource reuse and impersonate a new executor prompt. */
+        {
+            cli_control_lane_t *view=&slot->outbound[COG_CLI_LANE_VIEW-1U];
+            cli_control_lane_t *policy=&slot->outbound[COG_CLI_LANE_POLICY-1U];
+            if(view->pending_valid || policy->pending_valid ||
+               (policy->provisional_reply.length!=0U && policy->provisional_reply.data[0]==1U))
+                return COG_ERROR_AGAIN;
+        }
         rc=dispose_execution(slot);
         if(rc==COG_OK) {
             slot->phase=CLI_SLOT_RETAINED;slot->started=false;slot->local_done=true;

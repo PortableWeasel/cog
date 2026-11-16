@@ -404,7 +404,7 @@ add_test(NAME cli-headless-native-limit COMMAND ${Python3_EXECUTABLE}
     $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} limit)
 set_tests_properties(cli-headless-native-limit PROPERTIES TIMEOUT 70)
 # Lane A owns shared CMake; append these real-source private branch fixtures.
-foreach(name IN ITEMS worker_receipt_owned delegation_callbacks worker_handoff_critic)
+foreach(name IN ITEMS worker_receipt_owned delegation_callbacks worker_handoff_critic worker_reload_failure)
     add_executable(test_${name} test_${name}.c)
     target_link_libraries(test_${name} PRIVATE cog::cli)
     target_include_directories(test_${name} PRIVATE ../src ../../../libraries/cog-ipc/private)
@@ -438,3 +438,6 @@ target_link_options(test_cli_coordinator_identity PRIVATE -Wl,--gc-sections)
 target_enable_warnings(test_cli_coordinator_identity)
 add_test(NAME cli-coordinator-identity COMMAND test_cli_coordinator_identity)
 set_tests_properties(cli-coordinator-identity PROPERTIES LABELS "unit;cli;headless")
+
+add_test(NAME cli-worker-reload-failure COMMAND test_worker_reload_failure)
+set_tests_properties(cli-worker-reload-failure PROPERTIES TIMEOUT 10)
