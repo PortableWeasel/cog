@@ -2945,9 +2945,15 @@ cog_result_t cog_cli_host_runtime_step(cog_cli_host_runtime_t *r,
         }
         bool handoff_done = r->handoff == NULL || r->handoff->phase == CLI_HANDOFF_IDLE ||
             (r->handoff->phase == CLI_HANDOFF_FROZEN && r->handoff->pending.length == 0U);
-        /* The deadline is a fallback, not a minimum lifetime. Keep ingress
-         * until native/local ownership has drained, then stop the control core. */
-        if (local_done && native_done && handoff_done && !r->control_drive_ended)
+        /* With live UI leases, keep the established deadline drain so queued
+         * transport bytes and protected final/ACK receipts remain serviceable. */
+        bool ui_drained = true;
+        for (size_t i = 0U; i < r->bounds.clients; ++i)
+            if (r->clients[i].used) ui_drained = false;
+        for (size_t i = 0U; i < r->bounds.command_records; ++i)
+            if (r->commands[i].phase != CLI_COMMAND_FREE) ui_drained = false;
+        /* The deadline is a fallback, not a minimum lifetime without UI owners. */
+        if (local_done && native_done && handoff_done && ui_drained && !r->control_drive_ended)
             cog_core_stop(r->control_core);
         r->done = local_done && native_done && r->control_drive_ended && handoff_done;
         if (r->shutdown_deadline_ms < out.next_deadline_ms) out.next_deadline_ms = r->shutdown_deadline_ms;
