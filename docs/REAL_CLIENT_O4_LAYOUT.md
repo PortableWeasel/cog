@@ -270,7 +270,12 @@ cannot resurrect its cleared source/probe or receive a new latest probe. Constru
 unwind/abandonment clears metadata and wipes ENTIRE secret arenas; ordinary close
 retires exchange first, then releases its explicit generation pin. No raw secret
 original cache, extra logical generation/provider, store reread, runtime allocation
-or mutable global is introduced. Header-only strict checks below do not claim
+or mutable global is introduced. Failed purpose4 reload is the narrow exception:
+the consuming call leaves no live candidate for duplicate proof. Retire its
+request proof and keep only the separately retained nonsecret negative ACK under
+REAL_CLIENT_RELOAD_FAILURE_RECEIPTS.md; stale retries cannot reapply or poison
+the binding. This does not extend credential lifetime or weaken successful proof.
+Header-only strict checks below do not claim
 runtime duplicate conformance or permit O4 bodies ahead of their prerequisites.
 
 Amendment verification:18/18 full strict standalone/combined/reversed checks on

@@ -60,3 +60,31 @@ arenas never receive credential-bearing bytes.
    the binding is lost, no response or new owner is fabricated: preserve the
    caller's unresolved/frozen outcome and retire at actual lifetime end. A new
    binding cannot resurrect this consumed candidate or replay an old effect.
+
+## Pass 3: consistency, lifetime and exhaustion audit
+
+| Seam | Required result |
+|---|---|
+| Failed consuming call | No exchange source alias exists during transfer/free; failure publishes retired request identity plus actual negative ACK, never a dangling proof. |
+| Successful consuming call | Exact candidate is now executor-owned; bind original probe/source and use normal exact comparison. No preemptive watermark may stale-reject that successful wire. |
+| Old live profile proof | Retire its previous identity/borrow before replacing metadata; keep the actual active provider/configuration alive according to executor ownership, independently of the failed candidate. |
+| Failed candidate secret lifetime | Full scratch/frame wipe and constructor/configuration consuming cleanup remain required. R contains only existing result/generation/state fields and nonsecret envelope. No secret is placed in generic lane caches. |
+| Repeat failure receipt | Same outer response wire/body, original reply_to, no new logical reload count, no new resolver authority, and no state2/success promotion. |
+| Stale request classifier | Full authenticated stream and covered wire classification precedes candidate reconstruction; stale return is absorbed as nonfatal ingress bookkeeping, not worker shutdown or binding poison. |
+| Successor | Validate the new higher same-stream request before consuming R; copying a negative ACK alone does not authorize erasing its retained replay body. One exchange remains bounded. |
+| Counter exhaustion | Existing LIMIT/frozen error path; no wrap, reset, new stream identity or guessed receipt. A retained R can be resent without allocating another wire. |
+| Reconnect/close | Actual lifetime retirement wipes body/frame/scratch, clears proof/correlation and preserves applicable monotonic retirement policy. No old request acquires a new executor. |
+| Unrelated operations | Child bootstrap, successful reload, HANDOFF and UPDATE confirmation contracts remain unchanged. Parent TOOL durable ACK is unrelated. |
+
+This refines the O4 layout sentence requiring proof to survive ACK retention:
+that sentence applies only while an exact live source generation exists. For a
+consumed failed reload, the request proof is already retired and only the
+nonsecret failure receipt survives. Neither retained negative ACK nor its copied
+send is evidence that the attempted configuration became active.
+
+Validation: 16 strict standalone header checks passed for host_internal.h,
+composition_internal.h, configuration.h and execution.h using GCC/Clang C11 and
+G++/Clang++ C++11 with Werror. Evidence is checkout-local
+build-reload-failure-contract/checks.log. No source implementation or runtime
+conformance claim is part of these three amendment commits. Independent approval
+is required before changing the worker's dependent replay path.
