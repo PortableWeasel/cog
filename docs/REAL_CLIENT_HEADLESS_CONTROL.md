@@ -514,10 +514,18 @@ an already accepted authorization. Keep fixed per-executor COMMAND/CANCEL pendin
 slots until actual result/receipt disposal; report/discard old-client delivery
 without re-admitting its mutation. Generic final/ACK replies follow the exact
 request lane/role path; no recursive ACK is required for an ACK-of-ACK.
-Malformed/stale UI frames are refused per-peer/logical lease without killing
-headless model work; existing Q framing closes malformed transport as declared.
-No invented public close-one-peer operation is assumed. Actual driver/output/
-observation failures still freeze admission and retain owned cleanup.
+A complete, valid Q frame containing malformed CGL/schema data or a stale UI
+identity is refused at application ingress per-peer/logical lease without
+killing headless model work. This does NOT promise isolation of Q framing or
+service failures. If the core IPC drive propagates PROTOCOL/LIMIT (for example
+malformed Q framing or an oversized retained transport frame), or another driver
+failure, retain that primary error, freeze ordinary admission and cancel/drain
+owned work under the existing core contract. Dropping the offending transport
+peer does not convert a propagated error into successful ongoing execution.
+Normal EOF/per-peer IO retains Q's existing disconnect handling; not every
+disconnect is a fatal driver error. No invented public close-one-peer operation
+or new transport-fault isolation is assumed. Actual driver/output/observation
+failures still freeze admission and retain owned cleanup.
 
 The initial child runtime emits one factual RUNNING update and one terminal
 (or early no-effect terminal without RUNNING); cancel arbitration may replace

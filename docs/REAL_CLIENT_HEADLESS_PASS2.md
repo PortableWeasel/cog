@@ -365,6 +365,12 @@ tiny corrupt CGV1/CGD1 suffix, output failure, stale cross-session reconnect,
 controller expiry and late POLICY/CONTINUE. Nonwriting full scan precedes any
 decode output; CGD1 rows cannot be partially installed before later bad policy.
 Exact view or error, independent command/render acknowledgement, no effect replay.
+Final-critic A48 clarification: per-peer refusal here applies to well-framed Q
+payloads rejected by CGL/schema/identity validation. A propagated Q framing/core
+ceiling PROTOCOL/LIMIT or other driver failure freezes ordinary admission and
+drains owned work under existing core semantics; it does not promise continued
+model execution after transport corruption. Normal EOF/per-peer IO and prefix
+AGAIN retain existing Q handling. The pass3 targeted retrace records both paths.
 
 R14 combines03/07/09/10/15: global credit exhausted before STARTED; parent G1 turn
 while G2 published; prefix OOM; early cancel before profile/start; RUNNING n in

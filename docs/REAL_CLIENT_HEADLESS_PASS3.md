@@ -16,6 +16,7 @@ different final critic still must approve an exact coherent checkpoint.
 | A45 | stale receipt wording confused its own envelope ID with answered update | inner wire_id equals outer.reply_to; own outer wire_id is independent, fixed UPDATE lane |
 | A46 | residual child POLICY text exceeded chosen noninteractive role | PRIMARY-only policy target/CGV row; child ASK durable no-effect DENY, no UI wait |
 | A47 | private states only prose, consuming cleanup scope unclear | explicit PUBLICATION/PREPARE states/events, named direct drain/close, original standalone values unchanged |
+| A48 | per-peer CGL refusal prose could imply isolation of fatal Q framing errors | valid Q payload/application rejection stays per-peer; propagated Q PROTOCOL/LIMIT/service driver failure freezes/drains under existing core semantics |
 
 The policy forward is prepared/checked against a current canonical prompt or
 branch before send; copied-send AGAIN accepts nothing and rechecks lease on
@@ -56,6 +57,28 @@ all rows have no known declaration/ownership gap after current amendments.
 | 20 | owner signalfd, worker inherited mask reset, host bounded output unchanged; cancel independent lane and final-line known/unknown disposition |
 | R13 | partial resync never renders/enables input; current primary policy nonce/branch identity; old forward-committed grant distinct from replacement controller |
 | R14 | accepted CGA terminal wins, negative consume changes no semantic prefix, new immutable terminal envelope, startup/cancel race fenced; no old peer/epoch reattachment |
+
+### Final critic A48 targeted retrace (11/R13/05/16/20)
+
+1. Q delivers one complete valid frame; CGL schema/identity validation fails
+   before command admission. Static application ingress refuses that peer/lease
+   operation, changes no model/tool state and does not turn that application
+   rejection into a core driver error. No effect is replayed for resync.
+2. A malformed Q frame or retained frame above the core ceiling instead causes
+   the existing IPC path to drop the offending peer and propagate PROTOCOL/LIMIT.
+   Core step preserves that first driver failure; runtime freezes ordinary
+   admission, ends core driving once and uses bounded direct app/native drain.
+   Previously accepted text/results remain actual incomplete/durable state.
+   There is no promise that headless model execution continues after this fault.
+3. Ordinary EOF/per-peer IO and incomplete-prefix AGAIN follow existing Q
+   handling and fair service. They are not reclassified as fatal merely because
+   they are transport events. Actual propagated accept/service/driver errors
+   retain the normal freeze/drain outcome.
+
+This source-grounded distinction preserves Q/core behavior and the R13 slow-peer
+and no-repeat guarantees; it adds no per-peer transport-fault isolation API or
+implementation. All earlier authorization, receipt and ownership traces remain
+unchanged. Headers are byte-for-byte unchanged from the74-check candidate.
 
 ## Interface and error audit
 

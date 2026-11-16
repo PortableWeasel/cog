@@ -797,6 +797,11 @@ executor version checks, independent cancel/state receipts and checked consuming
 cleanup. Gated per-file O tickets preserve one shared app source lane, disjoint
 pure codecs/profiles/projection and different critics. All three writer passes
 are complete; the different final N gate remains open, with no bodies authorized.
+N's per-peer application refusal applies only after Q delivered a valid complete
+frame. Malformed CGL/schema/stale identity does not kill headless work; propagated
+Q framing/core-ceiling PROTOCOL/LIMIT or other driver failure retains existing
+core freeze/drain behavior. Normal disconnect handling stays unchanged; no new
+transport-fault isolation is implied by the UI replay contract.
 
 Stage 6 — Headers first. Design all public APIs as headers before any
 implementation. Three iterations:
