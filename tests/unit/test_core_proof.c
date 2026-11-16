@@ -200,17 +200,25 @@ static void attached(void)
 }
 /* Fatal framing cannot wait for an ordinary descriptor: otherwise a step
  * executes ordinary handlers after transport corruption was already observed. */
-static void saturated_fatal(void)
+static void saturated_fatal(bool arena)
 {
     fixture_t f={0};char path[108];f.fill=true;f.protected_ingress=true;
     create(&f,listen_new(path));
+    int retained=-1;
+    if(arena) {
+        retained=raw(path,"one");
+        assert(cog_core_drive_begin(f.core)==COG_OK);step(&f);
+        for(unsigned i=0U;i<8U && f.core->ipc_arena_used==0U;++i) step(&f);
+        assert(f.core->ipc_arena_used==3U && f.messages==0U);
+        assert(!cog_event_queue_is_full(f.core->ipc_events));
+    }
     int fd=socket(AF_UNIX,SOCK_STREAM,0);assert(fd>=0);
     struct sockaddr_un address={0};address.sun_family=AF_UNIX;
     memcpy(address.sun_path,path,strlen(path)+1U);
     assert(connect(fd,(const struct sockaddr *)&address,sizeof(address))==0);
     const unsigned char prefix[]={0U,0U,0U,17U};
     assert(write(fd,prefix,sizeof(prefix))==(ssize_t)sizeof(prefix));
-    assert(cog_core_drive_begin(f.core)==COG_OK);
+    if(!arena) assert(cog_core_drive_begin(f.core)==COG_OK);
     cog_core_step_info_t info;
     cog_result_t rc=cog_core_step(f.core,&info);
     if(rc==COG_OK) {
@@ -221,10 +229,17 @@ static void saturated_fatal(void)
             (int)rc,(int)info.done,info.dispatched);
     assert(rc==COG_ERROR_LIMIT && info.done && info.dispatched==0U);
     assert(cog_core_drive_end(f.core)==COG_ERROR_LIMIT);
+    assert(f.core->ipc_client_count<=(arena?1U:0U));
+    for(size_t i=0U;i<f.core->ipc_client_count;++i)
+        assert(f.core->ipc_clients[i].endpoint->failure!=COG_ERROR_LIMIT);
+    if(arena) assert(f.core->ipc_arena_used==3U && f.messages==0U);
+    /* Retired fatal endpoint cannot reappear on explicit rebegin. */
+    assert(cog_core_drive_begin(f.core)==COG_OK);step(&f);stop(&f);
+    if(retained>=0) assert(close(retained)==0);
     assert(close(fd)==0);drop(&f);
 }
 int main(void)
 {
-    saturated_fatal();saturated();rejected_or_generic(true);rejected_or_generic(false);attached();
+    saturated_fatal(false);saturated_fatal(true);saturated();rejected_or_generic(true);rejected_or_generic(false);attached();
     puts("protected IPC proof under event/arena pressure PASS");return 0;
 }

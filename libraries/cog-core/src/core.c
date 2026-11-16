@@ -318,6 +318,15 @@ static cog_result_t core_ipc_step(cog_core_t *core, uint64_t *deadline)
                 continue;
             }
         }
+        /* Fatal framing/service outcomes freeze dispatch even when descriptor
+         * or payload reservations are full. Only ordinary IO/EOF may drain
+         * retained complete frames before peer retirement. Event proof copies
+         * already queued remain valid after this exact endpoint is removed. */
+        if (service_rc != COG_OK && service_rc != COG_ERROR_AGAIN &&
+            service_rc != COG_ERROR_IO) {
+            core_peer_remove(core, index);
+            return service_rc;
+        }
         if (!peer->connected_queued) {
             if (cog_event_queue_is_full(core->ipc_events)) continue;
             rc = core_ipc_enqueue(core, COG_EVENT_IPC_CONNECTED, peer, NULL, 0U);
