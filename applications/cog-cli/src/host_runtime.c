@@ -1510,6 +1510,40 @@ static void host_secret_wipe(cli_secret_exchange_t *s)
         for (size_t j = 0U; j < capacities[i]; ++j) buffers[i][j] = 0U;
     s->body_length = 0U; s->frame_length = 0U;
 }
+/* Only accepted copies start a retry clock; transport pressure retains eligibility. */
+static cog_result_t host_copied_send(cog_cli_host_runtime_t *r, cog_worker_id_t worker,
+    const cli_host_bytes_t *frame, uint64_t wire, uint64_t *copied, uint64_t *next,
+    bool one_way)
+{
+    if (wire == 0U || frame->length == 0U) return COG_ERROR_INVALID_STATE;
+    if (*copied == wire && (one_way || r->now_ms < *next)) return COG_ERROR_AGAIN;
+    if (!one_way && r->now_ms > UINT64_MAX - CLI_CONTROL_RETRY_MS) return COG_ERROR_LIMIT;
+    cog_ipc_message_t bytes = {.data = frame->data, .len = frame->length, .capacity = frame->capacity};
+    cog_result_t rc = cog_orchestrator_send(r->orchestrator, worker, &bytes);
+    if (rc == COG_OK) {
+        *copied = wire;
+        *next = one_way ? 0U : r->now_ms + CLI_CONTROL_RETRY_MS;
+    }
+    return rc;
+}
+static cog_result_t host_lane_send(cog_cli_host_runtime_t *r, cog_worker_id_t worker,
+    cli_control_lane_t *lane, const cli_host_bytes_t *frame, bool one_way)
+{
+    return host_copied_send(r, worker, frame, lane->pending_wire,
+        &lane->copied_wire, &lane->next_send_ms, one_way);
+}
+static cog_result_t host_reply_send(cog_cli_host_runtime_t *r, cog_worker_id_t worker,
+    cli_control_lane_t *lane, const cli_host_bytes_t *frame)
+{
+    uint64_t wire = frame == &lane->final_reply ? lane->final_reply_wire : lane->provisional_wire;
+    /* An already copied valid successor retires older response delivery. */
+    if (wire < lane->copied_wire) return COG_ERROR_AGAIN;
+    lane->pending_reply_wire = wire;
+    cog_result_t rc = host_copied_send(r, worker, frame, wire,
+        &lane->copied_wire, &lane->next_send_ms, false);
+    if (rc == COG_OK) lane->pending_reply_wire = 0U;
+    return rc;
+}
 static cog_result_t host_profile_send(cog_cli_host_runtime_t *r, cli_worker_record_t *worker,
     cli_executor_slot_t *slot, cli_secret_exchange_t *secret, uint8_t purpose, bool *accepted)
 {
@@ -1545,8 +1579,9 @@ static cog_result_t host_profile_send(cog_cli_host_runtime_t *r, cli_worker_reco
         if (rc != COG_OK) return rc;
         secret->wire = r->next_nonce++; secret->pending = true;
     }
-    cog_ipc_message_t bytes = {.data = secret->frame, .len = secret->frame_length, .capacity = secret->frame_capacity};
-    cog_result_t rc = cog_orchestrator_send(r->orchestrator, worker->id, &bytes);
+    cli_host_bytes_t bytes = {.data = secret->frame, .length = secret->frame_length, .capacity = secret->frame_capacity};
+    cog_result_t rc = host_copied_send(r, worker->id, &bytes, secret->wire,
+        &secret->copied_wire, &secret->next_send_ms, false);
     if (rc == COG_OK && accepted != NULL) *accepted = true;
     if (rc == COG_OK && slot != NULL) {
         slot->first_admission_sent = true;
@@ -1619,12 +1654,6 @@ static cog_result_t host_remote_frame(cog_cli_host_runtime_t *r, cli_executor_sl
     out->length = required; *wire = r->next_nonce++;
     return COG_OK;
 }
-static cog_result_t host_worker_send(cog_cli_host_runtime_t *r, cog_worker_id_t worker,
-    const cli_host_bytes_t *frame)
-{
-    cog_ipc_message_t bytes = {.data = frame->data, .len = frame->length, .capacity = frame->capacity};
-    return cog_orchestrator_send(r->orchestrator, worker, &bytes);
-}
 static cog_result_t host_remote_update(cog_cli_host_runtime_t *r, cli_executor_slot_t *slot,
     const cog_cli_control_message_t *m, const cog_orchestrator_event_t *event)
 {
@@ -1632,7 +1661,7 @@ static cog_result_t host_remote_update(cog_cli_host_runtime_t *r, cli_executor_s
     cli_control_lane_t *lane = &slot->inbound[COG_CLI_LANE_UPDATE - 1U];
     if (lane->final_valid && lane->final_answered_wire == m->wire_id) {
         if (!host_bytes_equal(&lane->final_original, event->data, event->data_len)) return COG_ERROR_PROTOCOL;
-        return host_worker_send(r, slot->worker, &lane->final_reply);
+        return host_reply_send(r, slot->worker, lane, &lane->final_reply);
     }
     if (m->wire_id <= lane->retired_through ||
         (lane->final_valid && m->wire_id <= lane->final_answered_wire)) return COG_ERROR_INVALID_STATE;
@@ -1700,7 +1729,7 @@ static cog_result_t host_remote_update(cog_cli_host_runtime_t *r, cli_executor_s
             if (rc != COG_OK) return rc;
             lane->provisional_prefix = slot->accepted_sequence;
         }
-        return host_worker_send(r, slot->worker, &lane->provisional_reply);
+        return host_reply_send(r, slot->worker, lane, &lane->provisional_reply);
     }
     rc = host_remote_frame(r, slot, COG_CLI_CONTROL_UPDATE_RECEIPT, COG_CLI_LANE_UPDATE,
         m->wire_id, body, sizeof(body), &lane->final_reply, &lane->final_reply_wire);
@@ -1710,7 +1739,7 @@ static cog_result_t host_remote_update(cog_cli_host_runtime_t *r, cli_executor_s
     lane->final_answered_wire = m->wire_id; lane->final_valid = true;
     lane->pending_valid = false; lane->pending.length = 0U; lane->provisional_wire = 0U;
     slot->receipt = receipt; slot->pending_update_wire = m->wire_id;
-    return host_worker_send(r, slot->worker, &lane->final_reply);
+    return host_reply_send(r, slot->worker, lane, &lane->final_reply);
 }
 
 static void host_json_number(cli_wire_writer_t *writer, uint64_t value, bool quoted)
@@ -2062,7 +2091,7 @@ static cog_result_t host_forward_command(cog_cli_host_runtime_t *r, cli_executor
         op->owner = record->owner; op->executor_serial = serial; op->executor_wire = lane->pending_wire;
         op->reply.length = 0U; lane->pending_valid = true;
     }
-    cog_result_t rc = host_worker_send(r, slot->worker, &lane->pending);
+    cog_result_t rc = host_lane_send(r, slot->worker, lane, &lane->pending, false);
     if (rc == COG_OK) { op->forward_committed = true; record->phase = CLI_COMMAND_FORWARDED; }
     return rc == COG_OK ? COG_ERROR_AGAIN : rc;
 }
@@ -2082,7 +2111,7 @@ static cog_result_t host_forwarded_slice(cog_cli_host_runtime_t *r, cli_executor
                 }
         }
         if (op->forward_committed && lane->pending_valid) {
-            cog_result_t rc = host_worker_send(r, slot->worker, &lane->pending);
+            cog_result_t rc = host_lane_send(r, slot->worker, lane, &lane->pending, false);
             if (rc != COG_OK && rc != COG_ERROR_AGAIN) return rc;
         }
         if (!op->final || lane->pending_valid) continue;
@@ -2218,7 +2247,7 @@ static cog_result_t host_remote_child_slice(cog_cli_host_runtime_t *r, cli_execu
             if (rc != COG_OK) return rc;
             lane->pending_valid = true;
         }
-        return host_worker_send(r, slot->worker, &lane->pending);
+        return host_lane_send(r, slot->worker, lane, &lane->pending, true);
     }
     if (slot->phase != CLI_SLOT_PROFILE) return COG_ERROR_AGAIN;
     cli_group_record_t *group = host_slot_group(r, slot);
@@ -2253,7 +2282,7 @@ static cog_result_t host_remote_child_slice(cog_cli_host_runtime_t *r, cli_execu
         if (rc != COG_OK) return rc;
         lane->pending_valid = true;
     }
-    return host_worker_send(r, slot->worker, &lane->pending);
+    return host_lane_send(r, slot->worker, lane, &lane->pending, false);
 }
 
 
@@ -2290,7 +2319,7 @@ static cog_result_t host_request_finish(cog_cli_host_runtime_t *r, cli_executor_
     lane->final_original.length = lane->pending.length;
     lane->final_answered_wire = lane->pending_wire; lane->final_valid = true; lane->pending_valid = false;
     lane->provisional_wire = 0U;
-    return host_worker_send(r, slot->worker, &lane->final_reply);
+    return host_reply_send(r, slot->worker, lane, &lane->final_reply);
 }
 static cog_result_t host_remote_mailbox(cog_cli_host_runtime_t *r, cli_executor_slot_t *slot,
     const cog_cli_control_message_t *m, const cog_orchestrator_event_t *event)
@@ -2301,7 +2330,7 @@ static cog_result_t host_remote_mailbox(cog_cli_host_runtime_t *r, cli_executor_
     cog_result_t rc = host_request_cache(slot, m, event, &duplicate);
     if (rc != COG_OK) return rc;
     cli_control_lane_t *lane = &slot->inbound[COG_CLI_LANE_MAILBOX - 1U];
-    if (duplicate) return host_worker_send(r, slot->worker, &lane->final_reply);
+    if (duplicate) return host_reply_send(r, slot->worker, lane, &lane->final_reply);
     if (r->next_nonce > UINT64_MAX - 4U) return COG_ERROR_LIMIT;
     if (m->kind == COG_CLI_CONTROL_CHILD_MESSAGE) {
         cli_wire_reader_t reader = {m->payload, m->payload_len, 0U, true};
@@ -2321,7 +2350,7 @@ static cog_result_t host_remote_mailbox(cog_cli_host_runtime_t *r, cli_executor_
                     body, sizeof(body), &lane->provisional_reply, &lane->provisional_wire);
                 if (rc != COG_OK) return rc;
             }
-            return host_worker_send(r, slot->worker, &lane->provisional_reply);
+            return host_reply_send(r, slot->worker, lane, &lane->provisional_reply);
         }
         return host_request_finish(r, slot, m->lane, COG_CLI_CONTROL_MESSAGE_RESULT, body, sizeof(body));
     }
@@ -2387,7 +2416,7 @@ static cog_result_t host_remote_command_result(cog_cli_host_runtime_t *r, cli_ex
     if (state == 1U) return COG_ERROR_AGAIN;
     if (op->final) {
         if (!host_bytes_equal(&op->reply, event->data, event->data_len)) return COG_ERROR_PROTOCOL;
-        return lane->pending_valid ? host_worker_send(r, slot->worker, &lane->pending) : COG_OK;
+        return lane->pending_valid ? host_lane_send(r, slot->worker, lane, &lane->pending, false) : COG_OK;
     }
     if (event->data_len > op->reply.capacity) return COG_ERROR_LIMIT;
     cog_result_t rc = host_remote_frame(r, slot, COG_CLI_CONTROL_COMMAND_ACK, m->lane, m->wire_id,
@@ -2395,7 +2424,7 @@ static cog_result_t host_remote_command_result(cog_cli_host_runtime_t *r, cli_ex
     if (rc != COG_OK) return rc;
     memcpy(op->reply.data, event->data, event->data_len); op->reply.length = event->data_len;
     op->result = outcome; op->final = true; lane->pending_valid = true;
-    return host_worker_send(r, slot->worker, &lane->pending);
+    return host_lane_send(r, slot->worker, lane, &lane->pending, false);
 }
 
 static cog_result_t host_remote_publication(cog_cli_host_runtime_t *r, cli_executor_slot_t *slot,
@@ -2408,7 +2437,7 @@ static cog_result_t host_remote_publication(cog_cli_host_runtime_t *r, cli_execu
     cog_result_t rc = host_request_cache(slot, m, event, &duplicate);
     if (rc != COG_OK) return rc;
     cli_control_lane_t *lane = &slot->inbound[(size_t)m->lane - 1U];
-    if (duplicate) return host_worker_send(r, slot->worker, &lane->final_reply);
+    if (duplicate) return host_reply_send(r, slot->worker, lane, &lane->final_reply);
     cog_cli_projection_view_t view;
     rc = cog_cli_projection_snapshot(r->projection, &view); if (rc != COG_OK) return rc;
     cli_wire_reader_t reader = {m->payload, m->payload_len, 0U, true};
@@ -2504,13 +2533,14 @@ static cog_result_t host_remote_delegate(cog_cli_host_runtime_t *r, cli_executor
             return COG_ERROR_INVALID_STATE;
         group->result_checkpoint.generation = checkpoint; group->result_acknowledged = true;
         group->phase = CLI_GROUP_SAVED; lane->retired_through = m->wire_id;
-        lane->final_valid = false; lane->final_original.length = 0U; lane->final_reply.length = 0U;
+        lane->final_valid = false; lane->pending_reply_wire = 0U;
+        lane->final_original.length = 0U; lane->final_reply.length = 0U;
         return COG_OK;
     }
     bool duplicate;
     cog_result_t rc = host_request_cache(slot, m, event, &duplicate);
     if (rc != COG_OK) return rc;
-    if (duplicate) return host_worker_send(r, slot->worker, &lane->final_reply);
+    if (duplicate) return host_reply_send(r, slot->worker, lane, &lane->final_reply);
     if (m->kind == COG_CLI_CONTROL_DELEGATE_RESERVATION_RELEASE) {
         if (m->lane != COG_CLI_LANE_CANCEL || m->payload_len != 8U) return COG_ERROR_PROTOCOL;
         uint64_t reservation = cli_wire_get(&reader, 8U);
@@ -2623,7 +2653,7 @@ static cog_result_t host_worker_message(cog_cli_host_runtime_t *r, const cog_orc
             return COG_ERROR_INVALID_STATE;
         /* This one-way proof is distinct from local core ACK and parent save.
          * It certifies actual worker cleanup under the trusted current binding. */
-        lane->retired_through = m.wire_id; lane->final_valid = false;
+        lane->retired_through = m.wire_id; lane->final_valid = false; lane->pending_reply_wire = 0U;
         lane->final_original.length = 0U; lane->final_reply.length = 0U;
         return COG_OK;
     }
@@ -2696,6 +2726,48 @@ static bool host_handoff_owns(const cog_cli_host_runtime_t *r, size_t index)
     if (index == h->target_slot && h->activation_acked && !h->abort_requested) return false;
     return index == h->source_slot || index == h->target_slot;
 }
+static void host_send_due(cog_cli_host_runtime_t *r, cog_cli_host_runtime_step_t *out,
+    uint64_t wire, uint64_t copied, uint64_t next, bool one_way)
+{
+    if (wire == 0U || (one_way && wire == copied)) return;
+    uint64_t due = wire == copied ? next : r->now_ms;
+    if (due < out->next_deadline_ms) out->next_deadline_ms = due;
+}
+static cog_result_t host_retained_sends(cog_cli_host_runtime_t *r, cog_cli_host_runtime_step_t *out)
+{
+    for (size_t i = 0U; i < r->bounds.workers; ++i) {
+        cli_secret_exchange_t *profile = &r->workers[i].startup_profile;
+        if (profile->pending && !profile->acknowledged)
+            host_send_due(r, out, profile->wire, profile->copied_wire, profile->next_send_ms, false);
+    }
+    for (size_t i = 0U; i < r->bounds.executors; ++i) {
+        cli_executor_slot_t *slot = &r->executors[i];
+        if (slot->phase == CLI_SLOT_FREE || slot->owner_peer == 0U) continue;
+        cli_secret_exchange_t *profile = &slot->profile;
+        if (profile->pending && !profile->acknowledged)
+            host_send_due(r, out, profile->wire, profile->copied_wire, profile->next_send_ms, false);
+        for (size_t j = 0U; j < CLI_HOST_LANES; ++j) {
+            cli_control_lane_t *lane = &slot->inbound[j];
+            uint64_t wire = lane->pending_reply_wire;
+            if (wire != 0U) {
+                const cli_host_bytes_t *frame = NULL;
+                if (lane->final_valid && wire == lane->final_reply_wire) frame = &lane->final_reply;
+                else if (wire == lane->provisional_wire) frame = &lane->provisional_reply;
+                if (frame == NULL) return COG_ERROR_INVALID_STATE;
+                cog_result_t rc = host_reply_send(r, slot->worker, lane, frame);
+                if (rc != COG_OK && rc != COG_ERROR_AGAIN) return rc;
+                if (lane->pending_reply_wire != 0U)
+                    host_send_due(r, out, wire, lane->copied_wire, lane->next_send_ms, false);
+            }
+            lane = &slot->outbound[j];
+            if (lane->pending_valid) {
+                bool one_way = j == COG_CLI_LANE_CANCEL - 1U && slot->agent != 0U;
+                host_send_due(r, out, lane->pending_wire, lane->copied_wire, lane->next_send_ms, one_way);
+            }
+        }
+    }
+    return COG_OK;
+}
 static void host_step_merge(cog_cli_host_runtime_t *r, cog_cli_host_runtime_step_t *out,
     const cog_core_step_info_t *info)
 {
@@ -2765,7 +2837,17 @@ cog_result_t cog_cli_host_runtime_step(cog_cli_host_runtime_t *r,
             size_t required;
             rc = cog_cli_control_decode(h->pending.data, h->pending.length, &request,
                 r->decode.data, r->decode.capacity, &required);
-            if (rc == COG_OK) rc = host_worker_send(r, request.worker, &h->pending);
+            if (rc == COG_OK) {
+                cli_executor_slot_t *target = &r->executors[h->target_slot];
+                cli_executor_slot_t *source = &r->executors[h->source_slot];
+                cli_executor_slot_t *addressed = host_worker_equal(request.worker, target->worker) &&
+                    request.owner_peer == target->owner_peer ? target : source;
+                cli_control_lane_t *lane = &addressed->outbound[COG_CLI_LANE_HANDOFF - 1U];
+                if (!host_worker_equal(request.worker, addressed->worker) ||
+                    request.owner_peer != addressed->owner_peer || request.wire_id != lane->pending_wire)
+                    rc = COG_ERROR_INVALID_STATE;
+                else rc = host_lane_send(r, request.worker, lane, &h->pending, false);
+            }
             host_fail(r, rc);
         }
         if (h->phase == CLI_HANDOFF_PREPARE && h->target_peer != 0U) {
@@ -2862,6 +2944,7 @@ cog_result_t cog_cli_host_runtime_step(cog_cli_host_runtime_t *r,
         r->done = local_done && native_done && r->control_drive_ended && handoff_done;
         if (r->shutdown_deadline_ms < out.next_deadline_ms) out.next_deadline_ms = r->shutdown_deadline_ms;
     }
+    host_fail(r, host_retained_sends(r, &out));
     if (out.next_deadline_ms <= r->now_ms) out.max_wait_ms = 0U;
     out.done = r->done; r->in_step = false; *info = out;
     return r->primary;
