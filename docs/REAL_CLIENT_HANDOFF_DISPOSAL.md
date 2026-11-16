@@ -26,3 +26,30 @@ freeing the app, retain the complete tuple/request bytes needed for response;
 never read disposed app fields to answer retries. Receipt storage is not cleared
 with executor resources, and source-release PREPARED proof cannot disappear
 merely because execution_close consumed the source.
+
+## Pass 2 — duplicate, loss and reuse traces
+
+1. Exact ABORT retry while draining retains the same request and deadline; it
+   neither closes twice nor emits a preliminary success echo. Changed bytes under
+   that wire are conflicting duplicate; stale/mismatched tuple never disposes a
+   newer slot occupant. Once final exists, exact retry replays cached bytes only.
+2. Lost final ABORT: resources are already disposed but coordinator reserves the
+   source slot until correlated response arrives. Receiver resends cached final
+   without dereferencing app/net. Timeout preserves admission freeze and first
+   failure; it does not authorize slot reuse based on socket send or process reap.
+3. Source release PREPARED remains until fresh valid ABORT in the SAME HANDOFF
+   stream. Coordinator only issues ABORT after receiving preceding final proof.
+   Successful final ABORT then occupies that lane's bounded final cache. A later
+   valid higher HANDOFF request in that same root/native stream consumes it into
+   the retired watermark after coordinator actually received the disposal result.
+4. Physical-resource reuse and proof retirement are distinct. Coordinator first
+   receives successful final ABORT, then may send purpose3 PROFILE for a later
+   same-root move. Worker may admit profile into actually freed resources while
+   retaining old HANDOFF original/reply/key/counters. PROFILE cannot consume that
+   proof; subsequent valid CHECKPOINTED in the SAME HANDOFF stream does so. Thus
+   bootstrap-before-CHECKPOINTED ordering has no receipt-retirement deadlock and
+   a lost old ABORT response can still be replayed without touching the new app.
+5. An unrelated session/managed-peer key must not overwrite a retained final.
+   Existing bounded capacity/physical-slot admission refuses work until valid
+   retirement; no new cache, unbounded log or guessed conflict evidence is added.
+   Native lifetime retirement invalidates its old bindings, not success proof.
