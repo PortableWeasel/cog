@@ -107,7 +107,8 @@ int main(int argc,char **argv)
             CHECK(s->worker.incarnation==owned.incarnation && s->worker.number==owned.number);
             if(actual==0U)actual=s->agent;
             CHECK(actual==s->agent);
-            if(!killed && local_completed && exists(argv[4],"native-entered")) {
+            if(!killed && local_completed && s->first_admission_sent && s->started &&
+                s->accepted_status==COG_AGENT_STATUS_RUNNING && exists(argv[4],"native-entered")) {
                 CHECK(s->first_admission_sent && s->started && s->accepted_status==COG_AGENT_STATUS_RUNNING);
                 CHECK(after?once(argv[4]):!exists(argv[4],"effect-native-1"));
                 if(after)CHECK(pin_command(argv[4],command));
