@@ -85,8 +85,9 @@ cog_result_t cog_cli_configuration_finish_host(
  * @param[in] configuration Resolved owner, one thread, bound or unbound.
  * @param[out] mask Known subset0..15, unchanged on failure.
  * @return OK; NULL_PTR. No allocation, callbacks, resolution or state change.
- * Startup sets all four workspace bits iff DURABLE+workspace present and fixed
- * policy is not DENY, otherwise0. Reload preserves it; child stores exact
+ * Startup sets all four workspace bits iff DURABLE+workspace present, otherwise0.
+ * Fixed DENY remains separate and forbids effects even if capability bits exist,
+ * preserving existing M schema/policy behavior. Reload preserves it; child stores exact
  * intersection with requested mask; bootstrap retains validated CGB1 mask.
  * This is not delegation permission or a per-call ALLOW/guard. Actual schema
  * selection and every effect admission still enforce role/policy and ownership.
