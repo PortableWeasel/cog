@@ -348,3 +348,91 @@ cog_result_t cli_runtime_mailbox_step(cog_cli_host_runtime_t *r,
     host_mailbox_result(h, length);
     return COG_OK;
 }
+
+/** Admit one real registry member per invocation, with the group gate closed. */
+cog_result_t cli_runtime_start(cog_cli_host_runtime_t *r,
+    uint64_t reservation, cog_store_checkpoint_t checkpoint)
+{
+    if (r == NULL) return COG_ERROR_NULL_PTR;
+    cli_group_record_t *g = host_group(r, reservation);
+    if (g == NULL || checkpoint.generation == 0U) return COG_ERROR_INVALID_STATE;
+    if (g->started) {
+        if (g->started_checkpoint.generation != checkpoint.generation) return COG_ERROR_PROTOCOL;
+        if (g->phase == CLI_GROUP_RUNNING || g->phase == CLI_GROUP_RESULT) return COG_OK;
+        if (g->phase != CLI_GROUP_ADMITTING) return COG_ERROR_ABORTED;
+    } else {
+        if (g->phase != CLI_GROUP_GRANTED || r->shutdown || r->admission_frozen)
+            return COG_ERROR_ABORTED;
+        if (r->now_ms >= g->deadline_ms) return COG_ERROR_TIMEOUT;
+        g->started = true; g->started_checkpoint = checkpoint;
+        g->credit_charged = true;
+        r->request_credit_held -= g->credit; r->request_credit_used += g->credit;
+        g->phase = CLI_GROUP_ADMITTING;
+    }
+    if (g->admitted == g->submitted) {
+        g->gate_open = true; g->phase = CLI_GROUP_RUNNING; return COG_OK;
+    }
+    size_t member = g->admitted;
+    cli_executor_slot_t *slot = &r->executors[g->members[member].slot];
+    cli_worker_record_t *placement = NULL;
+    size_t choices = r->bounds.workers + 1U;
+    for (size_t n = 0U; n < choices; ++n) {
+        size_t candidate = (r->placement_cursor + n) % choices;
+        if (candidate == 0U) { r->placement_cursor = 1U % choices; break; }
+        cli_worker_record_t *w = &r->workers[candidate - 1U];
+        if (w->used && w->profile_ready && w->native.health == COG_HEALTH_HEALTHY &&
+            !w->native.reaped && !w->native.ownership_lost && w->native.peer_id != 0U &&
+            w->reserved_slots < w->native.capacity) {
+            placement = w; r->placement_cursor = (candidate + 1U) % choices; break;
+        }
+    }
+    if (r->next_nonce == 0U || r->next_nonce == UINT64_MAX || r->now_ms >= g->deadline_ms) {
+        g->aggregate = r->now_ms >= g->deadline_ms ? COG_ERROR_TIMEOUT : COG_ERROR_LIMIT;
+        g->phase = CLI_GROUP_ROLLBACK;
+        return g->aggregate;
+    }
+    uint64_t remaining = g->deadline_ms - r->now_ms;
+    cog_agent_config_t config = {
+        .task = (const char *)g->tasks.data + g->task_offsets[member],
+        .parent_session_id = g->parent_session,
+        .timeout_ms = remaining > UINT32_MAX ? UINT32_MAX : (uint32_t)remaining,
+        .force_local = placement == NULL, .group_id = g->id,
+        .owner_peer = placement == NULL ? 0U : placement->native.peer_id,
+        .execution_epoch = r->next_nonce,
+        .max_status_bytes = r->bounds.status_bytes,
+        .max_result_bytes = g->result_payload_cap + 1U};
+    cog_agent_id_t id;
+    cog_result_t rc = cog_agent_spawn(r->control_core, &config, &id);
+    if (rc == COG_ERROR_OVERFLOW || rc == COG_ERROR_AGAIN) return COG_ERROR_AGAIN;
+    if (rc != COG_OK) {
+        g->aggregate = rc; g->phase = CLI_GROUP_ROLLBACK;
+        for (size_t i = 0U; i < g->submitted; ++i) {
+            r->executors[g->members[i].slot].cancel_latched = true;
+            if (!g->members[i].present) g->members[i].outcome = rc;
+        }
+        return rc;
+    }
+    ++r->next_nonce;
+    /* Record real admission before any later fallible query. Rollback therefore
+     * always distinguishes an actual identity from an absent member. */
+    g->members[member].present = true; g->members[member].agent = id;
+    g->members[member].attempt = config.execution_epoch;
+    slot->agent = id; slot->attempt = config.execution_epoch;
+    slot->owner_peer = config.owner_peer;
+    slot->configuration_generation = g->pinned_configuration;
+    slot->runtime = r->runtime_incarnation; slot->deadline_ms = g->deadline_ms;
+    slot->parent_node = g->parent_node; slot->parent_ordinal = g->ordinal;
+    memcpy(slot->parent_session, g->parent_session, sizeof(slot->parent_session));
+    memcpy(slot->parent_call, g->call_id, sizeof(slot->parent_call));
+    if (placement != NULL) { slot->worker = placement->id; ++placement->reserved_slots; }
+    ++g->admitted;
+    if (g->admitted != g->submitted) return COG_ERROR_AGAIN;
+    /* Full membership is fixed before any executor may obtain its task. */
+    for (size_t i = 0U; i < g->submitted; ++i) {
+        cli_executor_slot_t *s = &r->executors[g->members[i].slot];
+        s->member_count = g->submitted;
+        for (size_t j = 0U; j < g->submitted; ++j) s->members[j] = g->members[j].agent;
+    }
+    g->gate_open = true; g->phase = CLI_GROUP_RUNNING;
+    return COG_OK;
+}
