@@ -76,5 +76,25 @@ int main(int argc,char **argv)
     assert(info.done && cog_cli_execution_end(app)==COG_ERROR_AGAIN);
     assert(cog_cli_execution_close(&app,COG_OK)==COG_OK && app==NULL && release_calls==before+1U);
     if(failed)return 1;
+    for(unsigned mode=0U;mode<4U;++mode){
+        app=make_app(argv);triggered=false;inject=true;before=release_calls;
+        const bool aborting=mode>=2U;
+        const cog_result_t primary=mode%2U==0U?COG_OK:COG_ERROR_PROTOCOL;
+        slots[0]=(cli_executor_slot_t){0};slots[1]=(cli_executor_slot_t){0};
+        slots[aborting?1U:0U].app=app;
+        slots[aborting?0U:1U].local_done=true;
+        runtime.admission_frozen=false;
+        handoff=(cog_cli_handoff_t){.runtime=&runtime,
+            .phase=aborting?CLI_HANDOFF_FROZEN:CLI_HANDOFF_CLEANUP,
+            .source_slot=0U,.target_slot=1U,.deadline_ms=100U,
+            .abort_requested=aborting,.primary=primary};
+        const cog_result_t expected=primary==COG_OK?COG_ERROR_AGAIN:primary;
+        assert(cog_cli_handoff_step(&handoff,&done,&deadline)==expected);
+        assert(triggered && handoff.primary==expected && handoff.abort_requested && runtime.admission_frozen);
+        assert(slots[aborting?1U:0U].app==NULL && slots[aborting?1U:0U].local_done);
+        assert(slots[aborting?1U:0U].phase==CLI_SLOT_RETAINED && release_calls==before+1U);
+        assert(cog_cli_handoff_step(&handoff,&done,&deadline)==expected && done);
+        assert(release_calls==before+1U);
+    }
     puts("handoff consuming AGAIN frozen source release: PASS");return 0;
 }
