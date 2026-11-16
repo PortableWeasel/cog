@@ -191,7 +191,10 @@ cog_result_t cog_orchestrator_worker_decode(const void *input, size_t input_len,
  * @param[in]  config Configuration; must be non-NULL.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p out or @p config is NULL.
- * @return COG_ERROR_INVALID_ARG if @p config->socket_path is NULL.
+ * @return COG_ERROR_INVALID_ARG if @p config->socket_path is NULL, normalized
+ * capacity/frame bounds are invalid, or reservation size arithmetic overflows.
+ * C+2 startup formatting uses checked uint64_t arithmetic and does not reject
+ * a valid generic child capacity merely because C+2 exceeds SIZE_MAX.
  * @return COG_ERROR_NOMEM if allocation fails.
  * @return IO if fresh nonzero incarnation entropy/setup fails (no PID/time
  * fallback); UNSUPPORTED without kernel peer identity or supported child-reap

@@ -108,3 +108,88 @@ C+2 on32-bit; replaced the private physical scalar with uint64_t and clarified
 the public generic range versus installed binary support. Verified14 strings
 plus terminating pointer,21-byte numeric buffers, CGW1 fixed37 bytes and CGH1
 fixed62 plus at most127 session bytes. No wire shape or API signature changed.
+
+## Pass 2 — targeted ownership/capacity/failure traces
+
+### A. Startup, child count and width (original03/04/10)
+
+```mermaid
+sequenceDiagram
+  participant H as Host
+  participant O as Orchestrator
+  participant W as Worker
+  H->>O: new(config C), checked reservation plan
+  H->>O: spawn(trusted binary)
+  O->>W: exec fixed argv P=uint64_t(C)+2
+  W->>W: validate supported profile and reserve roles
+  W->>O: kernel-bound HELLO exact managed ID
+  O-->>H: copied READY, placement C
+```
+
+| Step | Declaring header / fields | Boundary |
+|---|---|---|
+| Normalize default and physical scalar | `orchestrator.h` config; layout reservation plan | C0 means4; P6 |
+| Maximum installed profile | Same + worker startup profile | C16 gives P18, active children<=16 |
+| Generic maximum on32-bit | `orch_reservations_t.worker_executor_slots` | C4294967295 gives P4294967297, no size_t intermediate |
+| Unsupported selected binary | Public spawn/service/health/reap | Fail before HELLO/readiness; retain published process ownership |
+| Exact argv | Public spawn; worker argv[15], numeric[21] | Six pairs only; no task/config/secret |
+
+Gap found and amended: constructor INVALID_ARG prose named only NULL path;
+now it includes invalid normalized bounds and reservation arithmetic, while
+explicitly preserving a wide physical startup scalar above SIZE_MAX. Physical
+slots are not an orchestrator array-size multiplier. Runtime worker tests remain
+O3/O4 work, not a claim from a header trace.
+
+### B. Full ordinary queue, handshake/EOF and native stop (original05/07/19/20)
+
+```mermaid
+sequenceDiagram
+  participant Q as IPC
+  participant O as Orchestrator
+  participant H as Host
+  Q-->>O: one handshake publication unit
+  O->>Q: immediate peer_info copy
+  Q-->>O: complete frame, later EOF
+  O->>O: stage frame; ordinary queue full
+  H->>O: stop exact managed ID
+  O->>O: timer, exact-PID check, TERM/KILL, reap
+  O-->>H: reserved disconnect/final control
+  H->>O: copy/ack retained ordinary event
+```
+
+| Step | Header / ownership | Boundary |
+|---|---|---|
+| First proof barrier | `orch_link_step`, link proof | Before another service/recv/TX/EOF unit; no private endpoint access |
+| Full ring | message slot/ring and link frame | One staged ingress frame; pause only affected receive |
+| Native deadline | `orch_native_check/signal`, worker PID/state | No waitpid(-1), no blocking; ECHILD permanently LOST |
+| Mandatory control | `orch_control_capture`, independent FIFO and held IDs | Three transitions reserved before fork; ordinary saturation cannot steal IDs |
+| Final payload | public event_next/ack | Proof retained through EOF; copy/ACK before wipe |
+
+No new gap: control delivery can overtake ordinary data but does not overwrite
+an already accepted CGA terminal or claim escaped descendants stopped. An early
+exit may skip READY; unused identity holds release only after terminal state.
+
+### C. Frozen routes, reuse and handoff (original09/13/17)
+
+```mermaid
+sequenceDiagram
+  participant H as O4 handoff owner
+  participant O as Orchestrator
+  H->>O: publish exact owner/checkpoint route
+  O->>O: worker disconnect/reap; retain affected route
+  H->>H: guarded CGH transaction and explicit recovery
+  H->>O: forget exact old owner
+  H->>O: ack events, release terminal worker
+  O->>O: recycle storage with fresh managed number
+```
+
+| Step | Header / ownership | Boundary |
+|---|---|---|
+| Route | Public publish_owner/session_owner/forget_owner; `orch_route_t` | Advisory route, not durable store/guard authority |
+| Disconnect | worker bound_once/proof; frozen route | No new peer binding or automatic task replay |
+| Release | Public release_worker; route/event references | Refuse live/reference-bearing reservation; stale ID NOT_FOUND |
+| Handoff | CGH public codecs; O4 coordinator | Library contains no save/CAS/guard/activation engine |
+
+No new gap. All20 original scenario contracts remain unchanged; the targeted
+03/04/05/07/09/10/13/17/19/20 paths exercise these private structures. The other
+ten paths use existing provider/tool/app/UI boundaries and add no O3 calls.

@@ -111,7 +111,9 @@ typedef struct orch_route {
 } orch_route_t;
 /** Pure checked constructor plan. Native executable path slices are sized for
  * the supported host's prevalidated absolute exec path bound; no service copy
- * can enlarge them. Worker argv physical-executor mapping is fixed before body,
+ * can enlarge them. Plan includes socket path NUL and allocation alignment;
+ * sum/product overflow is INVALID_ARG, allocation failure later is NOMEM.
+ * Worker argv physical-executor mapping is fixed before body,
  * as uint64_t(C)+2, independently of size_t host width. This is an argv
  * scalar, NOT an orchestrator allocation count. Any worker converting it to
  * size_t must validate its own supported range first. Generic C<=UINT32_MAX
