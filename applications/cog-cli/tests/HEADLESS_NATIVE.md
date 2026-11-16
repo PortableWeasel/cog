@@ -37,3 +37,19 @@ results live in ticket50fad6e and its bug tickets. Native reuse/handoff/cancel
 failures must be resolved and independently reviewed before whole-O4 acceptance.
 Scoped private leaf tests cannot replace these native joins. Compiler logs and
 runtime failure logs remain in checkout-local `build-*` directories.
+
+The `handoff-timeout` fault mode retains the default three-second move budget.
+After actual source release and owner CAS, it pauses the exact still-owned worker
+before target guard acquisition. The helper rejects PID<=0, reaped/lost ownership,
+and a child which `waitid(WNOWAIT)` reports exited; it never consumes the
+orchestrator's wait status or signals a default PID/process group. Expected timeout
+requires frozen admission, source authority still released, no target guard/route/
+activation, and the actual stored next owner. Cleanup resumes that exact child or
+uses the orchestrator's managed-ID kill, drives bounded reap, and requires consumed
+runtime close before declaring the expected timeout a passing oracle.
+
+The Python wrapper deliberately starts the harness in its own session. Its final
+process-group fallback is used only while the leader is still an owned unreaped
+child with a verified positive PID. A completed `Popen.wait()` disables that
+fallback, so a reaped leader's numeric PGID is never signalled later. Normal and
+expected-failure paths use the actual runtime/orchestrator cleanup above.
