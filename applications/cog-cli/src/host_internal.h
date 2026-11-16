@@ -56,6 +56,10 @@ typedef struct cli_control_lane {
     uint64_t next_wire, reserved_cleanup_first, reserved_cleanup_count;
     cli_host_bytes_t pending, provisional_reply, final_original, final_reply;
     uint64_t deadline_ms; /**< Min only; duplicate never extends. */
+    uint64_t pending_reply_wire; /**< 0=no generic response awaiting copied send;
+       otherwise selects retained final_reply_wire or provisional_wire exactly.
+       Independent of semantic pending_valid. Copied send clears only this
+       delivery selector; cooldown/AGAIN retain it. See SEND_REPLY_RETENTION. */
     uint64_t copied_wire, next_send_ms; /**< Transport-owned exact outer wire and
        independent earliest retransmit time. New wire is immediately eligible;
        AGAIN accepts nothing and changes neither value. No receipt/authority
