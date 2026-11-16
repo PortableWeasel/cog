@@ -114,3 +114,21 @@ and installed empty-session controls pass 3/3 in GCC, Clang, full-project
 ASan/UBSan/LSan and TSan. Exact logs: each profile's `startup-fix-build.log` and
 `startup-fix-check.log`. Independent re-review of this correction remains required
 before final O4 acceptance.
+
+The same independent startup review then exposed a pre-spawn control-core begin
+failure: directly setting `shutdown` skipped the normal orchestrator shutdown
+initializer, so the live runtime never reached done even with no native child.
+B correction `c4f882f`, joined as `4ad363a`, retains the original error and
+`control_drive_ended`, then invokes the existing shutdown initializer. The main
+prefix-drain fix remains intact. Regression `5b07cce`, joined as `4c9cf63`, uses
+the real REAL runtime, injects only control begin IO, asserts no child was
+spawned, and requires terminal convergence and consumed close preserving IO.
+The old source fails convergence in 32 steps; its test-only actual orchestrator
+cleanup fallback prevents an abandoned owner.
+
+Shared registration `81b6e41` brings the registry to 169 tests. Final strict full
+incremental builds and the 13 affected startup/coordinator/core/native checks
+pass in each GCC, Clang, full-project ASan/UBSan/LSan and TSan profile. Results
+are recorded per profile in `core-startup-final-build.log` and
+`core-startup-final-check.log`. This preserves the earlier full-suite evidence
+and reruns the concrete changed ownership paths instead of unrelated tests.
