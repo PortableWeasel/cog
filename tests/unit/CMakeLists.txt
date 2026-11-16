@@ -258,3 +258,16 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 add_test(NAME unit-ipc-authenticated COMMAND test_ipc_authenticated)
 set_tests_properties(unit-ipc-authenticated PROPERTIES LABELS "unit;ipc" TIMEOUT 20)
+
+# Independent O1 prequeued-proof, wrapped-RX retirement and isolated-TX joins.
+add_executable(test_ipc_o1_review test_ipc_o1_review.c)
+target_link_libraries(test_ipc_o1_review PRIVATE cog::ipc)
+target_enable_warnings(test_ipc_o1_review)
+target_link_options(test_ipc_o1_review PRIVATE
+    -Wl,--wrap=getsockopt,--wrap=recv,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_ipc_o1_review PRIVATE
+        -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-free)
+endif()
+add_test(NAME unit-ipc-o1-review COMMAND test_ipc_o1_review)
+set_tests_properties(unit-ipc-o1-review PROPERTIES LABELS "unit;ipc" TIMEOUT 20)
