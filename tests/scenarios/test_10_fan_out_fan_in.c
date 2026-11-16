@@ -151,6 +151,7 @@ static cog_orchestrator_t *fx_new(char *path,size_t capacity,bool replace)
     cog_orchestrator_config_t cfg={0};cfg.socket_path=path;cfg.max_aux_cores=8;
     cfg.health_interval_ms=200;cfg.unhealthy_threshold=3;cfg.default_core_capacity=8;
     cfg.shutdown_timeout_ms=200;cfg.auto_replace=replace;
+    cfg.max_frame_bytes=256;cfg.message_bytes=4096;cfg.message_events=8;
     cog_orchestrator_t *o=NULL;FX_CHECK(cog_orchestrator_new(&o,&cfg)==COG_OK);return o;
 }
 static cog_worker_id_t fx_spawn(cog_orchestrator_t *o)
