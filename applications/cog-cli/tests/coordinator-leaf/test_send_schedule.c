@@ -43,6 +43,8 @@ static void copied_schedule(cog_ipc_endpoint_t *sender,cog_ipc_endpoint_t *recei
     orch.config.unhealthy_threshold=3U;orch.now_ms=1000U;worker.now_ms=2010U;
     assert(host_copied_send(&worker,managed.id,&bytes,1U,&copied,&due,false)==COG_ERROR_AGAIN);
     assert(copied==1U && due==2010U);
+    assert(host_copied_send(&worker,managed.id,&bytes,9U,&copied,&due,false)==COG_ERROR_AGAIN);
+    assert(copied==1U && due==2010U); /* degraded is not fresh admission */
     orch.now_ms=0U;
     /* One-way wire needs no future time, even at clock exhaustion. */
     worker.now_ms=UINT64_MAX;
@@ -96,6 +98,17 @@ static void copied_schedule(cog_ipc_endpoint_t *sender,cog_ipc_endpoint_t *recei
     assert(reply->next_send_ms==4000U);
     step.next_deadline_ms=2500U;host_send_due(&worker,&step,3U,3U,4000U,false);
     assert(step.next_deadline_ms==2500U);
+    /* A rejected higher request cannot consume a retained reply obligation. */
+    reply->pending_valid=false;
+    cog_cli_control_message_t higher={.lane=COG_CLI_LANE_COMMAND,.wire_id=100U};
+    cog_orchestrator_event_t event={.data=data,.data_len=sizeof(data)};bool duplicate=false;
+    assert(host_request_cache(&slot,&higher,&event,&duplicate)==COG_ERROR_LIMIT);
+    assert(reply->pending_reply_wire==6U && reply->copied_wire==6U && reply->next_send_ms==4000U);
+    /* An orphan selector is an internal error, never an empty/unrelated send. */
+    reply->pending_reply_wire=7U;
+    assert(host_retained_sends(&worker,&step)==COG_ERROR_INVALID_STATE);
+    reply->pending_reply_wire=6U;
+    assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_ERROR_AGAIN);
 }
 int main(int argc,char **argv)
 {
