@@ -168,3 +168,9 @@ No unbounded tombstones, reused IDs or automatic request re-identification.
 No public header/ABI, CGL/CGR/CGV layout, library transport behavior or execution
 capability changes. Three targeted passes complete; exact strict header checks
 and independent final review are the remaining gate before either O8 body.
+
+Verification at the frozen pass3 checkpoint:16/16 full-strict GCC14/Clang19 C11
+and G++14/Clang++19 C++11 standalone plus combined/reversed include checks pass
+for view_internal.h, coordinated host_internal.h and control.h. Diff-check clean;
+only four private-header/doc paths plus this layout document changed since base,
+no .c/shared CMake/config/accepted-profile edits. Independent final gate pending.
