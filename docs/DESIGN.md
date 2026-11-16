@@ -933,3 +933,14 @@ children. The installed application accepts C<=16, physical<=18, independently
 of the generic library contract. Unsupported selected binaries fail before
 readiness. This header-only clarification does not waive O2 or independent
 layout review gates.
+
+### O2 cooperative accepted-endpoint allocation clarification
+
+The cooperative driver preserves Q/M's existing explicit constructor profile.
+Both run and manual step can call `cog_ipc_endpoint_accept` during listener
+service, with live accepted objects bounded by `ipc_peer_capacity` and each
+paired with `cog_ipc_endpoint_free`. Tracking records, queues, payload arenas,
+driver state and child session borrows never grow during driving. This corrects
+the overly broad step comment; it admits no new allocation class.
+[Targeted resource/error/shutdown passes](REAL_CLIENT_CORE_O2_ALLOCATION.md)
+record the clarification gate, separate from recovered implementation acceptance.

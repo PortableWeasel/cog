@@ -163,7 +163,8 @@ typedef struct cog_core_config {
      *
      * May be NULL for single-process operation (the default).  If
      * non-NULL, the core takes ownership of the endpoint: it drains
-     * incoming connections and messages during @c cog_core_run,
+     * incoming connections and messages during @c cog_core_run or
+     * an active manual drive,
      * enqueuing them as COG_EVENT_IPC_* events into the local queue,
      * and destroys the endpoint in @c cog_core_free.  The endpoint must
      * be bound (listening or connected) before it is passed to the
@@ -363,7 +364,9 @@ cog_result_t cog_core_drive_begin(cog_core_t *core);
  * @return OK for progress/idle/normal stop; NULL_PTR; INVALID_STATE wrong driver/
  * reentry/already done; otherwise first service/dispatch/IPC/save/checked-clock
  * error. Valid-work failure fills info.done=true and latches that error until
- * drive_end. Invalid-call outputs/state remain unchanged.
+ * drive_end. Accepted-endpoint constructor failure propagates COG_ERROR_NOMEM
+ * through this same first-error path; no successful peer is published for that
+ * failed construction. Invalid-call outputs/state remain unchanged.
  * @note Uses the SAME checked CLOCK_MONOTONIC-ms clock and dispatch/service
  * engine as run, sampling between bounded units. At most step_event_limit
  * dispatches. Service interval, IPC/local rotation and deadlines persist across
@@ -379,7 +382,11 @@ cog_result_t cog_core_drive_begin(cog_core_t *core);
  * actionable work return a due deadline even when enqueue is temporarily full.
  * Hooks/handlers must obey bounded-work contracts.
  * Popped IPC/agent/event leases release after handler on EVERY path; budget yield
- * never acknowledges/drops unprocessed work. No allocation. Stop is still the
+ * never acknowledges/drops unprocessed work. No per-message, driver-state or
+ * borrowed-session allocation or storage growth. As in run(), listener service
+ * may call the explicit cog_ipc_endpoint_accept constructor, bounded by
+ * ipc_peer_capacity, with each accepted endpoint paired with
+ * cog_ipc_endpoint_free; see cog_core_config_t::ipc_endpoint. Stop is still the
  * sole cross-thread/signal-safe operation and is checked between units.
  * App-owned asynchronous work remains owned and must explicitly drain.
  */
@@ -393,6 +400,8 @@ cog_result_t cog_core_step(cog_core_t *core, cog_core_step_info_t *info);
  * intents remain leased. Core becomes inactive even when returning latched work
  * error. No implicit cancellation/free/new begin. Host cancels/drains/reaps its
  * own work; ending this driver alone does not make context destruction safe.
+ * Accepted endpoints remain core-owned across end/begin until peer retirement
+ * or core_free; ending a drive neither frees them nor allocates replacements.
  * run() uses the same engine internally with its checked clock/bounded wait
  * hooks; manual APIs from run callbacks always fail INVALID_STATE.
  */

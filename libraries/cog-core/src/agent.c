@@ -11,6 +11,7 @@
 #include "cog/agent.h"
 
 #include "agent_internal.h"
+#include "session_internal.h"
 
 #include <assert.h>
 #include <stddef.h>
@@ -76,7 +77,10 @@ void cog_agent_registry_reset(cog_agent_registry_t *reg)
 {
     size_t i;
     if (reg == NULL) { return; }
-    for (i = 0U; i < reg->capacity; ++i) { cog_session_free(reg->entries[i].session); }
+    for (i = 0U; i < reg->capacity; ++i) {
+        assert(!reg->entries[i].execution_borrowed);
+        cog_session_free(reg->entries[i].session);
+    }
     free(reg->entries); free(reg->storage); memset(reg, 0, sizeof(*reg));
 }
 
@@ -494,6 +498,33 @@ cog_result_t cog_agent_ack_update(cog_core_t *core, cog_agent_id_t agent_id,
     return COG_OK;
 }
 
+cog_result_t cog_agent_session_borrow(cog_core_t *core, cog_agent_id_t agent_id,
+                                       cog_session_t **session)
+{
+    cog_agent_entry_t *entry;
+    if (core == NULL || session == NULL) return COG_ERROR_NULL_PTR;
+    entry = agent_lookup(core, agent_id);
+    if (entry == NULL) return COG_ERROR_NOT_FOUND;
+    if (entry->owner_peer != COG_PEER_ID_INVALID || agent_status_terminal(entry->status) ||
+        entry->execution_borrowed) return COG_ERROR_INVALID_STATE;
+    if (entry->cancelled) return COG_ERROR_ABORTED;
+    entry->execution_borrowed = true;
+    *session = entry->session;
+    return COG_OK;
+}
+cog_result_t cog_agent_session_return(cog_core_t *core, cog_agent_id_t agent_id,
+                                       cog_session_t *session)
+{
+    cog_agent_entry_t *entry;
+    if (core == NULL || session == NULL) return COG_ERROR_NULL_PTR;
+    entry = agent_lookup(core, agent_id);
+    if (entry == NULL) return COG_ERROR_NOT_FOUND;
+    if (!entry->execution_borrowed || entry->session != session ||
+        ((struct cog_session *)session)->attached) return COG_ERROR_INVALID_STATE;
+    entry->execution_borrowed = false;
+    return COG_OK;
+}
+
 cog_result_t cog_agent_release(cog_core_t *core, cog_agent_id_t agent_id)
 {
     cog_agent_entry_t *entry;
@@ -501,7 +532,7 @@ cog_result_t cog_agent_release(cog_core_t *core, cog_agent_id_t agent_id)
     if (core == NULL) return COG_ERROR_NULL_PTR;
     entry = agent_lookup(core, agent_id);
     if (entry == NULL) return COG_ERROR_NOT_FOUND;
-    if (!agent_status_terminal(entry->status) || entry->notification_pending || entry->intent_leases != 0U) return COG_ERROR_INVALID_STATE;
+    if (!agent_status_terminal(entry->status) || entry->notification_pending || entry->intent_leases != 0U || entry->execution_borrowed) return COG_ERROR_INVALID_STATE;
     cog_session_free(entry->session);
     memset(entry, 0, sizeof(*entry));
     reg = cog_core_agent_registry(core);
