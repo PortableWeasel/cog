@@ -189,3 +189,28 @@ bodies/full application runtime. Main, O integration and dependency bytes unchan
 
 Scoped independent implementation verdict: **PASS** helper850fd52 plus the retained
 critic test/evidence amendment. This is5fcaef7 only, not a whole O/runtime/P gate.
+
+## Approved helper-only O integration
+
+Root-authorized no-ff merge b065fea retains approved helper-only850fd52; critic
+amendment dfc6abd retained separately via ff26a56 (test+evidence only). Inspection
+of the exact0aa7654→ff26a56 delta confirms NO core.c/agent.c bodies, public/app/
+orchestrator changes or runtime stubs. Existing unit registration already runs
+the strengthened readiness fixture; no duplicate critic target is needed.
+
+Postmerge affected checks rebuilt actual targets from codex/integrate-headless:
+GCC/Clang strict Release and Clang ASan+UBSan+LSan each **8/8** IPC suites PASS;
+separate GCC Debug TSan **6/6** non-replay IPC suites PASS. Exact selected scopes
+remain previous independent review's list, including O1 critics/readiness.
+The source integration checkpoint is ff26a567c8b5d35385183d341b84d916a5740ad9
+before this evidence-only update. Main remains Mdacbd199; accepted dependency
+profile bytes/build_user untouched, no installs, paid calls or whole O/P closure.
+Only5fcaef7 is finalized; dependent O2 source/layout/runtime gates remain separate.
+Writer impl-headless-core worktree is retained for O2 continuation.
+
+| Postmerge log | SHA256 |
+|---|---|
+| /tmp/cog-ipc-ready-postmerge-gcc.log | 044689b55bf0db1c3496177af2e0fd1ffbd043eb71239b1440bdc1f60fbec646 |
+| /tmp/cog-ipc-ready-postmerge-clang.log | ada564ff406f2bc5b94b8aa9e65d04c1a113ad76ef54ee8852d83772c8ed98fb |
+| /tmp/cog-ipc-ready-postmerge-asan.log | 3e1d7bb168ed51db704b263acd71f21f1352ac5023ccec8b7c046ff071cff60c |
+| /tmp/cog-ipc-ready-postmerge-tsan.log | 948d0fa540dc868a474c2030f77ff8c826e45ced654e158cff7a868f463675b2 |
