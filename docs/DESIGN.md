@@ -728,6 +728,16 @@ The Process Orchestrator manages auxiliary core lifecycle:
 
 ## Next steps
 
+Stage14.N now refines headless/subagent composition against the completed M
+single-process client. Its [design inventory](REAL_CLIENT_HEADLESS_CONTRACTS.md)
+keeps UI and worker-control fabrics under separate single owners and consumes
+the shipped Q/G/CGA1/CGR1/CGD1 primitives. Required amendments include authenticated
+owned-child binding, cooperative app execution, canonical replay anchoring and
+explicit staged handoff; no implementation is authorized by this inventory.
+Three header passes and a different final gate precede O bodies. Existing live-
+handle/cross-host migration, uncertain-effect replay and unbounded growth remain
+unsupported.
+
 Stage 6 — Headers first. Design all public APIs as headers before any
 implementation. Three iterations:
 1. Initial headers from this design
