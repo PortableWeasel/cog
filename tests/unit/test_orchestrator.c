@@ -300,6 +300,43 @@ static void allocation_bounds(const char *binary)
     }
     assert(done);deny_allocations=false;cog_orchestrator_free(o);
 }
+/* Independent critic: accepted-endpoint constructors are the only runtime
+ * allocation exception. Every failure must retire the accepted native socket,
+ * preserve bounded link accounting, and remain the primary cleanup outcome. */
+static size_t native_fd_count(void)
+{
+    DIR *dir=opendir("/proc/self/fd");assert(dir!=NULL);
+    size_t count=0U;struct dirent *entry;
+    while((entry=readdir(dir))!=NULL)
+        if(strcmp(entry->d_name,".")!=0 && strcmp(entry->d_name,"..")!=0) ++count;
+    assert(closedir(dir)==0);return count;
+}
+static void accepted_allocation_failures(void)
+{
+    size_t allocations=0U;
+    for(size_t fail=0U;fail<=allocations;++fail) {
+        size_t before=native_fd_count();
+        char path[64];cog_orchestrator_t *o=make(path,1U);
+        cog_ipc_endpoint_t *peer;assert(cog_ipc_endpoint_new(&peer)==COG_OK);
+        cog_result_t rc=cog_ipc_endpoint_connect(peer,path,NULL);
+        assert(rc==COG_OK || rc==COG_ERROR_AGAIN);
+        o->config.service_quantum=1U;
+        allocation_calls=0U;fail_allocation=fail;watch_allocations=true;
+        bool done=false;uint64_t deadline;
+        rc=cog_orchestrator_service(o,now_ms(),&done,&deadline);
+        watch_allocations=false;
+        if(fail==0U) {
+            allocations=allocation_calls;assert(allocations!=0U);
+            assert(rc==COG_OK && o->link_count==1U);
+        } else {
+            assert(rc==COG_ERROR_NOMEM && o->link_count==0U && o->worker_count==0U);
+            assert(cog_orchestrator_request_shutdown(o,now_ms(),1U)==COG_OK);
+            assert(cog_orchestrator_service(o,now_ms(),&done,&deadline)==COG_ERROR_NOMEM && done);
+        }
+        assert(cog_ipc_endpoint_free(peer)==COG_OK);cog_orchestrator_free(o);
+        assert(native_fd_count()==before && access(path,F_OK)!=0);
+    }
+}
 static void impostor_and_ids(const char *binary)
 {
     char path[64];cog_orchestrator_t *o=make(path,2U);cog_worker_id_t id;
@@ -418,6 +455,6 @@ int main(int argc,char **argv)
     char executable[PATH_MAX];ssize_t size=readlink("/proc/self/exe",executable,sizeof(executable)-1U);
     assert(size>0 && (size_t)size<sizeof(executable));executable[size]='\0';
     boundaries(executable);lifecycle(executable);loss_and_pressure(executable);
-    allocation_bounds(executable);impostor_and_ids(executable);shortened_shutdown(executable);silent_handshake();owner_routes();
+    allocation_bounds(executable);accepted_allocation_failures();impostor_and_ids(executable);shortened_shutdown(executable);silent_handshake();owner_routes();
     puts("orchestrator owned native lifecycle PASS");return 0;
 }
