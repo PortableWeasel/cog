@@ -73,6 +73,8 @@ typedef struct cli_execution_state {
  * @return Existing execution_new construction errors; no task before initial
  * child SYSTEM checkpoint, no restored proposal before context attachment.
  * cli.c constructs resources; execution.c validates the chosen admission mode.
+ * Allocate/mark headless session ownership BEFORE installing a local borrow;
+ * partial unwind never falls through standalone owned-session destruction.
  */
 cog_result_t cli_app_construct_resolved(cog_cli_app_t **out,
     cog_cli_execution_admission_t *admission);
@@ -108,9 +110,13 @@ cog_result_t cli_turn_drain_one(cog_cli_app_t *app, bool *done);
 /** @brief app_tools.c resolve enabled ORIGINAL static table and fixed user bind.
  * @param[in] app Admitted role/profile. @param[in] name Literal tool name.
  * @param[out] table Original workspace/delegation table, not copied descriptor.
- * @param[out] user Fixed workspace or installed context borrow.
- * @return OK; NULL_PTR; NOT_FOUND disabled/unknown; DENIED role/policy refusal.
- * No allocation/registration; enforce mask/role again before STARTED.
+ * @param[out] user Optional: NULL asks schema-only resolution before context
+ * attachment; otherwise fixed workspace/installed-context borrow is required.
+ * @return OK; NULL_PTR; NOT_FOUND disabled/unknown; INVALID_STATE requested
+ * live userdata before attachment. No allocation/registration or policy grant.
+ * Schema-only lookup filters role/mask before provider preflight, uses original
+ * static descriptor metadata and never calls a tool. Actual binding enforces
+ * the SAME role/mask again; global policy/guard remain checked before STARTED.
  */
 cog_result_t cli_tools_binding(const cog_cli_app_t *app, const char *name,
     const cog_tool_table_t **table, void **user);

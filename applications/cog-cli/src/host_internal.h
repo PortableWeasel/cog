@@ -31,7 +31,8 @@ typedef struct cli_stream_key {
     cli_host_fabric_t fabric;
     uint64_t runtime, sender;
     cog_worker_id_t worker;
-    cog_peer_id_t peer;
+    cog_peer_id_t owner_peer; /**< Immutable attempt placement;0 for UI logical lease.
+       UI reconnect current transport lives in client_record, NOT this dedup key. */
     cog_agent_id_t agent;
     uint64_t attempt;
     cog_cli_control_lane_t lane;
@@ -46,8 +47,9 @@ typedef struct cli_control_lane {
     cli_stream_key_t key;
     bool bound, pending_valid, final_valid;
     uint64_t pending_wire, final_answered_wire, final_reply_wire, retired_through;
+    uint64_t provisional_wire, provisional_prefix;
     uint64_t next_wire, reserved_cleanup_first, reserved_cleanup_count;
-    cli_host_bytes_t pending, final_original, final_reply;
+    cli_host_bytes_t pending, provisional_reply, final_original, final_reply;
     uint64_t deadline_ms; /**< Min only; duplicate never extends. */
 } cli_control_lane_t;
 /** Dedicated PROFILE lane. Re-encode exact pinned generation for duplicate
@@ -173,7 +175,8 @@ typedef struct cli_executor_slot {
     cog_cli_control_receipt_t receipt;
     cli_host_bytes_t task, status, result, update;
     cli_forwarded_operation_t command, cancel;
-    cli_control_lane_t *inbound, *outbound; /**< Each10 constructor slots. */
+    cli_control_lane_t *inbound, *outbound; /**< Each10 constructor metadata slots;
+       PROFILE generic byte capacities0, dedicated profile exchange only. */
     cli_secret_exchange_t profile;
     cli_mailbox_t mailbox; /**< Used only in coordinator child records. */
 } cli_executor_slot_t;

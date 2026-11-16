@@ -156,3 +156,71 @@ No public/behavior gap or new protocol was introduced by these layout amendments
 N's source/target, exact native binding and per-call resolver authority remain
 unchanged. Repeated strict include checks pass18/18 after the amendments. This
 is declaration/ownership validation, not runtime tests or O4 body authorization.
+
+## Pass3 — include, ownership and static dispatch consistency
+
+Final consistency walk found three implementation-only joins and pinned them:
+
+- UI stream dedup must survive a fresh transport peer under the SAME retained
+  logical lease. cli_stream_key.owner_peer is the immutable WORKER attempt peer
+  only (0 UI); client_record.peer/proof holds current authenticated UI transport.
+  Treating that transport as part of the logical command key could admit an old
+  request twice after reconnect. Worker replacement/reconnect still has no rebind
+  authority. Active attempts/leases are looked up before scalar retired counters;
+  retired unknown identities remain uniformly stale, not newly allocated records.
+- A provisional RETRY may precede a final receipt without permitting the worker
+  to retire its item. Lane layout now has separate provisional reply bytes/wire/
+  prefix from cached immutable final reply+answered original. Identical RETRY
+  retransmits same bytes/ID. The initial RUNNING+terminal profile bounds semantic
+  transitions; before each ordinary admission reserve enough final/control wire
+  IDs/bytes, including changed-prefix provisional reply and negative-consume
+  resolution. Supersession never rewrites a queued/retained envelope or grows a
+  cache. Final accepted prefix is distinct from wire/nonce/replay/store counters.
+- Provider preflight schemas precede context installation. cli_tools_binding
+  permits schema-only lookup with user=NULL, filtering role/mask against original
+  descriptors without tool callbacks. Actual userdata lookup refuses before
+  attachment and enforces identical role/mask. Global DENY/ASK and actual guard
+  remain separate effect checks; schema presence is never permission. Shared
+  resolved construction marks local borrowed-session ownership before installing
+  its pointer, so even early failure cannot run the standalone session destructor.
+
+Include graph: no library/O5/O6/O8 header includes these layouts. app_internal
+only forward-declares its owned pointer; the three new implementation headers
+are independently C11/C++11-compatible and do not include app_internal. No
+configuration definition, provider/toolkit private vtable or vendor parser type
+crosses this boundary. All numeric maxima are the existing N limits; capacities
+are explicit, checked at named constructors and never enlarged by service.
+
+Static dispatch audit: app_turn owns its existing static const table/transitions
+and adds PUBLICATION/PREPARE/common cancellation/config-notice rows in every
+eligible state. Saved continuation IDs select original handler phases after
+canonical publication, never a runtime callback table. host_runtime owns ONE
+static control-state table with exact protected IPC and copied agent-intent
+handlers; worker_host owns its ONE parent reader/static kind switch. Common
+lane records hold identities/bytes, not function pointers or a generic RPC
+registry. Original workspace/delegation table references remain static const;
+no flattened descriptor/schema copies, registration or nested run.
+
+Failure/unwind review (all first errors retained): constructors initialize every
+owned pointer NULL and fd -1; root_options/resolver inputs never retained; UI
+endpoint remains constructor-owned until successful core transfer; canonical
+path/FD pins stay until all borrowers end. PROFILE receive/decode/body/frame/
+scratch/TX/RX capacities wipe completely on every abandonment/failure/free,
+never ordinary metadata caches. App handle/context destruction precedes guard
+release; provider disconnect consumes/detaches once on ANY return, then secret
+clear; net ends before observer; local session borrow returned after app close.
+Guard-release refusal retains source ownership; successful release never thaws.
+Catalog outlives handoff+orchestrator and app replacement. No close returns done
+with live provider/process/guard/registry borrow, no consumed-pointer retry or
+whole-runtime leak substitute. The owning body must preserve these invariants
+on every partial constructor stage before a pointer is published.
+
+Rechecked03/05/07/08/09/10/11/14/17/20 and R13/R14 against final layouts/helpers:
+no known private call/ownership gap in this targeted layout stage. This is NOT
+another N whole-design gate, O runtime/scenario PASS or body dispatch permission.
+Different final critic must review the exact frozen commit; root integrates only
+approved headers/docs. Repeated standalone/combined/reversed strict GCC/Clang C11
+and G++/Clang++ C++11 checks pass18/18 after all changes; no source body or runtime
+fixture was created. All11 source owners retain their existing N contracts and
+O prerequisites; private-file parallel dispatch starts only after layout freeze
+and primitive completion, with shared app_internal/CMake edits coordinated.
