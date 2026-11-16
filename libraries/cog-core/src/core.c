@@ -335,9 +335,9 @@ static cog_result_t core_ipc_step(cog_core_t *core, uint64_t *deadline)
         }
         /* Complete retained frames precede ordinary disconnect, using cached proof. */
         rc = core_ipc_receive(core, peer);
-        /* Terminal framing errors stay latched in the endpoint while complete
-         * RX/event reservations drain; remove that endpoint before returning
-         * its error so explicit rebegin cannot redispatch the same failure. */
+        /* Ordinary IO/EOF waits for retained RX/event reservations to drain.
+         * Receive-side/core-ceiling errors retire the endpoint before returning
+         * so explicit rebegin cannot redispatch the same failure. */
         if (rc == COG_OK || rc == COG_ERROR_AGAIN || rc == COG_ERROR_INVALID_STATE) continue;
         if (cog_event_queue_is_full(core->ipc_events)) continue;
         (void)core_ipc_enqueue(core, COG_EVENT_IPC_DISCONNECTED, peer, NULL, 0U);
