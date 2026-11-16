@@ -397,16 +397,18 @@ static cog_result_t line(cog_cli_host_client_t *c)
     c->line[c->line_length] = '\0';
     if (c->line_length == 0U) return COG_OK;
     if (c->next_input_serial == UINT64_MAX) return COG_ERROR_LIMIT;
-    c->last_input_serial = ++c->next_input_serial;
-    c->final_input_result = COG_OK;
+    uint64_t input_serial = c->next_input_serial + 1U;
     cog_cli_command_t cmd = {0};
     cmd.observed_generation = c->line_generation; cmd.observed_sequence = c->line_sequence;
     bool local = false;
     cog_result_t rc = parse(c, &cmd, &local);
     if (rc == COG_OK && !local) {
         if (c->fixed.watch && cmd.kind != COG_CLI_COMMAND_RESYNC) rc = COG_ERROR_DENIED;
-        else rc = command(c, &cmd, c->last_input_serial);
+        else rc = command(c, &cmd, input_serial);
     }
+    if (rc == COG_ERROR_AGAIN) return rc; /* Retain bytes and first-byte anchor. */
+    c->last_input_serial = input_serial; c->next_input_serial = input_serial;
+    c->final_input_result = COG_OK;
     c->line_length = 0U;
     if (rc == COG_ERROR_IO || rc == COG_ERROR_LIMIT) return rc;
     if (rc != COG_OK) {
@@ -428,6 +430,13 @@ static cog_result_t ready_fd(int fd, bool *ready)
 }
 static cog_result_t input(cog_cli_host_client_t *c, bool *progress)
 {
+    if (c->eof && !c->stopping) {
+        cog_result_t rc = c->line_length == 0U ? COG_OK : line(c);
+        if (rc == COG_ERROR_AGAIN) return COG_OK;
+        if (rc != COG_OK) return rc;
+        c->stopping = true;
+        return deadline(c);
+    }
     if (c->input_cursor == c->input_length) {
         c->input_cursor = 0U; c->input_length = 0U;
         if (c->eof || c->stopping) return COG_OK;
@@ -441,6 +450,7 @@ static cog_result_t input(cog_cli_host_client_t *c, bool *progress)
         if (n == 0) {
             c->eof = true;
             rc = c->line_length == 0U ? COG_OK : line(c);
+            if (rc == COG_ERROR_AGAIN) return COG_OK;
             c->stopping = true;
             if (rc != COG_OK) return rc;
             return deadline(c);
@@ -451,7 +461,11 @@ static cog_result_t input(cog_cli_host_client_t *c, bool *progress)
         unsigned char ch = (unsigned char)c->input[c->input_cursor++];
         *progress = true;
         if (c->line_length == 0U) { c->line_generation = c->input_generation; c->line_sequence = c->input_sequence; }
-        if (ch == '\n') return line(c);
+        if (ch == '\n') {
+            cog_result_t rc = line(c);
+            if (rc == COG_ERROR_AGAIN) { --c->input_cursor; return COG_OK; }
+            return rc;
+        }
         if (ch == 0U) return COG_ERROR_PROTOCOL;
         if (c->line_length == sizeof(c->line) - 1U) return COG_ERROR_LIMIT;
         c->line[c->line_length++] = (char)ch;

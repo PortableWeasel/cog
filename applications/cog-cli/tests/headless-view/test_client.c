@@ -290,6 +290,37 @@ static void deadline_case(const char *path, bool known)
     CHECK(cog_cli_host_client_step(f.client, &info) == expected && info.done);
     error_cleanup(&f, expected);
 }
+static void resync_input_pressure_case(const char *path, bool eof)
+{
+    fixture_t f; setup(&f,path,false); handshake(&f); view(&f,5U,true);
+    cog_cli_control_message_t resync=next_frame(&f);
+    if(resync.kind==COG_CLI_CONTROL_REPLAY) resync=next_frame(&f);
+    CHECK(resync.kind==COG_CLI_CONTROL_UI_COMMAND);
+    cog_cli_command_t cmd;char buf[256];size_t required;
+    OK(cog_cli_command_decode(resync.payload,resync.payload_len,&cmd,buf,sizeof(buf),&required));
+    CHECK(cmd.kind==COG_CLI_COMMAND_RESYNC);
+    send_result(&f,&resync,COG_OK,0U);
+    cog_cli_control_message_t ack=next_frame(&f);
+    CHECK(ack.kind==COG_CLI_CONTROL_COMMAND_ACK);
+    CHECK(write(f.input[1],eof?"anchored":"anchored\n",eof?8U:9U)==(eof?8:9));
+    if(eof){CHECK(close(f.input[1])==0);f.input[1]=-1;}
+    for(size_t i=0U;i<30U;++i)pump(&f);
+    CHECK(f.client->line_length==8U && f.client->line_sequence==5U);
+    CHECK(f.client->next_input_serial==0U && f.client->last_input_serial==0U);
+    view(&f,6U,false);
+    cog_cli_control_message_t cursor=next_frame(&f);CHECK(cursor.kind==COG_CLI_CONTROL_REPLAY);
+    send_result(&f,&ack,COG_OK,0U);
+    cog_cli_control_message_t submitted=next_frame(&f);
+    CHECK(submitted.kind==COG_CLI_CONTROL_UI_COMMAND && submitted.lane==COG_CLI_LANE_COMMAND);
+    OK(cog_cli_command_decode(submitted.payload,submitted.payload_len,&cmd,buf,sizeof(buf),&required));
+    CHECK(cmd.kind==COG_CLI_COMMAND_SUBMIT && cmd.observed_sequence==5U &&
+        cmd.text_len==8U && memcmp(cmd.text,"anchored",8U)==0);
+    CHECK(f.client->next_input_serial==1U && f.client->last_input_serial==1U);
+    complete(&f,&submitted);
+    CHECK(f.client->next_input_serial==1U && f.client->last_input_serial==1U);
+    if(eof)CHECK(f.client->phase==CLI_CLIENT_DONE);
+    cleanup(&f);
+}
 static void independent_cancel_case(const char *path)
 {
     fixture_t f; setup(&f, path, false); online(&f);
@@ -410,5 +441,6 @@ int main(int argc, char **argv)
     grammar_case(argv[1]); gap_case(argv[1]); output_failure_case(argv[1]);
     identity_case(argv[1]); deadline_case(argv[1], false); deadline_case(argv[1], true);
     independent_cancel_case(argv[1]);
+    resync_input_pressure_case(argv[1],false);resync_input_pressure_case(argv[1],true);
     return 0;
 }
