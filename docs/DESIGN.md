@@ -737,6 +737,10 @@ explicit staged handoff; no implementation is authorized by this inventory.
 Three header passes and a different final gate precede O bodies. Existing live-
 handle/cross-host migration, uncertain-effect replay and unbounded growth remain
 unsupported.
+The first foundation subset adds kernel-origin peer queries/directed sends,
+explicit bounded core begin/step/end using the existing clock/dispatch engine,
+and an exact local agent-session execution borrow. These are draft contracts
+for incremental review, not implemented headless or child behavior.
 
 Stage 6 — Headers first. Design all public APIs as headers before any
 implementation. Three iterations:

@@ -141,6 +141,38 @@ cog_result_t cog_agent_copy_config(const cog_core_t *core, cog_agent_id_t agent_
                                     size_t *out_required);
 
 /**
+ * @brief Borrow the exact registry-owned local child session for one executor.
+ * @param[in,out] core Parent registry owner, one thread; may be called in this
+ * record's leased spawn handler, not recursively for the same record.
+ * @param[in] agent_id Retained local(owner_peer=0), nonterminal child record.
+ * @param[out] session Mutable borrowed session, unchanged on failure.
+ * @return OK; NULL_PTR; NOT_FOUND; ABORTED cancellation already admitted;
+ * INVALID_STATE remote/terminal/already borrowed. No allocation, execution,
+ * update/ack or intent consumption. Exactly one execution borrow at a time.
+ * @post Child app/core uses THIS object and its exact copied ID/parent link,
+ * never a replacement tree with the same ID. It borrows, never destroys it.
+ * Parent release cannot consume this record while borrowed. core_free requires
+ * all execution borrows returned after work drains, as it already requires
+ * local/remote work fenced/drained. No native pointer is transferred remotely;
+ * remote execution uses copied identity and its own guarded store context.
+ */
+cog_result_t cog_agent_session_borrow(cog_core_t *core, cog_agent_id_t agent_id,
+                                       cog_session_t **session);
+/**
+ * @brief Return one local execution borrow after complete child cleanup.
+ * @param[in,out] core Live parent registry owner, one thread.
+ * @param[in] agent_id Exact borrowed record.
+ * @param[in] session Exact borrowed pointer; never freed by the child.
+ * @return OK; NULL_PTR; NOT_FOUND; INVALID_STATE mismatch/no borrow. Failure
+ * changes no borrow. OK does not release/ack the record or result.
+ * @pre No child app/core/provider/tool/store guard or callback still borrows
+ * this session: cancel/drain/reap, consuming provider/config cleanup and child
+ * core destruction have completed. No allocation or effects.
+ */
+cog_result_t cog_agent_session_return(cog_core_t *core, cog_agent_id_t agent_id,
+                                       cog_session_t *session);
+
+/**
  * @brief Cancel a running subagent.
  *
  * Atomically marks cancellation admitted and queues COG_EVENT_SUBAGENT_CANCEL
@@ -363,7 +395,7 @@ cog_result_t cog_agent_ack_update(cog_core_t *core, cog_agent_id_t agent_id,
  * @param[in,out] core Owner. @param[in] agent_id Terminal, notification acked,
  * with no queued/in-dispatch spawn/cancel intent lease.
  * @return OK; NULL_PTR; NOT_FOUND; INVALID_STATE if active, pending notification
- * or any intent lease remains (including inside its own handler). No change on
+ * or any intent/execution-session lease remains (including inside its own handler). No change on
  * failure; retry after handler return. Queued payload storage cannot be freed.
  * @note Owner thread. IDs are never reused; invalidates query views, not copied
  * event payloads. core_free requires remote/local owned work fenced/drained.

@@ -139,3 +139,31 @@ headers with the maintained critic-header-smoke target under GCC and Clang.
 Different final review must pass before any O body. Gated per-file source,
 review, integration and finalize children will name exact ownership groups and
 actual process/TLS/tool acceptance oracles.
+
+## Incremental pass1 foundation subset
+
+The first header subset declares two IPC operations: exact directed send (no
+temporary/fake session route) and copied kernel peer identity. Neither makes a
+link ID an execution credential. Higher layers still match unreaped immutable
+native spawn ownership and an exact managed bootstrap incarnation, including
+stale buffered HELLO after reap/PID reuse.
+
+Core driving has explicit begin/step/end. The SAME checked monotonic-ms clock,
+dispatch/IPC engine, fair queue rotation, interval/deadline counters and lease
+cleanup back run and manual driving. A step has a constructor dispatch ceiling,
+never calls idle/wait hooks and reports its count/deadline. It cannot nest into
+itself or run, and a budget yield is not an exit. End consumes only stopped/failed
+driver ownership and returns its retained primary error; asynchronous work still
+belongs to the host. This avoids independent synthetic clocks and a second event
+loop implementation. Application stepping will add its existing drain/policy/
+input ownership rather than recursively call app_run.
+
+The local agent borrow/return pair exposes the exact registry-owned session with
+one execution lease. Remote records cannot borrow their local identity shadow
+for execution. App child construction borrows instead of freeing/recreating this
+tree; parent release refuses a live borrow. Return follows all child app/core,
+provider/config, tool/process and store-guard cleanup. Parent core destruction
+retains its explicit drained-work/no-borrow precondition; no destructor leak
+workaround or unbounded join is introduced.
+
+This subset is for incremental critique, not completion of pass1 or the N gate.
