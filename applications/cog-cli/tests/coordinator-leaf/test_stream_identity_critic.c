@@ -36,11 +36,30 @@ int main(void)
     assert(cog_cli_control_encode(&m,wire,sizeof(wire),&wn)==COG_OK); e.msg_payload_len=wn;
     cog_result_t lane_rc=host_ui_command(&r,&client,&e,&m);
     printf("independent COMMAND/CANCEL wire3: actual=%d expected=%d\n",(int)lane_rc,(int)COG_OK);
-    /* Control: a distinct wire ID follows the valid refusal path. */
-    m.wire_id=4U;
-    assert(cog_cli_control_encode(&m,wire,sizeof(wire),&wn)==COG_OK); e.msg_payload_len=wn;
-    assert(host_ui_command(&r,&client,&e,&m)==COG_OK);
+    /* Negative-version control: a distinct wire follows the valid refusal
+       path if the buggy equal-wire lookup left the second record vacant. */
+    if (lane_rc != COG_OK) {
+        m.wire_id=4U;
+        assert(cog_cli_control_encode(&m,wire,sizeof(wire),&wn)==COG_OK); e.msg_payload_len=wn;
+        assert(host_ui_command(&r,&client,&e,&m)==COG_OK);
+    } else {
+        assert(records[0].phase==CLI_COMMAND_COPIED && records[0].request_wire==3U);
+        assert(records[1].request_wire==3U);
+        assert(host_ui_command(&r,&client,&e,&m)==COG_OK); /* exact CANCEL retry */
+    }
     assert(records[1].phase==CLI_COMMAND_FINAL && records[1].result==COG_ERROR_DENIED);
+    /* A genuine same-lease reconnect must preserve both independent receipts
+       and its watermark. Only later factual expiry permits a reset. */
+    lanes[CLI_HOST_LANES+COG_CLI_LANE_COMMAND-1U].retired_through=100U;
+    unsigned char reconnect[18]={1U,2U};
+    m=(cog_cli_control_message_t){.kind=COG_CLI_CONTROL_UI_HELLO,.lane=COG_CLI_LANE_COMMAND,
+        .runtime_incarnation=7U,.sender_incarnation=7U,.wire_id=5U,.session_id="root",
+        .payload=reconnect,.payload_len=sizeof(reconnect)};
+    assert(cog_cli_control_encode(&m,wire,sizeof(wire),&wn)==COG_OK); e.msg_payload_len=wn;
+    client.connected=false;client.send.length=0U;
+    assert(host_ui_hello(&r,&e,&m)==COG_OK);
+    assert(client.logical_lease==7U && records[0].phase==CLI_COMMAND_COPIED && records[1].phase==CLI_COMMAND_FINAL);
+    assert(lanes[CLI_HOST_LANES+COG_CLI_LANE_COMMAND-1U].retired_through==100U);
     /* Expire old lease, then use a factual fresh HELLO on the same physical cell. */
     client.connected=false; client.send.length=0U; client.receipts_until_ms=1U; r.now_ms=2U;
     lanes[CLI_HOST_LANES+COG_CLI_LANE_COMMAND-1U].retired_through=100U;
@@ -50,6 +69,7 @@ int main(void)
         .sender_incarnation=99U,.wire_id=1U,.session_id="",.payload=hello,.payload_len=18U};
     assert(cog_cli_control_encode(&m,wire,sizeof(wire),&wn)==COG_OK); e.msg_payload_len=wn;
     assert(host_ui_hello(&r,&e,&m)==COG_OK); assert(client.logical_lease==8U);
+    assert(client.hello.retired_through==0U);
     command=(cog_cli_command_t){.kind=COG_CLI_COMMAND_RESYNC,.observed_generation=7U,.observed_sequence=1U};
     assert(cog_cli_command_encode(&command,body,sizeof(body),&n)==COG_OK);
     m=(cog_cli_control_message_t){.kind=COG_CLI_CONTROL_UI_COMMAND,.lane=COG_CLI_LANE_COMMAND,
