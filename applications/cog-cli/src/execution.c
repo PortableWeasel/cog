@@ -127,6 +127,13 @@ cog_result_t cog_cli_execution_copy_view(cog_cli_app_t *app, uint64_t *serial,
 {
     if (app == NULL || serial == NULL || view == NULL) return COG_ERROR_NULL_PTR;
     if (app->headless == NULL) return COG_ERROR_INVALID_STATE;
+    if (!app->headless->publication_pending && app->headless->newer_view_dirty) {
+        cog_state_t next;
+        cog_result_t rc = cli_execution_barrier(app, app->headless->after_publication,
+            app->headless->resume_state, &next);
+        if (rc != COG_OK) return rc;
+        app->headless->newer_view_dirty = false;
+    }
     if (!app->headless->publication_pending) return COG_ERROR_AGAIN;
     *serial = app->headless->pending_serial; *view = app->headless->frozen;
     return COG_OK;
@@ -146,11 +153,10 @@ cog_result_t cog_cli_execution_commit_view(cog_cli_app_t *app, uint64_t serial,
     h->committed_serial = serial; h->committed_generation = generation; h->committed_sequence = sequence;
     h->publication_pending = false;
     if (h->policy_retirement_pending) h->policy_retirement_pending = false;
-    if (h->newer_view_dirty) {
-        h->newer_view_dirty = false; cog_state_t next;
-        return cli_execution_barrier(app, h->after_publication, h->resume_state, &next);
-    }
-    return COG_OK; /* Service queues the static continuation without fallible commit enqueue. */
+    /* A newer dirty view is captured by copy_view/service, whose contracts can
+       report copy exhaustion. This exact canonical acknowledgement is infallible
+       after correlation checks and never hides accepted output behind an error. */
+    return COG_OK;
 }
 cog_result_t cog_cli_execution_begin(cog_cli_app_t *app)
 {

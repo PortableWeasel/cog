@@ -476,6 +476,12 @@ cog_result_t cog_cli_service(void *arg, uint64_t now, uint64_t *deadline)
     cog_state_t state = cog_core_state(app->core);
     if (app->headless != NULL) {
         cli_execution_state_t *h = app->headless;
+        if (h->newer_view_dirty && !h->publication_pending) {
+            cog_state_t next_state;
+            rc = cli_execution_barrier(app, h->after_publication, h->resume_state, &next_state);
+            if (rc != COG_OK) return rc;
+            h->newer_view_dirty = false;
+        }
         if (h->absolute_deadline_ms != 0U && h->absolute_deadline_ms < *deadline) *deadline = h->absolute_deadline_ms;
         if (h->authority != CLI_AUTH_NORMAL) return COG_OK;
         if (h->publication_pending || state == CLI_PUBLICATION) {
