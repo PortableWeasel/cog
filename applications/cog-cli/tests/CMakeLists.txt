@@ -364,3 +364,12 @@ target_include_directories(test_execution_headless PRIVATE ../src)
 target_link_libraries(test_execution_headless PRIVATE cog::cli)
 target_enable_warnings(test_execution_headless)
 add_test(NAME cli-execution-headless COMMAND test_execution_headless)
+
+add_executable(test_handoff_leaf test_handoff_leaf.c)
+target_include_directories(test_handoff_leaf PRIVATE ../src)
+target_link_libraries(test_handoff_leaf PRIVATE cog::cli)
+target_enable_warnings(test_handoff_leaf)
+add_test(NAME cli-handoff-leaf COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_handoff_leaf.py
+    $<TARGET_FILE:test_handoff_leaf> ${CMAKE_BINARY_DIR})
+set_tests_properties(cli-handoff-leaf PROPERTIES TIMEOUT 25)
