@@ -921,3 +921,15 @@ including consuming-disconnect error handling, retained notices and EOF-aware
 input admission. [Scoped writer evidence](REAL_CLIENT_RELOAD_EVIDENCE.md) records
 actual two-generation composition; independent package/integration gates remain
 separate from the original header approval.
+
+### O3 private ownership and worker capacity
+
+[O3 private layout](REAL_CLIENT_ORCHESTRATOR_LAYOUT.md) freezes bounded native
+worker, authenticated link, copied event and advisory route ownership before
+runtime bodies. Generic child placement capacity C defaults to4 and remains
+<=UINT32_MAX. Fixed worker startup carries physical C+2 in checked uint64_t
+arithmetic, including on 32-bit hosts; primary and staged slots never count as
+children. The installed application accepts C<=16, physical<=18, independently
+of the generic library contract. Unsupported selected binaries fail before
+readiness. This header-only clarification does not waive O2 or independent
+layout review gates.
