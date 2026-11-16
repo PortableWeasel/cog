@@ -69,3 +69,43 @@ handshake/error/unsupported and unchanged output; foreign listener and retired
 ID; exact directed output/no broadcast; copied source and capacity retry;
 short write, complete+partial EOF, overflow preservation, all slot retirement,
 explicit abandonment and constructor unwind with optimizer-safe wipe oracles.
+
+## Pass3 — final implementation consistency review
+
+Rewalked all preceding paths against public ipc.h and core/event proof contracts.
+No public behavior change is proposed. The private header is a planned relocation
+of ipc.c's existing layout, not a second endpoint implementation; bodies will
+include it only after independent approval. No exported/helper ABI is added.
+
+Native capture stores only a kernel connection-establishment snapshot. Query
+performs no syscall or allocation, returns the latched IO/UNSUPPORTED only for
+a live published exact link, and never copies on failure. The byte-order identity
+handshake remains unchanged and contains no native credentials. O2 separately
+captures/retains its protected event proof before ownership can end; these facts
+do not establish managed-worker/role authorization. Directed send delegates only
+after checking listener, live peer and complete handshake; queue fullness accepts
+nothing, oversized input returns LIMIT, no route mutation or implicit service.
+
+All existing checked constructor products remain unchanged except the fixed
+endpoint sizeof. Cleanup checks allocated pointers individually, so partial
+constructor failure can wipe exactly the allocated configured capacity without
+reading uninitialized bytes. A volatile clearing helper must not be optimized
+away under Release; tests inspect buffers at actual retirement and allocator
+release, rather than trusting memset source presence. Frame descriptors are
+cleared with retired slots; partial writes retain their cursor and complete RX
+OVERFLOW retains its descriptor. Opt-out keeps existing payload behavior.
+
+Failure cleanup is idempotent: re-observing the same terminal error cannot wipe
+committed RX or lose its error precedence. Explicit disconnect resets native
+snapshot/capture state and all framing state before reuse. Listener disconnect
+still detaches rather than owns/frees separately owned accepted endpoints; each
+accepted endpoint retains its independent cleanup duty and inherited wipe flag.
+No changes to Q fatal framing propagation, replay storage, core event ingress,
+application role authorization or orchestrator lifetime are included.
+
+Verification: the private header compiles standalone and under repeated include
+with full strict GCC/Clang C11 and G++/Clang++ C++11 (4/4). Existing source bodies
+are byte-for-byte unchanged. Independent private-layout gate remains required
+before implementation. Focused runtime validation later includes existing IPC
+and replay suites plus new native-auth/retirement/fault tests; no claim is made
+that unfinished O core/orchestrator targets or the full release suite pass.
