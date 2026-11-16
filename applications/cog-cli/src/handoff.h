@@ -67,6 +67,15 @@ cog_result_t cog_cli_handoff_request(cog_cli_handoff_t *handoff,
  * Duplicate retained phases replay their immutable reply without save/release/
  * CAS/acquire/activation repetition. Unknown retired phases cannot resurrect work.
  * No failure, timeout or ABORT restores source admission or old owner authority.
+ * After successful target ACTIVATE/echo, request disposal of the frozen old
+ * source with a fresh HANDOFF-lane ABORT carrying the SAME transaction tuple
+ * and checkpoint. This is resource retirement, never rollback or target abort.
+ * ABORT reply echoes reply_to only AFTER actual executor/handle/guard/provider/
+ * configuration/net/observer cleanup succeeded; request_shutdown/send-OK/reap
+ * alone cannot produce this receipt. Retain exact request/final reply in the
+ * existing slot HANDOFF cache OUTSIDE the disposed app until consumption.
+ * Coordinator cannot reuse the old physical executor slot before matching
+ * successful final ABORT receipt (local source requires actual checked close).
  */
 cog_result_t cog_cli_handoff_step(cog_cli_handoff_t *handoff, bool *done,
     uint64_t *deadline_ms);
