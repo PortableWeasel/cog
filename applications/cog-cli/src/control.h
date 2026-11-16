@@ -198,6 +198,11 @@ cog_result_t cog_cli_control_decode(const void *input, size_t input_len,
  * connection/rebind retry; failure before coordinator receives proof freezes
  * retirement under existing native-loss policy. Confirmation is not acknowledged
  * recursively. Separate CANCEL/PROFILE/COMMAND lanes never consume UPDATE proof.
+ * Reserve this final confirmation identity/storage before child admission; no
+ * wrap or fresh allocation during cleanup. Until copied-send succeeds, preserve
+ * the final receipt's exact outer correlation and the cleaned attempt's identity.
+ * Cleanup failure emits no confirmation; even consuming-close error cannot be
+ * relabelled as successful cleanup. Old unknown attempts remain uniformly stale.
  */
 
 #ifdef __cplusplus
