@@ -50,6 +50,50 @@ static void bridge_payloads(void)
     context.mailbox_entries=0U;count=(cli_wire_writer_t){NULL,0U,true};
     assert(bridge_output(&handle,&message,&count,&outcome,&effects,&group)==COG_ERROR_PROTOCOL);
 }
+static void copied_schedule(cog_ipc_endpoint_t *sender,cog_ipc_endpoint_t *receiver)
+{
+    cog_cli_worker_host_t worker={0};worker.parent=sender;worker.now_ms=10U;
+    unsigned char data[4]={1U,2U,3U,4U},received[16];
+    cli_host_bytes_t bytes={data,sizeof(data),sizeof(data)};
+    uint64_t copied=0U,due=0U;
+    assert(retained_send(&worker,&bytes,1U,&copied,&due,false)==COG_OK);
+    assert(copied==1U && due==1010U);
+    for(unsigned i=0U;i<100U;++i) assert(retained_send(&worker,&bytes,1U,&copied,&due,false)==COG_ERROR_AGAIN);
+    /* A new wire is eligible but full TX accepts nothing. */
+    assert(retained_send(&worker,&bytes,2U,&copied,&due,false)==COG_ERROR_AGAIN);
+    assert(copied==1U && due==1010U);
+    service(sender,receiver);
+    cog_ipc_message_t incoming={received,0U,sizeof(received)};
+    assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_OK && incoming.len==sizeof(data));
+    assert(memcmp(received,data,sizeof(data))==0);
+    assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_ERROR_AGAIN);
+    worker.now_ms=1009U;assert(retained_send(&worker,&bytes,1U,&copied,&due,false)==COG_ERROR_AGAIN);
+    worker.now_ms=1010U;assert(retained_send(&worker,&bytes,1U,&copied,&due,false)==COG_OK);
+    assert(due==2010U);service(sender,receiver);
+    assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_OK);
+    assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_ERROR_AGAIN);
+    /* One-way wire needs no future time, even at clock exhaustion. */
+    worker.now_ms=UINT64_MAX;
+    assert(retained_send(&worker,&bytes,2U,&copied,&due,false)==COG_ERROR_LIMIT);
+    assert(copied==1U && due==2010U);
+    assert(retained_send(&worker,&bytes,2U,&copied,&due,true)==COG_OK);
+    service(sender,receiver);assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_OK);
+    assert(retained_send(&worker,&bytes,2U,&copied,&due,true)==COG_ERROR_AGAIN);
+    assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_ERROR_AGAIN);
+    /* PROFILE duplicate demand preserves both the exact ACK and its clock. */
+    worker.now_ms=20U;cli_secret_exchange_t profile={0};
+    profile.body=data;profile.body_capacity=sizeof(data);profile.body_length=sizeof(data);
+    profile.replied_wire=3U;profile.pending=true;
+    assert(send_profile_ack(&worker,&profile)==COG_OK && !profile.pending);
+    profile.pending=true;
+    assert(send_profile_ack(&worker,&profile)==COG_ERROR_AGAIN && profile.pending);
+    assert(profile.next_send_ms==1020U);
+    service(sender,receiver);assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_OK);
+    assert(incoming.len==sizeof(data) && memcmp(received,data,sizeof(data))==0);
+    worker.now_ms=1020U;assert(send_profile_ack(&worker,&profile)==COG_OK);
+    service(sender,receiver);assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_OK);
+    assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_ERROR_AGAIN);
+}
 int main(int argc,char **argv)
 {
     assert(argc==2);bridge_payloads();
@@ -61,7 +105,7 @@ int main(int argc,char **argv)
     cog_result_t rc=cog_ipc_endpoint_connect(sender,argv[1],NULL);
     assert(rc==COG_OK || rc==COG_ERROR_AGAIN);
     assert(cog_ipc_endpoint_accept(listener,&receiver,NULL)==COG_OK);
-    service(sender,receiver);
+    service(sender,receiver);copied_schedule(sender,receiver);
     cog_cli_worker_host_t host={0};host.parent=sender;host.runtime_incarnation=7U;
     host.fixed.worker=(cog_worker_id_t){11U,3U};
     cli_control_lane_t lanes[CLI_HOST_LANES]={0};
