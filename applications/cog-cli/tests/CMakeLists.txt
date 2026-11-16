@@ -205,6 +205,7 @@ add_test(NAME cli-app-stop COMMAND test_app_stop)
 set_tests_properties(cli-app-stop PROPERTIES TIMEOUT 10)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     add_executable(test_app_memory test_app_memory.c)
+    target_include_directories(test_app_memory PRIVATE ../src)
     target_link_libraries(test_app_memory PRIVATE cog::cli)
     target_link_options(test_app_memory PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc)
     # Allocator linker wrappers invalidate the corresponding builtin effects.
