@@ -1,0 +1,20 @@
+cmake_minimum_required(VERSION 3.16)
+project(cog_installed_live_smoke C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+include(GNUInstallDirs)
+find_package(cog-provider REQUIRED CONFIG)
+find_package(Threads REQUIRED)
+foreach(component config toolkit cli)
+    include("${cog-provider_DIR}/../cog/cog-${component}-targets.cmake")
+endforeach()
+add_executable(installed_live_smoke consumer.c)
+target_link_libraries(installed_live_smoke PRIVATE cog::cli)
+target_compile_options(installed_live_smoke PRIVATE -UNDEBUG
+    -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wsign-conversion
+    -Wmissing-prototypes -Wstrict-prototypes -Wundef -Wpointer-arith
+    -Wcast-align -Wwrite-strings -Wformat=2 -Werror)
+target_link_options(installed_live_smoke PRIVATE -Wl,--wrap=cog_provider_send)
+set_target_properties(installed_live_smoke PROPERTIES INSTALL_RPATH "$ORIGIN/../lib")
+install(TARGETS installed_live_smoke RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
