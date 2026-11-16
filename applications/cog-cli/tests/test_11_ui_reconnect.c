@@ -161,7 +161,7 @@ int main(int argc,char **argv)
     CHECK(controller.client->lease==lease && controller.client->replay_generation==generation && strcmp(session,controller.client->session)==0);
     CHECK(cog_cli_projection_snapshot(f.host->projection,&current)==COG_OK);
     CHECK(same_view(&current,&controller.client->banks[controller.client->current].view));
-    CHECK(current.policy_count==1U && current.policies[0].assistant_node==prompt_node && current.policies[0].nonce==prompt_nonce && current.policies[0].call_ordinal==prompt_ordinal);
+    CHECK(current.policy_count==1U && current.policies[0].assistant_node==prompt_node && current.policies[0].nonce==prompt_nonce && current.policies[0].call_ordinal==prompt_ordinal && current.policies[0].configuration_generation==prompt.configuration_generation && current.policies[0].deadline_ms==prompt.deadline_ms);
     CHECK(access(effect,F_OK)!=0); /* Reconnect/render is never implicit ALLOW. */
     /* A separate actual watch client consumes state but cannot mutate it. */
     CHECK(snprintf(path,sizeof(path),"%s/watch.ndjson",argv[4])>0);
