@@ -59,7 +59,7 @@ typedef struct cli_control_lane {
     uint64_t pending_reply_wire; /**< 0=no generic response awaiting copied send;
        otherwise selects retained final_reply_wire or provisional_wire exactly.
        Independent of semantic pending_valid. Copied send clears only this
-       delivery selector; cooldown/AGAIN retain it. See SEND_REPLY_RETENTION. */
+       delivery selector; cooldown/AGAIN retain it. See REAL_CLIENT_SEND_REPLY_RETENTION.md. */
     uint64_t copied_wire, next_send_ms; /**< Transport-owned exact outer wire and
        independent earliest retransmit time. New wire is immediately eligible;
        AGAIN accepts nothing and changes neither value. No receipt/authority

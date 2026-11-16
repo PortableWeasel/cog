@@ -55,3 +55,29 @@ buffer, ACK, new frame identity, wire kind, hot allocation or extra native read.
    selector survive. Factual stream/native retirement clears selector with its
    associated proof. The new logical UI lease reset remains its own separate
    rule; no native key rebinding or semantic pending reset is implied.
+
+## Pass 3: bounded lifetime audit
+
+The selector is one uint64 in existing constructor-owned generic metadata, not a
+second queue. A stream has at most one currently owed response: final dominates
+provisional for the same request, and only a valid admitted higher successor may
+retire the older response obligation. Existing byte caches remain the sole source
+for exact reply encoding; no generic selector ever names credential-bearing data.
+If neither retained response matches a nonzero selector, fail closed; never send
+an unrelated or empty buffer. Reserve response bytes/identity before arming.
+
+At fixed maxima this adds840*8=6720 scalar bytes per coordinator and360*8=2880 per
+worker to92a7d46's metadata payload, for total20576 and8944 added scalar bytes
+respectively; actual sizeof accounts for ABI layout. Existing calloc counts,
+frame capacities and all hot-path allocation prohibitions remain unchanged.
+There is no new counter to wrap; the selector is an existing validated nonzero
+outer wire. No native reader, retry timer, semantic prefix, guard, resolver or
+operation limit is added.
+
+Required regression: firstreply AGAIN then service without duplicate; duplicate
+inside cooldown then exactly-due send; zero/equal/backward clock eligibility;
+provisional-to-final replacement with immutable final receipt; malformed higher
+request cannot erase prior pending reply; original deadline unchanged; retained
+same-key receipt survives reuse; actual key retirement clears delivery. Existing
+native cancel5s and handoff15s oracles remain unmodified. Independent design gate
+is required before source uses the new selector.
