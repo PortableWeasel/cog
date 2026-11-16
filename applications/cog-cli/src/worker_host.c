@@ -314,7 +314,7 @@ static cog_result_t lane_duplicate(cli_control_lane_t *lane,uint64_t wire,
         lane->pending_valid=true;*handled=true;return COG_OK;
     }
     if(wire<=lane->retired_through || (lane->final_valid && wire<lane->final_answered_wire))
-        return COG_ERROR_INVALID_STATE;
+        return COG_ERROR_AGAIN; /* Covered identity, no effect or binding error. */
     return COG_OK;
 }
 static cli_executor_slot_t *find_attempt(cog_cli_worker_host_t *worker,
@@ -621,14 +621,16 @@ static cog_result_t update_receipt(cog_cli_worker_host_t *worker,cli_executor_sl
         return original_length==lane->final_original.length &&
             memcmp(worker->receive_secret,lane->final_original.data,original_length)==0?COG_OK:COG_ERROR_PROTOCOL;
     }
-    if(!lane->pending_valid || message->reply_to!=slot->pending_update_wire) return COG_ERROR_INVALID_STATE;
     cog_cli_control_receipt_t receipt;
     cog_result_t rc=cog_cli_control_receipt_decode(message->payload,message->payload_len,&receipt);
     if(rc!=COG_OK) return rc;
     if(receipt.parent_runtime_incarnation!=worker->runtime_incarnation || receipt.agent_id!=slot->agent ||
        receipt.execution_epoch!=slot->attempt || receipt.owner_peer!=slot->owner_peer ||
-       receipt.wire_id!=slot->pending_update_wire || receipt.parent_accepted_sequence<slot->accepted_sequence)
+       receipt.wire_id!=message->reply_to || message->reply_to==0U)
         return COG_ERROR_PROTOCOL;
+    if(message->reply_to<=lane->retired_through) return COG_ERROR_AGAIN;
+    if(!lane->pending_valid || message->reply_to!=slot->pending_update_wire) return COG_ERROR_INVALID_STATE;
+    if(receipt.parent_accepted_sequence<slot->accepted_sequence) return COG_ERROR_PROTOCOL;
     uint64_t sequence=slot->pending_update_sequence;
     if(receipt.disposition==COG_CLI_CONTROL_RECEIPT_RETRY) {
         if(receipt.parent_accepted_sequence!=sequence && receipt.parent_accepted_sequence!=sequence-1U)
@@ -1015,13 +1017,16 @@ static cog_result_t publish_view(cog_cli_worker_host_t *worker,cli_executor_slot
 }
 static cog_result_t view_commit(cli_executor_slot_t *slot,const cog_cli_control_message_t *message)
 {
-    if(message->lane!=COG_CLI_LANE_VIEW || message->payload_len!=40U || slot->app==NULL || slot->agent!=0U)
+    if(message->lane!=COG_CLI_LANE_VIEW || message->payload_len!=40U || message->reply_to==0U || slot->agent!=0U)
         return COG_ERROR_PROTOCOL;
     cli_control_lane_t *lane=&slot->outbound[COG_CLI_LANE_VIEW-1U];
-    if(!lane->pending_valid || message->reply_to!=lane->pending_wire) return COG_ERROR_INVALID_STATE;
     cli_wire_reader_t r={message->payload,message->payload_len,0U,true};uint64_t serial=cli_wire_get(&r,8U);
     cog_store_owner_t owner={cli_wire_get(&r,8U),cli_wire_get(&r,8U)};
     uint64_t generation=cli_wire_get(&r,8U),sequence=cli_wire_get(&r,8U);
+    if(serial==0U || owner.epoch==0U || owner.instance_id==0U || generation==0U || sequence==0U)
+        return COG_ERROR_PROTOCOL;
+    if(message->reply_to<=lane->retired_through) return COG_ERROR_AGAIN;
+    if(slot->app==NULL || !lane->pending_valid || message->reply_to!=lane->pending_wire) return COG_ERROR_INVALID_STATE;
     if(!same_owner(owner,slot->owner) || serial!=lane->provisional_prefix) return COG_ERROR_INVALID_STATE;
     cog_result_t rc=cog_cli_execution_commit_view(slot->app,serial,generation,sequence);
     if(rc==COG_OK) { lane->retired_through=lane->pending_wire;lane->pending_valid=false; }
@@ -1086,13 +1091,15 @@ static cog_result_t publish_policy(cog_cli_worker_host_t *worker,cli_executor_sl
 }
 static cog_result_t policy_result(cli_executor_slot_t *slot,const cog_cli_control_message_t *message)
 {
-    if(message->lane!=COG_CLI_LANE_POLICY || message->payload_len!=21U) return COG_ERROR_PROTOCOL;
+    if(message->lane!=COG_CLI_LANE_POLICY || message->payload_len!=21U || message->reply_to==0U)
+        return COG_ERROR_PROTOCOL;
     cli_control_lane_t *lane=&slot->outbound[COG_CLI_LANE_POLICY-1U];
-    if(!lane->pending_valid || message->reply_to!=lane->pending_wire) return COG_ERROR_INVALID_STATE;
     cli_wire_reader_t r={message->payload,message->payload_len,0U,true};
     cog_result_t result=cli_wire_signed(cli_wire_get(&r,4U));uint8_t state=(uint8_t)cli_wire_get(&r,1U);
     if(!cli_wire_result(result) || state!=2U || cli_wire_get(&r,8U)!=0U || cli_wire_get(&r,8U)!=0U)
         return COG_ERROR_PROTOCOL;
+    if(message->reply_to<=lane->retired_through) return COG_ERROR_AGAIN;
+    if(!lane->pending_valid || message->reply_to!=lane->pending_wire) return COG_ERROR_INVALID_STATE;
     if(result!=COG_OK) return result;
     lane->retired_through=lane->pending_wire;lane->pending_valid=false;return COG_OK;
 }
@@ -1113,11 +1120,16 @@ static cog_result_t delegation_reply(cog_cli_worker_host_t *worker,cli_executor_
 static cog_result_t command_ack(cog_cli_worker_host_t *worker,cli_executor_slot_t *slot,
     const cog_cli_control_message_t *message,size_t length)
 {
-    if(message->payload_len!=0U) return COG_ERROR_PROTOCOL;
+    if(message->payload_len!=0U || message->reply_to==0U ||
+       (message->lane!=COG_CLI_LANE_COMMAND && message->lane!=COG_CLI_LANE_CANCEL)) return COG_ERROR_PROTOCOL;
     cli_control_lane_t *lane=&slot->inbound[(size_t)message->lane-1U];
+    cli_control_lane_t *out=&slot->outbound[(size_t)message->lane-1U];
+    if(message->reply_to<=out->retired_through) return COG_ERROR_AGAIN;
     if(!lane->final_valid || message->reply_to!=lane->final_reply_wire) return COG_ERROR_INVALID_STATE;
-    unsigned char body[21]={0};body[4]=2U;
-    return lane_reply(worker,slot,message,COG_CLI_CONTROL_COMMAND_RESULT,body,sizeof(body),length);
+    unsigned char body[21]={0};body[4]=2U;uint64_t consumed=lane->final_reply_wire;
+    cog_result_t rc=lane_reply(worker,slot,message,COG_CLI_CONTROL_COMMAND_RESULT,body,sizeof(body),length);
+    if(rc==COG_OK) out->retired_through=consumed;
+    return rc;
 }
 static cog_result_t dispatch_cancel(cog_cli_worker_host_t *worker,cli_executor_slot_t *slot,
     const cog_cli_control_message_t *message,size_t length)
@@ -1169,6 +1181,22 @@ static cog_result_t application_receive(cog_cli_worker_host_t *worker,size_t len
     if(message.kind==COG_CLI_CONTROL_BOOTSTRAP) return bootstrap(worker,&message,length);
     if(!worker->startup_ready) return COG_ERROR_INVALID_STATE;
     cli_executor_slot_t *slot=find_attempt(worker,&message);
+    if(slot==NULL && message.kind==COG_CLI_CONTROL_UPDATE_RECEIPT &&
+       message.agent_id!=0U && message.agent_id<=worker->opened_agent_high_watermark) {
+        /* Physical child reuse retired the whole attempt. A delayed valid
+           disposition cannot apply to another occupant or poison its binding. */
+        for(size_t i=0U;i<worker->executor_capacity;++i)
+            if(worker->executors[i].phase!=CLI_SLOT_FREE && worker->executors[i].agent==message.agent_id)
+                return COG_ERROR_INVALID_STATE; /* Live conflicting identity. */
+        cog_cli_control_receipt_t receipt;
+        rc=cog_cli_control_receipt_decode(message.payload,message.payload_len,&receipt);
+        if(rc!=COG_OK) return rc;
+        if(message.lane!=COG_CLI_LANE_UPDATE || message.reply_to==0U ||
+           receipt.parent_runtime_incarnation!=message.runtime_incarnation || receipt.agent_id!=message.agent_id ||
+           receipt.execution_epoch!=message.execution_epoch || receipt.owner_peer!=message.owner_peer ||
+           receipt.wire_id!=message.reply_to) return COG_ERROR_PROTOCOL;
+        return COG_ERROR_AGAIN;
+    }
     if(slot==NULL && message.kind==COG_CLI_CONTROL_CHILD_CANCEL) {
         rc=open_attempt(worker,&message,&slot);if(rc!=COG_OK) return rc;
     }
