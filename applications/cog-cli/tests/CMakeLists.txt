@@ -61,9 +61,17 @@ target_compile_definitions(run_cli_smoke PRIVATE
 function(cog_add_cli_scenario target)
     add_executable(${target} ${target}.c)
     target_enable_warnings(${target})
-    add_test(NAME scenario-${target}
-        COMMAND ${target}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+       AND COG_NET_CURL_BUILD_DIR AND COG_NET_CURL_LIBRARY
+       AND ("${target}" STREQUAL "test_18_observability" OR "${target}" STREQUAL "test_19_connection_events"))
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        add_test(NAME scenario-${target} COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/run_app_https.py $<TARGET_FILE:${target}> retry)
+    else()
+        add_test(NAME scenario-${target}
+            COMMAND ${target}
+            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    endif()
     set_tests_properties(scenario-${target} PROPERTIES
         LABELS "scenario"
         TIMEOUT 30)
@@ -143,6 +151,35 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang
         -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-free)
     target_enable_warnings(test_configuration_memory)
     add_test(NAME cli-configuration-memory COMMAND test_configuration_memory)
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+   AND COG_NET_CURL_BUILD_DIR AND COG_NET_CURL_LIBRARY)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_library(cog-observation-fixture STATIC observation_fixture.c)
+    target_include_directories(cog-observation-fixture PRIVATE ../src)
+    target_link_libraries(cog-observation-fixture PUBLIC cog::cli)
+    target_enable_warnings(cog-observation-fixture)
+    add_executable(test_app_observation test_app_observation.c)
+    target_enable_warnings(test_app_observation)
+    foreach(target test_app_observation test_18_observability test_19_connection_events)
+        target_link_libraries(${target} PRIVATE cog-observation-fixture)
+        target_link_options(${target} PRIVATE -Wl,--wrap=cog_obs_new -Wl,--wrap=cog_cli_service)
+        target_compile_definitions(${target} PRIVATE COG_CLI_OBSERVATION_PROFILE)
+    endforeach()
+    foreach(mode normal retry stall tls connect cancel)
+        add_test(NAME cli-observation-${mode} COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/run_app_https.py $<TARGET_FILE:test_app_observation> ${mode})
+        set_tests_properties(cli-observation-${mode} PROPERTIES TIMEOUT 35)
+    endforeach()
+    add_executable(test_observation_critic test_observation_critic.c)
+    target_include_directories(test_observation_critic PRIVATE ../src)
+    target_link_libraries(test_observation_critic PRIVATE cog::cli)
+    target_link_options(test_observation_critic PRIVATE -Wl,--wrap=cog_obs_clock_now_ns)
+    target_enable_warnings(test_observation_critic)
+    add_test(NAME cli-observation-critic COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/run_observation_critic.py $<TARGET_FILE:test_observation_critic>)
+    set_tests_properties(cli-observation-critic PROPERTIES TIMEOUT 20)
 endif()
 
 add_executable(test_app_loop test_app_loop.c)
