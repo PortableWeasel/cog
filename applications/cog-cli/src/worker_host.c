@@ -1445,8 +1445,12 @@ cog_result_t cog_cli_worker_host_step(cog_cli_worker_host_t *worker,cog_cli_host
            pending->profile.next_send_ms<step.next_deadline_ms) step.next_deadline_ms=pending->profile.next_send_ms;
         for(size_t j=0U;j<CLI_HOST_LANES;++j) for(size_t direction=0U;direction<2U;++direction) {
             cli_control_lane_t *stream=direction==0U?&pending->inbound[j]:&pending->outbound[j];
-            if(stream->next_send_ms>worker->now_ms && stream->next_send_ms<step.next_deadline_ms)
-                step.next_deadline_ms=stream->next_send_ms;
+            /* Handle-owned requests also use outbound eligibility; future
+               clocks are safe conservative wakes even after receipt retirement. */
+            uint64_t due=stream->next_send_ms;
+            if(stream->pending_valid && due<=worker->now_ms) due=worker->now_ms;
+            if((stream->pending_valid || due>worker->now_ms) && due<step.next_deadline_ms)
+                step.next_deadline_ms=due;
         }
     }
     if(progress || step.next_deadline_ms<=worker->now_ms) step.max_wait_ms=0U;

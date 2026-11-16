@@ -93,6 +93,22 @@ static void copied_schedule(cog_ipc_endpoint_t *sender,cog_ipc_endpoint_t *recei
     worker.now_ms=1020U;assert(send_profile_ack(&worker,&profile)==COG_OK);
     service(sender,receiver);assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_OK);
     assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_ERROR_AGAIN);
+    cli_control_lane_t inbound[CLI_HOST_LANES]={0},outbound[CLI_HOST_LANES]={0};
+    cli_executor_slot_t slot={0};slot.inbound=inbound;slot.outbound=outbound;
+    inbound[0].pending_valid=true;inbound[0].final_reply=bytes;inbound[0].final_reply_wire=7U;
+    worker.now_ms=2000U;bool progress=false;
+    send_application_turn(&worker,&slot,0U,&progress);assert(progress && !inbound[0].pending_valid);
+    inbound[0].pending_valid=true;progress=false;
+    send_application_turn(&worker,&slot,0U,&progress);assert(!progress && inbound[0].pending_valid);
+    service(sender,receiver);assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_OK);
+    worker.now_ms=3000U;send_application_turn(&worker,&slot,0U,&progress);
+    assert(progress && !inbound[0].pending_valid);
+    service(sender,receiver);assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_OK);
+    assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_ERROR_AGAIN);
+    outbound[0].copied_wire=9U;outbound[0].next_send_ms=4000U;outbound[0].next_wire=10U;
+    retire_attempt(&slot);
+    assert(inbound[0].copied_wire==0U && inbound[0].next_send_ms==0U);
+    assert(outbound[0].copied_wire==0U && outbound[0].next_send_ms==0U && outbound[0].next_wire==10U);
 }
 int main(int argc,char **argv)
 {
