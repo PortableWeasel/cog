@@ -530,3 +530,13 @@ add_test(NAME cli-coordinator-begin-failure COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/run_coordinator_begin_failure.py
     $<TARGET_FILE:test_coordinator_begin_failure_critic> ${CMAKE_BINARY_DIR})
 set_tests_properties(cli-coordinator-begin-failure PROPERTIES TIMEOUT 20)
+add_executable(test_coordinator_core_begin_failure_critic test_coordinator_core_begin_failure_critic.c)
+target_include_directories(test_coordinator_core_begin_failure_critic PRIVATE ../src)
+target_link_libraries(test_coordinator_core_begin_failure_critic PRIVATE cog::cli)
+target_enable_warnings(test_coordinator_core_begin_failure_critic)
+target_link_options(test_coordinator_core_begin_failure_critic PRIVATE -Wl,--wrap=cog_core_drive_begin)
+add_dependencies(test_coordinator_core_begin_failure_critic cog-cli)
+add_test(NAME cli-coordinator-core-begin-failure COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_coordinator_core_begin_failure.py
+    $<TARGET_FILE:test_coordinator_core_begin_failure_critic> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR})
+set_tests_properties(cli-coordinator-core-begin-failure PROPERTIES TIMEOUT 20)
