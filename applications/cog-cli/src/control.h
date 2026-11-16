@@ -193,6 +193,11 @@ cog_result_t cog_cli_control_decode(const void *input, size_t input_len,
  * Coordinator matches retained final receipt+original before wire retirement;
  * parent durable TOOL-save ACK remains independent. No response is generated,
  * no semantic apply/ack_update or effect is performed by this confirmation.
+ * Worker retains exact confirmation bytes/correlation across send AGAIN; only
+ * successful endpoint copied-send transfers its delivery ownership. No new
+ * connection/rebind retry; failure before coordinator receives proof freezes
+ * retirement under existing native-loss policy. Confirmation is not acknowledged
+ * recursively. Separate CANCEL/PROFILE/COMMAND lanes never consume UPDATE proof.
  */
 
 #ifdef __cplusplus
