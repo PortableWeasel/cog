@@ -216,6 +216,12 @@ cog_result_t cog_cli_handoff_request(cog_cli_handoff_t *h, cog_worker_id_t targe
     dest->agent = 0U; dest->attempt = 0U; dest->started = false; dest->local_done = false;
     dest->cancel_latched = false; dest->first_admission_sent = false; dest->primary = COG_OK;
     dest->deadline_ms = h->deadline_ms;
+    /* Mutation serials belong to the newly admitted executor, whereas wire
+       watermarks and retained receipts belong to the surviving stream. */
+    if (dest->inbound != NULL) {
+        dest->inbound[COG_CLI_LANE_VIEW - 1U].provisional_prefix = 0U;
+        dest->inbound[COG_CLI_LANE_POLICY - 1U].provisional_prefix = 0U;
+    }
     handoff_secret_clear(&dest->profile);
     if (worker != NULL) ++worker->reserved_slots;
     h->phase = CLI_HANDOFF_QUIESCE;

@@ -12,7 +12,7 @@ typedef struct fixture {
     cog_cli_handoff_t handoff;
     cli_executor_slot_t slots[2];
     cli_worker_record_t workers[2];
-    cli_control_lane_t lanes[2][CLI_HOST_LANES];
+    cli_control_lane_t lanes[2][CLI_HOST_LANES], inbound[2][CLI_HOST_LANES];
     unsigned char pending[512], reply[512], storage[2][3][512];
 } fixture_t;
 static void fixture_init(fixture_t *f)
@@ -33,7 +33,7 @@ static void fixture_init(fixture_t *f)
     for (size_t i = 0U; i < 2U; ++i) {
         f->slots[i].worker = i == 0U ? f->handoff.source_worker : f->handoff.target_worker;
         f->slots[i].owner_peer = i == 0U ? 11U : 22U;
-        f->slots[i].outbound = f->lanes[i];
+        f->slots[i].outbound = f->lanes[i]; f->slots[i].inbound = f->inbound[i];
         cli_control_lane_t *lane = &f->lanes[i][COG_CLI_LANE_HANDOFF - 1U];
         lane->pending = (cli_host_bytes_t){f->storage[i][0], 512U, 0U};
         lane->final_original = (cli_host_bytes_t){f->storage[i][1], 512U, 0U};
@@ -180,11 +180,43 @@ static int local_operations(const char *base, const char *socket)
     CHECK(cog_cli_execution_begin(target) == COG_OK);
     cog_mock_state_t mock;
     CHECK(cog_mock_provider_state(target->provider, &mock) == COG_OK && mock.send_count == 0U);
-    for (size_t slot = 0U; slot < 2U; ++slot) {
-        cog_result_t rc = COG_ERROR_AGAIN;
-        for (size_t i = 0U; i < 64U && rc == COG_ERROR_AGAIN; ++i) rc = handoff_local_dispose(&f.slots[slot]);
-        CHECK(rc == COG_OK && f.slots[slot].app == NULL && f.slots[slot].local_done);
+    /* Retire the actual old executor, then reuse its physical slot for the
+       next move. The new executor's mutation serial starts at one. */
+    cog_result_t disposed = COG_ERROR_AGAIN;
+    for (size_t i = 0U; i < 64U && disposed == COG_ERROR_AGAIN; ++i)
+        disposed = handoff_local_dispose(&f.slots[0]);
+    CHECK(disposed == COG_OK && f.slots[0].app == NULL && f.slots[0].local_done);
+    CHECK(cog_cli_execution_copy_view(target, &serial, &view) == COG_OK && serial == 1U);
+    CHECK(cog_cli_execution_commit_view(target, serial, 91U, 2U) == COG_OK);
+    for (size_t i = 0U; i < 8U; ++i) CHECK(cog_cli_execution_step(target, &info) == COG_OK);
+    f.runtime.primary_slot = 1U; f.runtime.primary_owner = h->next;
+    f.runtime.primary_worker = (cog_worker_id_t){0}; f.runtime.primary_peer = 0U;
+    f.runtime.next_nonce = 300U;
+    f.slots[1].owner = h->next; f.slots[1].worker = (cog_worker_id_t){0};
+    f.slots[1].phase = CLI_SLOT_STARTED; f.slots[1].started = true;
+    cli_control_lane_t *old_view = &f.inbound[0][COG_CLI_LANE_VIEW - 1U];
+    cli_control_lane_t *old_policy = &f.inbound[0][COG_CLI_LANE_POLICY - 1U];
+    old_view->provisional_prefix = 99U; old_policy->provisional_prefix = 77U;
+    old_view->retired_through = 51U; old_view->final_answered_wire = 52U;
+    old_policy->retired_through = 61U; old_policy->final_answered_wire = 62U;
+    cli_control_lane_t *proof = &f.lanes[0][COG_CLI_LANE_HANDOFF - 1U];
+    proof->final_valid = true; proof->final_answered_wire = 112U;
+    proof->final_reply.length = 1U; proof->final_reply.data[0] = 0xA5U;
+    CHECK(cog_cli_handoff_new(&owner, &f.runtime, orch, catalog, 100U) == COG_OK);
+    CHECK(cog_cli_handoff_request(owner, f.workers[1].id) == COG_OK);
+    CHECK(old_view->provisional_prefix == 0U && old_policy->provisional_prefix == 0U);
+    CHECK(old_view->retired_through == 51U && old_view->final_answered_wire == 52U);
+    CHECK(old_policy->retired_through == 61U && old_policy->final_answered_wire == 62U);
+    CHECK(proof->final_valid && proof->final_answered_wire == 112U &&
+        proof->final_reply.length == 1U && proof->final_reply.data[0] == 0xA5U);
+    CHECK(cog_cli_handoff_abort(owner) == COG_OK);
+    bool done = false; uint64_t deadline = 0U;
+    for (size_t i = 0U; i < 128U && !done; ++i) {
+        cog_result_t rc = cog_cli_handoff_step(owner, &done, &deadline);
+        CHECK(rc == COG_OK || rc == COG_ERROR_AGAIN);
     }
+    CHECK(done && f.slots[0].app == NULL && f.slots[1].app == NULL);
+    CHECK(cog_cli_handoff_close(&owner, COG_OK) == COG_OK);
     cog_cli_configuration_free(f.runtime.current_mirror);
     cog_orchestrator_free(orch); cog_store_free(catalog);
     return 0;
