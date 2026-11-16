@@ -337,7 +337,11 @@ static cog_result_t open_attempt(cog_cli_worker_host_t *worker,
        message->execution_epoch==0U || !worker->startup_ready || worker->shutdown)
         return COG_ERROR_INVALID_STATE;
     for(size_t i=2U;i<worker->executor_capacity;++i) if(worker->executors[i].phase==CLI_SLOT_FREE) {
-        slot=&worker->executors[i];slot->phase=CLI_SLOT_RESERVED;
+        slot=&worker->executors[i];
+        for(size_t lane=0U;lane<CLI_HOST_LANES;++lane)
+            if(slot->outbound[lane].next_wire==0U || slot->outbound[lane].next_wire>UINT64_MAX-8U)
+                return COG_ERROR_LIMIT;
+        slot->phase=CLI_SLOT_RESERVED;
         slot->kind=COG_CLI_EXECUTION_REMOTE_CHILD;slot->agent=message->agent_id;
         slot->attempt=message->execution_epoch;slot->owner_peer=message->owner_peer;
         slot->worker=worker->fixed.worker;slot->proof=worker->parent_proof;
@@ -1095,6 +1099,29 @@ static cog_result_t application_receive(cog_cli_worker_host_t *worker,size_t len
     default:return COG_ERROR_PROTOCOL;
     }
 }
+/* Reuse the consumed UPDATE arena only after factual child cleanup. The
+   retained receipt remains separate until endpoint TX owns this exact proof. */
+static cog_result_t confirm_terminal(cog_cli_worker_host_t *worker,cli_executor_slot_t *slot)
+{
+    cli_control_lane_t *lane=&slot->outbound[COG_CLI_LANE_UPDATE-1U];
+    if(!slot->terminal_acked || !slot->local_done || slot->app!=NULL || slot->net!=NULL ||
+       slot->observer!=NULL || slot->pending_profile!=NULL || !lane->final_valid ||
+       lane->final_reply_wire==0U || !terminal_status(slot->receipt.accepted_terminal_status) ||
+       (slot->receipt.disposition!=COG_CLI_CONTROL_RECEIPT_ACCEPTED &&
+        slot->receipt.disposition!=COG_CLI_CONTROL_RECEIPT_TERMINAL_FIXED)) return COG_ERROR_INVALID_STATE;
+    if(!lane->pending_valid) {
+        if(lane->next_wire==0U) return COG_ERROR_LIMIT;
+        uint64_t wire=lane->next_wire;
+        cog_cli_control_message_t message={COG_CLI_CONTROL_COMMAND_ACK,COG_CLI_LANE_UPDATE,
+            worker->runtime_incarnation,worker->fixed.worker.incarnation,wire,lane->final_reply_wire,
+            worker->fixed.worker,slot->owner_peer,slot->agent,slot->attempt,slot->session,NULL,0U};
+        cog_result_t rc=cog_cli_control_encode(&message,lane->pending.data,lane->pending.capacity,&lane->pending.length);
+        if(rc!=COG_OK) return rc;
+        lane->next_wire=wire==UINT64_MAX?0U:wire+1U;
+        lane->pending_wire=wire;lane->pending_valid=true;
+    }
+    return envelope_send(worker,&lane->pending);
+}
 static void retire_attempt(cli_executor_slot_t *slot)
 {
     cli_host_bytes_t task=slot->task,status=slot->status,result=slot->result,update=slot->update;
@@ -1104,8 +1131,9 @@ static void retire_attempt(cli_executor_slot_t *slot)
         cli_control_lane_t *lane=direction==0U?&in[i]:&out[i];
         cli_host_bytes_t a=lane->pending,b=lane->provisional_reply,c=lane->final_original,d=lane->final_reply;
         worker_wipe(a.data,a.capacity);worker_wipe(b.data,b.capacity);worker_wipe(c.data,c.capacity);worker_wipe(d.data,d.capacity);
+        uint64_t next_wire=lane->next_wire;
         a.length=0U;b.length=0U;c.length=0U;d.length=0U;memset(lane,0,sizeof(*lane));
-        lane->pending=a;lane->provisional_reply=b;lane->final_original=c;lane->final_reply=d;lane->next_wire=1U;
+        lane->pending=a;lane->provisional_reply=b;lane->final_original=c;lane->final_reply=d;lane->next_wire=next_wire;
     }
     worker_wipe(task.data,task.capacity);worker_wipe(status.data,status.capacity);
     worker_wipe(result.data,result.capacity);worker_wipe(update.data,update.capacity);
@@ -1195,8 +1223,9 @@ cog_result_t cog_cli_worker_host_step(cog_cli_worker_host_t *worker,cog_cli_host
         }
         if(slot->local_done && slot->agent!=0U && slot->terminal_acked) {
             rc=dispose_execution(slot);
-            if(slot->app==NULL) retire_attempt(slot);
-            if(rc!=COG_OK) (void)retain_error(worker,rc);
+            if(rc==COG_OK) rc=confirm_terminal(worker,slot);
+            if(rc==COG_OK) { retire_attempt(slot);progress=true; }
+            else if(rc!=COG_ERROR_AGAIN) (void)retain_error(worker,rc);
         }
     }
     if(worker->authenticated) {
@@ -1221,7 +1250,8 @@ cog_result_t cog_cli_worker_host_step(cog_cli_worker_host_t *worker,cog_cli_host
             rc=envelope_send(worker,&in->final_reply);
             if(rc==COG_OK) { in->pending_valid=false;progress=true; } else (void)retain_error(worker,rc);
         }
-        if(out->pending_valid && out->pending.length!=0U) {
+        if(out->pending_valid && out->pending.length!=0U &&
+           !(lane_index==COG_CLI_LANE_UPDATE-1U && slot->terminal_acked)) {
             rc=envelope_send(worker,&out->pending);
             if(rc==COG_OK) {
                 progress=true;
