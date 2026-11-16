@@ -125,6 +125,63 @@ static size_t field_offset(const unsigned char *wire, size_t index)
     }
     return p;
 }
+static size_t replace_session(const unsigned char *wire, size_t length,
+    unsigned char *output, const char *id, size_t id_bytes)
+{
+    size_t at = field_offset(wire, 7U), old_bytes = 0U;
+    for (size_t i = 0U; i < 4U; ++i) old_bytes = (old_bytes << 8U) | wire[at + i];
+    memcpy(output, wire, at);
+    for (size_t i = 0U; i < 4U; ++i) output[at + i] = (unsigned char)(id_bytes >> ((3U - i) * 8U));
+    memcpy(output + at + 4U, id, id_bytes);
+    memcpy(output + at + 4U + id_bytes, wire + at + 4U + old_bytes, length - at - 4U - old_bytes);
+    return length + id_bytes - old_bytes;
+}
+static int probe_ids(cog_cli_configuration_t *parent, const cog_cli_bootstrap_probe_t *probe,
+    const cog_net_config_t *transport, const unsigned char *wire, size_t length)
+{
+    static const char *const invalid[] = {"", ".", "..", "/", "a/b", "a\\b", "a\n", "a\r", "a\t", "a\x7f", ".cog-domain.lock", "\xc0\xaf"};
+    unsigned char modified[32768], output[32768], before_output[32768];
+    cog_cli_bootstrap_probe_t local = *probe, copied, original_probe;
+    cog_cli_configuration_t *decoded = NULL;
+    cog_net_config_t got, before_transport;
+    char storage[64], before_storage[64];
+    size_t required, used;
+    for (size_t i = 0U; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        memcpy(local.session_id, invalid[i], strlen(invalid[i]) + 1U);
+        memset(output, 0x5c, sizeof(output)); memcpy(before_output, output, sizeof(output)); required = 999U;
+        CHECK(cog_cli_configuration_bootstrap_encode(parent, &local, transport, output, sizeof(output), &required) == COG_ERROR_INVALID_ARG);
+        CHECK(required == 999U && memcmp(output, before_output, sizeof(output)) == 0);
+        used = replace_session(wire, length, modified, invalid[i], strlen(invalid[i]));
+        memset(&copied, 0x55, sizeof(copied)); original_probe = copied;
+        memset(&got, 0x33, sizeof(got)); before_transport = got;
+        memset(storage, 'x', sizeof(storage)); memcpy(before_storage, storage, sizeof(storage));
+        CHECK(cog_cli_configuration_bootstrap_new(&decoded, modified, used,
+            (cog_net_ctx_t *)(void *)&local, &copied) == COG_ERROR_PROTOCOL && decoded == NULL);
+        CHECK(memcmp(&copied, &original_probe, sizeof(copied)) == 0);
+        CHECK(cog_cli_bootstrap_transport_decode(modified, used, &got, storage, sizeof(storage), &required) == COG_ERROR_PROTOCOL);
+        CHECK(required == 999U && memcmp(&got, &before_transport, sizeof(got)) == 0 && memcmp(storage, before_storage, sizeof(storage)) == 0);
+    }
+    const char embedded_nul[] = {'a', '\0', 'b'};
+    used = replace_session(wire, length, modified, embedded_nul, sizeof(embedded_nul));
+    CHECK(cog_cli_configuration_bootstrap_new(&decoded, modified, used,
+        (cog_net_ctx_t *)(void *)&local, &copied) == COG_ERROR_PROTOCOL && decoded == NULL);
+    CHECK(cog_cli_bootstrap_transport_decode(modified, used, &got, storage, sizeof(storage), &required) == COG_ERROR_PROTOCOL);
+    char maximum[128], unicode[128];
+    memset(maximum, 's', 127U); maximum[127] = '\0';
+    for (size_t i = 0U; i < 63U; ++i) { unicode[i * 2U] = (char)0xc3; unicode[i * 2U + 1U] = (char)0xa9; }
+    unicode[126] = 'x'; unicode[127] = '\0';
+    const char *valid[] = {"a b:@literal", "\xf0\x9f\x8c\xb1-session", maximum, unicode};
+    for (size_t i = 0U; i < sizeof(valid) / sizeof(valid[0]); ++i) {
+        memcpy(local.session_id, valid[i], strlen(valid[i]) + 1U);
+        CHECK(cog_cli_configuration_bootstrap_encode(parent, &local, transport, output, sizeof(output), &required) == COG_OK);
+        used = replace_session(wire, length, modified, valid[i], strlen(valid[i]));
+        CHECK(cog_cli_configuration_bootstrap_new(&decoded, modified, used,
+            (cog_net_ctx_t *)(void *)&local, &copied) == COG_OK && strcmp(copied.session_id, valid[i]) == 0);
+        cog_cli_configuration_free(decoded); decoded = NULL;
+        CHECK(cog_cli_bootstrap_transport_decode(modified, used, &got, storage, sizeof(storage), &required) == COG_OK);
+    }
+    return 0;
+}
 static int bootstrap(void)
 {
     cog_cli_options_t o; options(&o);
@@ -209,6 +266,7 @@ static int bootstrap(void)
         length - model_at - 4U - old_model_bytes);
     CHECK(cog_cli_configuration_bootstrap_new(&decoded, modified, length + 4096U - old_model_bytes,
         (cog_net_ctx_t *)(void *)&o, &copy) == COG_ERROR_LIMIT && decoded == NULL);
+    CHECK(probe_ids(parent, &probe, &transport, wire, length) == 0);
     CHECK(resolver_calls == calls);
     cog_cli_configuration_free(parent);
     return 0;

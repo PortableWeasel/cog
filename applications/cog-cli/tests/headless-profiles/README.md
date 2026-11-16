@@ -83,3 +83,16 @@ sources, and no bootstrap/probe acquires a store guard or grants execution. The
 host separately verifies canonical SAME-directory identities and the immutable
 shared-store checkpoint/current-owner probe before ACK/tasks. This component
 cannot claim those caller-owned IO/runtime oracles.
+
+Cycle1 independent review found one real bug: NEW option validation checks only
+selector exclusivity, so it was the wrong validation path for the existing root
+probe ID. The shared CGB1 validator now uses the existing RESUME source-ID path;
+there is no new/narrower identity grammar. Local encode maps invalid caller IDs
+to INVALID_ARG; both inbound APIs report PROTOCOL without allocation/publication
+or output mutation. Direct rewritten frames cover reserved dot/domain-lock IDs,
+slash/backslash, controls/DEL, invalid UTF-8 and embedded NUL. Valid punctuation,
+space, Unicode and exact127-byte ASCII/multibyte IDs remain supported. Allocator/
+source-read controls prove rejection before allocation or source reads. Reverting
+the RESUME-path change in a temporary O3 source copy makes the new assertion fail.
+All five focused tests pass again under GCC/Clang Release and Clang ASan/UBSan/LSan.
+This is the only production change after the initial frozen1416a5b review.

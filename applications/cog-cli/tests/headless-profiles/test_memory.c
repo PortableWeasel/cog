@@ -120,6 +120,32 @@ int main(void)
     unsigned char frame[32768]; size_t length = 0U;
     before = calls;
     CHECK(cog_cli_configuration_bootstrap_encode(child, &probe, &transport, frame, sizeof(frame), &length) == COG_OK && calls == before);
+    /* Malformed wire IDs must be rejected before allocating an owner or
+       consulting any source; local encoding preserves the complete frame. */
+    unsigned char saved_frame[32768]; memcpy(saved_frame, frame, length);
+    cog_cli_bootstrap_probe_t invalid_probe = probe;
+    memcpy(invalid_probe.session_id, "/bad", 5U);
+    size_t invalid_required = 777U;
+    CHECK(cog_cli_configuration_bootstrap_encode(child, &invalid_probe, &transport,
+        frame, sizeof(frame), &invalid_required) == COG_ERROR_INVALID_ARG);
+    CHECK(invalid_required == 777U && memcmp(frame, saved_frame, length) == 0 && calls == before);
+    size_t session_at = 54U;
+    for (size_t i = 0U; i < 7U; ++i) {
+        size_t field_bytes = 0U;
+        for (size_t j = 0U; j < 4U; ++j) field_bytes = (field_bytes << 8U) | frame[session_at + j];
+        session_at += 4U + field_bytes;
+    }
+    memcpy(frame + session_at + 4U, "/bad", 4U);
+    memset(&copied, 0x55, sizeof(copied)); probe_before = copied;
+    CHECK(cog_cli_configuration_bootstrap_new(&decoded, frame, length,
+        (cog_net_ctx_t *)(void *)&options, &copied) == COG_ERROR_PROTOCOL && decoded == NULL && calls == before);
+    CHECK(memcmp(&copied, &probe_before, sizeof(copied)) == 0);
+    cog_net_config_t invalid_transport, invalid_before;
+    memset(&invalid_transport, 0x55, sizeof(invalid_transport)); invalid_before = invalid_transport;
+    CHECK(cog_cli_bootstrap_transport_decode(frame, length, &invalid_transport, NULL, 0U,
+        &invalid_required) == COG_ERROR_PROTOCOL && invalid_required == 777U && calls == before);
+    CHECK(memcmp(&invalid_transport, &invalid_before, sizeof(invalid_transport)) == 0 && forbidden_reads == 0U);
+    memcpy(frame, saved_frame, length);
     cog_net_config_t decoded_transport;
     size_t required = 777U;
     CHECK(cog_cli_bootstrap_transport_decode(frame, length, &decoded_transport, NULL, 0U, &required) == COG_OK && required == 0U && calls == before);

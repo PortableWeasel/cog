@@ -936,7 +936,10 @@ static cog_result_t bootstrap_valid(const bootstrap_view_t *v)
             if (!canonical_path(text)) return COG_ERROR_PROTOCOL;
         if (i == B_SESSION) {
             cog_cli_options_t selector = {0};
-            selector.session_id = text;
+            /* Probe identity is an EXISTING durable session. NEW validates
+               only selector conflicts, so use the existing G/L source-ID path. */
+            selector.session_action = COG_CLI_SESSION_RESUME;
+            selector.source_session_id = text;
             if (cog_cli_session_options_validate(&selector) != COG_OK) return COG_ERROR_PROTOCOL;
         }
     }
