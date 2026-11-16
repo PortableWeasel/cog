@@ -364,12 +364,59 @@ static void silent_handshake(void)
     }
     assert(o->link_count==0U);assert(cog_ipc_endpoint_free(peer)==COG_OK);cog_orchestrator_free(o);
 }
+static void remove_tree(const char *path)
+{
+    DIR *dir=opendir(path);assert(dir!=NULL);struct dirent *entry;
+    while((entry=readdir(dir))!=NULL) {
+        if(strcmp(entry->d_name,".")==0 || strcmp(entry->d_name,"..")==0) continue;
+        char child[PATH_MAX];int n=snprintf(child,sizeof(child),"%s/%s",path,entry->d_name);
+        assert(n>0 && (size_t)n<sizeof(child));struct stat status;assert(lstat(child,&status)==0);
+        if(S_ISDIR(status.st_mode)) remove_tree(child);else assert(unlink(child)==0);
+    }
+    assert(closedir(dir)==0 && rmdir(path)==0);
+}
+static void owner_routes(void)
+{
+    char base[]="cog-orch-store-XXXXXX";assert(mkdtemp(base)!=NULL);
+    cog_store_config_t store_cfg={0};store_cfg.base_dir=base;store_cfg.require_owner=true;
+    store_cfg.max_record_bytes=1048576U;
+    cog_store_t *store;assert(cog_store_new(&store,&store_cfg)==COG_OK);
+    cog_session_config_t session_cfg={0};session_cfg.id="guarded-route";
+    cog_session_t *session;assert(cog_session_new(&session,&session_cfg)==COG_OK);
+    cog_store_owner_t old={1U,41U},next={2U,42U};cog_store_checkpoint_t checkpoint={0};
+    assert(cog_store_owner_compare_exchange(store,session_cfg.id,(cog_store_owner_t){0},old,checkpoint)==COG_OK);
+    cog_store_owner_guard_t *guard;assert(cog_store_owner_acquire(store,session_cfg.id,old,&guard)==COG_OK);
+    assert(cog_store_checkpoint_save(store,session,guard,&checkpoint)==COG_OK && checkpoint.generation!=0U);
+    char path[64];cog_orchestrator_t *o=make(path,1U);
+    assert(cog_orchestrator_publish_owner(o,session_cfg.id,0U,old,checkpoint)==COG_ERROR_UNSUPPORTED);
+    cog_orchestrator_config_t config=o->config;config.socket_path=path;config.store=store;
+    cog_orchestrator_free(o);assert(cog_orchestrator_new(&o,&config)==COG_OK);
+    deny_allocations=true;
+    assert(cog_orchestrator_publish_owner(o,session_cfg.id,0U,old,checkpoint)==COG_OK);
+    assert(cog_orchestrator_publish_owner(o,session_cfg.id,0U,old,checkpoint)==COG_OK);
+    assert(o->route_count==1U);
+    assert(cog_orchestrator_publish_owner(o,session_cfg.id,99U,old,checkpoint)==COG_ERROR_NOT_FOUND);
+    assert(cog_orchestrator_publish_owner(o,session_cfg.id,0U,next,checkpoint)==COG_ERROR_INVALID_STATE);
+    cog_peer_id_t peer=7U;cog_store_owner_t owner={0};cog_store_checkpoint_t copied={0};
+    assert(cog_orchestrator_session_owner(o,session_cfg.id,&peer,&owner,&copied)==COG_OK);
+    assert(peer==0U && owner.epoch==old.epoch && owner.instance_id==old.instance_id && copied.generation==checkpoint.generation);
+    assert(cog_orchestrator_forget_owner(o,session_cfg.id,next)==COG_ERROR_INVALID_STATE);
+    assert(cog_store_owner_release(guard)==COG_OK);
+    assert(cog_store_owner_compare_exchange(store,session_cfg.id,old,next,checkpoint)==COG_OK);
+    deny_allocations=false;assert(cog_store_owner_acquire(store,session_cfg.id,next,&guard)==COG_OK);deny_allocations=true;
+    assert(cog_orchestrator_publish_owner(o,session_cfg.id,0U,next,checkpoint)==COG_OK);
+    assert(cog_orchestrator_publish_owner(o,session_cfg.id,0U,old,checkpoint)==COG_ERROR_INVALID_STATE);
+    assert(cog_orchestrator_forget_owner(o,session_cfg.id,old)==COG_ERROR_INVALID_STATE);
+    assert(cog_orchestrator_forget_owner(o,session_cfg.id,next)==COG_OK && o->route_count==0U);
+    assert(cog_store_owner_release(guard)==COG_OK);deny_allocations=false;
+    cog_orchestrator_free(o);cog_session_free(session);cog_store_free(store);remove_tree(base);
+}
 int main(int argc,char **argv)
 {
     if(argc>1) return worker_main(argc,argv);
     char executable[PATH_MAX];ssize_t size=readlink("/proc/self/exe",executable,sizeof(executable)-1U);
     assert(size>0 && (size_t)size<sizeof(executable));executable[size]='\0';
     boundaries(executable);lifecycle(executable);loss_and_pressure(executable);
-    allocation_bounds(executable);impostor_and_ids(executable);shortened_shutdown(executable);silent_handshake();
+    allocation_bounds(executable);impostor_and_ids(executable);shortened_shutdown(executable);silent_handshake();owner_routes();
     puts("orchestrator owned native lifecycle PASS");return 0;
 }
