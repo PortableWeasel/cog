@@ -39,3 +39,9 @@ consuming cleanup failure across a fresh ABORT.
 ASan/UBSan; this instruments the owned worker/delegation bodies and test code.
 The supplied prebuilt archives remain as built: this optional direct run is not
 a claim of fully instrumented dependency or whole-runtime validation.
+
+`test_worker_reload_failure.c` uses actual configuration/execution constructors
+and the consuming resolved reload failure path. It verifies secret proof wipe,
+retained negative ACK, changed-byte stale retry, lower covered identities, invalid
+successor preservation and admitted successor replacement. No new credential
+cache or resolver is introduced.
