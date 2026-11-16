@@ -78,3 +78,46 @@ make read-only legacy loads atomic against an external process modifying files
 outside the store protocol. No broader filesystem scan or new lock is added.
 Independent final header review is required before implementing the helper or
 modifying its four production call paths.
+
+## Implementation and writer verification
+
+The independent header gate passed `4b9a3b9`, after passes `8518917`, `48e2d43`
+and `4b9a3b9`. Implementation checkpoint `6f5aacc` adds the finite probe and
+reuses its immutable names in the existing deletion classifier. There is no
+public header change. Store behavior now matches the four traced entry points;
+the application never inspects backend filenames.
+
+`unit-store-legacy-admission` exercises six names × three object types (regular,
+directory, dangling symlink) × two ownership states, preserving original object
+identity/size and exact regular-file bytes after refusal. Guarded first save is
+tested while the real live guard excludes CAS with AGAIN; after release, direct
+acquire and CAS both refuse the remnant. Metadata-only load/save retains the
+existing IO result for missing nodes; other lone names return UNSUPPORTED.
+
+At each of the six names, injected EIO, EACCES and ELOOP are checked through
+absent-owner CAS/unowned save and existing-owner CAS/acquire/load/guarded save.
+Fault counts prove the hooks ran; owner/token and load report remain unchanged,
+no session or guard escapes. The test uses real backend locks and transactions,
+wrapping only directory-relative stat. Separate cases prove missing-directory
+and empty-reservation NOT_FOUND, orphan-v2 generation collision avoidance,
+same-process independent-store guard exclusion, valid explicit v1 migration,
+and nonzero-v2 authority even when legacy inspection would fail. Existing strict
+legacy parsing, persistence transaction/fencing and application suites also run.
+
+Fresh all-target strict Release builds passed with GCC and Clang and a separate
+Clang ASan/UBSan build. Each passed **52/52** tests selected by:
+
+```sh
+ctest --test-dir BUILD -R 'unit-store|session|cli-' --output-on-failure -j4
+```
+
+Builds: `/tmp/cog-legacy-gcc`, `/tmp/cog-legacy-clang`, `/tmp/cog-legacy-asan`.
+All pin CURL_LIBRARY and COG_NET_CURL_LIBRARY to the accepted installed
+`/tmp/cog-relocatable-profile/shipped/curl-build/install/lib/libcurl.so`,
+COG_NET_CURL_BUILD_DIR to its audited `curl-build`, and CURL_INCLUDE_DIR to that
+installation's `include`. They use COG_ENABLE_WERROR, with COG_ENABLE_ASAN only
+in the separate sanitizer build, ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 and
+UBSAN_OPTIONS=halt_on_error=1. Test assertions remain enabled in Release.
+
+Independent final source review remains required. This scoped correction does
+not itself implement empty application checkpoint recovery or close M/N/O/P.
