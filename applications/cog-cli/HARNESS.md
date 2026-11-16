@@ -152,3 +152,23 @@ positive control. Its existing allocation-free mock run and reload activation
 checks continue to execute the new app timing paths. Exact selected commands and
 supported dependency identities are in
 [observation evidence](../../docs/REAL_CLIENT_OBSERVATION_EVIDENCE.md).
+
+`cli-empty-session` verifies successful empty checkpoint publication before app
+construction returns, exact guarded repair of an interrupted owner-only reservation
+and zero provider sends. A real child holds the old guard, proves live contention,
+then exits without releasing it; subsequent explicit RESUME uses a new epoch and
+commits an empty snapshot. Before/after-publication IO/INDETERMINATE are tested for
+both NEW and owner-only RESUME, alongside CAS uncertainty/races, acquire failure,
+epoch exhaustion, selector/collision refusal, unchanged legacy remnants and stored
+model/provider provenance under current J configuration. Fault wrappers exercise
+existing store operations; they do not replace admission or effect logic.
+
+`cli-installed-empty-session` normally installs the executable runtime component
+and exercises actual idle EOF, SIGINT and SIGTERM before any input. It waits for
+real core readiness and the host's blocked-signal mask, holds stdin open until
+signal exit and then resumes each session. A public-store fixture also seeds an
+old owner-only reservation; the installed host repairs it. Public snapshot/owner
+inspection checks zero nodes/ledger/identity high-water, exact epoch advance and
+unchanged committed empty checkpoint on ordinary restart. This runtime-component
+test is separate from R18's full dependency-install/relocation closure. See
+[empty session evidence](../../docs/REAL_CLIENT_EMPTY_SESSION.md).

@@ -133,3 +133,45 @@ accept input, and no rollback/delete of possibly committed persistence.
 
 Three header passes and a different final reviewer are required before app
 bodies. G correction9a95735 must also pass before the dependent repair body.
+
+## Reviewed implementation and concrete fixtures
+
+Private/public prose passes `67552f3`, `d20ecd0`, `b5f327d` precede app bodies.
+Different final header review passed exact `b5f327d` with22 independent strict
+GCC/Clang C11 and G++/Clang++ C++11 checks; writer checks passed14. G correction
+`9a95735` independently passed source `6f5aacc` and is integrated through main
+`f2d9159`. Its [evidence](REAL_CLIENT_LEGACY_ADMISSION.md) records the finite
+legacy-remnant refusal and separate52-test compiler/sanitizer checks.
+
+Application production checkpoint `ccb77a0` changes only app_sessions.c. Fresh
+durable admission and the exact owned/absent checkpoint0 RESUME path call existing
+checkpoint_save under their matching normal guard. All errors propagate without
+publishing an app. A new explicit RESUME re-reads any owner/checkpoint that remains;
+neither branch deletes/reset IDs, fabricates provenance or starts provider work.
+Ordinary committed and legacy load paths retain their existing bodies.
+Approved main/83 host output fixes and G history are preserved through merge
+`7e1457e`; no sibling implementation or public ABI was changed by the app fix.
+
+Fixture checkpoint `9eadf21` supplies two committed tests:
+
+- `cli-empty-session`: empty initial checkpoint/ordinary restart with zero mock
+  sends; actual child owner death and live-guard exclusion; NEW/RESUME save failures
+  before and after publication for both IO and INDETERMINATE; exact CAS uncertainty,
+  a real competing owner CAS, acquire failure and epoch exhaustion; selectors,
+  collision and recognized remnant refusal; stored historical model/provider data
+  unchanged while J selects current configuration.
+- `cli-installed-empty-session`: normal runtime-component install; fresh idle EOF
+  and empty history; SIGINT/SIGTERM with actual core/mask readiness and stdin kept
+  open until exit; subsequent guard acquisition/resume; old owner-only reservation
+  repair. Public snapshot inspection verifies zero nodes/ledger/high-water and
+  exact epoch/checkpoint state. No model/effect bytes execute during repair.
+
+The original fresh constructor without this fix fails the prepared checkpoint
+assertion; the composed source passes both new GCC Release tests. Initial-save
+faults include ordinary IO after a real successful publication as well as
+INDETERMINATE, so uncertainty is never reduced to one error spelling. Existing
+first-user-save injection semantics remain intact because initial persistence
+uses the explicit checkpoint operation, not ordinary turn save.
+
+Full compiler/sanitizer checks and the different final implementation verdict
+follow. This focused fix does not close M, O, all38 or release P. No paid requests.
