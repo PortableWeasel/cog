@@ -154,6 +154,12 @@ cog_result_t cog_cli_handoff_request(cog_cli_handoff_t *h, cog_worker_id_t targe
     if (source->command.used || source->cancel.used || source->update.length != 0U ||
         dest->phase != CLI_SLOT_FREE || dest->app != NULL || dest->net != NULL ||
         dest->observer != NULL || dest->pending_profile != NULL) return COG_ERROR_AGAIN;
+    if (source->profile.pending) return COG_ERROR_AGAIN;
+    for (size_t i = 0U; i < CLI_HOST_LANES; ++i) {
+        if (i == COG_CLI_LANE_HANDOFF - 1U) continue;
+        if ((source->inbound != NULL && source->inbound[i].pending_valid) ||
+            (source->outbound != NULL && source->outbound[i].pending_valid)) return COG_ERROR_AGAIN;
+    }
     if (!handoff_worker_equal(source->worker, r->primary_worker) || source->owner_peer != r->primary_peer ||
         !handoff_owner_equal(source->owner, r->primary_owner)) return COG_ERROR_INVALID_STATE;
     if (r->primary_owner.epoch == 0U || r->primary_owner.instance_id == 0U ||
