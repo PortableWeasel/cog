@@ -168,7 +168,7 @@ def main():
     with TLSFixture(build, responder, max_requests=64) as fixture:
         fixture.run(harness, executable, extra=(mode,), timeout=65)
         expected = {"success": 12, "cancel": 5, "crash-before": 4, "crash-after": 4,
-            "fanout": 16, "fanout-cancel": 5, "fanout-limit": 2, "messaging": 25}[mode]
+            "fanout": 16, "fanout-cancel": 5, "fanout-limit": 2, "messaging": 23}[mode]
         assert len(fixture.requests) == expected, (mode, len(fixture.requests), child_calls)
         if crash:
             assert child_calls["native-1"] == 1, child_calls

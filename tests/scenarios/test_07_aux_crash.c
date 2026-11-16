@@ -28,7 +28,7 @@ static bool once(const char *root)
 int main(int argc,char **argv)
 {
     headless_fixture_t f={0};cog_result_t primary=COG_OK,first=COG_OK;
-    bool done=false,cleanup=false,killed=false,uncertain=false,reaped=false;
+    bool done=false,cleanup=false,killed=false,uncertain=false,reaped=false,local_completed=false;
     CHECK(argc==8);bool after=strcmp(argv[7],"crash-after")==0;
     CHECK(after || strcmp(argv[7],"crash-before")==0);
     const char *paths[6]={argv[1],argv[2],argv[3],argv[4],argv[5],argv[6]};
@@ -46,10 +46,15 @@ int main(int argc,char **argv)
         if(rc!=COG_OK && first==COG_OK)first=rc;
         for(size_t i=2U;i<h->bounds.executors;++i) {
             cli_executor_slot_t *s=&h->executors[i];
-            if(s->agent==0U || s->owner_peer==0U)continue;
+            if(s->agent==0U)continue;
+            if(s->owner_peer==0U) {
+                if(s->terminal_acked && s->accepted_status==COG_AGENT_STATUS_COMPLETED)local_completed=true;
+                continue;
+            }
             CHECK(s->worker.incarnation==owned.incarnation && s->worker.number==owned.number);
-            if(actual==0U)actual=s->agent;CHECK(actual==s->agent);
-            if(!killed && exists(argv[4],"native-entered")) {
+            if(actual==0U)actual=s->agent;
+            CHECK(actual==s->agent);
+            if(!killed && local_completed && exists(argv[4],"native-entered")) {
                 CHECK(s->first_admission_sent && s->started && s->accepted_status==COG_AGENT_STATUS_RUNNING);
                 CHECK(after?once(argv[4]):!exists(argv[4],"effect-native-1"));
                 CHECK(headless_fixture_signal_worker(h,0U,SIGKILL)==COG_OK);killed=true;
