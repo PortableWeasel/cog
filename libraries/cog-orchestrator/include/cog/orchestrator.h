@@ -90,7 +90,13 @@ typedef struct cog_orchestrator_config {
     uint32_t unhealthy_threshold;
 
     /** Maximum subagents per core (placement);0 defaults4,<=UINT32_MAX so the
-     * native heartbeat representation never silently truncates capacity. */
+     * native heartbeat representation never silently truncates capacity. Normalized
+     * child capacity C maps to physical worker executor slots C+2, computed in
+     * uint64_t before addition even on 32-bit hosts. The two extra slots are
+     * reserved for primary and staged handoff execution, never child placement.
+     * The installed application supports C<=16 (physical<=18); this does not
+     * narrow the generic library range. A selected worker may reject a profile
+     * it cannot support before readiness, without accepting tasks. */
     size_t default_core_capacity;
 
     /** If true, automatically spawn a replacement when a core dies. */
@@ -147,7 +153,7 @@ typedef enum cog_worker_control_kind {
 typedef struct cog_worker_control {
     cog_worker_control_kind_t kind;
     cog_worker_id_t worker;
-    uint32_t active_subagents;
+    uint32_t active_subagents; /**< Children only; excludes primary/staged slots. */
     uint64_t deadline_ms;
     cog_result_t outcome;
 } cog_worker_control_t;
@@ -229,7 +235,14 @@ void cog_orchestrator_free(cog_orchestrator_t *orch);
  * Child exec has an explicit minimal PATH=/usr/bin:/bin,LC_ALL=C.UTF-8 environment;
  * no inherited credential/config/proxy/loader variables. Fixed startup argv
  * conveys control path, managed identity, native parent PID and constructor
- * capacity/frame reservations only. Trust/net/profile settings follow private
+ * capacity/frame reservations only. Exact argv after executable is --worker,
+ * then six flag/value pairs in this order: --control-socket,
+ * --worker-incarnation, --worker-number, --parent-pid, --executor-slots,
+ * --frame-bytes. Executor slots is decimal uint64_t C+2 (C normalized from
+ * default_core_capacity); no size_t intermediate may wrap or truncate it.
+ * Unsupported worker profile/exec failure after publication follows the same
+ * service/health/reap path and cannot produce READY or accept a task.
+ * Trust/net/profile settings follow private
  * authenticated bootstrap, never a generic arbitrary argv/environment override.
  * Reset inherited blocked INT/TERM in the child before exec; host mask unchanged.
  *
