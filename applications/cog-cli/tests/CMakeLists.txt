@@ -470,3 +470,15 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 add_test(NAME unit-cli-coordinator-send-schedule
   COMMAND test_coordinator_send_schedule coordinator-send.sock)
+
+foreach(name IN ITEMS app_close_guard_critic guard_backend_ownership)
+    add_executable(test_${name} test_${name}.c)
+    target_include_directories(test_${name} PRIVATE ../src)
+    target_link_libraries(test_${name} PRIVATE cog::cli)
+    target_enable_warnings(test_${name})
+    add_test(NAME cli-${name} COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/run_execution_tools.py
+        $<TARGET_FILE:test_${name}> ${CMAKE_BINARY_DIR})
+endforeach()
+target_link_options(test_app_close_guard_critic PRIVATE -Wl,--wrap=close -Wl,--wrap=cog_store_owner_release)
+target_link_options(test_guard_backend_ownership PRIVATE -Wl,--wrap=calloc)
