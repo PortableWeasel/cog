@@ -209,7 +209,7 @@ static int provenance(const char *base)
     char path[1024];CHECK(snprintf(path,sizeof(path),"%s/current.cfg",base)>0);
     FILE *file=fopen(path,"wb");CHECK(file!=NULL && fputs("models.default=from-current-config\n",file)>=0 && fclose(file)==0);
     cog_cli_options_t value=options(base,"provenance",COG_CLI_SESSION_RESUME);
-    value.model_id=NULL;value.explicit_options&=~(uint64_t)COG_CLI_OPT_MODEL;value.config_path=path;
+    value.model_id=NULL;value.explicit_options&=~(uint32_t)COG_CLI_OPT_MODEL;value.config_path=path;
     reset();cog_cli_app_t *app=NULL;CHECK(cog_cli_app_new(&app,&value)==COG_OK && saves==0U);
     CHECK(strcmp(app->opts.model_id,"from-current-config")==0);
     cog_session_snapshot_t loaded;CHECK(cog_session_snapshot_view(app->session,&loaded)==COG_OK && loaded.node_count==1U);
