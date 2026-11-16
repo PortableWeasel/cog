@@ -87,6 +87,7 @@ cog_add_scenario(test_10_fan_out_fan_in test_10_fan_out_fan_in
     test_10_fan_out_fan_in.c)
 target_link_libraries(test_10_fan_out_fan_in PRIVATE
     cog::cli cog::orchestrator Threads::Threads)
+target_link_options(test_10_fan_out_fan_in PRIVATE -Wl,--wrap=cog_orchestrator_send)
 target_include_directories(test_10_fan_out_fan_in PRIVATE
     ${PROJECT_SOURCE_DIR}/libraries/cog-core/src
     ${PROJECT_SOURCE_DIR}/libraries/cog-orchestrator/src)

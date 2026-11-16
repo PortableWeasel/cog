@@ -9,6 +9,55 @@
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) {fprintf(stderr,"scenario10:%d: %s\n",__LINE__,#x);if(primary==COG_OK)primary=COG_ERROR_PROTOCOL;goto finish;} } while(0)
 
+/* This cancellation control needs all three attempts actually active. Distinct
+ * session constructors may legitimately refuse a busy store-wide domain lock.
+ * Hold only an unaccepted native child PROFILE transport copy until its
+ * predecessor is factually running in a held provider request. No authority,
+ * receipt, deadline, frame bytes or accepted-copy state is changed here. */
+typedef struct startup_gate {
+    cog_cli_host_runtime_t *host;
+    bool enabled,allow[2],accepted[2],invalid;
+    const void *frame[2];
+    size_t length[2],blocked[2];
+    uint64_t wire[2],deadline[2];
+} startup_gate_t;
+static startup_gate_t *active_startup_gate;
+cog_result_t __real_cog_orchestrator_send(cog_orchestrator_t *orch,
+    cog_worker_id_t worker,const cog_ipc_message_t *message);
+cog_result_t __wrap_cog_orchestrator_send(cog_orchestrator_t *orch,
+    cog_worker_id_t worker,const cog_ipc_message_t *message);
+cog_result_t __wrap_cog_orchestrator_send(cog_orchestrator_t *orch,
+    cog_worker_id_t worker,const cog_ipc_message_t *message)
+{
+    startup_gate_t *gate=active_startup_gate;
+    if(gate!=NULL && gate->enabled && gate->host->orchestrator==orch && message!=NULL)
+        for(size_t i=2U;i<gate->host->bounds.executors;++i) {
+            const cli_executor_slot_t *slot=&gate->host->executors[i];
+            if(slot->agent==0U || slot->owner_peer==0U || message->data!=slot->profile.frame ||
+               worker.incarnation!=slot->worker.incarnation || worker.number!=slot->worker.number)continue;
+            cog_agent_config_t config;char storage[512];size_t needed;
+            cog_result_t rc=cog_agent_copy_config(gate->host->control_core,slot->agent,&config,
+                storage,sizeof(storage),&needed);
+            if(rc!=COG_OK){gate->invalid=true;return rc;}
+            size_t k=strcmp(config.task,"child native-a 1")==0?0U:
+                strcmp(config.task,"child native-b 1")==0?1U:2U;
+            if(k>=2U){gate->invalid=true;return COG_ERROR_PROTOCOL;}
+            if(gate->frame[k]==NULL) {
+                gate->frame[k]=message->data;gate->length[k]=message->len;
+                gate->wire[k]=slot->profile.wire;gate->deadline[k]=slot->deadline_ms;
+            }
+            if(gate->frame[k]!=message->data || gate->length[k]!=message->len ||
+               gate->wire[k]!=slot->profile.wire || gate->deadline[k]!=slot->deadline_ms) {
+                gate->invalid=true;return COG_ERROR_PROTOCOL;
+            }
+            if(!gate->allow[k]){++gate->blocked[k];return COG_ERROR_AGAIN;}
+            rc=__real_cog_orchestrator_send(orch,worker,message);
+            if(rc==COG_OK)gate->accepted[k]=true;
+            return rc;
+        }
+    return __real_cog_orchestrator_send(orch,worker,message);
+}
+
 static bool marker(const char *root,const char *prefix,const char *role,unsigned int round,bool create)
 {
     char path[4096];int n=snprintf(path,sizeof(path),"%s/%s-%s-%u",root,prefix,role,round);
@@ -20,6 +69,7 @@ static bool marker(const char *root,const char *prefix,const char *role,unsigned
 int main(int argc,char **argv)
 {
     headless_fixture_t f={0};cog_result_t primary=COG_OK;bool cleanup=false,done=false;
+    startup_gate_t gate={0};
     CHECK(argc==8);bool cancel=strcmp(argv[7],"fanout-cancel")==0,limit=strcmp(argv[7],"fanout-limit")==0;
     CHECK(cancel||limit||strcmp(argv[7],"fanout")==0);
     const char *paths[6]={argv[1],argv[2],argv[3],argv[4],argv[5],argv[6]};
@@ -29,6 +79,7 @@ int main(int argc,char **argv)
     primary=headless_fixture_open(&f);CHECK(primary==COG_OK);
     primary=headless_fixture_ready(&f,10000U);CHECK(primary==COG_OK);
     cog_cli_host_runtime_t *h=f.host;
+    gate.host=h;gate.enabled=cancel;active_startup_gate=&gate;
     CHECK(h->workers[0].native.peer_id!=0U && h->workers[1].native.peer_id!=0U &&
         h->workers[0].native.peer_id!=h->workers[1].native.peer_id);
     cog_cli_app_t *parent=h->executors[h->primary_slot].app;CHECK(parent!=NULL);
@@ -44,6 +95,8 @@ int main(int argc,char **argv)
         uint64_t end=headless_fixture_clock_ms()+20000U;
         while(headless_fixture_clock_ms()<end) {
             primary=headless_fixture_step(h,&done);CHECK(primary==COG_OK&&!done);
+            CHECK(!gate.invalid);
+            bool current_running[3]={false,false,false};
             for(size_t i=2U;i<h->bounds.executors;++i) {
                 cli_executor_slot_t *s=&h->executors[i];if(s->agent==0U)continue;
                 CHECK(!limit);
@@ -60,6 +113,8 @@ int main(int argc,char **argv)
                 if(k!=0U)CHECK(s->owner_peer==h->workers[0].native.peer_id || s->owner_peer==h->workers[1].native.peer_id);
                 cog_agent_status_t state;CHECK(cog_agent_status(h->control_core,s->agent,&state)==COG_OK);
                 if(state==COG_AGENT_STATUS_RUNNING)running[k]=true;
+                current_running[k]=state==COG_AGENT_STATUS_RUNNING && s->started &&
+                    (k==0U || s->first_admission_sent);
                 if(s->terminal_acked && !terminal[k]) {
                     if(state!=(cancel?COG_AGENT_STATUS_CANCELLED:COG_AGENT_STATUS_COMPLETED))
                         fprintf(stderr,"scenario10 terminal role=%s state=%d accepted=%d primary=%d started=%d first_sent=%d cancel_requested=%d cancel_latched=%d peer=%llu\n",
@@ -71,9 +126,14 @@ int main(int argc,char **argv)
                     CHECK(marker(argv[4],"terminal",roles[k],round,true));
                 }
             }
-            if(cancel && !cancelled && running[0]&&running[1]&&running[2] &&
+            if(cancel && !cancelled) {
+                if(current_running[0] && marker(argv[4],"entered",roles[0],round,false))gate.allow[0]=true;
+                if(current_running[1] && marker(argv[4],"entered",roles[1],round,false))gate.allow[1]=true;
+            }
+            if(cancel && !cancelled && current_running[0]&&current_running[1]&&current_running[2] &&
                 marker(argv[4],"entered",roles[0],round,false)&&marker(argv[4],"entered",roles[1],round,false)&&
                 marker(argv[4],"entered",roles[2],round,false)) {
+                CHECK(gate.blocked[0]>0U && gate.blocked[1]>0U && gate.accepted[0] && gate.accepted[1]);
                 CHECK(peers[1]!=peers[2] && ids[0]!=ids[1] && ids[1]!=ids[2] && ids[0]!=ids[2]);
                 for(size_t k=0U;k<3U;++k)CHECK(cog_agent_cancel(h->control_core,ids[k])==COG_OK);
                 cancelled=true;
@@ -105,6 +165,7 @@ int main(int argc,char **argv)
         CHECK(h->workers[0].reserved_slots==0U && h->workers[1].reserved_slots==0U);
     }
 finish:
+    active_startup_gate=NULL;
     primary=headless_fixture_close(&f,primary,&cleanup);
     if(primary!=COG_OK||!cleanup) {fprintf(stderr,"scenario10 outcome=%d cleanup=%d\n",(int)primary,(int)cleanup);return 1;}
     puts("actual distributed fan-out/fan-in: PASS");return 0;
