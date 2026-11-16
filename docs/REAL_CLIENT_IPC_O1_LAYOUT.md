@@ -109,3 +109,27 @@ are byte-for-byte unchanged. Independent private-layout gate remains required
 before implementation. Focused runtime validation later includes existing IPC
 and replay suites plus new native-auth/retirement/fault tests; no claim is made
 that unfinished O core/orchestrator targets or the full release suite pass.
+
+## Independent gate clarification — first-proof service barrier
+
+O2 must drive an unauthenticated connection through the existing private
+`cog_ipc_internal_service_one` helper. Its handshake branch returns immediately
+after the unit that publishes handshake readiness, before another payload read,
+EOF observation or queued TX attempt. Immediately after that unit, O2 queries
+and caches public `cog_ipc_endpoint_peer_info` BEFORE any further service unit,
+regardless of event-slot or ingress-arena capacity. IPC_CONNECTED remains deferred
+until proof is cached; a saturated event queue cannot defer this capture barrier.
+Failure/unsupported capture refuses the peer without admitting trusted events.
+
+Public aggregate `cog_ipc_endpoint_service` can cross handshake, complete frame
+and EOF within a single quantum, so it cannot serve as the first-proof boundary.
+O1 preserves the private helper's one-unit handshake return. No public API or
+post-EOF query exception is introduced: peer_info after physical failure remains
+NOT_FOUND, while already committed RX frames remain readable. O2 owns the cached
+by-value proof through event admission and handler lease after endpoint removal.
+
+The focused trace/test plan is handshake publication → immediate proof capture →
+complete frame → EOF or TX error, repeated with saturated event/arena queues.
+IPC tests establish the one-unit boundary and retained payload/native snapshot;
+O2's actual core tests must additionally prove queue saturation never moves
+capture after another service unit and retained event proof survives teardown.
