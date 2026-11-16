@@ -178,8 +178,71 @@ int main(int argc,char **argv)
         printf("policy receipt copy %u: rc=%d shutdown=%d\n",repeat,(int)result,(int)host.shutdown);
         if(repeat==0U) assert(!policy->pending_valid && policy->retired_through==42U && !host.shutdown);
     }
-    bool stale_safe=!host.shutdown;
+    assert(!host.shutdown);
+    /* A new pending policy must not be consumed by an old valid receipt. */
+    policy->pending_valid=true;policy->pending_wire=43U;
+    assert(policy_result(&slot,&answer)==COG_ERROR_AGAIN && policy->pending_valid);
+    answer.reply_to=44U;assert(policy_result(&slot,&answer)==COG_ERROR_INVALID_STATE);
+    answer.reply_to=42U;answer.payload_len=20U;assert(policy_result(&slot,&answer)==COG_ERROR_PROTOCOL);
+    answer.payload_len=sizeof(accepted);policy->pending_valid=false;
     assert(cog_cli_execution_close(&slot.app,COG_OK)==COG_OK);
+    slot.phase=CLI_SLOT_RETAINED;
+    /* A retired VIEW receipt remains harmless after factual app disposal. */
+    unsigned char view_bytes[40];cli_wire_writer_t vw={view_bytes,0U,true};
+    cli_wire_put(&vw,3U,8U);cli_wire_put(&vw,1U,8U);cli_wire_put(&vw,2U,8U);
+    cli_wire_put(&vw,5U,8U);cli_wire_put(&vw,6U,8U);
+    lanes[COG_CLI_LANE_VIEW-1U].retired_through=61U;
+    answer.kind=COG_CLI_CONTROL_VIEW_COMMIT;answer.lane=COG_CLI_LANE_VIEW;
+    answer.wire_id=62U;answer.reply_to=61U;answer.payload=view_bytes;answer.payload_len=sizeof(view_bytes);
+    assert(cog_cli_control_encode(&answer,response_bytes,sizeof(response_bytes),&answer_length)==COG_OK);
+    for(unsigned repeat=0U;repeat<2U;++repeat) {
+        cog_ipc_message_t packet={response_bytes,answer_length,sizeof(response_bytes)};
+        assert(cog_ipc_endpoint_send(receiver,&packet)==COG_OK);service(sender,receiver);
+        bool progress=false;rc=parent_step(&host,&progress,&next);(void)retain_error(&host,rc);
+        assert(!host.shutdown && lanes[COG_CLI_LANE_VIEW-1U].retired_through==61U);
+    }
+    answer.payload_len=39U;assert(view_commit(&slot,&answer)==COG_ERROR_PROTOCOL);
+    answer.payload_len=40U;answer.reply_to=63U;assert(view_commit(&slot,&answer)==COG_ERROR_INVALID_STATE);
+    /* COMMAND ACK consumes our response counter, never the peer request ID. */
+    unsigned char cmd_original[512],cmd_final[512];
+    cli_control_lane_t *command=&incoming[COG_CLI_LANE_COMMAND-1U];
+    command->final_original=(cli_host_bytes_t){cmd_original,sizeof(cmd_original),0U};
+    command->final_reply=(cli_host_bytes_t){cmd_final,sizeof(cmd_final),0U};
+    command->final_valid=true;command->final_answered_wire=60U;command->final_reply_wire=70U;
+    lanes[COG_CLI_LANE_COMMAND-1U].next_wire=71U;
+    answer.kind=COG_CLI_CONTROL_COMMAND_ACK;answer.lane=COG_CLI_LANE_COMMAND;
+    answer.wire_id=80U;answer.reply_to=70U;answer.payload=NULL;answer.payload_len=0U;
+    for(unsigned repeat=0U;repeat<3U;++repeat) {
+        if(repeat==2U) answer.wire_id=81U; /* fresh ACK of already consumed result */
+        assert(cog_cli_control_encode(&answer,response_bytes,sizeof(response_bytes),&answer_length)==COG_OK);
+        cog_ipc_message_t packet={response_bytes,answer_length,sizeof(response_bytes)};
+        assert(cog_ipc_endpoint_send(receiver,&packet)==COG_OK);service(sender,receiver);
+        bool progress=false;rc=parent_step(&host,&progress,&next);(void)retain_error(&host,rc);
+        assert(!host.shutdown && lanes[COG_CLI_LANE_COMMAND-1U].retired_through==70U);
+    }
+    answer.reply_to=72U;assert(command_ack(&host,&slot,&answer,answer_length)==COG_ERROR_INVALID_STATE);
+    answer.reply_to=70U;answer.payload=accepted;answer.payload_len=1U;
+    assert(command_ack(&host,&slot,&answer,answer_length)==COG_ERROR_PROTOCOL);
+    /* A late valid terminal disposition for a retired child is nonfatal even
+       after physical slot reuse; a live conflicting identity is still refused. */
+    host.opened_agent_high_watermark=17U;
+    proof.owner_peer=slot.owner_peer;
+    assert(cog_cli_control_receipt_encode(&proof,body,sizeof(body),&n)==COG_OK);
+    answer.kind=COG_CLI_CONTROL_UPDATE_RECEIPT;answer.lane=COG_CLI_LANE_UPDATE;
+    answer.wire_id=29U;answer.reply_to=19U;answer.agent_id=17U;answer.execution_epoch=2U;
+    answer.session_id="old-child";answer.payload=body;answer.payload_len=n;
+    assert(cog_cli_control_encode(&answer,response_bytes,sizeof(response_bytes),&answer_length)==COG_OK);
+    cog_ipc_message_t retired_packet={response_bytes,answer_length,sizeof(response_bytes)};
+    assert(cog_ipc_endpoint_send(receiver,&retired_packet)==COG_OK);service(sender,receiver);
+    bool progress=false;rc=parent_step(&host,&progress,&next);(void)retain_error(&host,rc);
+    assert(!host.shutdown);
+    memcpy(incoming_wire,response_bytes,answer_length);slot.agent=17U;slot.attempt=3U;
+    assert(application_receive(&host,answer_length)==COG_ERROR_INVALID_STATE);
+    slot.agent=0U;slot.attempt=0U;
+    answer.payload_len=54U;
+    assert(cog_cli_control_encode(&answer,incoming_wire,sizeof(incoming_wire),&answer_length)==COG_OK);
+    assert(application_receive(&host,answer_length)==COG_ERROR_PROTOCOL);
+    bool stale_safe=!host.shutdown;
     assert(cog_ipc_endpoint_free(sender)==COG_OK);
     assert(cog_ipc_endpoint_free(receiver)==COG_OK);
     assert(cog_ipc_endpoint_free(listener)==COG_OK);
