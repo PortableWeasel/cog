@@ -27,7 +27,7 @@ static bool saved_delegate(cog_session_t *session,unsigned int round,bool cancel
         for (size_t i=0U;i<m->tool_call_count;++i) if (strcmp(m->tool_calls[i].id,call)==0) {
             cog_tool_execution_state_t state;
             ledger=cog_session_tool_state(session,n,call,&state)==COG_OK &&
-                (cancel?state==COG_TOOL_EXECUTION_FAILED:state==COG_TOOL_EXECUTION_SUCCEEDED);
+                (cancel?state==COG_TOOL_EXECUTION_CANCELLED:state==COG_TOOL_EXECUTION_SUCCEEDED);
         }
     }
     return tool && ledger;
