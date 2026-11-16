@@ -1,6 +1,7 @@
 /** @file test_empty_session.c @brief Durable empty construction and guarded restart. */
 #define _POSIX_C_SOURCE 200809L
 #include "app_internal.h"
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -133,17 +134,19 @@ static int interrupted(const char *base)
 }
 static int save_failures(const char *base)
 {
-    for (unsigned i=0U;i<4U;i++) {
+    for (unsigned i=0U;i<8U;i++) {
         char id[32];CHECK(snprintf(id,sizeof(id),"save-%u",i)>0);
-        cog_cli_options_t value=options(base,id,COG_CLI_SESSION_NEW);cog_cli_app_t *app=NULL;
-        reset();fault=i<2U?SAVE_BEFORE:SAVE_AFTER;injected=i%2U==0U?COG_ERROR_IO:COG_ERROR_INDETERMINATE;
+        bool repair=i>=4U;unsigned variant=i%4U;reset();if (repair) CHECK(seed(base,id)==0);
+        cog_cli_options_t value=options(base,id,repair?COG_CLI_SESSION_RESUME:COG_CLI_SESSION_NEW);cog_cli_app_t *app=NULL;
+        reset();fault=variant<2U?SAVE_BEFORE:SAVE_AFTER;injected=variant%2U==0U?COG_ERROR_IO:COG_ERROR_INDETERMINATE;
         CHECK(cog_cli_app_new(&app,&value)==injected && app==NULL && saves==1U);
         reset();cog_store_owner_t owner;cog_store_checkpoint_t checkpoint;
-        CHECK(state(base,id,&owner,&checkpoint)==0 && owner.epoch==1U && (checkpoint.generation!=0U)==(i>=2U));
+        CHECK(state(base,id,&owner,&checkpoint)==0 && owner.epoch==(repair?2U:1U) && (checkpoint.generation!=0U)==(variant>=2U));
+        value=options(base,id,COG_CLI_SESSION_NEW);
         CHECK(cog_cli_app_new(&app,&value)==COG_ERROR_INVALID_STATE && app==NULL);
         value=options(base,id,COG_CLI_SESSION_RESUME);
         CHECK(cog_cli_app_new(&app,&value)==COG_OK && empty(app,id)==0);
-        CHECK(state(base,id,&owner,&checkpoint)==0 && owner.epoch==2U && checkpoint.generation!=0U);
+        CHECK(state(base,id,&owner,&checkpoint)==0 && owner.epoch==(repair?3U:2U) && checkpoint.generation!=0U);
         cog_cli_app_free(app);
     }
     return 0;
@@ -219,8 +222,24 @@ static int provenance(const char *base)
     CHECK(state(base,"provenance",&owner,&after)==0 && owner.epoch==2U && after.generation==checkpoint.generation);
     cog_cli_app_free(app);return 0;
 }
-int main(void)
+static int inspect(const char *base,const char *id)
 {
+    cog_store_t *store=NULL;CHECK(store_new(base,&store)==0);
+    cog_store_owner_t owner;cog_store_checkpoint_t checkpoint;
+    CHECK(cog_store_owner_read(store,id,&owner,&checkpoint)==COG_OK && owner.epoch!=0U && checkpoint.generation!=0U);
+    cog_session_t *session=NULL;cog_store_load_report_t report;
+    CHECK(cog_store_checkpoint_load(store,id,checkpoint,COG_STORE_LOAD_REPLAY,&session,&report)==COG_OK);
+    cog_session_snapshot_t snapshot;CHECK(cog_session_snapshot_view(session,&snapshot)==COG_OK &&
+        strcmp(snapshot.session_id,id)==0 && snapshot.node_count==0U && snapshot.ledger_count==0U &&
+        snapshot.active_node_id==0U && snapshot.node_id_high_water==0U && snapshot.audit_high_water==0U);
+    printf("%" PRIu64 " %" PRIu64 "\n",owner.epoch,checkpoint.generation);
+    cog_session_free(session);cog_store_free(store);return 0;
+}
+int main(int argc,char **argv)
+{
+    if (argc==4 && strcmp(argv[1],"inspect")==0) return inspect(argv[2],argv[3]);
+    if (argc==4 && strcmp(argv[1],"reserve")==0) return seed(argv[2],argv[3]);
+    CHECK(argc==1);
     char base[]="/tmp/cog-empty-session-XXXXXX";CHECK(mkdtemp(base)!=NULL);
     CHECK(fresh(base)==0);CHECK(interrupted(base)==0);CHECK(save_failures(base)==0);
     CHECK(admission_failures(base)==0);CHECK(selectors_and_remnants(base)==0);CHECK(provenance(base)==0);

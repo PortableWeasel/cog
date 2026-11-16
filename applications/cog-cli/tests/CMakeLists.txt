@@ -335,6 +335,7 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     add_executable(test_empty_session test_empty_session.c)
+    add_dependencies(test_empty_session cog-cli)
     target_include_directories(test_empty_session PRIVATE ../src)
     target_link_libraries(test_empty_session PRIVATE cog::cli)
     target_link_options(test_empty_session PRIVATE
@@ -344,4 +345,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang
     add_test(NAME cli-empty-session COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/run_empty_session.py $<TARGET_FILE:test_empty_session>)
     set_tests_properties(cli-empty-session PROPERTIES TIMEOUT 25)
+    add_test(NAME cli-installed-empty-session COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/run_installed_empty_session.py
+        ${CMAKE_BINARY_DIR} $<TARGET_FILE:test_empty_session>)
+    set_tests_properties(cli-installed-empty-session PROPERTIES TIMEOUT 30)
 endif()
