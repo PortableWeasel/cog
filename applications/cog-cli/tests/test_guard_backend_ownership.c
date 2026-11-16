@@ -105,7 +105,8 @@ int main(int argc,char **argv)
     const cog_message_t message={.role=COG_MESSAGE_ROLE_ASSISTANT,.tool_calls=&call,.tool_call_count=1U};
     cog_session_node_t *node=NULL;assert(cog_session_append(session,&message,&node)==COG_OK);
     assert(cog_session_tool_transition(session,node,"call",COG_TOOL_EXECUTION_PROPOSED,COG_TOOL_EXECUTION_STARTED)==COG_OK);
-    assert(cog_store_checkpoint_save(store,session,g,&cp)==COG_OK);
+    assert(cog_store_save(store,session)==COG_OK);
+    cog_store_owner_t recorded;assert(cog_store_owner_read(store,"recovery",&recorded,&cp)==COG_OK);
     assert(cog_store_owner_release(g)==COG_OK);g=NULL;
     cog_store_owner_t next={2U,93U};assert(cog_store_owner_compare_exchange(store,"recovery",owner,next,cp)==COG_OK);
     state.reject_after_acquire=true;state.release_result=COG_ERROR_INVALID_STATE;
