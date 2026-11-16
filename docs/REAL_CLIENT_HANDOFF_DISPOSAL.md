@@ -53,3 +53,36 @@ merely because execution_close consumed the source.
    Existing bounded capacity/physical-slot admission refuses work until valid
    retirement; no new cache, unbounded log or guessed conflict evidence is added.
    Native lifetime retirement invalidates its old bindings, not success proof.
+
+## Pass 3 — cleanup failure and consistency audit
+
+A consuming close error is still an error even if it consumed some handles. The
+receiver retains factual ownership for unfinished cleanup and a correlated FAILED
+result when terminal failure is known. It never emits successful ABORT for partial
+teardown, silently frees a guard borrower or substitutes force/reap for cleanup.
+First failure stays primary; the coordinator freezes further slot admission and
+uses existing checked shutdown/recovery policy. No old epoch is reacquired and no
+already activated target is relabelled as unactivated to hide a cleanup failure.
+
+ABORT during failed/pre-CAS handoff uses exactly the same final post-cleanup
+meaning for the addressed source or staged target. It is not successful PREPARED,
+READY, ACTIVATE or CAS evidence. A target bootstrap reservation with no app must
+still release its actual dedicated configuration/profile borrows and clear secret
+storage before successful final disposal. A request to the wrong target or newer
+transaction is refused before mutation. If no resources ever existed, authenticated
+exact admitted transaction cleanup can finish without fabricating an app lifetime.
+
+Whole handoff stays pending through old-source disposal and uses its original
+finite transaction deadline; repeats never extend it or permit a second move.
+Target authority and ordinary-work eligibility remain governed by the already
+accepted ACTIVATE proof, never by source cleanup receipt. Send-AGAIN holds exact
+bytes and retries one bounded send; receipt storage and cleanup IDs were reserved
+at transaction admission. Existing CLI_HANDOFF_CLEANUP plus slot/lane state is
+sufficient; no new phase value, callback, public header or constructor is required.
+
+Consistency review: exact tuples, original native peer binding, distinct inbound/
+outbound keys and reply_to are unchanged; proof survives app disposal and physical
+same-root reuse; unrelated PROFILE cannot retire HANDOFF state. Final cache never
+requires an infinite ACK-of-ACK chain: receiver retains it through reuse until the
+next admitted SAME-stream request (or native lifetime retirement). Normal duplicate
+lookup occurs before new-occupant dispatch, so old ABORT cannot kill new execution.
