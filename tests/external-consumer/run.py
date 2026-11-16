@@ -39,7 +39,7 @@ def reject_paths(text, forbidden, owned=None):
     # The current relocated prefix may live below a forbidden producer/source
     # ancestor. That exception must not hide explicitly forbidden old install
     # prefixes within the fixture itself.
-    scrubbed = text.replace(str(owned), "<fixture>") if owned is not None else text
+    scrubbed = re.sub(re.escape(str(owned)) + r"(?=/|$|[\s;\"'])", "<fixture>", text) if owned is not None else text
     for path in forbidden:
         checked = scrubbed if owned is not None and pathlib.Path(path) in pathlib.Path(owned).parents else text
         if str(path) in checked:

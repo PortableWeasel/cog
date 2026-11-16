@@ -2,6 +2,8 @@ set(COG_TEST_CARES_BUILD_DIR "" CACHE PATH "Relocatable c-ares build for the R18
 if(BUILD_TESTING AND COG_BUILD_CLI AND COG_NET_CURL_BUILD_DIR AND COG_NET_CURL_LIBRARY
    AND COG_TEST_CARES_BUILD_DIR AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME unit-installed-path-audit
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_path_audit.py)
     add_test(NAME integration-installed-embedder
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/run.py
             --build ${PROJECT_BINARY_DIR}
