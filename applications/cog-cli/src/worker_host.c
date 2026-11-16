@@ -1068,3 +1068,155 @@ static cog_result_t application_receive(cog_cli_worker_host_t *worker,size_t len
     default:return COG_ERROR_PROTOCOL;
     }
 }
+static void retire_attempt(cli_executor_slot_t *slot)
+{
+    cli_host_bytes_t task=slot->task,status=slot->status,result=slot->result,update=slot->update;
+    cli_control_lane_t *in=slot->inbound,*out=slot->outbound;
+    cli_secret_exchange_t secret=slot->profile;
+    for(size_t i=0U;i<CLI_HOST_LANES;++i) for(size_t direction=0U;direction<2U;++direction) {
+        cli_control_lane_t *lane=direction==0U?&in[i]:&out[i];
+        cli_host_bytes_t a=lane->pending,b=lane->provisional_reply,c=lane->final_original,d=lane->final_reply;
+        worker_wipe(a.data,a.capacity);worker_wipe(b.data,b.capacity);worker_wipe(c.data,c.capacity);worker_wipe(d.data,d.capacity);
+        a.length=0U;b.length=0U;c.length=0U;d.length=0U;memset(lane,0,sizeof(*lane));
+        lane->pending=a;lane->provisional_reply=b;lane->final_original=c;lane->final_reply=d;lane->next_wire=1U;
+    }
+    worker_wipe(task.data,task.capacity);worker_wipe(status.data,status.capacity);
+    worker_wipe(result.data,result.capacity);worker_wipe(update.data,update.capacity);
+    worker_wipe(secret.body,secret.body_capacity);worker_wipe(secret.frame,secret.frame_capacity);
+    worker_wipe(secret.scratch,secret.scratch_capacity);
+    task.length=0U;status.length=0U;result.length=0U;update.length=0U;
+    unsigned char *body=secret.body,*frame=secret.frame,*scratch=secret.scratch;
+    size_t bc=secret.body_capacity,fc=secret.frame_capacity,sc=secret.scratch_capacity;
+    memset(slot,0,sizeof(*slot));slot->task=task;slot->status=status;slot->result=result;slot->update=update;
+    slot->inbound=in;slot->outbound=out;slot->profile.body=body;slot->profile.frame=frame;slot->profile.scratch=scratch;
+    slot->profile.body_capacity=bc;slot->profile.frame_capacity=fc;slot->profile.scratch_capacity=sc;
+}
+static cog_result_t send_profile_ack(cog_cli_worker_host_t *worker,cli_secret_exchange_t *exchange)
+{
+    if(!exchange->pending) return COG_ERROR_AGAIN;
+    cog_ipc_message_t frame={exchange->body,exchange->body_length,exchange->body_capacity};
+    cog_result_t rc=cog_ipc_endpoint_send(worker->parent,&frame);
+    if(rc==COG_OK) { exchange->pending=false;exchange->acknowledged=true; }
+    return rc;
+}
+static cog_result_t parent_step(cog_cli_worker_host_t *worker,bool *progress,uint64_t *deadline)
+{
+    cog_result_t serviced=cog_ipc_internal_service_one(worker->parent,worker->now_ms,deadline);
+    if(!worker->authenticated) {
+        cog_peer_id_t peer;cog_result_t rc=cog_ipc_endpoint_get_peer_id(worker->parent,&peer);
+        if(rc==COG_OK) rc=cog_ipc_endpoint_peer_info(worker->parent,peer,&worker->parent_proof);
+        if(rc==COG_OK) {
+            if(worker->parent_proof.process_id!=worker->fixed.parent_pid ||
+               worker->parent_proof.user_id!=(uint64_t)geteuid()) return COG_ERROR_DENIED;
+            worker->authenticated=true;
+            rc=native_frame(worker,0U,COG_WORKER_HELLO,0U,0U,COG_OK);
+            if(rc!=COG_OK) return rc;
+        } else if(rc!=COG_ERROR_AGAIN && rc!=COG_ERROR_INVALID_STATE) return rc;
+        if(!worker->authenticated) return serviced;
+    }
+    /* No second transport unit before the immutable native proof above. */
+    if(serviced!=COG_OK && serviced!=COG_ERROR_AGAIN && serviced!=COG_ERROR_IO) return serviced;
+    if(serviced==COG_ERROR_IO) (void)retain_error(worker,serviced);
+    cog_ipc_message_t input={worker->receive_secret,0U,worker->receive_capacity};
+    cog_result_t rc=cog_ipc_endpoint_recv(worker->parent,&input);
+    if(rc==COG_OK) {
+        *progress=true;
+        if(input.len>=3U && memcmp(input.data,"CGW",3U)==0) rc=native_receive(worker,input.data,input.len);
+        else if(input.len>=3U && memcmp(input.data,"CGL",3U)==0) rc=application_receive(worker,input.len);
+        else rc=COG_ERROR_PROTOCOL;
+        worker_wipe(worker->receive_secret,worker->receive_capacity);
+        worker_wipe(worker->decode_secret,worker->decode_capacity);
+        if(rc!=COG_OK && rc!=COG_ERROR_AGAIN) return rc;
+    } else if(rc!=COG_ERROR_AGAIN && rc!=COG_ERROR_INVALID_STATE) return rc;
+    return serviced;
+}
+cog_result_t cog_cli_worker_host_step(cog_cli_worker_host_t *worker,cog_cli_host_runtime_step_t *info)
+{
+    if(worker==NULL || info==NULL) return COG_ERROR_NULL_PTR;
+    if(worker->in_step || worker->done) return COG_ERROR_INVALID_STATE;
+    uint64_t now;bool first=!worker->stepped;worker->stepped=true;worker->in_step=true;
+    cog_result_t rc=cog_cli_clock(&now);
+    if(rc==COG_OK && now<worker->now_ms) rc=COG_ERROR_IO;
+    if(rc==COG_OK && first && now>UINT64_MAX-5000U) rc=COG_ERROR_LIMIT;
+    if(rc==COG_OK) { worker->now_ms=now;if(first) worker->startup_deadline_ms=now+5000U; }
+    else (void)retain_error(worker,rc);
+    cog_cli_host_runtime_step_t step={false,0U,UINT64_MAX,10U};bool progress=false;
+    if(worker->fixed.signal_fd>=0) {
+        struct pollfd signal={worker->fixed.signal_fd,POLLIN,0};int polled=poll(&signal,1U,0);
+        if(polled<0 && errno!=EINTR) (void)retain_error(worker,COG_ERROR_IO);
+        else if(polled>0) {
+            if((signal.revents&(POLLERR|POLLHUP|POLLNVAL))!=0) (void)retain_error(worker,COG_ERROR_IO);
+            else if((signal.revents&POLLIN)!=0) (void)cog_cli_worker_host_request_shutdown(worker);
+        }
+    }
+    if(!worker->startup_ready && !worker->shutdown && worker->now_ms>=worker->startup_deadline_ms)
+        (void)retain_error(worker,COG_ERROR_TIMEOUT);
+    uint64_t parent_deadline=UINT64_MAX;
+    rc=parent_step(worker,&progress,&parent_deadline);(void)retain_error(worker,rc);
+    if(parent_deadline<step.next_deadline_ms) step.next_deadline_ms=parent_deadline;
+    size_t turn=worker->round_robin++;
+    if(worker->round_robin==worker->executor_capacity*CLI_HOST_LANES) worker->round_robin=0U;
+    cli_executor_slot_t *slot=&worker->executors[turn/CLI_HOST_LANES];size_t lane_index=turn%CLI_HOST_LANES;
+    if(slot->phase!=CLI_SLOT_FREE) {
+        rc=executor_step(worker,slot,&step);if(rc==COG_OK) progress=true;
+        if(rc!=COG_OK && rc!=COG_ERROR_AGAIN) (void)retain_error(worker,rc);
+        if(!worker->shutdown) {
+            rc=queue_update(worker,slot);if(rc!=COG_OK && rc!=COG_ERROR_AGAIN) (void)retain_error(worker,rc);
+            rc=publish_view(worker,slot);if(rc!=COG_OK && rc!=COG_ERROR_AGAIN) (void)retain_error(worker,rc);
+            rc=publish_policy(worker,slot);if(rc!=COG_OK && rc!=COG_ERROR_AGAIN) (void)retain_error(worker,rc);
+        }
+        if(slot->local_done && slot->agent!=0U && slot->terminal_acked) {
+            rc=dispose_execution(slot);
+            if(slot->app==NULL) retire_attempt(slot);
+            if(rc!=COG_OK) (void)retain_error(worker,rc);
+        }
+    }
+    if(worker->authenticated) {
+        uint32_t active=0U;
+        for(size_t i=2U;i<worker->executor_capacity;++i)
+            if(worker->executors[i].started && !worker->executors[i].local_done) ++active;
+        if(!worker->shutdown && worker->now_ms>=worker->next_heartbeat_ms && !worker->native_pending[1])
+            (void)retain_error(worker,native_frame(worker,1U,COG_WORKER_HEARTBEAT,active,0U,COG_OK));
+        for(size_t i=0U;i<2U;++i) if(worker->native_pending[i]) {
+            rc=envelope_send(worker,&worker->native_control[i]);
+            if(rc==COG_OK) {
+                worker->native_pending[i]=false;progress=true;
+                if(i==1U) worker->next_heartbeat_ms=worker->now_ms>UINT64_MAX-100U?UINT64_MAX:worker->now_ms+100U;
+            } else (void)retain_error(worker,rc);
+        }
+        rc=send_profile_ack(worker,&worker->startup_profile);if(rc==COG_OK) progress=true;
+        else (void)retain_error(worker,rc);
+        rc=send_profile_ack(worker,&slot->profile);if(rc==COG_OK) progress=true;
+        else (void)retain_error(worker,rc);
+        cli_control_lane_t *in=&slot->inbound[lane_index],*out=&slot->outbound[lane_index];
+        if(in->pending_valid && in->final_reply.length!=0U) {
+            rc=envelope_send(worker,&in->final_reply);
+            if(rc==COG_OK) { in->pending_valid=false;progress=true; } else (void)retain_error(worker,rc);
+        }
+        if(out->pending_valid && out->pending.length!=0U) {
+            rc=envelope_send(worker,&out->pending);if(rc==COG_OK) progress=true;else (void)retain_error(worker,rc);
+        }
+    }
+    bool drained=true;
+    for(size_t i=0U;i<worker->executor_capacity;++i)
+        if(worker->executors[i].app!=NULL && !worker->executors[i].local_done) drained=false;
+    if(worker->shutdown && drained) {
+        /* Done is actual local drain, not a claim the parent received this ACK.
+           The parent still proves native termination through its owned PID. */
+        if(worker->authenticated && worker->native_control[2].length!=0U) {
+            rc=envelope_send(worker,&worker->native_control[2]);
+            if(rc==COG_OK) {
+                uint64_t ignored;rc=cog_ipc_internal_service_one(worker->parent,worker->now_ms,&ignored);
+            }
+            if(rc!=COG_OK && rc!=COG_ERROR_AGAIN) (void)retain_error(worker,rc);
+            if(rc==COG_ERROR_AGAIN && worker->now_ms<worker->shutdown_deadline_ms) drained=false;
+        }
+        if(drained) worker->done=true;
+    }
+    if(worker->shutdown && worker->shutdown_deadline_ms<step.next_deadline_ms) step.next_deadline_ms=worker->shutdown_deadline_ms;
+    else if(!worker->startup_ready && worker->startup_deadline_ms<step.next_deadline_ms) step.next_deadline_ms=worker->startup_deadline_ms;
+    if(!worker->shutdown && worker->next_heartbeat_ms<step.next_deadline_ms) step.next_deadline_ms=worker->next_heartbeat_ms;
+    if(progress || step.next_deadline_ms<=worker->now_ms) step.max_wait_ms=0U;
+    step.done=worker->done;*info=step;worker->in_step=false;
+    return worker->primary!=COG_OK?worker->primary:progress?COG_OK:COG_ERROR_AGAIN;
+}
