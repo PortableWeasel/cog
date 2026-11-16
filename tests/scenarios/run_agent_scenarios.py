@@ -2,6 +2,8 @@
 """Finite synthetic provider scripts; C owns all actual agent/effect oracles."""
 from pathlib import Path
 import json
+import os
+import subprocess
 import sys
 import time
 
@@ -162,7 +164,7 @@ def main():
             return text("CHILD_DONE_" + token)
         command = f"printf once >> effect-{token}; printf effect-complete"
         if mode == "crash-after" and role == "native":
-            command = f"printf once >> effect-{token}; printf entered > native-entered; sleep 2; printf ended > native-command-ended"
+            command = f"printf once >> effect-{token}; printf '%s %s' $$ $PPID > native-entered; sleep 2; printf ended > native-command-ended"
         return tool("run_command", {"command": command}, "effect-" + token)
 
     with TLSFixture(build, responder, max_requests=64) as fixture:
@@ -175,7 +177,22 @@ def main():
             assert (fixture.workspace / "effect-native-1").exists() == (mode == "crash-after")
             if mode == "crash-after":
                 assert (fixture.workspace / "effect-native-1").read_text() == "once"
-                assert (fixture.workspace / "native-command-ended").read_text() == "ended"
+                command_pids = (fixture.workspace / "native-entered").read_text().split()
+                assert len(command_pids) == 2 and all(int(pid) > 0 for pid in command_pids)
+            # Normal REAL resume must refuse the actual uncertain checkpoint
+            # before any provider/tool continuation; no fencing assertion or
+            # recovery override is supplied to turn this into fresh work.
+            session = fixture.registry()["root_session"]
+            count = len(fixture.requests)
+            env = {key: value for key, value in os.environ.items() if not key.startswith("COG_")}
+            env.update(COG_NATIVE_KEY="synthetic-native", CURL_CA_BUNDLE=str(fixture.cert),
+                TMPDIR=str(Path(build).resolve() / "tmp"))
+            resumed = subprocess.run([str(Path(executable).resolve()), "--backend", "real", "--model", "fixture/model",
+                "--credential-ref", "env:COG_NATIVE_KEY", "--base-url", fixture.url, "--workspace", str(fixture.workspace),
+                "--store", str(fixture.store), "--resume", session, "--prompt", "must not replay"],
+                env=env, capture_output=True, text=True, timeout=10)
+            assert resumed.returncode == 1 and "indeterminate" in resumed.stderr, (resumed.returncode, resumed.stdout, resumed.stderr)
+            assert len(fixture.requests) == count and not fixture.errors, "unsafe resume sent a request"
         print("finite actual TLS scenario:", mode, "PASS")
 
 

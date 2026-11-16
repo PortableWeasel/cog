@@ -47,9 +47,11 @@ int main(int argc,char **argv)
             for(size_t i=2U;i<h->bounds.executors;++i) {
                 cli_executor_slot_t *s=&h->executors[i];if(s->agent==0U)continue;
                 CHECK(!limit);
+                cog_agent_config_t observed;char storage[512];size_t required;
+                CHECK(cog_agent_copy_config(h->control_core,s->agent,&observed,storage,sizeof(storage),&required)==COG_OK);
                 size_t k=3U;
                 for(size_t j=0U;j<3U;++j) {char task[64];CHECK(snprintf(task,sizeof(task),"child %s %u",roles[j],round)>0);
-                    if(s->task.length==strlen(task) && memcmp(s->task.data,task,s->task.length)==0)k=j;}
+                    if(strcmp(observed.task,task)==0)k=j;}
                 CHECK(k<3U);
                 if(ids[k]==0U) {ids[k]=s->agent;peers[k]=s->owner_peer;}
                 CHECK(ids[k]==s->agent && peers[k]==s->owner_peer);
