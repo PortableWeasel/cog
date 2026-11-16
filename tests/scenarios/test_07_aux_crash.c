@@ -4,6 +4,9 @@
  */
 #define _POSIX_C_SOURCE 200809L
 #include "fixtures/headless_fixture.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
@@ -25,23 +28,59 @@ static bool once(const char *root)
     size_t size=fread(bytes,1U,sizeof(bytes),stream);bool ok=!ferror(stream)&&size==4U&&memcmp(bytes,"once",4U)==0;
     return fclose(stream)==0 && ok;
 }
+/* Pin /proc directories while these two actual command processes are alive.
+   Later openat observes the same lifetimes even if numeric PIDs are reused.
+   Neither is signalled or reaped by this harness: the workspace guardian owns
+   shell/group cleanup and the outer process fixture owns orphan supervision. */
+static bool pin_command(const char *root,int descriptors[2])
+{
+    char path[4096];int n=snprintf(path,sizeof(path),"%s/native-entered",root);
+    if(n<=0 || (size_t)n>=sizeof(path))return false;
+    FILE *stream=fopen(path,"r");if(stream==NULL)return false;
+    long long pids[2];bool read_ok=fscanf(stream,"%lld %lld",&pids[0],&pids[1])==2;
+    if(fclose(stream)!=0 || !read_ok)return false;
+    for(size_t i=0U;i<2U;++i) {
+        if(pids[i]<=0 || pids[i]>INT_MAX)return false;
+        n=snprintf(path,sizeof(path),"/proc/%lld",pids[i]);
+        if(n<=0 || (size_t)n>=sizeof(path))return false;
+        descriptors[i]=open(path,O_RDONLY|O_DIRECTORY|O_CLOEXEC);
+        if(descriptors[i]<0)return false;
+    }
+    return pids[0]!=pids[1];
+}
+static bool command_ended(int directory)
+{
+    int descriptor=openat(directory,"stat",O_RDONLY|O_CLOEXEC);
+    if(descriptor<0)return errno==ENOENT || errno==ESRCH;
+    char bytes[4096];ssize_t length=read(descriptor,bytes,sizeof(bytes)-1U);
+    (void)close(descriptor);
+    if(length<=0)return false;
+    bytes[(size_t)length]='\0';char *end=strrchr(bytes,')');
+    return end!=NULL && (size_t)(end-bytes)+2U<(size_t)length && end[1]==' ' && (end[2]=='Z' || end[2]=='X');
+}
 static bool durable_unknown(cog_session_t *session)
 {
-    bool ledger=false,result=false;
+    bool ledger=false,result=false,result_seen=false;
     for(cog_session_node_t *n=cog_session_active(session);n!=NULL;n=cog_node_parent(n)) {
         const cog_message_t *m=cog_node_data(n)->message;if(m==NULL)continue;
-        if(m->role==COG_MESSAGE_ROLE_TOOL && m->tool_call_id!=NULL && strcmp(m->tool_call_id,"delegate-1")==0)
+        if(m->role==COG_MESSAGE_ROLE_TOOL && m->tool_call_id!=NULL && strcmp(m->tool_call_id,"delegate-1")==0) {
+            result_seen=true;
             result=m->content!=NULL && strstr(m->content,"side_effects_possible=true")!=NULL;
+        }
         for(size_t i=0U;i<m->tool_call_count;++i)if(strcmp(m->tool_calls[i].id,"delegate-1")==0) {
             cog_tool_execution_state_t state;
-            ledger=cog_session_tool_state(session,n,"delegate-1",&state)==COG_OK && state==COG_TOOL_EXECUTION_INDETERMINATE;
+            cog_result_t rc=cog_session_tool_state(session,n,"delegate-1",&state);
+            ledger=rc==COG_OK && state==COG_TOOL_EXECUTION_INDETERMINATE;
         }
     }
-    return ledger && result;
+    /* A fatal host driver freezes admission before model continuation. Its
+       recovery-only checkpoint may retain an INDETERMINATE ledger without a
+       TOOL node; never demand a fabricated final child result after death. */
+    return ledger && (!result_seen || result);
 }
 int main(int argc,char **argv)
 {
-    headless_fixture_t f={0};cog_result_t primary=COG_OK,first=COG_OK;
+    headless_fixture_t f={0};cog_result_t primary=COG_OK,first=COG_OK;int command[2]={-1,-1};
     bool done=false,cleanup=false,killed=false,uncertain=false,reaped=false,local_completed=false;
     CHECK(argc==8);bool after=strcmp(argv[7],"crash-after")==0;
     CHECK(after || strcmp(argv[7],"crash-before")==0);
@@ -71,6 +110,7 @@ int main(int argc,char **argv)
             if(!killed && local_completed && exists(argv[4],"native-entered")) {
                 CHECK(s->first_admission_sent && s->started && s->accepted_status==COG_AGENT_STATUS_RUNNING);
                 CHECK(after?once(argv[4]):!exists(argv[4],"effect-native-1"));
+                if(after)CHECK(pin_command(argv[4],command));
                 CHECK(headless_fixture_signal_worker(h,0U,SIGKILL)==COG_OK);killed=true;
             }
             if(killed && s->effects_uncertain) {
@@ -91,18 +131,22 @@ int main(int argc,char **argv)
     CHECK(cog_store_load_ex(h->catalog,h->primary_session,COG_STORE_LOAD_INSPECT,&saved,&report)==COG_OK);
     bool durable=durable_unknown(saved);cog_session_free(saved);
     CHECK(durable && report.indeterminate_tools>=1U);
-    /* The after-effect shell is deliberately finite (two seconds). Worker
-       death cannot prove descendants stopped: observe its final marker rather
-       than claim rollback, kill a foreign PID or replay its accepted command. */
+    char metadata[4096];CHECK(snprintf(metadata,sizeof(metadata),"%s/registry.json",argv[4])>0);
+    CHECK(headless_fixture_registry(h,metadata)==COG_OK);
+    /* Workspace guardian observes control EOF, kills its owned shell group
+       and reaps descendants. Observe actual command lifetimes; worker death
+       itself still cannot prove arbitrary external effects stopped. */
     if(after) {
         end=headless_fixture_clock_ms()+4000U;
-        while(!exists(argv[4],"native-command-ended") && headless_fixture_clock_ms()<end)(void)poll(NULL,0U,5);
-        CHECK(exists(argv[4],"native-command-ended") && once(argv[4]));
+        while((!command_ended(command[0]) || !command_ended(command[1])) && headless_fixture_clock_ms()<end)(void)poll(NULL,0U,5);
+        CHECK(command_ended(command[0]) && command_ended(command[1]) && once(argv[4]));
     } else CHECK(!exists(argv[4],"effect-native-1"));
+    for(size_t i=0U;i<2U;++i)if(command[i]>=0){(void)close(command[i]);command[i]=-1;}
     primary=headless_fixture_close(&f,first,&cleanup);
     CHECK(primary==first && cleanup && f.host==NULL);
     puts("actual owned-worker crash retained uncertainty and reaped: PASS");return 0;
 finish:
+    for(size_t i=0U;i<2U;++i)if(command[i]>=0)(void)close(command[i]);
     primary=headless_fixture_close(&f,primary,&cleanup);
     fprintf(stderr,"scenario07 outcome=%d first=%d cleanup=%d\n",(int)primary,(int)first,(int)cleanup);return 1;
 }
