@@ -17,7 +17,8 @@ typedef enum core_driver_kind {
 /** One unified engine, with run-only waiting outside bounded slices. */
 typedef struct core_drive_state {
     core_driver_kind_t kind;
-    bool inside_slice; /**< Forbid callback/reentrant manual driver operations. */
+    bool inside_call; /**< Guard begin/slice/end and disposal callbacks;
+         prevents recursive lifecycle entry even before/after ownership publish. */
     bool done; /**< Stop/fatal latched, still owned until matching end. */
     bool service_due;
     cog_result_t result; /**< First work error, or OK for ordinary stop. */

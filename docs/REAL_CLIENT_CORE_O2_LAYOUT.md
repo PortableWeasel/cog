@@ -9,7 +9,7 @@ layout, not another public architecture or permission to edit app/orchestrator.
 
 core_internal.h relocates the existing core.c layout and adds one drive-state
 record, persistent checked-clock sample, constructor step ceiling and per-peer
-metadata. Driver kinds NONE/RUN/MANUAL prevent competing ownership. inside_slice
+metadata. Driver kinds NONE/RUN/MANUAL prevent competing ownership. inside_call
 blocks callback recursion; done/result latch stop/first fatal error until end.
 The run wrapper begins the same private engine, repeatedly executes bounded
 slices, and invokes legacy wait/idle/nanosleep only outside slices. Public manual
@@ -139,3 +139,70 @@ work returns max_wait_ms0 and deadline<=sampled now. Idle writable sockets alone
 do not count. Any transient readiness-query AGAIN gives a bounded immediate
 retry; permanent query/clock errors latch normal fatal driver failure. Only the
 run wrapper waits; manual slices never invoke wait_fn/idle_fn/nanosleep/poll>0.
+
+## Pass3 — final consistency and executable acceptance plan
+
+Rewalked pass2 against public core.h/agent.h/event.h, actual Q queue/arena leases,
+O1's one-unit identity barrier and integrated read-only readiness. No public gap
+or additional IPC body change is proposed. The private core header is C11-only
+because its actual state contains C atomics; installed public headers retain
+normal C/C++ support. Agent private layout remains C/C++ compatible.
+
+Amendment: inside_call guards lifecycle entry, not just dispatch slices. Begin/
+end observation callbacks must not recursively step/end/begin while ownership
+is being published/consumed. Begin validates first, sets this guard before any
+observer callback, then returns with a published owner and guard cleared. Step
+publishes a temporary output only after valid work, clears the guard on every
+return, and never changes invalid-call output. End restores the injected lease
+once under the guard before releasing owner kind. Destruction also guards its
+callbacks while consuming an inactive core; it does not silently end a live
+manual drive. Existing atomic stop stays usable throughout.
+
+One shared engine owns dispatch/transition/save, pending injection, service/
+deadline fairness, proof ingress, error/stop latching and lease cleanup. The run
+wrapper owns only repeated slices plus checked idle waiting. Budget counters
+cannot wrap: the bounded dispatch count is checked before another dispatch, and
+service counts reset at the configured interval before increment can overflow.
+Clock seconds multiplication, nanoseconds range, addition and nondecreasing
+sample are checked; failure is IO and never synthesizes time. Core clock history
+survives rebegin, while first service is due on each new drive.
+
+Constructor arithmetic checks the enlarged peer-record array and all existing
+reservations before allocation; transferred endpoint/session ownership changes
+only on successful construction. Peer-cache state is per core, not global. No
+proof/credential or borrowed pointer is reconstructed from session text, wire
+HELLO or coincident numeric IDs. No dynamic dispatch/registration/growing arena
+is introduced. Agent entry destruction asserts returned borrows in debug builds;
+void destructors retain their documented preconditions rather than leaking a
+live object or pretending to clean external work.
+
+Planned meaningful body tests, beyond existing M/core/agent/IPC suites:
+
+- Manual-vs-run dispatch/service/save ordering and retained queue/rotation state;
+  zero/default/max/overlimit step settings, exact event ceiling, continuous queued
+  work, due service and finite idle with an actually idle writable IPC link.
+- Stop before/inside/between units, separate threaded/signal-safe stop, handler/
+  service/idle/save/clock failures, no invented clock on failure/backward/overflow;
+  first-error latch, info.done, reentry from each callback, end exactly once and
+  invalid-call output/state preservation. Manual step calls no wait/idle hook.
+- Exact newly accepted and attached handshake→proof capture→frame→EOF/TX failure
+  with saturated IPC event slots and arena; retained immutable handler proof,
+  CONNECTED ordering, disjoint peers and untrusted enqueue rejection. Repeat
+  after stop/end/rebegin, retain one existing connection's proof without duplicate
+  CONNECTED, and remove old connection/cache before a new accepted link.
+- Popped handler-error IPC/intent lease release, untouched queued intents across
+  budget/stop/error, exact injected FIFO restoration, disposal releases leases
+  without running queued effects. Pending reservations cannot be stolen meanwhile.
+- Borrow pointer/ID/parent-link identity, null/unknown/remote/terminal/cancelled/
+  duplicate refusal with unchanged output; return wrong record/pointer/no borrow/
+  attached child refusal; child core/free before return; terminal ACK/intent-lease
+  release still cannot free a borrowed record; return has no execution effect.
+
+Independent private-layout review remains required before core.c/agent.c bodies.
+The source stage will use strict GCC/Clang, separate ASan/UBSan/LSan and meaningful
+TSan stop/concurrency checks; scoped passing tests cannot stand in for unfinished
+O orchestrator/application/scenario integration or final P acceptance.
+
+Header verification: strict standalone/repeated include checks passed6/6 — core
+layout with GCC/Clang C11, agent layout with GCC/Clang C11 and G++/Clang++ C++11.
+Production core.c and agent.c remain unchanged at this header-only checkpoint.
