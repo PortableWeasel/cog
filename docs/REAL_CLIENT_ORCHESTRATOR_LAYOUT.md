@@ -193,3 +193,35 @@ sequenceDiagram
 No new gap. All20 original scenario contracts remain unchanged; the targeted
 03/04/05/07/09/10/13/17/19/20 paths exercise these private structures. The other
 ten paths use existing provider/tool/app/UI boundaries and add no O3 calls.
+
+## Pass 3 — consistency, overflow, includes and final self-review
+
+- Reviewed both private headers against the public ownership/error contracts.
+  All shared helpers take the explicit owner; no mutable globals, dynamic
+  registration, endpoint layout import, CGL dependency or library-to-app edge.
+- Checked three control transitions, independent class ACKs, held event IDs,
+  retired worker IDs, exact PID checks, early exit, ECHILD, EOF proof retention,
+  and route references. No counter or socket fact grants durable execution.
+- Checked constructor products/sums, uint64_t startup arithmetic, numeric NUL
+  space and exact argv count. Installed role partition cannot inflate child
+  admission; generic UINT32_MAX child capacity is preserved. Byte-ring wrap is
+  bounded; overflow must reject before storage mutation or fork.
+- Checked NULL/transactional output/error declarations on the five helpers and
+  public constructor clarification. No private allocator silently expands
+  service work. API bodies, native syscall behavior and memory cleanup remain
+  unimplemented work and cannot be inferred from syntax checks.
+- GCC and Clang each compiled public orchestrator.h and both private headers
+  standalone under C11 and the project strict warning set plus Werror. Six
+  invocations passed. Layout compile included static assertions for uint64_t
+  storage, UINT32_MAX+2=4294967297,15 argv entries,21 numeric bytes and CGH189.
+  These assertions check expression/type width on this host; no32-bit runtime
+  execution is claimed. Compiler input used stdin, not a new source body.
+- `git diff --check 25a5936` passed. Local evidence is
+  `build-layout/header-checks.log`. No all-target build, CMake change, sanitizer
+  run or executable scenario acceptance was attempted during dependency repair.
+
+The additional self-review retraced A/B/C after pass2 and found no remaining
+layout gap. A different critic must review the final tree, including the public
+capacity/error prose and supported installed profile, before this layout is
+accepted. O2 finalization separately gates O3 bodies. Neither this document nor
+the three design commits closes those gates or P release acceptance.
