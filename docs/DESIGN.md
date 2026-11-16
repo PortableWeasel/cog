@@ -965,3 +965,7 @@ of their copied transport ownership. `REAL_CLIENT_CONTROL_SEND_OWNERSHIP.md`
 one-way copied-send retirement, and separate unchanged operation deadlines. The
 private lane/PROFILE metadata makes that distinction explicit without new wire
 kinds, buffers, runtime allocations, process rebinding, or semantic ACK shortcuts.
+
+Generic retained response delivery additionally has an independent selector under
+`REAL_CLIENT_SEND_REPLY_RETENTION.md` (81431a3), so throttling cannot silently lose
+a re-armed reply or misuse a still-pending semantic request flag.
