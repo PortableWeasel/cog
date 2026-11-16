@@ -71,7 +71,9 @@ struct cog_cli_host_runtime {
     cli_host_reservations_t bounds;
     cog_result_t primary;
     bool begun, done, shutdown, in_step, admission_frozen, coordinator_failed;
-    bool control_drive_ended; /**< Core driver retired; independent drain may remain. */
+    bool control_drive_ended; /**< Set after the sole drive_end call on a done
+       core (including fatal return). Thereafter never step/end/restart that
+       core; executor/native cleanup continues independently until runtime done. */
     uint64_t now_ms, shutdown_deadline_ms, runtime_incarnation;
     uint64_t next_client_lease, next_group, next_reservation, next_nonce;
     uint64_t request_credit_used, request_credit_held;
@@ -116,7 +118,11 @@ struct cog_cli_worker_host {
     bool stepped; /**< First valid step began; distinguishes never-stepped close. */
     cog_result_t primary;
     uint64_t runtime_incarnation, now_ms, shutdown_deadline_ms;
-    uint64_t next_heartbeat_ms, startup_deadline_ms; /**< Independent native timers. */
+    uint64_t next_heartbeat_ms, startup_deadline_ms;
+    /**< Checked monotonic native schedule, separate from shutdown/executor clocks.
+       Startup deadline fixed before first service, never extended by duplicates
+       or partial bootstrap. Heartbeat deadline advances only when its reserved
+       native frame is accepted for transport; backpressure preserves that frame. */
     cog_agent_id_t opened_agent_high_watermark;
     size_t round_robin, executor_capacity;
     cli_executor_slot_t *executors;

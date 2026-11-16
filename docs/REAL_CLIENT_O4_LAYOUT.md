@@ -308,3 +308,20 @@ Coordinator control_drive_ended records the one-time end of its control core;
 whole-runtime begun/done and coordinator_failed cannot represent this fact while
 successful or failed core termination is followed by independent owned cleanup.
 Bodies consuming these fields remain gated on an independent header-only review.
+
+Pass2 traces: constructor starts stepped=false; first valid outer worker step
+sets it before driving. Native connection/bootstrap retains its original finite
+startup deadline through partial readiness, duplicates and queue pressure; no
+executor can start merely because handshake progresses. Native heartbeat retains
+its reserved immutable frame under AGAIN, independently of application lanes;
+only transport acceptance schedules its next bounded due time, never readiness
+polling. Parent disconnect/signal follows existing shutdown/drain and does not
+reset startup or extend a task deadline. Checked clock arithmetic and finite
+max_wait combine all relevant deadlines without interpreting zero as an overdue
+active timer when its phase has not started.
+
+Coordinator core done/fatal: call drive_end once, latch control_drive_ended even
+when drive_end returns the retained fatal status, preserve first error, and stop
+all later core steps/end/restart. Separate started executor/provider/native drain
+continues, then normal borrowed-session/guard/registry cleanup. Successful stop
+needs the same flag: coordinator_failed is not a substitute for driver retirement.
