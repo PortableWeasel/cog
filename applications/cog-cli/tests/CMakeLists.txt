@@ -114,6 +114,7 @@ foreach(test IN LISTS COG_APP_SCENARIO_TESTS)
 endforeach()
 
 target_link_libraries(test_11_ui_reconnect PRIVATE cog::cli)
+target_link_options(test_11_ui_reconnect PRIVATE -Wl,--wrap=cog_ipc_endpoint_send)
 target_link_libraries(test_12_rate_limit PRIVATE cog::cli)
 target_link_libraries(test_13_session_persistence PRIVATE cog::core)
 target_link_libraries(test_14_conversation_fork PRIVATE cog::core)
