@@ -49,6 +49,28 @@ checked before replacing its disconnected link. Server replies COMMAND_RESULT
 with its runtime and canonical snapshot/replay state. Wrong generation receives
 GAP/full resync rather than executing input to rebuild display.
 
+HELLO has its own bounded per-client original/final-result/ACK-of-ACK receipt,
+separate from effect-bearing COMMAND/CANCEL records even though it uses COMMAND
+lane numbering. A higher HELLO request/ACK is NOT successor/consumption proof for
+any earlier effect command. The same logical client may reconnect while such a
+command awaits its final result; retain the exact original command bytes/IDs and
+answer only its own final-result/ACK exchange. This is an exception to generic
+higher-wire retirement, not a new stream/lane/wire layout. An initial HELLO retry
+before its final exchange completes retains its original nonce/bytes; known
+reconnect after that uses exact assigned lease/session/runtime. Known active
+request/reply lookup occurs before retired-watermark checks. Expired role/lease
+never makes HELLO a fresh effect authorization, and no receipt cache grows.
+
+Exact duplicate HELLO repeats its cached result. Final HELLO result receives
+COMMAND_ACK and the same checked ACK-of-ACK as other final results; these consume
+only the HELLO cache. The client establishes server/session/lease from the checked
+HELLO result, but admits fresh mutation input only after its HELLO cleanup and a
+fully decoded/rendered view. Lost/late replies match their original request first;
+a stale HELLO result cannot rebind a view, release a command slot or grant a role.
+Retire acknowledged HELLO proof on a subsequent admitted HELLO, independently of
+ordinary mutation proof. Full client/receipt/identity bounds refuse admission;
+no wrap, role reset or implicit command resend under a new identity.
+
 All other envelopes require the exact discovered runtime. UI/local traffic has
 worker/owner/agent/attempt0. Worker frames carry the exact managed identity. Agent
 traffic additionally carries immutable actual owner_peer/agent/attempt from
