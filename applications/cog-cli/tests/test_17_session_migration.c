@@ -58,6 +58,11 @@ static uint64_t bytes_hash(uint64_t hash,const void *data,size_t length)
 {
     const unsigned char *p=data;for(size_t i=0U;i<length;++i){hash^=p[i];hash*=UINT64_C(1099511628211);}return hash;
 }
+static uint64_t text_hash(uint64_t hash,const char *text)
+{
+    size_t length=text==NULL?SIZE_MAX:strlen(text);hash=bytes_hash(hash,&length,sizeof(length));
+    return text==NULL?hash:bytes_hash(hash,text,length);
+}
 static cog_result_t history_hash(cog_session_t *session,uint64_t *hash,size_t *users,size_t *tools)
 {
     const cog_message_t *messages=NULL;size_t count=0U;
@@ -67,9 +72,22 @@ static cog_result_t history_hash(cog_session_t *session,uint64_t *hash,size_t *u
     for(size_t i=0U;i<count;++i){const cog_message_t *m=&messages[i];
         *hash=bytes_hash(*hash,&m->role,sizeof(m->role));*hash=bytes_hash(*hash,&m->status,sizeof(m->status));
         *hash=bytes_hash(*hash,&m->content_len,sizeof(m->content_len));*hash=bytes_hash(*hash,m->content,m->content_len);
+        *hash=text_hash(*hash,m->name);*hash=text_hash(*hash,m->tool_call_id);
         *hash=bytes_hash(*hash,&m->tool_call_count,sizeof(m->tool_call_count));
+        *hash=bytes_hash(*hash,&m->opaque_count,sizeof(m->opaque_count));
+        for(size_t j=0U;j<m->opaque_count;++j){const cog_message_opaque_t *o=&m->opaque[j];
+            *hash=text_hash(*hash,o->namespace_id);*hash=text_hash(*hash,o->format);
+            *hash=bytes_hash(*hash,&o->size,sizeof(o->size));*hash=bytes_hash(*hash,o->data,o->size);}
+        *hash=bytes_hash(*hash,&m->usage.tokens_known,sizeof(m->usage.tokens_known));
+        *hash=bytes_hash(*hash,&m->usage.input_tokens,sizeof(m->usage.input_tokens));
+        *hash=bytes_hash(*hash,&m->usage.output_tokens,sizeof(m->usage.output_tokens));
+        *hash=bytes_hash(*hash,&m->usage.reasoning_tokens_known,sizeof(m->usage.reasoning_tokens_known));
+        *hash=bytes_hash(*hash,&m->usage.reasoning_tokens,sizeof(m->usage.reasoning_tokens));
+        *hash=bytes_hash(*hash,&m->usage.cost_known,sizeof(m->usage.cost_known));
+        *hash=bytes_hash(*hash,&m->usage.cost,sizeof(m->usage.cost));*hash=text_hash(*hash,m->usage.currency);
         for(size_t j=0U;j<m->tool_call_count;++j){const cog_message_tool_call_t *t=&m->tool_calls[j];
-            *hash=bytes_hash(*hash,t->id,strlen(t->id));*hash=bytes_hash(*hash,t->name,strlen(t->name));
+            *hash=text_hash(*hash,t->id);*hash=text_hash(*hash,t->name);
+            *hash=bytes_hash(*hash,&t->arguments_len,sizeof(t->arguments_len));
             *hash=bytes_hash(*hash,t->arguments,t->arguments_len);}
         if(m->role==COG_MESSAGE_ROLE_USER)++*users;
         if(m->role==COG_MESSAGE_ROLE_TOOL)++*tools;
