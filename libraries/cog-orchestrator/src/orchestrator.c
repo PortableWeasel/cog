@@ -142,7 +142,8 @@ static void native_terminal(cog_orchestrator_t *o,orch_worker_t *w,bool lost)
     if(!w->ready) release_hold(o,w,ORCH_CONTROL_READY);
     if(!w->bound_once) release_hold(o,w,ORCH_CONTROL_DISCONNECTED);
     (void)remember(o,orch_control_capture(o,w,ORCH_CONTROL_FINAL,lost?COG_ERROR_IO:COG_OK));
-    w->replacement_pending=o->config.auto_replace && !o->shutting_down && !w->stop_requested;
+    w->replacement_pending=o->config.auto_replace && !o->shutting_down &&
+        (w->replacement_pending || !w->stop_requested);
 }
 cog_result_t orch_native_check(cog_orchestrator_t *o,orch_worker_t *w)
 {
@@ -286,10 +287,10 @@ cog_result_t cog_orchestrator_spawn(cog_orchestrator_t *o,const char *binary,cog
 }
 static void request_stop(cog_orchestrator_t *o,orch_worker_t *w,uint64_t deadline)
 {
-    if(!w->stop_requested || deadline<w->stop_deadline_ms) {
-        w->stop_deadline_ms=deadline;w->terminate_deadline_ms=deadline;
-        /* A previously queued shutdown retains its original wire deadline. */
-        if(!w->shutdown_queued) w->shutdown_length=0U;
+    if(!w->stop_requested) w->terminate_deadline_ms=deadline;
+    else if(deadline<w->terminate_deadline_ms) w->terminate_deadline_ms=deadline;
+    if(!w->shutdown_queued && (!w->stop_requested || deadline<w->stop_deadline_ms)) {
+        w->stop_deadline_ms=deadline;w->shutdown_length=0U;
     }
     w->stop_requested=true;w->replacement_pending=false;(void)o;
 }
@@ -496,8 +497,8 @@ cog_result_t orch_link_step(cog_orchestrator_t *o,orch_link_t *link,uint64_t now
     if(o==NULL || link==NULL || deadline==NULL) return COG_ERROR_NULL_PTR;
     *deadline=UINT64_MAX;
     if(link->state==ORCH_LINK_FREE) return COG_ERROR_AGAIN;
-    if(!link->proof_valid && now>=link->handshake_deadline_ms) { link_close(o,link,COG_ERROR_TIMEOUT);return COG_OK; }
-    if(!link->proof_valid) *deadline=link->handshake_deadline_ms;
+    if(link->worker==SIZE_MAX && now>=link->handshake_deadline_ms) { link_close(o,link,COG_ERROR_TIMEOUT);return COG_OK; }
+    if(link->worker==SIZE_MAX) *deadline=link->handshake_deadline_ms;
     cog_result_t rc;
     if(link->staged_frame_valid) {
         rc=process_frame(o,link);
@@ -577,10 +578,12 @@ static cog_result_t worker_step(cog_orchestrator_t *o,orch_worker_t *w)
     if(!w->ready && o->now_ms>=w->startup_deadline_ms && !w->stop_requested)
         request_stop(o,w,o->now_ms);
     w->health=health_at(o,w);
-    if(w->health==COG_HEALTH_DEAD && !w->stop_requested)
+    if(w->health==COG_HEALTH_DEAD && !w->stop_requested) {
         request_stop(o,w,deadline_add(o->now_ms,o->ack_timeout_ms));
+        w->replacement_pending=o->config.auto_replace && !o->shutting_down;
+    }
     if(!w->stop_requested) return COG_OK;
-    if(o->now_ms>=w->stop_deadline_ms) {
+    if(o->now_ms>=w->terminate_deadline_ms) {
         if(!w->kill_sent) {
             rc=orch_native_signal(o,w,SIGKILL);
             if(rc==COG_OK && w->native_state==ORCH_NATIVE_OWNED) w->kill_sent=true;
@@ -646,11 +649,18 @@ cog_result_t cog_orchestrator_service(cog_orchestrator_t *o,uint64_t now,bool *d
         orch_worker_t *w=&o->workers[i];if(!w->used) continue;
         if(w->native_state==ORCH_NATIVE_OWNED) {
             disposed=false;
-            uint64_t due=w->stop_requested?w->stop_deadline_ms:!w->ready?w->startup_deadline_ms:
+            uint64_t due=w->stop_requested?w->terminate_deadline_ms:!w->ready?w->startup_deadline_ms:
                 deadline_add(w->last_heartbeat_ms,o->config.health_interval_ms);
             if(due<next) next=due;
         }
         if(w->stop_requested && w->kill_sent) timed_out=true;
+    }
+    /* Timers belong to every retained link, even outside this service quantum.
+     * Native proof alone is not HELLO readiness and cannot hold a slot forever. */
+    for(size_t i=0U;i<o->bounds.links;++i) {
+        const orch_link_t *link=&o->links[i];
+        if(link->state!=ORCH_LINK_FREE && link->worker==SIZE_MAX && link->handshake_deadline_ms<next)
+            next=link->handshake_deadline_ms;
     }
     o->shutdown_done=o->shutting_down && disposed;
     if(o->shutdown_done && timed_out && o->primary==COG_OK) (void)remember(o,COG_ERROR_TIMEOUT);
