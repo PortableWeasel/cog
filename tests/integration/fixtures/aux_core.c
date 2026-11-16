@@ -1,152 +1,95 @@
-/**
- * @file aux_core.c
- * @brief Test fixture: a minimal auxiliary-core process for the
- *        orchestrator integration tests.
- *
- * Connects to the orchestrator's listener socket (argv[1]) and speaks the
- * orchestrator control protocol:
- *
- *   aux -> orch : "hello <pid>", "heartbeat <active>", "session <id>",
- *                 "ack"
- *   orch -> aux : "shutdown"
- *
- * Behaviour is selected by environment variables so the same binary can
- * play every role the tests need:
- *
- *   COG_AUX_MODE         hb (default) | silent | crash | noack
- *   COG_AUX_SESSION      optional session id to register at startup
- *   COG_AUX_INTERVAL_MS  heartbeat interval in ms (default 50)
- *
- * Modes:
- *   - hb:     send heartbeats every interval; ack shutdown and exit.
- *   - silent: connect but never heartbeat; ack shutdown and exit.
- *   - crash:  send one heartbeat then exit(1) without acking (crash).
- *   - noack:  send heartbeats; on shutdown exit without acking (so the
- *             orchestrator must force-kill / time out).
- *   - ackhang: send heartbeats; on shutdown ack but then sleep forever
- *             without exiting (probes whether stop/shutdown hang waiting
- *             for a process that acknowledged but never exits).
- *
- * This fixture is owned exclusively by the orchestrator integration test;
- * it never touches processes outside the test.
+/** @file aux_core.c
+ * @brief Owned binary-CGW worker fixture. No environment-selected authority.
+ * FXM1 application frames select test behavior only after authenticated READY:
+ * opcode1 crash,2 noack,3 ackhang,4 load; byte5 is child load. Echo receipts
+ * prove command receipt before a test requests native stop. They are not CGW.
  */
-
 #define _POSIX_C_SOURCE 200809L
-
-#include "cog/ipc.h"
-
-#include <stdio.h>
+#include <cog/orchestrator.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
-/** Send a NUL-terminated string as a framed message. */
-static int
-send_str(cog_ipc_endpoint_t *ep, const char *text)
+static uint64_t now_ms(void)
 {
-    cog_ipc_message_t msg;
-    size_t len = strlen(text);
-    cog_result_t rc;
-
-    rc = cog_ipc_message_new(&msg, len + 1U);
-    if (rc != COG_OK) {
-        return -1;
-    }
-    (void)memcpy(msg.data, text, len);
-    msg.len = len;
-    rc = cog_ipc_endpoint_send(ep, &msg);
-    (void)cog_ipc_message_free(&msg);
-    return (rc == COG_OK) ? 0 : -1;
+    struct timespec ts;
+    if(clock_gettime(CLOCK_MONOTONIC,&ts)!=0) abort();
+    return (uint64_t)ts.tv_sec*1000U+(uint64_t)ts.tv_nsec/1000000U;
 }
-
-int
-main(int argc, char **argv)
+static bool number(const char *s,uint64_t *out)
 {
-    const char *path;
-    const char *mode;
-    const char *session;
-    const char *interval_env;
-    int interval;
-    cog_ipc_endpoint_t *ep = NULL;
-    cog_peer_id_t peer_id = COG_PEER_ID_INVALID;
-    char hello[64];
-
-    if (argc < 2) {
-        return 2;
+    uint64_t n=0;
+    if(*s=='\0') return false;
+    for(;*s!='\0';++s) {
+        if(*s<'0'||*s>'9'||n>(UINT64_MAX-(uint64_t)(*s-'0'))/10U) return false;
+        n=n*10U+(uint64_t)(*s-'0');
     }
-    path = argv[1];
-    mode = getenv("COG_AUX_MODE");
-    if (mode == NULL || mode[0] == '\0') {
-        mode = "hb";
-    }
-    session = getenv("COG_AUX_SESSION");
-    interval_env = getenv("COG_AUX_INTERVAL_MS");
-    interval = 50;
-    if (interval_env != NULL && interval_env[0] != '\0') {
-        interval = atoi(interval_env);
-    }
-    if (interval < 1) {
-        interval = 1;
-    }
-
-    if (cog_ipc_endpoint_new(&ep) != COG_OK) {
-        return 2;
-    }
-    if (cog_ipc_endpoint_connect(ep, path, &peer_id) != COG_OK) {
-        (void)cog_ipc_endpoint_free(ep);
-        return 2;
-    }
-
-    (void)snprintf(hello, sizeof(hello), "hello %ld\n", (long)getpid());
-    (void)send_str(ep, hello);
-    if (session != NULL && session[0] != '\0') {
-        char buf[256];
-
-        (void)snprintf(buf, sizeof(buf), "session %s\n", session);
-        (void)send_str(ep, buf);
-    }
-
-    if (strcmp(mode, "crash") == 0) {
-        (void)send_str(ep, "heartbeat 0\n");
-        (void)cog_ipc_endpoint_free(ep);
-        return 1;
-    }
-
-    for (;;) {
-        int revents = 0;
-        cog_result_t rc;
-
-        rc = cog_ipc_endpoint_poll(ep, COG_IPC_POLL_IN, interval, &revents);
-        if (rc == COG_OK && (revents & COG_IPC_POLL_IN) != 0) {
-            cog_ipc_message_t msg;
-
-            if (cog_ipc_message_new(&msg, 256U) == COG_OK) {
-                rc = cog_ipc_endpoint_recv(ep, &msg);
-                if (rc == COG_OK && msg.len >= 8U &&
-                    memcmp(msg.data, "shutdown", 8U) == 0) {
-                    if (strcmp(mode, "noack") != 0) {
-                        (void)send_str(ep, "ack\n");
-                    }
-                    (void)cog_ipc_message_free(&msg);
-                    if (strcmp(mode, "ackhang") == 0) {
-                        /* Acknowledge shutdown but never exit: the
-                         * orchestrator must not block forever waiting for
-                         * this process to terminate. */
-                        for (;;) {
-                            (void)sleep(3600);
-                        }
-                    }
-                    break;
+    *out=n;return n!=0;
+}
+static cog_result_t send_control(cog_ipc_endpoint_t *ep,cog_worker_control_t *control)
+{
+    unsigned char bytes[37];size_t required=0;
+    cog_result_t rc=cog_orchestrator_worker_encode(control,bytes,sizeof(bytes),&required);
+    if(rc!=COG_OK) return rc;
+    cog_ipc_message_t message={.data=bytes,.capacity=sizeof(bytes),.len=required};
+    return cog_ipc_endpoint_send(ep,&message);
+}
+int main(int argc,char **argv)
+{
+    static const char *const flags[]={"--control-socket","--worker-incarnation","--worker-number","--parent-pid","--executor-slots","--frame-bytes"};
+    uint64_t values[5];cog_ipc_endpoint_t *ep=NULL;
+    if(argc!=14||strcmp(argv[1],"--worker")!=0) return 2;
+    for(size_t i=0;i<6;++i) if(strcmp(argv[2+i*2],flags[i])!=0) return 2;
+    for(size_t i=0;i<5;++i) if(!number(argv[5+i*2],&values[i])) return 2;
+    if(values[2]!=(uint64_t)getppid()||values[3]<3||values[3]>18||values[4]>UINT32_MAX||values[4]<37) return 2;
+    if(getenv("COG_AUX_MODE")!=NULL||getenv("COG_AUX_SESSION")!=NULL) return 2;
+    cog_ipc_endpoint_config_t cfg={0};cfg.max_frame_bytes=(size_t)values[4];cfg.wipe_buffers=true;
+    if(cog_ipc_endpoint_new_ex(&ep,&cfg)!=COG_OK) return 2;
+    cog_result_t rc=cog_ipc_endpoint_connect(ep,argv[3],NULL);
+    if(rc!=COG_OK&&rc!=COG_ERROR_AGAIN) { (void)cog_ipc_endpoint_free(ep);return 2; }
+    cog_worker_control_t control={.kind=COG_WORKER_HELLO,.worker={values[0],values[1]}};
+    bool hello=false,closing=false;unsigned mode=0;uint32_t active=0;
+    uint64_t next_heartbeat=0,exit_at=UINT64_MAX,start=now_ms();
+    unsigned char bytes[256];cog_ipc_message_t message={.data=bytes,.capacity=sizeof(bytes)};
+    for(;;) {
+        uint64_t now=now_ms(),deadline;
+        rc=cog_ipc_endpoint_service(ep,now,&deadline);
+        if(rc!=COG_OK&&rc!=COG_ERROR_AGAIN) break;
+        if(!hello) {
+            rc=send_control(ep,&control);
+            if(rc==COG_OK) { hello=true;next_heartbeat=now; }
+            else if(rc!=COG_ERROR_AGAIN&&rc!=COG_ERROR_INVALID_STATE) break;
+        }
+        if(hello&&!closing&&now>=next_heartbeat) {
+            control.kind=COG_WORKER_HEARTBEAT;control.active_subagents=active;
+            rc=send_control(ep,&control);
+            if(rc==COG_OK) next_heartbeat=now+40;
+            else if(rc!=COG_ERROR_AGAIN) break;
+        }
+        message.len=0;rc=cog_ipc_endpoint_recv(ep,&message);
+        if(rc==COG_OK) {
+            if(message.len==6&&memcmp(bytes,"FXM1",4)==0) {
+                mode=bytes[4];if(mode==4) active=bytes[5];
+                if(cog_ipc_endpoint_send(ep,&message)!=COG_OK) break;
+                if(mode==1) exit_at=now+50;
+                if(mode==2||mode==3) (void)signal(SIGTERM,SIG_IGN);
+            } else {
+                cog_worker_control_t request;
+                if(cog_orchestrator_worker_decode(bytes,message.len,&request)!=COG_OK||
+                   request.kind!=COG_WORKER_SHUTDOWN||request.worker.incarnation!=values[0]||request.worker.number!=values[1]) break;
+                closing=true;
+                if(mode!=2) {
+                    request.kind=COG_WORKER_SHUTDOWN_ACK;request.outcome=COG_OK;
+                    if(send_control(ep,&request)!=COG_OK) break;
                 }
-                (void)cog_ipc_message_free(&msg);
+                if(mode!=2&&mode!=3) exit_at=now+50;
             }
-        }
-        if (strcmp(mode, "hb") == 0 || strcmp(mode, "noack") == 0 ||
-            strcmp(mode, "ackhang") == 0) {
-            (void)send_str(ep, "heartbeat 0\n");
-        }
+        } else if(rc!=COG_ERROR_AGAIN) break;
+        if(now>=exit_at) { (void)cog_ipc_endpoint_free(ep);return mode==1?1:0; }
+        if(now-start>15000) break;
+        (void)nanosleep(&(struct timespec){0,1000000L},NULL);
     }
-
-    (void)cog_ipc_endpoint_free(ep);
-    return 0;
+    (void)cog_ipc_endpoint_free(ep);return 2;
 }
