@@ -174,3 +174,31 @@ and G++14/Clang++19 C++11 standalone plus combined/reversed include checks pass
 for view_internal.h, coordinated host_internal.h and control.h. Diff-check clean;
 only four private-header/doc paths plus this layout document changed since base,
 no .c/shared CMake/config/accepted-profile edits. Independent final gate pending.
+
+## Independently approved O8 component integration
+
+Independent source review1672a1c cycle2 approved exact
+3a89a17823e8dc38d9ad2449d489bb0650565702 after checked-clock defect148980a.
+No-ff merge58cfe5181f61d39b9aa30835db8a7bb1d2f6ba29 retains that source/test
+history atop O integrationd17c924, including approved O2 and O3 private headers.
+Merge was conflict-free. The coordinated per-client HELLO caches and retirement
+prose coexist with those interfaces; no public ABI/shared CMake/runtime body was
+changed by integration.
+
+Postmerge real projection/replay/codec/native Unix-peer fixtures PASS with all
+strict warnings/Werror under GCC and Clang O3/NDEBUG, and Clang ASan+UBSan with
+leak detection. Both positive owner fixtures and deliberate assertion-negative
+controls pass in each profile. Twenty standalone/combined/reversed GCC/Clang C11
+and G++/Clang++ C++11 checks also pass for view_internal.h, host_internal.h,
+control.h and combined composition_internal.h joins. Exact commands/output are
+retained in integrate-headless/build-o8-postmerge/{gcc,clang,asan,headers}.log.
+Diff-check and tracked tree are clean at the merge. All generated files/TMPDIR
+are inside checkout build* directories; no heavy dependency/profile build occurs.
+
+Close only O8 source/review/scoped integration/finalize and parent component
+9d57bf5. This is not an installed O4 coordinator/client end-to-end acceptance,
+full38/O/P gate, shared app build registration, or main merge. The additive
+registration remains in tests/headless-view/README.md for the owning O4 lane.
+Recovered build-dependencies and main are preserved. Writer/review trees retain
+their referenced audit logs pending root-managed archival; integration has its
+own complete postmerge evidence above.
