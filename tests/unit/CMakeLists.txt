@@ -279,3 +279,32 @@ target_enable_warnings(test_ipc_readiness)
 target_link_options(test_ipc_readiness PRIVATE -Wl,--wrap=poll,--wrap=connect,--wrap=send)
 add_test(NAME unit-ipc-readiness COMMAND test_ipc_readiness)
 set_tests_properties(unit-ipc-readiness PROPERTIES LABELS "unit;ipc" TIMEOUT 20)
+
+# O2 manual/run engine equivalence and registry execution-session lifetime.
+add_executable(test_core_cooperative test_core_cooperative.c)
+target_link_libraries(test_core_cooperative PRIVATE cog::core)
+target_enable_warnings(test_core_cooperative)
+target_link_options(test_core_cooperative PRIVATE -Wl,--wrap=clock_gettime)
+add_test(NAME unit-core-cooperative COMMAND test_core_cooperative)
+set_tests_properties(unit-core-cooperative PROPERTIES LABELS "unit;core" TIMEOUT 20)
+
+# O2 captures real kernel proof before further I/O despite queue/arena pressure.
+add_executable(test_core_proof test_core_proof.c)
+target_link_libraries(test_core_proof PRIVATE cog::core)
+target_enable_warnings(test_core_proof)
+target_link_options(test_core_proof PRIVATE
+    -Wl,--wrap=cog_ipc_endpoint_peer_info,--wrap=getsockopt)
+add_test(NAME unit-core-proof COMMAND test_core_proof)
+set_tests_properties(unit-core-proof PROPERTIES LABELS "unit;core;ipc" TIMEOUT 20)
+
+# O2 allocation fault/positive controls use real libraries and keep optimizer oracles.
+add_executable(test_core_reservations test_core_reservations.c)
+target_link_libraries(test_core_reservations PRIVATE cog::core)
+target_enable_warnings(test_core_reservations)
+target_link_options(test_core_reservations PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_core_reservations PRIVATE
+        -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc)
+endif()
+add_test(NAME unit-core-reservations COMMAND test_core_reservations)
+set_tests_properties(unit-core-reservations PROPERTIES LABELS "unit;core" TIMEOUT 20)

@@ -12,69 +12,24 @@
 #include <string.h>
 #include <time.h>
 
-typedef struct core_pending_owner {
-    char id[128];
-    size_t count;
-    bool leased; /**< An injected copy reserves this owner and one restore slot. */
-} core_pending_owner_t;
-typedef struct core_pending_item {
-    size_t length;
-} core_pending_item_t;
-typedef struct core_slice {
-    size_t offset, length, charge;
-} core_slice_t;
-struct cog_core {
-    cog_session_t *session;
-    const cog_dispatch_entry_t *dispatch_table;
-    size_t dispatch_table_size;
-    const cog_tool_table_t *tool_table;
-    cog_event_queue_t *event_queue;
-    cog_event_queue_t *ipc_events;
-    bool prefer_ipc, active;
-    cog_wait_fn wait_fn;
-    void *wait_arg;
-    cog_service_fn service_fn;
-    void *service_arg;
-    cog_idle_fn idle_fn;
-    void *idle_arg;
-    size_t service_interval;
-    uint32_t max_idle_wait_ms;
-    void *user;
-    cog_ipc_endpoint_t *ipc_endpoint;
-    cog_peer_id_t local_peer_id;
-    int ipc_is_listener;
-    cog_ipc_endpoint_t **ipc_clients;
-    size_t ipc_client_count, ipc_client_capacity, ipc_cursor, ipc_quantum;
-    size_t ipc_max_frame;
-    unsigned char *ipc_arena;
-    size_t ipc_arena_capacity, ipc_arena_head, ipc_arena_tail, ipc_arena_used;
-    core_slice_t *ipc_slices;
-    size_t ipc_slice_capacity, ipc_slice_head, ipc_slice_count;
-    cog_provider_t *provider;
-    cog_obs_t *obs;
-    cog_store_t *store;
-    cog_state_t state;
-    _Atomic bool running, stop_requested;
-    core_pending_owner_t *pending_owners;
-    core_pending_item_t *pending_items;
-    char *pending_text;
-    size_t pending_owner_capacity, pending_per_owner, pending_bytes;
-    char *injected_payload;
-    size_t injected_owner, injected_length;
-    bool injected;
-    cog_agent_registry_t agents;
-};
+#include "core_internal.h"
+
 static size_t core_default(size_t value, size_t fallback)
 {
     return value != 0U ? value : fallback;
 }
-static cog_result_t core_now(uint64_t *now)
+static cog_result_t core_now(cog_core_t *core, uint64_t *now)
 {
     struct timespec time;
-    if (clock_gettime(CLOCK_MONOTONIC, &time) != 0 || time.tv_sec < 0) {
+    if (clock_gettime(CLOCK_MONOTONIC, &time) != 0 || time.tv_sec < 0 ||
+        time.tv_nsec < 0 || time.tv_nsec >= 1000000000L ||
+        (uint64_t)time.tv_sec > (UINT64_MAX - (uint64_t)time.tv_nsec / 1000000U) / 1000U) {
         return COG_ERROR_IO;
     }
     *now = (uint64_t)time.tv_sec * 1000U + (uint64_t)time.tv_nsec / 1000000U;
+    if (core->clock_seen && *now < core->last_now) return COG_ERROR_IO;
+    core->clock_seen = true;
+    core->last_now = *now;
     return COG_OK;
 }
 static cog_result_t core_dispatch(cog_core_t *core, const cog_event_t *event)
@@ -179,12 +134,14 @@ static cog_result_t core_inject_pending(cog_core_t *core)
     return rc;
 }
 static cog_result_t core_ipc_enqueue(cog_core_t *core, cog_event_kind_t kind,
-                                     cog_peer_id_t peer, const void *data,
+                                     const core_peer_t *peer, const void *data,
                                      size_t length)
 {
     cog_event_ipc_t ipc = {0};
     cog_event_t event = {0};
-    ipc.peer = peer;
+    ipc.peer = peer->id;
+    ipc.peer_info_valid = peer->proof_valid;
+    ipc.peer_info = peer->proof;
     ipc.msg_payload = data;
     ipc.msg_payload_len = length;
     event.id = (cog_event_id_t)kind;
@@ -215,26 +172,27 @@ static void core_ipc_release(cog_core_t *core, const void *payload)
 }
 static void core_ipc_remove(cog_core_t *core, size_t index)
 {
-    (void)cog_ipc_endpoint_free(core->ipc_clients[index]);
+    (void)cog_ipc_endpoint_free(core->ipc_clients[index].endpoint);
     --core->ipc_client_count;
     memmove(core->ipc_clients + index, core->ipc_clients + index + 1U,
             (core->ipc_client_count - index) * sizeof(*core->ipc_clients));
+    memset(core->ipc_clients + core->ipc_client_count, 0, sizeof(*core->ipc_clients));
     if (core->ipc_cursor > index) {
         --core->ipc_cursor;
     }
 }
-static cog_result_t core_ipc_receive(cog_core_t *core, cog_ipc_endpoint_t *ep)
+static cog_result_t core_ipc_receive(cog_core_t *core, core_peer_t *peer)
 {
     unsigned char dummy;
     cog_ipc_message_t probe = {&dummy, 0U, 0U};
-    cog_peer_id_t peer = 0U;
+    cog_ipc_endpoint_t *ep = peer->endpoint;
     cog_result_t rc;
     size_t offset, charge, padding = 0U, slot;
     core_slice_t *slice;
     if (cog_event_queue_is_full(core->ipc_events)) {
         return COG_ERROR_AGAIN;
     }
-    (void)cog_ipc_endpoint_get_peer_id(ep, &peer);
+    (void)cog_ipc_endpoint_get_peer_id(ep, &peer->id);
     rc = cog_ipc_endpoint_recv(ep, &probe);
     if (rc == COG_OK) {
         return core_ipc_enqueue(core, COG_EVENT_IPC_MESSAGE, peer, NULL, 0U);
@@ -281,87 +239,101 @@ static cog_result_t core_ipc_receive(cog_core_t *core, cog_ipc_endpoint_t *ep)
     core->ipc_arena_tail = (offset + probe.len) % core->ipc_arena_capacity;
     return COG_OK;
 }
-static cog_result_t core_ipc_step(cog_core_t *core, uint64_t now, uint64_t *deadline)
+static cog_result_t core_peer_capture(core_peer_t *peer)
 {
-    size_t unit;
-    if (core->ipc_endpoint == NULL || core->ipc_is_listener == 0) {
-        return COG_OK;
+    if (peer->proof_valid) return COG_OK;
+    if (cog_ipc_endpoint_get_peer_id(peer->endpoint, &peer->id) != COG_OK)
+        return COG_ERROR_AGAIN;
+    cog_ipc_peer_info_t info;
+    cog_result_t rc = cog_ipc_endpoint_peer_info(peer->endpoint, peer->id, &info);
+    if (rc == COG_OK) { peer->proof = info; peer->proof_valid = true; }
+    return rc;
+}
+static void core_peer_remove(cog_core_t *core, size_t index)
+{
+    if (core->ipc_is_listener == 1) core_ipc_remove(core, index);
+    else {
+        (void)cog_ipc_endpoint_disconnect(core->ipc_endpoint);
+        memset(&core->ipc_attached, 0, sizeof(core->ipc_attached));
+        core->ipc_is_listener = 0;
     }
-    for (unit = 0U; unit < core->ipc_quantum; ++unit) {
-        cog_ipc_endpoint_t *ep;
-        cog_result_t rc;
-        uint64_t next = UINT64_MAX;
+}
+static cog_result_t core_ipc_step(cog_core_t *core, uint64_t *deadline)
+{
+    if (core->ipc_endpoint == NULL || core->ipc_is_listener == 0) return COG_OK;
+    for (size_t unit = 0U; unit < core->ipc_quantum; ++unit) {
+        if (core->ipc_is_listener == 0) break;
+        core_peer_t *peer;
+        cog_result_t rc, service_rc;
+        uint64_t next = UINT64_MAX, now;
         size_t index = 0U;
-        if (atomic_load_explicit(&core->stop_requested, memory_order_acquire)) {
-            break;
-        }
-        /* Rotate acceptance with existing peers; a permanently readable peer
-         * cannot monopolize the step and queue saturation never consumes ingress. */
+        if (atomic_load_explicit(&core->stop_requested, memory_order_acquire)) break;
+        rc = core_now(core, &now);
+        if (rc != COG_OK) return rc;
         if (core->ipc_is_listener == 1 && core->ipc_cursor >= core->ipc_client_count) {
             cog_ipc_endpoint_t *client = NULL;
-            cog_peer_id_t peer = 0U;
+            cog_peer_id_t id = 0U;
             core->ipc_cursor = 0U;
-            if (!cog_event_queue_is_full(core->ipc_events) &&
+            if ((core->require_peer_credentials || !cog_event_queue_is_full(core->ipc_events)) &&
                 core->ipc_client_count < core->ipc_client_capacity) {
-                rc = cog_ipc_endpoint_accept(core->ipc_endpoint, &client, &peer);
+                rc = cog_ipc_endpoint_accept(core->ipc_endpoint, &client, &id);
                 if (rc == COG_OK) {
-                    core->ipc_clients[core->ipc_client_count++] = client;
-                    rc =
-                        core_ipc_enqueue(core, COG_EVENT_IPC_CONNECTED, peer, NULL, 0U);
-                    assert(rc == COG_OK);
+                    peer = &core->ipc_clients[core->ipc_client_count++];
+                    peer->endpoint = client; peer->id = id;
+                    if (!core->require_peer_credentials) {
+                        rc = core_ipc_enqueue(core, COG_EVENT_IPC_CONNECTED, peer, NULL, 0U);
+                        assert(rc == COG_OK); peer->connected_queued = true;
+                    }
                 }
-                if (rc != COG_OK && rc != COG_ERROR_AGAIN) {
-                    return rc;
-                }
+                if (rc != COG_OK && rc != COG_ERROR_AGAIN) return rc;
             }
             if (core->ipc_client_count == core->ipc_client_capacity) {
                 rc = cog_ipc_internal_refuse(core->ipc_endpoint);
-                if (rc != COG_OK && rc != COG_ERROR_AGAIN) {
-                    return rc;
-                }
+                if (rc != COG_OK && rc != COG_ERROR_AGAIN) return rc;
             }
-            if (core->ipc_client_count == 0U) {
-                break;
-            }
+            if (core->ipc_client_count == 0U) break;
             continue;
         }
         if (core->ipc_is_listener == 1) {
-            index = core->ipc_cursor++;
-            ep = core->ipc_clients[index];
-        } else {
-            ep = core->ipc_endpoint;
+            index = core->ipc_cursor++; peer = &core->ipc_clients[index];
+        } else peer = &core->ipc_attached;
+        /* Already-ready transferred endpoints need proof BEFORE first I/O. */
+        if (core->require_peer_credentials && !peer->proof_valid) {
+            rc = core_peer_capture(peer);
+            if (rc == COG_ERROR_IO || rc == COG_ERROR_UNSUPPORTED) {
+                core_peer_remove(core, index); continue;
+            }
         }
-        rc = cog_ipc_internal_service_one(ep, now, &next);
-        if (next < *deadline) {
-            *deadline = next;
+        service_rc = cog_ipc_internal_service_one(peer->endpoint, now, &next);
+        if (next < *deadline) *deadline = next;
+        if (core->require_peer_credentials && !peer->proof_valid) {
+            /* Mandatory handshake barrier: never gate this capture on queues. */
+            rc = core_peer_capture(peer);
+            if (rc != COG_OK) {
+                if (rc == COG_ERROR_AGAIN &&
+                    (service_rc == COG_OK || service_rc == COG_ERROR_AGAIN)) continue;
+                core_peer_remove(core, index);
+                if (service_rc != COG_OK && service_rc != COG_ERROR_AGAIN &&
+                    service_rc != COG_ERROR_IO) return service_rc;
+                continue;
+            }
         }
-        if (rc != COG_OK && rc != COG_ERROR_AGAIN &&
-            cog_event_queue_is_full(core->ipc_events)) {
-            continue;
+        if (!peer->connected_queued) {
+            if (cog_event_queue_is_full(core->ipc_events)) continue;
+            rc = core_ipc_enqueue(core, COG_EVENT_IPC_CONNECTED, peer, NULL, 0U);
+            if (rc != COG_OK) return rc;
+            peer->connected_queued = true;
         }
-        /* Retained complete frames precede disconnect reporting even if the
-         * service observed EOF after framing them. */
-        rc = core_ipc_receive(core, ep);
-        if (rc == COG_OK || rc == COG_ERROR_AGAIN || rc == COG_ERROR_INVALID_STATE) {
-            continue;
-        }
-        if (cog_event_queue_is_full(core->ipc_events)) {
-            continue;
-        }
-        {
-            cog_peer_id_t peer = 0U;
-            (void)cog_ipc_endpoint_get_peer_id(ep, &peer);
-            (void)core_ipc_enqueue(core, COG_EVENT_IPC_DISCONNECTED, peer, NULL, 0U);
-        }
-        if (core->ipc_is_listener == 1) {
-            core_ipc_remove(core, index);
-        } else {
-            (void)cog_ipc_endpoint_disconnect(ep);
-            core->ipc_is_listener = 0;
-        }
-        if (rc != COG_ERROR_IO) {
-            return rc;
-        }
+        /* Complete retained frames precede ordinary disconnect, using cached proof. */
+        rc = core_ipc_receive(core, peer);
+        /* Terminal framing errors stay latched in the endpoint while complete
+         * RX/event reservations drain; remove that endpoint before returning
+         * its error so explicit rebegin cannot redispatch the same failure. */
+        if (rc == COG_OK || rc == COG_ERROR_AGAIN || rc == COG_ERROR_INVALID_STATE) continue;
+        if (cog_event_queue_is_full(core->ipc_events)) continue;
+        (void)core_ipc_enqueue(core, COG_EVENT_IPC_DISCONNECTED, peer, NULL, 0U);
+        core_peer_remove(core, index);
+        if (rc != COG_ERROR_IO) return rc;
     }
     return COG_OK;
 }
@@ -394,7 +366,8 @@ cog_result_t cog_core_new(cog_core_t **out, const cog_core_config_t *config)
     if (config->session == NULL || config->dispatch_table == NULL ||
         config->dispatch_table_size == 0U ||
         (config->wait_fn != NULL &&
-         (config->service_fn != NULL || config->idle_fn != NULL))) {
+         (config->service_fn != NULL || config->idle_fn != NULL)) ||
+        config->step_event_limit > 1024U) {
         return COG_ERROR_INVALID_ARG;
     }
     core = calloc(1U, sizeof(*core));
@@ -468,10 +441,14 @@ cog_result_t cog_core_new(cog_core_t **out, const cog_core_config_t *config)
     core->idle_fn = config->idle_fn;
     core->idle_arg = config->idle_arg;
     core->service_interval = core_default(config->service_interval, 16U);
+    core->step_event_limit = core_default(config->step_event_limit, 16U);
+    core->require_peer_credentials = config->require_peer_credentials;
     core->max_idle_wait_ms =
         config->max_idle_wait_ms != 0U ? config->max_idle_wait_ms : 10U;
     core->ipc_endpoint = config->ipc_endpoint;
     core->ipc_is_listener = cog_ipc_internal_role(config->ipc_endpoint);
+    core->ipc_attached.endpoint = config->ipc_endpoint;
+    core->ipc_attached.connected_queued = true;
     core->local_peer_id = config->local_peer_id;
     core->provider = config->provider;
     core->obs = config->obs;
@@ -491,9 +468,14 @@ void cog_core_free(cog_core_t *core)
     if (core == NULL) {
         return;
     }
+    assert(core->drive.kind == CORE_DRIVER_NONE && !core->drive.inside_call);
+    core->drive.inside_call = true;
+    cog_event_t discarded;
+    while (cog_event_queue_pop(core->event_queue, &discarded) == COG_OK)
+        cog_agent_intent_dispatched(core, &discarded);
     ((struct cog_session *)core->session)->attached = false;
     for (i = 0U; i < core->ipc_client_count; ++i) {
-        (void)cog_ipc_endpoint_free(core->ipc_clients[i]);
+        (void)cog_ipc_endpoint_free(core->ipc_clients[i].endpoint);
     }
     if (core->ipc_endpoint != NULL) {
         (void)cog_ipc_endpoint_free(core->ipc_endpoint);
@@ -503,129 +485,32 @@ void cog_core_free(cog_core_t *core)
     }
     core_storage_free(core);
 }
-cog_result_t cog_core_run(cog_core_t *core)
+static cog_result_t core_begin(cog_core_t *core, core_driver_kind_t kind)
 {
-    cog_result_t rc = COG_OK;
-    uint64_t deadline = 0U;
-    size_t dispatched = 0U;
-    bool service_due = true;
-    if (core == NULL) {
-        return COG_ERROR_NULL_PTR;
-    }
-    if (core->active) {
+    if (core == NULL) return COG_ERROR_NULL_PTR;
+    if (core->drive.kind != CORE_DRIVER_NONE || core->drive.inside_call)
         return COG_ERROR_INVALID_STATE;
-    }
-    core->active = true;
-    if (core->obs != NULL) {
-        (void)cog_obs_log(core->obs, COG_OBS_INFO, "core.run_start", NULL, 0U);
-    }
+    core->drive = (core_drive_state_t){0};
+    core->drive.kind = kind; core->drive.inside_call = true;
+    core->drive.service_due = true;
     atomic_store_explicit(&core->stop_requested, false, memory_order_relaxed);
     atomic_store_explicit(&core->running, true, memory_order_relaxed);
-    while (!atomic_load_explicit(&core->stop_requested, memory_order_acquire)) {
-        uint64_t now;
-        cog_event_t event;
-        rc = core_now(&now);
-        if (rc != COG_OK) {
-            break;
-        }
-        if (service_due || dispatched >= core->service_interval || now >= deadline ||
-            cog_event_queue_is_empty(core->event_queue)) {
-            uint64_t next = UINT64_MAX;
-            deadline = UINT64_MAX;
-            if (core->service_fn != NULL) {
-                rc = core->service_fn(core->service_arg, now, &next);
-                if (rc != COG_OK && rc != COG_ERROR_AGAIN) {
-                    break;
-                }
-                deadline = next;
-            }
-            if (atomic_load_explicit(&core->stop_requested, memory_order_acquire)) {
-                rc = COG_OK;
-                break;
-            }
-            rc = core_ipc_step(core, now, &deadline);
-            if (rc != COG_OK) {
-                break;
-            }
-            dispatched = 0U;
-            service_due = false;
-            if (atomic_load_explicit(&core->stop_requested, memory_order_acquire)) {
-                break;
-            }
-        }
-        if (core->prefer_ipc) {
-            rc = cog_event_queue_pop(core->ipc_events, &event);
-            if (rc == COG_ERROR_AGAIN) {
-                rc = cog_event_queue_pop(core->event_queue, &event);
-            }
-        } else {
-            rc = cog_event_queue_pop(core->event_queue, &event);
-            if (rc == COG_ERROR_AGAIN) {
-                rc = cog_event_queue_pop(core->ipc_events, &event);
-            }
-        }
-        core->prefer_ipc = !core->prefer_ipc;
-        if (rc == COG_ERROR_AGAIN) {
-            uint32_t budget = core->max_idle_wait_ms;
-            rc = core_inject_pending(core);
-            if (rc == COG_OK) {
-                continue;
-            }
-            if (rc != COG_ERROR_NOT_FOUND) {
-                break;
-            }
-            if (atomic_load_explicit(&core->stop_requested, memory_order_acquire)) {
-                rc = COG_OK;
-                break;
-            }
-            rc = core_now(&now);
-            if (rc != COG_OK) {
-                break;
-            }
-            if (deadline <= now) {
-                budget = 0U;
-            } else if (deadline - now < budget) {
-                budget = (uint32_t)(deadline - now);
-            }
-            if (core->wait_fn != NULL) {
-                core->wait_fn(core->wait_arg);
-                rc = COG_OK;
-            } else if (core->idle_fn != NULL) {
-                rc = core->idle_fn(core->idle_arg, budget);
-            } else {
-                struct timespec pause;
-                pause.tv_sec = (time_t)(budget / 1000U);
-                pause.tv_nsec = (long)(budget % 1000U) * 1000000L;
-                if (budget != 0U) {
-                    (void)nanosleep(&pause, NULL);
-                }
-                rc = COG_OK;
-            }
-            if (rc != COG_OK && rc != COG_ERROR_AGAIN) {
-                break;
-            }
-            service_due = true;
-            rc = COG_OK;
-            continue;
-        }
-        if (rc != COG_OK) {
-            break;
-        }
-        if (core->injected && event.payload == core->injected_payload) {
-            core->pending_owners[core->injected_owner].leased = false;
-            core->injected = false;
-        }
-        rc = core_dispatch(core, &event);
-        cog_agent_intent_dispatched(core, &event);
-        if (event.kind == COG_EVENT_IPC_MESSAGE && event.payload != NULL) {
-            const cog_event_ipc_t *ipc = event.payload;
-            core_ipc_release(core, ipc->msg_payload);
-        }
-        ++dispatched;
-        if (rc != COG_OK) {
-            break;
-        }
+    if (core->obs != NULL) (void)cog_obs_log(core->obs, COG_OBS_INFO, "core.run_start", NULL, 0U);
+    core->drive.inside_call = false;
+    return COG_OK;
+}
+static void core_finish(cog_core_t *core, cog_result_t result)
+{
+    if (!core->drive.done) {
+        core->drive.done = true;
+        core->drive.result = result;
     }
+    atomic_store_explicit(&core->running, false, memory_order_relaxed);
+}
+static cog_result_t core_end(cog_core_t *core)
+{
+    cog_result_t rc = core->drive.result;
+    core->drive.inside_call = true;
     /* The queued injected copy has not reached its handler. Its owner and
      * one FIFO slot stayed leased despite public drain/queue operations, so
      * restoring it at the head cannot overwrite a replacement or overflow. */
@@ -652,13 +537,162 @@ cog_result_t cog_core_run(cog_core_t *core)
         entry->leased = false;
         core->injected = false;
     }
-    if (core->obs != NULL) {
+    if (core->obs != NULL)
         (void)cog_obs_log(core->obs, rc == COG_OK ? COG_OBS_INFO : COG_OBS_ERROR,
                           rc == COG_OK ? "core.run_stop" : "core.run_error", NULL, 0U);
-    }
-    core->active = false;
-    atomic_store_explicit(&core->running, false, memory_order_relaxed);
+    core->drive.kind = CORE_DRIVER_NONE;
+    core->drive.inside_call = false;
     return rc;
+}
+static cog_result_t core_wait_info(cog_core_t *core, cog_core_step_info_t *info)
+{
+    uint64_t now;
+    cog_result_t rc = core_now(core, &now);
+    bool ready = core->drive.service_due ||
+        core->drive.dispatched_since_service >= core->service_interval ||
+        !cog_event_queue_is_empty(core->event_queue) ||
+        !cog_event_queue_is_empty(core->ipc_events);
+    if (rc != COG_OK) return rc;
+    size_t owner = core_pending_owner(core, cog_session_id(core->session));
+    if (owner != SIZE_MAX && core->pending_owners[owner].count != 0U) ready = true;
+    if (!ready && core->ipc_is_listener != 0) {
+        size_t count = core->ipc_is_listener == 1 ? core->ipc_client_count + 1U : 1U;
+        for (size_t i = 0U; i < count; ++i) {
+            if (atomic_load_explicit(&core->stop_requested, memory_order_acquire)) break;
+            cog_ipc_endpoint_t *ep = i == 0U ? core->ipc_endpoint : core->ipc_clients[i-1U].endpoint;
+            bool endpoint_ready = false;
+            rc = cog_ipc_internal_ready(ep, &endpoint_ready);
+            if (rc == COG_ERROR_AGAIN) ready = true;
+            else if (rc != COG_OK) return rc;
+            if (endpoint_ready) ready = true;
+            rc = core_now(core, &now);
+            if (rc != COG_OK) return rc;
+            if (ready) break;
+        }
+    }
+    info->next_deadline_ms = core->drive.deadline;
+    info->max_wait_ms = core->max_idle_wait_ms;
+    if (ready || info->next_deadline_ms <= now) {
+        info->max_wait_ms = 0U;
+        if (now < info->next_deadline_ms) info->next_deadline_ms = now;
+    } else if (info->next_deadline_ms - now < info->max_wait_ms)
+        info->max_wait_ms = (uint32_t)(info->next_deadline_ms - now);
+    return COG_OK;
+}
+static cog_result_t core_slice(cog_core_t *core, cog_core_step_info_t *output)
+{
+    cog_core_step_info_t info = {0};
+    cog_result_t rc = COG_OK;
+    info.next_deadline_ms = UINT64_MAX;
+    core->drive.inside_call = true;
+    while (info.dispatched < core->step_event_limit) {
+        uint64_t now;
+        cog_event_t event;
+        bool from_ipc;
+        if (atomic_load_explicit(&core->stop_requested, memory_order_acquire)) break;
+        rc = core_now(core, &now);
+        if (rc != COG_OK) break;
+        if (core->drive.service_due || core->drive.dispatched_since_service >= core->service_interval ||
+            now >= core->drive.deadline || cog_event_queue_is_empty(core->event_queue)) {
+            uint64_t next = UINT64_MAX;
+            core->drive.deadline = UINT64_MAX;
+            if (core->service_fn != NULL) {
+                rc = core->service_fn(core->service_arg, now, &next);
+                if (rc != COG_OK && rc != COG_ERROR_AGAIN) break;
+                core->drive.deadline = next;
+            }
+            rc = COG_OK;
+            if (atomic_load_explicit(&core->stop_requested, memory_order_acquire)) break;
+            rc = core_ipc_step(core, &core->drive.deadline);
+            if (rc != COG_OK) break;
+            core->drive.dispatched_since_service = 0U;
+            core->drive.service_due = false;
+            if (atomic_load_explicit(&core->stop_requested, memory_order_acquire)) break;
+        }
+        /* Clock failures never dequeue an event whose lease cannot be handled. */
+        rc = core_now(core, &now);
+        if (rc != COG_OK) break;
+        if (atomic_load_explicit(&core->stop_requested, memory_order_acquire)) break;
+        from_ipc = core->prefer_ipc;
+        rc = cog_event_queue_pop(from_ipc ? core->ipc_events : core->event_queue, &event);
+        if (rc == COG_ERROR_AGAIN) {
+            from_ipc = !from_ipc;
+            rc = cog_event_queue_pop(from_ipc ? core->ipc_events : core->event_queue, &event);
+        }
+        core->prefer_ipc = !core->prefer_ipc;
+        if (rc == COG_ERROR_AGAIN) {
+            rc = core_inject_pending(core);
+            if (rc == COG_OK) continue;
+            if (rc == COG_ERROR_NOT_FOUND) rc = COG_OK;
+            break;
+        }
+        if (rc != COG_OK) break;
+        if (core->injected && event.payload == core->injected_payload) {
+            core->pending_owners[core->injected_owner].leased = false;
+            core->injected = false;
+        }
+        rc = core_dispatch(core, &event);
+        cog_agent_intent_dispatched(core, &event);
+        if (from_ipc && event.kind == COG_EVENT_IPC_MESSAGE && event.payload != NULL) {
+            const cog_event_ipc_t *ipc = event.payload;
+            core_ipc_release(core, ipc->msg_payload);
+        }
+        ++info.dispatched;
+        ++core->drive.dispatched_since_service;
+        if (rc != COG_OK) break;
+    }
+    if (rc == COG_OK && !atomic_load_explicit(&core->stop_requested, memory_order_acquire))
+        rc = core_wait_info(core, &info);
+    if (rc != COG_OK || atomic_load_explicit(&core->stop_requested, memory_order_acquire))
+        core_finish(core, rc);
+    info.done = core->drive.done;
+    if (info.done) { info.max_wait_ms = 0U; info.next_deadline_ms = UINT64_MAX; }
+    *output = info;
+    core->drive.inside_call = false;
+    return core->drive.done ? core->drive.result : COG_OK;
+}
+cog_result_t cog_core_drive_begin(cog_core_t *core)
+{
+    return core_begin(core, CORE_DRIVER_MANUAL);
+}
+cog_result_t cog_core_step(cog_core_t *core, cog_core_step_info_t *info)
+{
+    if (core == NULL || info == NULL) return COG_ERROR_NULL_PTR;
+    if (core->drive.kind != CORE_DRIVER_MANUAL || core->drive.inside_call || core->drive.done)
+        return COG_ERROR_INVALID_STATE;
+    return core_slice(core, info);
+}
+cog_result_t cog_core_drive_end(cog_core_t *core)
+{
+    if (core == NULL) return COG_ERROR_NULL_PTR;
+    if (core->drive.kind != CORE_DRIVER_MANUAL || core->drive.inside_call || !core->drive.done)
+        return COG_ERROR_INVALID_STATE;
+    return core_end(core);
+}
+cog_result_t cog_core_run(cog_core_t *core)
+{
+    cog_result_t rc = core_begin(core, CORE_DRIVER_RUN);
+    if (rc != COG_OK) return rc;
+    while (!core->drive.done) {
+        cog_core_step_info_t info;
+        rc = core_slice(core, &info);
+        if (core->drive.done) break;
+        if (info.dispatched != 0U) continue;
+        if (atomic_load_explicit(&core->stop_requested, memory_order_acquire)) continue;
+        core->drive.inside_call = true;
+        if (core->wait_fn != NULL) { core->wait_fn(core->wait_arg); rc = COG_OK; }
+        else if (core->idle_fn != NULL) rc = core->idle_fn(core->idle_arg, info.max_wait_ms);
+        else {
+            struct timespec pause = {(time_t)(info.max_wait_ms / 1000U),
+                                     (long)(info.max_wait_ms % 1000U) * 1000000L};
+            if (info.max_wait_ms != 0U) (void)nanosleep(&pause, NULL);
+            rc = COG_OK;
+        }
+        if (rc != COG_OK && rc != COG_ERROR_AGAIN) core_finish(core, rc);
+        core->drive.service_due = true;
+        core->drive.inside_call = false;
+    }
+    return core_end(core);
 }
 void cog_core_stop(cog_core_t *core)
 {
@@ -678,6 +712,12 @@ cog_result_t cog_core_enqueue(cog_core_t *core, const cog_event_t *event)
     }
     if (event->kind == COG_EVENT_SUBAGENT_SPAWN || event->kind == COG_EVENT_SUBAGENT_CANCEL) {
         return COG_ERROR_INVALID_ARG;
+    }
+    if ((event->kind == COG_EVENT_IPC_MESSAGE || event->kind == COG_EVENT_IPC_CONNECTED ||
+         event->kind == COG_EVENT_IPC_DISCONNECTED) && event->payload != NULL) {
+        if (event->payload_len < sizeof(cog_event_ipc_t)) return COG_ERROR_INVALID_ARG;
+        const cog_event_ipc_t *ipc = event->payload;
+        if (ipc->peer_info_valid) return COG_ERROR_INVALID_ARG;
     }
     return cog_event_queue_push(core->event_queue, event);
 }
