@@ -145,8 +145,43 @@ int main(int argc,char **argv)
         } else assert(rc==COG_ERROR_AGAIN);
     }
     assert(native_seen>0U && application_seen>0U);
+    /* A retransmitted publication can produce two identical coordinator
+       replies. Retiring the first must make the second harmless stale input. */
+    unsigned char incoming_wire[512], incoming_decode[512], response_bytes[512];
+    host.receive_secret=incoming_wire;host.receive_capacity=sizeof(incoming_wire);
+    host.decode_secret=incoming_decode;host.decode_capacity=sizeof(incoming_decode);
+    host.executors=&slot;host.executor_capacity=1U;host.authenticated=true;host.startup_ready=true;
+    slot.phase=CLI_SLOT_STARTED;slot.agent=0U;slot.attempt=0U;
+    cog_cli_options_t options;char program[]="receipt",mock[]="--mock",no_store[]="--no-store";
+    char *args[]={program,mock,no_store};int code=0;
+    assert(cog_cli_options_parse(&options,3,args,&code)==COG_OK);options.config_path="/dev/null";
+    cog_cli_configuration_t *configuration=NULL;
+    assert(cog_cli_configuration_new(&configuration,&options,1U)==COG_OK);
+    cog_cli_execution_admission_t admission={.kind=COG_CLI_EXECUTION_ROOT,.configuration=configuration,.configuration_generation=1U};
+    assert(cog_cli_execution_new(&slot.app,&admission)==COG_OK);
+    strcpy(slot.session,cog_session_id(slot.app->session));
+    assert(cog_ipc_endpoint_get_peer_id(sender,&slot.owner_peer)==COG_OK);
+    cli_control_lane_t *policy=&lanes[COG_CLI_LANE_POLICY-1U];
+    policy->pending_valid=true;policy->pending_wire=42U;
+    unsigned char accepted[21]={0};accepted[4]=2U;
+    cog_cli_control_message_t answer={.kind=COG_CLI_CONTROL_COMMAND_RESULT,.lane=COG_CLI_LANE_POLICY,
+        .runtime_incarnation=7U,.sender_incarnation=7U,.wire_id=51U,.reply_to=42U,
+        .worker=host.fixed.worker,.owner_peer=slot.owner_peer,.session_id=slot.session,
+        .payload=accepted,.payload_len=sizeof(accepted)};
+    size_t answer_length;assert(cog_cli_control_encode(&answer,response_bytes,sizeof(response_bytes),&answer_length)==COG_OK);
+    for(unsigned repeat=0U;repeat<2U;++repeat) {
+        cog_ipc_message_t packet={response_bytes,answer_length,sizeof(response_bytes)};
+        assert(cog_ipc_endpoint_send(receiver,&packet)==COG_OK);service(sender,receiver);
+        bool made_progress=false;
+        cog_result_t result=parent_step(&host,&made_progress,&next);
+        (void)retain_error(&host,result);
+        printf("policy receipt copy %u: rc=%d shutdown=%d\n",repeat,(int)result,(int)host.shutdown);
+        if(repeat==0U) assert(!policy->pending_valid && policy->retired_through==42U && !host.shutdown);
+    }
+    bool stale_safe=!host.shutdown;
+    assert(cog_cli_execution_close(&slot.app,COG_OK)==COG_OK);
     assert(cog_ipc_endpoint_free(sender)==COG_OK);
     assert(cog_ipc_endpoint_free(receiver)==COG_OK);
     assert(cog_ipc_endpoint_free(listener)==COG_OK);
-    puts("worker receipt real IPC ownership PASS");return 0;
+    puts("worker receipt real IPC ownership completed");return stale_safe?0:1;
 }
