@@ -115,8 +115,9 @@ cog_result_t cog_cli_tools_step(cog_cli_app_t *app, cog_state_t *next)
         else if (!app->policy_prompt) {
             /* Display the complete request to make an interactive approval
                meaningful. Never accept an arbitrary queued prompt as approval. */
-            (void)fprintf(stderr, "\nAllow tool %s %.*s? Type allow or deny: ", call->name,
-                (int)call->arguments_len, call->arguments);
+            if (fprintf(stderr, "\nAllow tool %s %.*s? Type allow or deny: ", call->name,
+                    (int)call->arguments_len, call->arguments) < 0 || fflush(stderr) != 0)
+                return COG_ERROR_IO;
             app->policy_prompt = true;
             return COG_ERROR_AGAIN;
         } else return COG_ERROR_AGAIN;

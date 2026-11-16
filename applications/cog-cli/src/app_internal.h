@@ -111,11 +111,16 @@ struct cog_cli_app {
 };
 const cog_dispatch_entry_t *cog_cli_dispatch_table(size_t *count);
 cog_result_t cog_cli_service(void *arg, uint64_t now, uint64_t *deadline);
+/** Failed repeated ASK prompt write/flush returns IO; never consumes a later
+ * allow as successful delivery of the failed prompt. */
 cog_result_t cog_cli_idle(void *arg, uint32_t max_wait_ms);
 cog_result_t cog_cli_save(cog_cli_app_t *app);
 cog_result_t cog_cli_begin_request(cog_cli_app_t *app, bool reset);
 cog_result_t cog_cli_context_check(cog_cli_app_t *app, size_t count);
 cog_result_t cog_cli_finish_partial(cog_cli_app_t *app, cog_result_t reason);
+/** Initial ASK prompt must write/flush successfully before policy_prompt is
+ * published. Failure returns IO before execution construction/STARTED; ordinary
+ * drain denies the still-PROPOSED call without executing it. */
 cog_result_t cog_cli_tools_step(cog_cli_app_t *app, cog_state_t *next);
 cog_result_t cog_cli_tools_cancel(cog_cli_app_t *app);
 cog_result_t cog_cli_drain(cog_cli_app_t *app);

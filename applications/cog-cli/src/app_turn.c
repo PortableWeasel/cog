@@ -498,7 +498,8 @@ static cog_result_t line(cog_cli_app_t *app)
     if (app->policy_prompt) {
         if (strcmp(app->line, "allow") == 0) app->policy_decision = COG_TOOLKIT_POLICY_ALLOW;
         else if (strcmp(app->line, "deny") == 0) app->policy_decision = COG_TOOLKIT_POLICY_DENY;
-        else (void)fprintf(stderr, "Type allow or deny: ");
+        else if (fprintf(stderr, "Type allow or deny: ") < 0 || fflush(stderr) != 0)
+            rc = COG_ERROR_IO;
     } else if (strcmp(app->line, "/quit") == 0 || strcmp(app->line, "/exit") == 0)
         rc = cog_cli_app_shutdown(app);
     else if (strcmp(app->line, "/cancel") == 0) rc = cog_cli_app_cancel(app);
