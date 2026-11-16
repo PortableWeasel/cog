@@ -29,3 +29,13 @@ executables and TMPDIR. The supplied archives must be from the coherent O4 join.
 full sanitizer profiles later. The direct GCC/Clang run does not claim sanitizer
 coverage of prebuilt libraries. Native worker/bootstrap/delegation integration
 uses the separate real loopback TLS oracle; no live provider calls are needed.
+
+`test_worker_handoff_critic.c` is the independent cycle-1 regression, extended
+with actual profile-only configuration cleanup and wrong-checkpoint rejection.
+It covers exact purpose3 replay before admission checks and retention of prior
+consuming cleanup failure across a fresh ABORT.
+
+`COG_LEAF_SANITIZE=1` runs the three source-including fixtures with Clang
+ASan/UBSan; this instruments the owned worker/delegation bodies and test code.
+The supplied prebuilt archives remain as built: this optional direct run is not
+a claim of fully instrumented dependency or whole-runtime validation.

@@ -363,7 +363,7 @@ cog_result_t cli_delegation_saved(cog_cli_delegation_context_t *context,uint64_t
     cli_delegation_handle_t *h=context->prepared;
     if(h==NULL || !h->done || !h->output_cached || h->request.parent_node!=node ||
        h->request.ordinal!=ordinal || checkpoint.generation==0U) return COG_ERROR_INVALID_STATE;
-    if(h->context->worker!=NULL && h->operation==CLI_DELEGATE && h->reservation!=0U &&
+    if(h->operation==CLI_DELEGATE && h->reservation!=0U &&
        h->codec.length==16U) {
         cli_wire_reader_t saved={h->codec.data,16U,0U,true};
         if(cli_wire_get(&saved,8U)!=h->group || cli_wire_get(&saved,8U)!=checkpoint.generation)
@@ -375,6 +375,9 @@ cog_result_t cli_delegation_saved(cog_cli_delegation_context_t *context,uint64_t
         cli_group_record_t *group=local_group(h);
         if(group==NULL || (group->phase!=CLI_GROUP_RESULT && group->phase!=CLI_GROUP_SAVED)) return COG_ERROR_INVALID_STATE;
         if(group->result_acknowledged && group->result_checkpoint.generation!=checkpoint.generation) return COG_ERROR_INVALID_STATE;
+        if(h->codec.capacity<16U) return COG_ERROR_LIMIT;
+        cli_wire_writer_t saved={h->codec.data,0U,true};cli_wire_put(&saved,h->group,8U);
+        cli_wire_put(&saved,checkpoint.generation,8U);h->codec.length=saved.used;
         group->result_checkpoint=checkpoint;group->result_acknowledged=true;group->phase=CLI_GROUP_SAVED;
         h->result_saved=true;return COG_OK;
     }

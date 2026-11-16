@@ -35,5 +35,21 @@ int main(void)
     assert(arguments_parse(&parsed,duplicate,sizeof(duplicate)-1U)==COG_ERROR_INVALID_ARG);
     const char empty[]="{\"tasks\":[]}";
     assert(arguments_parse(&parsed,empty,sizeof(empty)-1U)==COG_ERROR_INVALID_ARG);
+    /* The local durable result receipt is exact even after registry/group reuse. */
+    unsigned char saved_bytes[16];cli_group_record_t group={0};
+    cog_cli_host_runtime_t runtime={0};runtime.groups=&group;runtime.group_capacity=1U;
+    cog_cli_delegation_context_t context={0};context.coordinator=&runtime;
+    cli_delegation_handle_t saved={0};saved.context=&context;context.prepared=&saved;
+    saved.operation=CLI_DELEGATE;saved.reservation=6U;saved.group=9U;
+    saved.done=true;saved.output_cached=true;saved.request.parent_node=4U;saved.request.ordinal=2U;
+    saved.codec=(cli_host_bytes_t){saved_bytes,sizeof(saved_bytes),0U};
+    strcpy(saved.parent_session,"root");strcpy(saved.call_id,"call");
+    group.phase=CLI_GROUP_RESULT;group.reservation=6U;group.parent_node=4U;group.ordinal=2U;
+    strcpy(group.parent_session,"root");strcpy(group.call_id,"call");
+    assert(cli_delegation_saved(&context,4U,2U,(cog_store_checkpoint_t){17U})==COG_OK);
+    assert(group.result_acknowledged && group.result_checkpoint.generation==17U);
+    group.phase=CLI_GROUP_FREE;
+    assert(cli_delegation_saved(&context,4U,2U,(cog_store_checkpoint_t){17U})==COG_OK);
+    assert(cli_delegation_saved(&context,4U,2U,(cog_store_checkpoint_t){18U})==COG_ERROR_INVALID_STATE);
     puts("delegation real callbacks clock/state/parser PASS");return 0;
 }
