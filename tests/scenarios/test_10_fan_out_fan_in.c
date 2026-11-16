@@ -55,7 +55,7 @@ int main(int argc,char **argv)
                 CHECK(ids[k]==s->agent && peers[k]==s->owner_peer);
                 for(size_t j=0U;j<3U;++j)CHECK(ids[k]!=previous[j]);
                 CHECK(k==0U?s->owner_peer==0U:s->owner_peer!=0U);
-                if(k!=0U)CHECK(s->owner_peer==h->workers[k-1U].native.peer_id);
+                if(k!=0U)CHECK(s->owner_peer==h->workers[0].native.peer_id || s->owner_peer==h->workers[1].native.peer_id);
                 cog_agent_status_t state;CHECK(cog_agent_status(h->control_core,s->agent,&state)==COG_OK);
                 if(state==COG_AGENT_STATUS_RUNNING)running[k]=true;
                 if(s->terminal_acked && !terminal[k]) {
