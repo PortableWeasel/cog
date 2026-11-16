@@ -26,7 +26,7 @@ SOURCE = '#include <stdio.h>\nstatic int answer(void) { return 40; }\nint main(v
 
 def environment(root):
     # Deliberately omit inherited credentials, loader overrides and user config.
-    return {"PATH": "/usr/bin:/bin", "HOME": str(root), "LC_ALL": "C.UTF-8",
+    return {"PATH": "/usr/bin:/bin", "HOME": str(root), "LC_ALL": "C.UTF-8", "TMPDIR": str(root),
             "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "xdg")}
 
 
@@ -220,7 +220,9 @@ if __name__ == "__main__":
     parser.add_argument("--receipt", type=pathlib.Path)
     arguments = parser.parse_args()
     binary = installed_audit(arguments.prefix.resolve())
-    with tempfile.TemporaryDirectory(prefix="cog-live-smoke-") as temporary:
+    scratch = pathlib.Path(__file__).resolve().parents[2] / "build-live-smoke"
+    scratch.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="cog-live-smoke-", dir=scratch) as temporary:
         result = (live if arguments.live else offline)(binary, pathlib.Path(temporary))
     encoded = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if arguments.receipt:
