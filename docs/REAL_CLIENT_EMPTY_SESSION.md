@@ -226,4 +226,10 @@ probes are retained under `/tmp/cog-empty-review-{gcc,clang,asan}`,
 `cd3d092` records the exact independent verdict. No production or fixture change
 was required by final review.
 
+The approved app branch was integrated with a no-fast-forward merge and the
+independent review evidence retained on main `111ae0b`. Its main-sourced strict
+Release all-target build and all **58/58** affected checks passed, including both
+installed/constructor fixtures; the accepted dependency cache was unchanged.
+Postmerge logs are `/tmp/cog-empty-postmerge-{build,tests}.log`.
+
 This focused fix does not close M, O, all38 or release P. No paid requests.
