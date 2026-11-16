@@ -60,6 +60,9 @@ int main(void)
     assert(host_ui_hello(&r,&e,&m)==COG_OK);
     assert(client.logical_lease==7U && records[0].phase==CLI_COMMAND_COPIED && records[1].phase==CLI_COMMAND_FINAL);
     assert(lanes[CLI_HOST_LANES+COG_CLI_LANE_COMMAND-1U].retired_through==100U);
+    cli_control_lane_t *old_lane=&lanes[CLI_HOST_LANES+COG_CLI_LANE_COMMAND-1U];
+    old_lane->final_reply=(cli_host_bytes_t){buffers[11],1024U,12U};
+    old_lane->final_valid=true; old_lane->pending_valid=true;
     /* Expire old lease, then use a factual fresh HELLO on the same physical cell. */
     client.connected=false; client.send.length=0U; client.receipts_until_ms=1U; r.now_ms=2U;
     lanes[CLI_HOST_LANES+COG_CLI_LANE_COMMAND-1U].retired_through=100U;
@@ -70,6 +73,8 @@ int main(void)
     assert(cog_cli_control_encode(&m,wire,sizeof(wire),&wn)==COG_OK); e.msg_payload_len=wn;
     assert(host_ui_hello(&r,&e,&m)==COG_OK); assert(client.logical_lease==8U);
     assert(client.hello.retired_through==0U);
+    assert(old_lane->final_reply.data==buffers[11] && old_lane->final_reply.capacity==1024U);
+    assert(old_lane->final_reply.length==0U && !old_lane->final_valid && !old_lane->pending_valid);
     command=(cog_cli_command_t){.kind=COG_CLI_COMMAND_RESYNC,.observed_generation=7U,.observed_sequence=1U};
     assert(cog_cli_command_encode(&command,body,sizeof(body),&n)==COG_OK);
     m=(cog_cli_control_message_t){.kind=COG_CLI_CONTROL_UI_COMMAND,.lane=COG_CLI_LANE_COMMAND,
@@ -83,6 +88,26 @@ int main(void)
     assert(host_ui_ack(&r,&client,&ae,&ack)==COG_OK); client.send.length=0U;
     cog_result_t lease_rc=host_ui_command(&r,&client,&e,&m);
     printf("new lease8 wire3 after lease7 watermark100: actual=%d expected=%d\n",(int)lease_rc,(int)COG_OK);
+    /* Same-key changed bytes still conflict after lane discrimination. */
+    command.observed_sequence=2U;
+    assert(cog_cli_command_encode(&command,body,sizeof(body),&n)==COG_OK); m.payload_len=n;
+    assert(cog_cli_control_encode(&m,wire,sizeof(wire),&wn)==COG_OK); e.msg_payload_len=wn;
+    assert(host_ui_command(&r,&client,&e,&m)==COG_ERROR_PROTOCOL);
+    /* Exercise the real authenticated ingress gate, not only its leaf helper:
+       stale lease and wrong native peer cannot address the freshly reused cell. */
+    r.decode=(cli_host_bytes_t){buffers[10],1024U,0U};
+    e.peer_info_valid=true; e.peer_info.peer_id=e.peer;
+    e.peer_info.user_id=(uint64_t)geteuid(); e.peer_info.process_id=(uint64_t)getpid();
+    m.sender_incarnation=7U;
+    assert(cog_cli_control_encode(&m,wire,sizeof(wire),&wn)==COG_OK); e.msg_payload_len=wn;
+    assert(host_ui_ingress(&r,&e)==COG_ERROR_NOT_FOUND);
+    m.sender_incarnation=8U;
+    assert(cog_cli_control_encode(&m,wire,sizeof(wire),&wn)==COG_OK); e.msg_payload_len=wn;
+    e.peer=13U; e.peer_info.peer_id=13U;
+    assert(host_ui_ingress(&r,&e)==COG_ERROR_NOT_FOUND);
+    e.peer_info.user_id=(uint64_t)geteuid()+1U;
+    assert(host_ui_ingress(&r,&e)==COG_ERROR_DENIED);
+    assert(client.logical_lease==8U && records[0].phase==CLI_COMMAND_COPIED);
     cog_cli_projection_free(r.projection);
     return lane_rc==COG_OK && lease_rc==COG_OK ? 0 : 1;
 }
