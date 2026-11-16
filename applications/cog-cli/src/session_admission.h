@@ -25,17 +25,20 @@
  * before success. No checkpoint/token/owner is reused
  * or reset. Epoch exhaustion, CAS/acquire/save failure propagates; no retry loop.
  *
- * An absent owner never creates a session through RESUME. Readable legacy under
- * an owned checkpoint0 is refused, not migrated or discarded as empty. Unowned
- * valid v1/v2, unreadable/corrupt legacy, committed data and uncertain effects
- * retain existing load/migration/recovery rules. FORK/RECOVER do not fabricate an
- * empty source. A save failure consumes no session identity or earlier committed
- * data; outer construction releases guard/store/session with no model/effects.
+ * An absent owner never creates a session through RESUME. Successful legacy load
+ * is ineligible for empty repair and follows the existing migration/refusal path.
+ * Unowned valid v1/v2, unreadable/corrupt legacy, committed data and uncertain
+ * effects retain existing load/migration/recovery rules. FORK/RECOVER do not
+ * fabricate an empty source. Save failure never resets/reuses identities or
+ * discards committed data; a changed durable owner or checkpoint may remain.
+ * Outer construction releases guard/store/session with no model/effects.
  * Normal owned RESUME needs no new operator fencing assertion for this no-data
  * case: a live guard excludes CAS and no committed STARTED/effect exists at0.
  * Current configuration resolves exactly as ordinary RESUME; stored nonempty
  * model/provider/message provenance is never replaced or inferred from epochs.
  * No app-side filesystem inspection or private store layout dependency.
+ * Requires reviewed G correction9a95735: checkpoint0 recognized legacy remnants
+ * must be refused by existing store operations, never returned as empty proof.
  *
  * LIST/disabled store and existing checkpoint admission retain their contracts.
  * @return Existing session/store constructor, load, CAS, acquire and save errors;

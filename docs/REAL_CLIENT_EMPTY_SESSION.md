@@ -25,7 +25,7 @@ checkpoint0 reservation with no replay-loadable data. Existing public calls:
 3. session_new constructs an empty matching-ID session within current reservations.
 4. owner_compare_exchange uses the exact old owner/checkpoint0, fresh incarnation
    and checked epoch+1. Locked CAS excludes live guards/stale state and refuses
-   legacy state, including an incomplete legacy pair.
+   legacy state/remnants through the corrected G admission contract described below.
 5. owner_acquire confirms the newly admitted normal owner under the lock.
 6. Existing checkpoint_save with that exact normal guard commits the empty
    checkpoint before app construction succeeds. Its output token is local; no
@@ -72,7 +72,7 @@ The checkpoint0 proof is conjunctive. NOT_FOUND from legacy load is insufficient
 by itself: exact locked owner CAS and acquire are also required, and G forbids
 adopting legacy files under this owner path. A missing nodes file with meta
 present is IO; malformed/unreadable meta is PROTOCOL/IO, never an empty proof.
-CAS refuses any newly appeared legacy meta under its lock. If another owner
+CAS refuses any newly appeared recognized legacy remnant under its lock. If another owner
 publishes a checkpoint or epoch between reads, exact CAS fails; it does not load
 that new state and retry automatically. A live normal/recovery guard returns AGAIN.
 
@@ -81,3 +81,55 @@ ordinary exact-load path. No config file or environment value is copied from an
 owner tuple or checkpoint number; current J sources remain the explicit ordinary
 RESUME configuration authority. Empty reconstruction has no nodes to attribute.
 No --fenced assertion can bypass malformed data, a live guard or failed save.
+
+## Pass 3: consistency, failure and feasibility
+
+Independent review found a real G gap: baseline legacy load stops at missing
+meta.json and checkpoint0 CAS inspects only that file, so lone nodes.jsonl can
+escape the proposed no-data proof. App implementation is gated on separate
+reviewed correction `9a95735`, rather than an app-side filename inspection or
+weaker proof. The finite recognized legacy remnants are meta.json, nodes.jsonl,
+index.bin and each .tmp counterpart. Their presence at checkpoint0 causes
+conservative refusal; it is not a claim that a staged/index file is committed
+authority. Inspection errors other than ENOENT fail IO. Unrelated unreferenced v2
+generations/.generation.tmp/.manifest.tmp retain existing nonauthority semantics;
+an actual valid v2 checkpoint remains authoritative over stale legacy remnants.
+
+Only RESUME with validated nonzero owner/checkpoint0 and load_ex NOT_FOUND can
+take the empty repair. Every other load result stays on the current success or
+error path. In particular successful legacy load retains existing migration/
+refusal rules; this exception does not silently convert legacy into an empty v2.
+An exact CAS/acquire failure never falls back to another read/checkpoint/epoch.
+If another process wins, the caller explicitly restarts construction to inspect
+that state. A fresh incarnation always advances the epoch, never impersonates
+the old owner or conflates store generation with J config identity.
+
+| Boundary | Required result and permanent oracle |
+|---|---|
+| fresh durable idle | app_new returns only after nonzero checkpoint; free/EOF/signal then RESUME gets same empty identity and fresh owner |
+| normal disabled store | No checkpoint/store/guard added; text fixture semantics remain unchanged |
+| owner-only interrupted process | Seed public owner/guard at0, let process exit; explicit RESUME creates empty checkpoint with a different incarnation and epoch+1 |
+| existing live guard | RESUME returns AGAIN; no checkpoint, owner change, provider send or effect |
+| absent source | Owner0/checkpoint0 never bootstraps through RESUME; NOT_FOUND and no new source |
+| NEW/FORK/RECOVER selectors | Existing NEW ID refuses; owner-only FORK/RECOVER cannot invent a source; no effect reconciliation is guessed |
+| initial checkpoint IO | *out=NULL; owner may remain reserved, no input/model/tool work; later explicit RESUME can repair |
+| initial checkpoint INDETERMINATE | *out=NULL whether manifest remains0 or committed checkpoint is present; next explicit RESUME reads authority rather than guessing/undoing it |
+| owner CAS uncertainty | No acquire/save/model after nonOK CAS; durable publication may remain, never reset |
+| failed acquire or save | App consumes partial resources/guard; admitted epoch may remain; next construction uses current exact authority |
+| stale CAS | Intervening owner/checkpoint refuses, no overwrite and no internal retry |
+| epoch exhaustion | LIMIT with no wrap or invented owner; no checkpoint/work |
+| legacy remnants/error | G correction refuses recognized artifacts and inspection IO; app propagates result, never private-peeks/resets |
+| committed v1/v2 | Existing migration/assertion and exact-checkpoint/uncertainty behavior remains; model/provider/opaque/ledger node data is preserved |
+| current config provenance | Different current J model/config sources do not overwrite saved node metadata or infer model from owner/checkpoint; empty snapshots have no invented nodes |
+
+An empty session has zero nodes rather than a fabricated root message. Existing
+public snapshot/checkpoint codecs support this shape (active/high-water/ledger0).
+checkpoint_save is an explicit existing operation under the normal guard before
+any borrowers; no app buffer growth or new transaction API is introduced.
+Save failure can leave an owner or checkpoint durable; it never makes the ID
+available for NEW reuse. All outer app_new failures retain NULL output and run
+ordinary matching resource cleanup. There is no successful intermediate app to
+accept input, and no rollback/delete of possibly committed persistence.
+
+Three header passes and a different final reviewer are required before app
+bodies. G correction9a95735 must also pass before the dependent repair body.

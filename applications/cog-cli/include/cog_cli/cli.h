@@ -499,8 +499,9 @@ const char *cog_cli_result_name(cog_result_t rc);
  * backend capabilities/unknown config fields/unsafe continuation format.
  * @return COG_ERROR_IO if the log file cannot be opened or the IPC
  *         listener cannot bind.
- * @return AGAIN for competing live ownership; INDETERMINATE for unsafe normal
- * resume; INVALID_STATE for recovery without uncertain tools or stale admission;
+ * @return AGAIN for competing live ownership; INDETERMINATE for uncertain initial
+ * checkpoint publication or unsafe normal resume; INVALID_STATE for recovery
+ * without uncertain tools or stale admission;
  * another error code from the underlying libraries.
  *
  * @post On success, @p *out is a valid app owned by the caller; release
