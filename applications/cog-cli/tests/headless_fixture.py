@@ -13,6 +13,7 @@ import ssl
 import subprocess
 import tempfile
 import threading
+import sys
 
 
 def text(content):
@@ -50,6 +51,7 @@ class TLSFixture:
         self.stop = threading.Event()
         self.lock = threading.Lock()
         self.process = self.server = self.thread = self.directory = None
+        self.supervisor_result = None
 
     def __enter__(self):
         scratch = self.build / "tmp"
@@ -121,11 +123,18 @@ class TLSFixture:
         env.update(COG_NATIVE_KEY="synthetic-native", TMPDIR=str(self.build / "tmp"))
         arguments = [str(Path(harness).resolve()), str(Path(executable).resolve()), str(self.cert),
             self.url, str(self.workspace), str(self.store), str(self.socket_prefix), *map(str, extra)]
-        self.process = subprocess.Popen(arguments, env=env, start_new_session=True)
-        status = self.process.wait(timeout=timeout)
-        assert status == 0, (status, self.errors, len(self.requests))
+        self.supervisor_result = self.root / "supervisor.json"
+        supervisor = Path(__file__).with_name("headless_supervisor.py")
+        self.process = subprocess.Popen([sys.executable, str(supervisor), str(timeout),
+            str(self.supervisor_result), *arguments], env=env, start_new_session=True)
+        status = self.process.wait(timeout=timeout + 7)
+        result = json.loads(self.supervisor_result.read_text())
+        assert status == 0 and result["cleanup"] and result["error"] is None, result
+        if result["timed_out"]:
+            raise subprocess.TimeoutExpired(arguments, timeout)
+        assert result["status"] == 0, (result, self.errors, len(self.requests))
         assert not self.errors, self.errors
-        return status
+        return result["status"]
 
     def registry(self):
         """Read one atomic C-published sample; never guess admitted identities."""
@@ -134,15 +143,17 @@ class TLSFixture:
     def __exit__(self, exc_type, exc_value, traceback):
         self.stop.set()
         if self.process is not None:
-            # Only our isolated session while its positive leader remains owned
-            # and unreaped. Never reuse a reaped numeric process-group identity.
+            # Ask the still-owned supervisor to drain its actual child tree.
+            # It alone adopts/signals/reaps native/tool descendants, including
+            # tools that created separate sessions. Never use a remembered PGID.
             if self.process.returncode is None:
                 assert self.process.pid > 0
-                try:
-                    os.killpg(self.process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            self.process.wait(timeout=5)
+                os.waitid(os.P_PID, self.process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                self.process.send_signal(signal.SIGTERM)
+                self.process.wait(timeout=7)
+            if self.supervisor_result.exists():
+                result = json.loads(self.supervisor_result.read_text())
+                assert result["cleanup"], result
         if self.server is not None:
             self.server.shutdown()
             self.server.server_close()
