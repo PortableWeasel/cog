@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#define CHECK(x) do { if (!(x)) {fprintf(stderr,"scenario10:%d: %s\n",__LINE__,#x);primary=COG_ERROR_PROTOCOL;goto finish;} } while(0)
+#define CHECK(x) do { if (!(x)) {fprintf(stderr,"scenario10:%d: %s\n",__LINE__,#x);if(primary==COG_OK)primary=COG_ERROR_PROTOCOL;goto finish;} } while(0)
 
 static bool marker(const char *root,const char *prefix,const char *role,unsigned int round,bool create)
 {
@@ -26,8 +26,8 @@ int main(int argc,char **argv)
     CHECK(headless_fixture_init(&f,paths,2U,3U)==COG_OK);
     f.options.max_tool_output_bytes=limit?4096U:16384U;
     f.config.child_requests=64U;
-    CHECK(headless_fixture_open(&f)==COG_OK);
-    CHECK(headless_fixture_ready(&f,10000U)==COG_OK);
+    primary=headless_fixture_open(&f);CHECK(primary==COG_OK);
+    primary=headless_fixture_ready(&f,10000U);CHECK(primary==COG_OK);
     cog_cli_host_runtime_t *h=f.host;
     CHECK(h->workers[0].native.peer_id!=0U && h->workers[1].native.peer_id!=0U &&
         h->workers[0].native.peer_id!=h->workers[1].native.peer_id);

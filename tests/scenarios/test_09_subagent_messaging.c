@@ -9,7 +9,7 @@
 #include "execution_internal.h"
 #include <stdio.h>
 #include <string.h>
-#define CHECK(x) do { if (!(x)) {fprintf(stderr,"scenario09:%d: %s\n",__LINE__,#x);primary=COG_ERROR_PROTOCOL;goto finish;} } while(0)
+#define CHECK(x) do { if (!(x)) {fprintf(stderr,"scenario09:%d: %s\n",__LINE__,#x);if(primary==COG_OK)primary=COG_ERROR_PROTOCOL;goto finish;} } while(0)
 
 static bool mark(const char *root,unsigned int round)
 {
@@ -27,8 +27,8 @@ int main(int argc,char **argv)
     CHECK(headless_fixture_init(&f,paths,1U,2U)==COG_OK);
     f.options.max_tool_rounds=8U;f.config.child_profile.max_tool_rounds=8U;
     f.config.child_profile.tools=0U;f.config.child_requests=64U;
-    CHECK(headless_fixture_open(&f)==COG_OK);
-    CHECK(headless_fixture_ready(&f,10000U)==COG_OK);
+    primary=headless_fixture_open(&f);CHECK(primary==COG_OK);
+    primary=headless_fixture_ready(&f,10000U);CHECK(primary==COG_OK);
     cog_cli_host_runtime_t *h=f.host;cog_cli_app_t *parent=h->executors[h->primary_slot].app;
     CHECK(parent!=NULL);
     char metadata[4096];CHECK(snprintf(metadata,sizeof(metadata),"%s/registry.json",argv[4])>0);
