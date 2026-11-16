@@ -6,7 +6,7 @@ stderr with SIGINT/SIGTERM masked for signalfd. All four stream/signal cases han
 until an external reader releases backpressure. This is a host output bug; no
 nonblocking-output precondition exists for the executable.
 
-## Private interface before bodies
+## Pass 1: private interface before bodies
 
 `host_output.h` declares a main-owned, zero-initialized adapter lifetime. Explicit
 GNU FILE constructors supply matching checked fclose destruction. The standard
@@ -24,13 +24,13 @@ Short writes, saturation or other errors latch IO and prevent replay/retry.
 Regular filesystem I/O remains subject to the filesystem's ordinary behavior.
 
 Saturation is an output failure, rather than a request to wait indefinitely for
-a slow consumer. Existing app failure handling cancels/drains, saves partial and
+a slow consumer. Checked app output failure handling cancels/drains, saves partial and
 identified tool outcomes, reaps tools and releases owners. A prior work error
 retains precedence. Final diagnostics also use the bounded adapter, so a full
 stderr cannot block cleanup. An initial adapter construction failure returns
 failure without trying a fallback write through the inherited blocked stream.
 
-## Trace and edge review before bodies
+## Pass 2: scenario trace before bodies
 
 | Case | Private sequence and invariant |
 |---|---|
@@ -44,6 +44,16 @@ failure without trying a fallback write through the inherited blocked stream.
 | constructor unwind | build both private streams before publishing; close only new descriptors/FILEs on any failure; standard bindings unchanged |
 | final teardown | checked stdout close; app/net/runtime cleanup; final bounded stderr diagnostic; checked adapter close; signal disposition/mask restoration |
 | embedding | helper is executable-only source; cog::cli and caller-provided FILE behavior do not change |
+
+FIFO reopen includes NONBLOCK on the open itself, so missing readers produce
+immediate failure rather than an open wait. Its extra writer does not extend EOF
+beyond the original inherited writer, which main still owns until process exit.
+TTY reopen includes NOCTTY, so setup cannot acquire a new controlling terminal.
+Private socket sends include NOSIGNAL and the host keeps SIGPIPE ignored through
+the final pipe/character diagnostic close. Original FILEs have no buffered bytes:
+main calls this constructor before any parse/log/output. The adapter neither
+flushes nor closes those originals; later process exit sees only their original
+empty buffers. Every adapter-only descriptor closes on setup/final failure.
 
 The existing public error/lifetime contract supports this implementation; no
 new public API, store/tool policy or network behavior is required. Runtime and

@@ -22,7 +22,9 @@ typedef struct cog_cli_host_output {
 } cog_cli_host_output_t;
 
 /** Install executable stdout/stderr adapters before any option/app output.
- * @pre Zero initialized, not already open; owner thread/process only.
+ * @pre Zero initialized, not already open; owner thread/process only. Main calls
+ * before any output: inherited standard FILEs have no pending buffered bytes.
+ * SIGPIPE is ignored by the explicit host lifetime through final adapter close.
  * Regular files use a dup of the inherited description, preserving shared offset
  * and append semantics. Sockets use per-call MSG_DONTWAIT; FIFO/character devices
  * reopen /proc/self/fd independently with NONBLOCK/NOCTTY. Inherited file status
@@ -35,6 +37,7 @@ typedef struct cog_cli_host_output {
  * No hard real-time guarantee is made for regular-file filesystem I/O.
  * @return OK; NULL_PTR; INVALID_STATE if already installed; NOMEM; IO. Failure
  * consumes only new resources and never changes the process standard FILEs.
+ * Neither unwind nor close flushes/closes the inherited original FILEs.
  * The host must not print a fallback diagnostic through inherited streams on
  * construction failure, as they may be the saturated descriptors being fixed.
  */
