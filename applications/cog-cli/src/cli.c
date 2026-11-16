@@ -1,6 +1,7 @@
 /** @file cli.c @brief Explicit application ownership and bounded lifecycle. */
 #define _POSIX_C_SOURCE 200809L
 #include "app_internal.h"
+#include "execution_internal.h"
 #include <errno.h>
 #include <assert.h>
 #include <fcntl.h>
@@ -13,8 +14,14 @@
 cog_result_t cog_cli_clock(uint64_t *now)
 {
     struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return COG_ERROR_IO;
-    *now = (uint64_t)ts.tv_sec * 1000U + (uint64_t)ts.tv_nsec / 1000000U;
+    if (now == NULL) return COG_ERROR_NULL_PTR;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0 || ts.tv_sec < 0 ||
+        ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000L ||
+        (uint64_t)ts.tv_sec > UINT64_MAX / 1000U) return COG_ERROR_IO;
+    uint64_t milliseconds = (uint64_t)ts.tv_sec * 1000U;
+    uint64_t fraction = (uint64_t)ts.tv_nsec / 1000000U;
+    if (fraction > UINT64_MAX - milliseconds) return COG_ERROR_IO;
+    *now = milliseconds + fraction;
     return COG_OK;
 }
 bool cog_cli_text_valid(const char *text, size_t length)
@@ -51,7 +58,7 @@ static cog_result_t reserve_state(cog_cli_app_t *app)
     app->delta_storage = malloc(app->delta_capacity);
     app->result_storage = malloc(app->result_capacity);
     app->history = calloc(CLI_NODES, sizeof(*app->history));
-    app->display_items = calloc(CLI_NODES + 1U, sizeof(*app->display_items));
+    app->display_items = calloc(CLI_NODES + 2U, sizeof(*app->display_items));
     app->tools_json = malloc(CLI_SCHEMA_BYTES);
     if (app->text == NULL || app->opaque_storage == NULL || app->delta_storage == NULL ||
         app->result_storage == NULL || app->history == NULL || app->display_items == NULL ||
@@ -177,20 +184,58 @@ static cog_result_t cli_build_script(cog_cli_app_t *app)
 }
 
 
-cog_result_t cog_cli_app_new(cog_cli_app_t **out, const cog_cli_options_t *input)
+static cog_result_t construct(cog_cli_app_t **out, const cog_cli_options_t *input,
+    cog_cli_execution_admission_t *admission)
 {
-    if (out == NULL || input == NULL) return COG_ERROR_NULL_PTR;
+    if (out == NULL || (input == NULL && admission == NULL)) return COG_ERROR_NULL_PTR;
     *out = NULL;
     cog_cli_app_t *app = calloc(1U, sizeof(*app));
-    if (app == NULL) return COG_ERROR_NOMEM;
+    if (app == NULL) {
+        if (admission != NULL) { cog_cli_configuration_free(admission->configuration); admission->configuration = NULL; }
+        return COG_ERROR_NOMEM;
+    }
+    if (admission != NULL) { app->configuration = admission->configuration; admission->configuration = NULL; }
     app->signal_fd = -1;
     app->out = stdout;
     atomic_init(&app->stop_requested, false);
-    if (!atomic_is_lock_free(&app->stop_requested)) { free(app); return COG_ERROR_UNSUPPORTED; }
-    cog_result_t rc = cog_cli_configuration_new(&app->configuration, input, 1U);
+    if (!atomic_is_lock_free(&app->stop_requested)) { cog_cli_configuration_free(app->configuration); free(app); return COG_ERROR_UNSUPPORTED; }
+    cog_result_t rc = admission == NULL ? cog_cli_configuration_new(&app->configuration, input, 1U) : COG_OK;
     if (rc != COG_OK) goto fail;
     app->opts = *cog_cli_configuration_options(app->configuration);
-    app->configuration_generation = 1U;
+    app->configuration_generation = admission == NULL ? 1U : admission->configuration_generation;
+    if (admission != NULL) {
+        app->headless = calloc(1U, sizeof(*app->headless));
+        if (app->headless == NULL) { rc = COG_ERROR_NOMEM; goto fail; }
+        cli_execution_state_t *h = app->headless;
+        h->kind = admission->kind;
+        h->session_borrowed = admission->kind == COG_CLI_EXECUTION_LOCAL_CHILD;
+        h->authority = admission->kind == COG_CLI_EXECUTION_STAGED ? CLI_AUTH_STAGED : CLI_AUTH_NORMAL;
+        h->absolute_deadline_ms = admission->absolute_deadline_ms;
+        h->expected_owner = admission->expected; h->next_owner = admission->next;
+        h->checkpoint = admission->checkpoint;
+        rc = cog_cli_configuration_tool_mask(app->configuration, &h->tool_mask);
+        if (rc != COG_OK) goto fail;
+        app->opts.socket_path = NULL; app->opts.interactive = false;
+        app->opts.show_usage = false; app->observer = admission->observer;
+        app->reload_attempts = admission->reload_attempts_used;
+        if (admission->kind != COG_CLI_EXECUTION_ROOT) {
+            app->opts.prompt = NULL; app->opts.queue_text = NULL; app->prompt_submitted = true;
+        }
+        if (admission->task != NULL) {
+            h->task_bytes = strlen(admission->task);
+            h->task = malloc(h->task_bytes + 1U);
+            if (h->task == NULL) { rc = COG_ERROR_NOMEM; goto fail; }
+            memcpy(h->task, admission->task, h->task_bytes + 1U);
+        }
+        if (admission->provenance != NULL) {
+            h->provenance_bytes = admission->provenance_len;
+            h->provenance = malloc(h->provenance_bytes + 1U);
+            if (h->provenance == NULL) { rc = COG_ERROR_NOMEM; goto fail; }
+            memcpy(h->provenance, admission->provenance, h->provenance_bytes);
+            h->provenance[h->provenance_bytes] = '\0';
+            memcpy(h->parent_session_id, admission->parent_session_id, strlen(admission->parent_session_id) + 1U);
+        }
+    }
     if ((app->opts.mock_deltas == NULL) != (app->opts.mock_delta_count == 0U) ||
         app->opts.mock_delta_count > 4096U ||
         (app->opts.mock_deltas != NULL && app->opts.script != NULL) ||
@@ -203,7 +248,20 @@ cog_result_t cog_cli_app_new(cog_cli_app_t **out, const cog_cli_options_t *input
         rc = reserve_state(app);
         if (rc != COG_OK) goto fail;
     }
-    rc = cog_cli_sessions_open(app);
+    if (app->headless != NULL) {
+        cli_execution_state_t *h = app->headless;
+        size_t fixed = CLI_NODES + 256U;
+        if (app->result_capacity > SIZE_MAX - fixed ||
+            app->opts.max_context_bytes > (SIZE_MAX - fixed - app->result_capacity) / 5U) {
+            rc = COG_ERROR_LIMIT; goto fail;
+        }
+        h->frozen_item_capacity = CLI_NODES + 2U;
+        h->frozen_text_capacity = app->opts.max_context_bytes * 5U + app->result_capacity + fixed;
+        h->frozen_items = calloc(h->frozen_item_capacity, sizeof(*h->frozen_items));
+        h->frozen_text = malloc(h->frozen_text_capacity);
+        if (h->frozen_items == NULL || h->frozen_text == NULL) { rc = COG_ERROR_NOMEM; goto fail; }
+    }
+    rc = admission == NULL ? cog_cli_sessions_open(app) : cli_sessions_admit(app, admission);
     if (rc != COG_OK) goto fail;
     rc = cog_cli_clock(&app->now);
     if (rc != COG_OK) goto fail;
@@ -249,6 +307,10 @@ cog_result_t cog_cli_app_new(cog_cli_app_t **out, const cog_cli_options_t *input
         .fields = cog_cli_observation_fields(), .sinks = &app->sink_table, .service = "cog-cli"};
     rc = cog_obs_new(&app->obs, &obs);
     if (rc != COG_OK) goto fail;
+    if (app->observer != NULL) {
+        rc = cog_cli_observer_bind(app->observer, app->obs);
+        if (rc != COG_OK) goto fail;
+    }
     if (app->opts.workspace_root != NULL && app->store != NULL) {
         static const char *const environment[] = {"PATH=/usr/bin:/bin", "LC_ALL=C.UTF-8"};
         cog_workspace_config_t workspace = {.root = app->opts.workspace_root,
@@ -270,15 +332,18 @@ cog_result_t cog_cli_app_new(cog_cli_app_t **out, const cog_cli_options_t *input
         .obs = app->obs, .store = app->store, .ipc_endpoint = app->ipc, .user = app,
         .tool_table = &cog_workspace_tools, .service_fn = cog_cli_service, .service_arg = app,
         .idle_fn = cog_cli_idle, .idle_arg = app, .service_interval = 4U,
-        .max_idle_wait_ms = 10U, .event_queue_capacity = 64U};
+        .max_idle_wait_ms = 10U, .event_queue_capacity = 64U,
+        .step_event_limit = admission == NULL ? 0U : 1U};
     rc = cog_core_new(&app->core, &core);
     if (rc != COG_OK) goto fail;
     app->ipc = NULL;
     rc = cog_cli_observation_check(app, COG_OK);
     if (rc != COG_OK) goto fail;
-    rc = cog_cli_sessions_prepare(app);
-    if (rc != COG_OK) goto fail;
-    if (app->opts.session_action == COG_CLI_SESSION_FORK) {
+    if (admission == NULL) {
+        rc = cog_cli_sessions_prepare(app);
+        if (rc != COG_OK) goto fail;
+    }
+    if ((admission == NULL || admission->kind == COG_CLI_EXECUTION_ROOT) && app->opts.session_action == COG_CLI_SESSION_FORK) {
         rc = cog_cli_app_fork(app, app->opts.fork_node_id);
         if (rc != COG_OK) goto fail;
     }
@@ -288,19 +353,28 @@ fail:
     cog_cli_app_free(app);
     return rc;
 }
-void cog_cli_app_free(cog_cli_app_t *app)
+cog_result_t cli_app_dispose(cog_cli_app_t **owner, cog_result_t primary)
 {
-    if (app == NULL) return;
+    if (owner == NULL) return COG_ERROR_NULL_PTR;
+    cog_cli_app_t *app = *owner;
+    if (app == NULL) return primary;
     /* app_run drains on every exit. Never destroy an active borrowed handle. */
     if (app->execution != NULL) {
         cog_result_t released = cog_toolkit_execution_free(app->execution);
         assert(released == COG_OK);
         if (released != COG_OK) {
             (void)fprintf(stderr, "cog-cli: active execution must be drained before app_free\n");
-            return;
+            return primary != COG_OK ? primary : released;
         }
     }
-    if (app->workspace != NULL) (void)cog_workspace_free(app->workspace);
+    if (app->headless != NULL && app->headless->delegation != NULL) {
+        cog_result_t released = cog_cli_delegation_context_free(app->headless->delegation);
+        if (released != COG_OK) return primary != COG_OK ? primary : released;
+    }
+    if (app->workspace != NULL) {
+        cog_result_t released = cog_workspace_free(app->workspace);
+        if (primary == COG_OK) primary = released;
+    }
     if (app->core != NULL) { cog_core_free(app->core); app->core = NULL; }
     cog_result_t cleanup = cog_cli_reload_free(app);
     cog_result_t ending = app->assistant_pending ? app->assistant_error :
@@ -314,17 +388,48 @@ void cog_cli_app_free(cog_cli_app_t *app)
         (void)fprintf(stderr, "cog-cli: provider cleanup: %s\n", cog_cli_result_name(cleanup));
     else if (observed != COG_OK)
         (void)fprintf(stderr, "cog-cli: observation failure: %s\n", cog_cli_result_name(observed));
-    if (app->guard != NULL) (void)cog_store_owner_release(app->guard);
+    if (primary == COG_OK) primary = observed;
+    if (app->guard != NULL) {
+        cog_result_t released = cog_store_owner_release(app->guard);
+        if (released != COG_OK) return primary != COG_OK ? primary : released;
+        app->guard = NULL;
+    }
     if (app->obs != NULL) cog_obs_free(app->obs);
     if (app->store != NULL) cog_store_free(app->store);
-    if (app->session != NULL) cog_session_free(app->session);
-    if (app->ipc != NULL) (void)cog_ipc_endpoint_free(app->ipc);
-    if (app->log_file != NULL && app->log_file != stderr) (void)fclose(app->log_file);
+    if (app->session != NULL && (app->headless == NULL || !app->headless->session_borrowed)) cog_session_free(app->session);
+    if (app->ipc != NULL) { cog_result_t released = cog_ipc_endpoint_free(app->ipc); if (primary == COG_OK) primary = released; }
+    if (app->log_file != NULL && app->log_file != stderr && fclose(app->log_file) != 0 && primary == COG_OK) primary = COG_ERROR_IO;
     for (size_t i = 0U; i < CLI_CALLS; i++) free(app->calls[i].arguments);
     for (size_t i = 0U; i < CLI_INPUTS; i++) free(app->inputs[i].text);
     free(app->text); free(app->opaque_storage); free(app->delta_storage);
     free(app->result_storage); free(app->history); free(app->display_items); free(app->tools_json);
-    free(app->steps); free(app->chunks_copy); free(app);
+    if (app->headless != NULL) {
+        free(app->headless->frozen_items); free(app->headless->frozen_text);
+        free(app->headless->task); free(app->headless->provenance); free(app->headless);
+    }
+    free(app->steps); free(app->chunks_copy); free(app); *owner = NULL;
+    return primary;
+}
+cog_result_t cog_cli_app_new(cog_cli_app_t **out, const cog_cli_options_t *input)
+{
+    return construct(out, input, NULL);
+}
+cog_result_t cli_app_construct_resolved(cog_cli_app_t **out, cog_cli_execution_admission_t *admission)
+{
+    if (admission == NULL) { if (out != NULL) *out = NULL; return COG_ERROR_NULL_PTR; }
+    if (out == NULL || admission->configuration == NULL) {
+        cog_cli_configuration_free(admission->configuration); admission->configuration = NULL;
+        if (out != NULL) *out = NULL;
+        return COG_ERROR_NULL_PTR;
+    }
+    return construct(out, NULL, admission);
+}
+void cog_cli_app_free(cog_cli_app_t *app)
+{
+    if (app == NULL) return;
+    cog_result_t rc = app->headless == NULL ? cli_app_dispose(&app, COG_OK) :
+        cog_cli_execution_close(&app, COG_OK);
+    if (rc != COG_OK) (void)fprintf(stderr, "cog-cli: application cleanup: %s\n", cog_cli_result_name(rc));
 }
 cog_result_t cog_cli_app_run(cog_cli_app_t *app)
 {
