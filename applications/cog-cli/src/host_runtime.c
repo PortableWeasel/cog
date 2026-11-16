@@ -533,16 +533,35 @@ static cog_result_t host_ui_hello(cog_cli_host_runtime_t *r, const cog_event_ipc
     cli_client_hello_record_t *h = &client->hello;
     if (event->msg_payload_len > h->original.capacity || r->next_nonce > UINT64_MAX - 16U)
         return COG_ERROR_LIMIT;
+    bool new_lease = !client->used;
     uint64_t lease = client->used ? client->logical_lease : r->next_client_lease;
     uint64_t wire;
     rc = host_ui_result(r, COG_CLI_LANE_COMMAND, message->wire_id, lease, COG_OK, &h->reply, &wire);
     if (rc != COG_OK) return rc;
     if (!client->used) {
+        /* A physical cell is reusable only after its old receipt lease expired.
+         * Its constructor arenas survive; stream identity and receipt state do
+         * not cross into the newly assigned logical lease. Reconnects bypass
+         * this branch and retain every original command/HELLO receipt. */
+        size_t base = (r->bounds.executors + (size_t)(client - r->clients)) * (2U * CLI_HOST_LANES);
+        for (size_t i = 0U; i < 2U * CLI_HOST_LANES; ++i) {
+            cli_control_lane_t previous = r->lanes[base + i];
+            r->lanes[base + i] = (cli_control_lane_t){.pending = previous.pending,
+                .provisional_reply = previous.provisional_reply, .final_original = previous.final_original,
+                .final_reply = previous.final_reply, .next_wire = 1U};
+            r->lanes[base + i].pending.length = 0U;
+            r->lanes[base + i].provisional_reply.length = 0U;
+            r->lanes[base + i].final_original.length = 0U;
+            r->lanes[base + i].final_reply.length = 0U;
+        }
+        client->send.length = 0U; client->resync.length = 0U; client->gap_last = 0U;
+        client->controller_until_ms = 0U;
         client->used = true; client->logical_lease = r->next_client_lease++;
         client->controller = role == 1U && !controller;
         h->initial_nonce = message->sender_incarnation;
     }
-    h->retired_through = h->ack_wire > h->request_wire ? h->ack_wire : h->request_wire;
+    h->retired_through = new_lease ? 0U :
+        (h->ack_wire > h->request_wire ? h->ack_wire : h->request_wire);
     memcpy(h->original.data, event->msg_payload, event->msg_payload_len);
     h->original.length = event->msg_payload_len;
     h->request_sender = message->sender_incarnation; h->request_wire = message->wire_id;
@@ -618,6 +637,8 @@ static cog_result_t host_ui_command(cog_cli_host_runtime_t *r, cli_client_record
         cli_command_record_t *record = &r->commands[i];
         if (record->phase == CLI_COMMAND_FREE) { if (vacant == NULL) vacant = record; continue; }
         if (record->lease == client->logical_lease && record->request_wire == m->wire_id) {
+            if (record->original.length < 6U) return COG_ERROR_PROTOCOL;
+            if (record->original.data[5] != (unsigned char)m->lane) continue;
             if (!host_bytes_equal(&record->original, event->msg_payload, event->msg_payload_len))
                 return COG_ERROR_PROTOCOL;
             return record->phase == CLI_COMMAND_FINAL ? host_client_queue(client, &record->reply) : COG_ERROR_AGAIN;
