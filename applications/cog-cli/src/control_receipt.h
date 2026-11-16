@@ -67,6 +67,24 @@ typedef enum cog_cli_control_receipt_disposition {
  * new wire ID to fill an unaccepted semantic slot; it cannot modify a retried
  * envelope's bytes or an already accepted update. A cached receipt is immutable
  * on retransmission, including its prefix snapshot; current state may be newer.
+ *
+ * Before consuming a receipt, compare every identity with the exact retained
+ * worker item. ACCEPTED requires prefix==that item's CGA1 sequence and matching
+ * terminal metadata (absent for RUNNING). CANCEL_CONSUMED requires admitted
+ * cancellation, no accepted terminal, and item RUNNING/COMPLETED with sequence
+ * prefix+1 (checked without overflow). It retires only the rejected delivery;
+ * it is not cog_agent_ack_update for that sequence. Only this disposition allows
+ * a new envelope to fill the unaccepted slot after drain. RETRY never retires
+ * even when its prefix/terminal metadata shows successful core ingress.
+ * TERMINAL_FIXED requires a verified accepted terminal at the reported prefix;
+ * it never semantically accepts the pending payload. An older receipt for a
+ * different wire item cannot free the current item, regress prefix or undo
+ * admitted cancellation. A conflicting duplicate wire ID is a protocol error.
+ *
+ * These receipts never certify a durable parent TOOL save, release its guard,
+ * prove descendants fenced, or claim factual child effects were rolled back.
+ * The parent's accepted core terminal and the child's factual durable ledger
+ * stay immutable even if parent tool-result persistence later fails.
  */
 typedef struct cog_cli_control_receipt {
     uint64_t parent_runtime_incarnation; /**< Parent process lifetime, not display
@@ -119,7 +137,7 @@ cog_result_t cog_cli_control_receipt_encode(
  * @param[in] input_len Exact payload length, excluding the outer envelope.
  * @param[out] receipt Caller scalar object; unchanged on every failure.
  * @return OK; NULL_PTR for input/receipt NULL; PROTOCOL for wrong length,
- * malformed scalar/predicate, zero disposition or trailing bytes; UNSUPPORTED
+ * malformed scalar/predicate, zero version/disposition or trailing bytes; UNSUPPORTED
  * for an unknown nonzero version or disposition. No allocation or ingestion.
  * @pre input and receipt do not overlap.
  * @post OK reconstructs only the payload above. Caller still verifies current
