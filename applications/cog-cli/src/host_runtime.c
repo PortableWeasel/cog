@@ -1150,3 +1150,64 @@ fail:
     cog_cli_configuration_free(resolved);
     return cog_cli_host_runtime_close(&r, rc);
 }
+
+/** Publish drive ownership without dispatch or waiting for any worker. */
+cog_result_t cog_cli_host_runtime_begin(cog_cli_host_runtime_t *r)
+{
+    if (r == NULL) return COG_ERROR_NULL_PTR;
+    if (r->begun || r->in_step) return COG_ERROR_INVALID_STATE;
+    if (r->shutdown) { r->done = true; return r->primary; }
+    r->begun = true;
+    cog_result_t rc = cog_core_drive_begin(r->control_core);
+    if (rc != COG_OK) {
+        r->control_drive_ended = true; r->primary = rc;
+        r->shutdown = true; r->admission_frozen = true;
+        return rc;
+    }
+    /* Every published native reservation remains owned on prefix failure. The
+     * later step/drain path services it; no synchronous rollback or waitpid. */
+    for (size_t i = 0U; i < r->bounds.workers; ++i) {
+        cli_worker_record_t *worker = &r->workers[i];
+        rc = cog_orchestrator_spawn(r->orchestrator, r->executable, &worker->id);
+        if (rc != COG_OK) {
+            r->primary = rc;
+            (void)cog_cli_host_runtime_request_shutdown(r);
+            return rc;
+        }
+        worker->used = true;
+    }
+    return COG_OK;
+}
+
+/** Freeze new admission and request bounded actual cleanup, never wait here. */
+cog_result_t cog_cli_host_runtime_request_shutdown(cog_cli_host_runtime_t *r)
+{
+    if (r == NULL) return COG_ERROR_NULL_PTR;
+    if (r->shutdown) return COG_OK;
+    r->shutdown = true; r->admission_frozen = true;
+    if (!r->begun) { r->done = true; return COG_OK; }
+    uint64_t now;
+    cog_result_t rc = host_clock(&now);
+    if (rc == COG_OK) r->now_ms = now;
+    else r->primary = host_first(r->primary, rc);
+    r->shutdown_deadline_ms = r->now_ms > UINT64_MAX - r->fixed.shutdown_ms ?
+        UINT64_MAX : r->now_ms + r->fixed.shutdown_ms;
+    for (size_t i = 0U; i < r->group_capacity; ++i) {
+        cli_group_record_t *group = &r->groups[i];
+        if (group->phase != CLI_GROUP_FREE) (void)cli_runtime_release(r, group->reservation);
+    }
+    for (size_t i = 0U; i < r->bounds.executors; ++i) {
+        cli_executor_slot_t *slot = &r->executors[i];
+        if (slot->phase == CLI_SLOT_FREE) continue;
+        slot->cancel_latched = true;
+        if (slot->drain_deadline_ms == 0U || slot->drain_deadline_ms > r->shutdown_deadline_ms)
+            slot->drain_deadline_ms = r->shutdown_deadline_ms;
+        if (slot->app != NULL) cog_cli_app_stop(slot->app);
+    }
+    if (r->handoff != NULL) rc = host_first(rc, cog_cli_handoff_abort(r->handoff));
+    if (r->orchestrator != NULL)
+        rc = host_first(rc, cog_orchestrator_request_shutdown(r->orchestrator, r->now_ms, r->fixed.shutdown_ms));
+    if (!r->control_drive_ended) cog_core_stop(r->control_core);
+    r->primary = host_first(r->primary, rc);
+    return rc;
+}
