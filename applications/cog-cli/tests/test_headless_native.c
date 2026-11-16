@@ -57,6 +57,7 @@ int main(int argc,char **argv)
         .max_request_bytes=1024U*1024U,.max_connections=2U,.ca_bundle=argv[2],.connect_timeout_ms=3000U,.stall_timeout_ms=5000U};
     cog_cli_host_runtime_config_t config={.root_options=&options,.net_config=&transport,
         .ui_socket=ui,.worker_socket=workers,.executable=argv[1],.workers=1U,.children=2U,.child_requests=32U,
+        .shutdown_ms=move?15000U:3000U,
         .child_profile={.policy=COG_CLI_CHILD_POLICY_INHERIT,.tools=COG_CLI_CHILD_COMMAND,
             .max_tool_rounds=1U,.max_retries=0U},.signal_fd=-1};
     primary=cog_cli_host_runtime_new(&host,&config);CHECK(primary==COG_OK);
@@ -119,9 +120,29 @@ int main(int argc,char **argv)
             if(requested==COG_ERROR_AGAIN){primary=advance(host,&done);CHECK(primary==COG_OK&&!done);}
         }
         CHECK(requested==COG_OK);
-        deadline=clock_ms()+20000U;
+        uint64_t began=clock_ms();deadline=began+20000U;
         while(host->handoff->phase!=CLI_HANDOFF_IDLE && clock_ms()<deadline) {
-            primary=advance(host,&done);CHECK(primary==COG_OK&&!done);
+            cli_handoff_phase_t previous=host->handoff->phase;
+            primary=advance(host,&done);
+            if(previous!=host->handoff->phase || primary!=COG_OK)
+                fprintf(stderr,"native handoff %u phase %d -> %d elapsed=%llu rc=%d\n",i+1U,
+                    (int)previous,(int)host->handoff->phase,(unsigned long long)(clock_ms()-began),(int)primary);
+            if(primary!=COG_OK) {
+                cog_cli_handoff_t *h=host->handoff;
+                fprintf(stderr,"native handoff state pending=%zu reply=%zu identity=%llu source=%zu/%llu target=%zu/%llu expected=%llu/%llu next=%llu/%llu token=%llu\n",
+                    h->pending.length,h->reply.length,(unsigned long long)h->identity,
+                    h->source_slot,(unsigned long long)h->source_peer,h->target_slot,(unsigned long long)h->target_peer,
+                    (unsigned long long)h->expected.epoch,(unsigned long long)h->expected.instance_id,
+                    (unsigned long long)h->next.epoch,(unsigned long long)h->next.instance_id,
+                    (unsigned long long)h->checkpoint.generation);
+                for(size_t slot=0U;slot<2U;++slot) {
+                    cli_executor_slot_t *ex=&host->executors[slot];
+                    fprintf(stderr,"native handoff slot%zu phase=%d worker=%llu/%llu peer=%llu owner=%llu/%llu\n",
+                        slot,(int)ex->phase,(unsigned long long)ex->worker.incarnation,(unsigned long long)ex->worker.number,
+                        (unsigned long long)ex->owner_peer,(unsigned long long)ex->owner.epoch,(unsigned long long)ex->owner.instance_id);
+                }
+            }
+            CHECK(primary==COG_OK&&!done);
         }
         CHECK(host->handoff->phase==CLI_HANDOFF_IDLE && host->handoff->primary==COG_OK);
         CHECK(host->primary_owner.epoch==before.epoch+1U && host->primary_owner.instance_id!=before.instance_id);
