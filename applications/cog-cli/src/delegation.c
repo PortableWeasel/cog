@@ -170,6 +170,11 @@ static cog_result_t tool_new(cog_core_t *core,const char *request,size_t length,
     if((operation==CLI_DELEGATE)!=(context->agent==0U)) return COG_ERROR_INVALID_ARG;
     if(operation==CLI_DELEGATE && (app->opts.backend!=COG_CLI_BACKEND_REAL || app->opts.workspace_root==NULL))
         return COG_ERROR_UNSUPPORTED;
+    if((operation==CLI_DELEGATE && config->max_output_bytes<app->opts.max_tool_output_bytes) ||
+       (operation==CLI_SEND_MESSAGE && config->max_output_bytes<14U) ||
+       (operation==CLI_RECEIVE_MESSAGES && config->max_output_bytes<36U) ||
+       (config->max_json_depth!=0U && config->max_json_depth<(operation==CLI_DELEGATE?3U:1U)))
+        return COG_ERROR_LIMIT;
     size_t arguments=config->max_argument_bytes?config->max_argument_bytes:65536U;
     if(length>=arguments || arguments>SIZE_MAX-2048U || config->max_output_bytes>SIZE_MAX-2048U)
         return COG_ERROR_LIMIT;
@@ -278,6 +283,8 @@ static cog_result_t tool_cancel(void *opaque,uint64_t now)
         if(h->context->coordinator!=NULL) rc=cli_runtime_release(h->context->coordinator,h->reservation);
         else rc=cli_worker_delegation_step(h->context->worker,h);
     }
+    if(!h->started && h->context->worker!=NULL && h->operation==CLI_DELEGATE &&
+       h->reservation==0U && h->pending.length!=0U) rc=COG_ERROR_AGAIN;
     if(!h->started && (rc==COG_OK || rc==COG_ERROR_NOT_FOUND)) failed_result(h,COG_ERROR_ABORTED);
     return rc==COG_ERROR_AGAIN?COG_OK:rc;
 }
@@ -315,6 +322,8 @@ static cog_result_t tool_poll(void *opaque,uint64_t now,bool *done,uint64_t *dea
                 }
             }
         }
+        if(rc==COG_OK && h->cancelled && !h->started && h->context->worker!=NULL &&
+           (h->reservation!=0U || h->pending.length==0U)) failed_result(h,COG_ERROR_ABORTED);
         if(rc!=COG_OK && rc!=COG_ERROR_AGAIN) {
             /* A live admitted group remains owned for actual cancel/drain;
                a transport loss can only report explicit unknown remote effects. */
@@ -336,7 +345,8 @@ static cog_result_t tool_destroy(void *opaque)
 {
     if(opaque==NULL) return COG_OK;
     cli_delegation_handle_t *h=opaque;
-    if(h->started && !h->done) return COG_ERROR_INVALID_STATE;
+    if((h->started && !h->done) || (!h->started && !h->done &&
+       h->context->worker!=NULL && h->pending.length!=0U)) return COG_ERROR_INVALID_STATE;
     if(!h->started && h->reservation!=0U) {
         h->cancelled=true;
         cog_result_t rc=h->context->coordinator!=NULL?
@@ -353,6 +363,12 @@ cog_result_t cli_delegation_saved(cog_cli_delegation_context_t *context,uint64_t
     cli_delegation_handle_t *h=context->prepared;
     if(h==NULL || !h->done || !h->output_cached || h->request.parent_node!=node ||
        h->request.ordinal!=ordinal || checkpoint.generation==0U) return COG_ERROR_INVALID_STATE;
+    if(h->context->worker!=NULL && h->operation==CLI_DELEGATE && h->reservation!=0U &&
+       h->codec.length==16U) {
+        cli_wire_reader_t saved={h->codec.data,16U,0U,true};
+        if(cli_wire_get(&saved,8U)!=h->group || cli_wire_get(&saved,8U)!=checkpoint.generation)
+            return COG_ERROR_INVALID_STATE;
+    }
     if(h->result_saved) return COG_OK;
     if(h->operation!=CLI_DELEGATE || h->reservation==0U) { h->result_saved=true;return COG_OK; }
     if(context->coordinator!=NULL) {

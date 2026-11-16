@@ -432,19 +432,23 @@ static cog_result_t bootstrap(cog_cli_worker_host_t *worker,const cog_cli_contro
         exchange=&slot->profile;
     }
     if(message->wire_id==exchange->wire) return bootstrap_duplicate(worker,exchange,message,original_length);
-    if(message->wire_id<=exchange->retired_through || exchange->pending || exchange->source!=NULL)
+    if(message->wire_id<=exchange->retired_through || exchange->pending ||
+       (exchange->source!=NULL && !(purpose==4U && exchange->acknowledged && message->wire_id>exchange->wire)))
         return COG_ERROR_INVALID_STATE;
     const unsigned char *profile=(const unsigned char *)message->payload+5U;
     size_t profile_length=message->payload_len-5U;
     cog_cli_configuration_t *configuration=NULL;cog_cli_bootstrap_probe_t probe={0};
-    cog_result_t outcome=slot->cancel_latched?COG_ERROR_ABORTED:
-        profile_construct(worker,slot,profile,profile_length,&configuration,&probe);
-    if(outcome!=COG_OK && outcome!=COG_ERROR_ABORTED) return outcome;
+    cog_result_t outcome=profile_construct(worker,slot,profile,profile_length,&configuration,&probe);
+    if(outcome!=COG_OK) return outcome;
+    if(slot->cancel_latched) {
+        cog_cli_configuration_free(configuration);configuration=NULL;outcome=COG_ERROR_ABORTED;
+    }
     cli_wire_reader_t generation={profile,profile_length,4U,true};
     uint64_t number=cli_wire_get(&generation,8U);
     if(!generation.valid || number==0U || (purpose==4U && number!=(uint64_t)attempts+1U)) {
         cog_cli_configuration_free(configuration);return COG_ERROR_PROTOCOL;
     }
+    if(exchange->wire!=0U) exchange->retired_through=exchange->wire;
     secret_bind(exchange,message);exchange->purpose=purpose;exchange->reload_attempts_used=attempts;
     exchange->generation=number;exchange->probe=probe;exchange->source=configuration;
     if(configuration!=NULL) {
@@ -499,6 +503,7 @@ static cog_result_t child_start(cog_cli_worker_host_t *worker,cli_executor_slot_
     if(original_length>incoming->final_original.capacity || incoming->final_reply.capacity<256U ||
        outgoing->next_wire==0U || outgoing->next_wire>UINT64_MAX-8U) return COG_ERROR_LIMIT;
     cog_result_t outcome=COG_OK;
+    if(!slot->profile.acknowledged) return COG_ERROR_INVALID_STATE;
     if(slot->cancel_latched) outcome=COG_ERROR_ABORTED;
     else if(slot->started || slot->pending_profile==NULL || generation!=slot->configuration_generation)
         outcome=COG_ERROR_INVALID_STATE;
@@ -704,7 +709,7 @@ static cog_result_t native_receive(cog_cli_worker_host_t *worker,const void *byt
 }
 static cog_result_t dispose_execution(cli_executor_slot_t *slot)
 {
-    cog_result_t rc=cog_cli_execution_close(&slot->app,slot->primary);
+    cog_result_t rc=cog_cli_execution_close(&slot->app,COG_OK);
     if(slot->app!=NULL) return rc;
     slot->profile.source=NULL;
     cog_cli_configuration_free(slot->pending_profile);slot->pending_profile=NULL;
@@ -1042,6 +1047,38 @@ static cog_result_t command_ack(cog_cli_worker_host_t *worker,cli_executor_slot_
     unsigned char body[21]={0};body[4]=2U;
     return lane_reply(worker,slot,message,COG_CLI_CONTROL_COMMAND_RESULT,body,sizeof(body),length);
 }
+static cog_result_t dispatch_cancel(cog_cli_worker_host_t *worker,cli_executor_slot_t *slot,
+    const cog_cli_control_message_t *message,size_t length)
+{
+    cli_control_lane_t *lane=&slot->inbound[COG_CLI_LANE_CANCEL-1U];
+    if(length>lane->final_original.capacity) return COG_ERROR_LIMIT;
+    cog_result_t rc=child_cancel(worker,slot,message);
+    if(rc==COG_OK) {
+        if(lane->final_valid) lane->retired_through=lane->final_answered_wire;
+        memcpy(lane->final_original.data,worker->receive_secret,length);
+        lane->final_original.length=length;lane->final_answered_wire=message->wire_id;lane->final_valid=true;
+    }
+    return rc;
+}
+static cog_result_t dispatch_view(cog_cli_worker_host_t *worker,cli_executor_slot_t *slot,
+    const cog_cli_control_message_t *message,size_t length)
+{ (void)worker;(void)length;return view_commit(slot,message); }
+static cog_result_t dispatch_result(cog_cli_worker_host_t *worker,cli_executor_slot_t *slot,
+    const cog_cli_control_message_t *message,size_t length)
+{
+    if(message->lane==COG_CLI_LANE_POLICY) return policy_result(slot,message);
+    return delegation_reply(worker,slot,message,length);
+}
+typedef cog_result_t (*worker_handler_t)(cog_cli_worker_host_t *,cli_executor_slot_t *,
+    const cog_cli_control_message_t *,size_t);
+static const struct { cog_cli_control_kind_t kind;worker_handler_t handler; } worker_dispatch[]={
+    {COG_CLI_CONTROL_CHILD_START,child_start},{COG_CLI_CONTROL_CHILD_CANCEL,dispatch_cancel},
+    {COG_CLI_CONTROL_UPDATE_RECEIPT,update_receipt},{COG_CLI_CONTROL_VIEW_COMMIT,dispatch_view},
+    {COG_CLI_CONTROL_EXECUTOR_COMMAND,executor_command},{COG_CLI_CONTROL_HANDOFF,handoff_receive},
+    {COG_CLI_CONTROL_COMMAND_ACK,command_ack},{COG_CLI_CONTROL_COMMAND_RESULT,dispatch_result},
+    {COG_CLI_CONTROL_DELEGATE_RESERVATION,delegation_reply},{COG_CLI_CONTROL_DELEGATE_RESULT,delegation_reply},
+    {COG_CLI_CONTROL_MESSAGE_RESULT,delegation_reply},{COG_CLI_CONTROL_MAILBOX_RESULT,delegation_reply}
+};
 static cog_result_t application_receive(cog_cli_worker_host_t *worker,size_t length)
 {
     cog_cli_control_message_t message;size_t required;
@@ -1070,34 +1107,9 @@ static cog_result_t application_receive(cog_cli_worker_host_t *worker,size_t len
             worker->receive_secret,length,&duplicate);
         if(rc!=COG_OK || duplicate) return rc;
     }
-    switch(message.kind) {
-    case COG_CLI_CONTROL_CHILD_START:return child_start(worker,slot,&message,length);
-    case COG_CLI_CONTROL_CHILD_CANCEL:
-        {
-            cli_control_lane_t *lane=&slot->inbound[COG_CLI_LANE_CANCEL-1U];
-            if(length>lane->final_original.capacity) return COG_ERROR_LIMIT;
-            rc=child_cancel(worker,slot,&message);
-            if(rc==COG_OK) {
-                if(lane->final_valid) lane->retired_through=lane->final_answered_wire;
-                memcpy(lane->final_original.data,worker->receive_secret,length);
-                lane->final_original.length=length;lane->final_answered_wire=message.wire_id;lane->final_valid=true;
-            }
-            return rc;
-        }
-    case COG_CLI_CONTROL_UPDATE_RECEIPT:return update_receipt(worker,slot,&message,length);
-    case COG_CLI_CONTROL_VIEW_COMMIT:return view_commit(slot,&message);
-    case COG_CLI_CONTROL_EXECUTOR_COMMAND:return executor_command(worker,slot,&message,length);
-    case COG_CLI_CONTROL_HANDOFF:return handoff_receive(worker,slot,&message,length);
-    case COG_CLI_CONTROL_COMMAND_ACK:return command_ack(worker,slot,&message,length);
-    case COG_CLI_CONTROL_COMMAND_RESULT:
-        if(message.lane==COG_CLI_LANE_POLICY) return policy_result(slot,&message);
-        return delegation_reply(worker,slot,&message,length);
-    case COG_CLI_CONTROL_DELEGATE_RESERVATION:
-    case COG_CLI_CONTROL_DELEGATE_RESULT:
-    case COG_CLI_CONTROL_MESSAGE_RESULT:
-    case COG_CLI_CONTROL_MAILBOX_RESULT:return delegation_reply(worker,slot,&message,length);
-    default:return COG_ERROR_PROTOCOL;
-    }
+    for(size_t i=0U;i<sizeof(worker_dispatch)/sizeof(worker_dispatch[0]);++i)
+        if(worker_dispatch[i].kind==message.kind) return worker_dispatch[i].handler(worker,slot,&message,length);
+    return COG_ERROR_PROTOCOL;
 }
 /* Reuse the consumed UPDATE arena only after factual child cleanup. The
    retained receipt remains separate until endpoint TX owns this exact proof. */
@@ -1221,9 +1233,13 @@ cog_result_t cog_cli_worker_host_step(cog_cli_worker_host_t *worker,cog_cli_host
             rc=publish_view(worker,slot);if(rc!=COG_OK && rc!=COG_ERROR_AGAIN) (void)retain_error(worker,rc);
             rc=publish_policy(worker,slot);if(rc!=COG_OK && rc!=COG_ERROR_AGAIN) (void)retain_error(worker,rc);
         }
-        if(slot->local_done && slot->agent!=0U && slot->terminal_acked) {
+        if(slot->local_done && slot->agent!=0U && slot->terminal_acked && slot->phase!=CLI_SLOT_DISPOSING) {
+            slot->phase=CLI_SLOT_DISPOSING;
             rc=dispose_execution(slot);
-            if(rc==COG_OK) rc=confirm_terminal(worker,slot);
+            if(rc==COG_OK) {
+                slot->phase=CLI_SLOT_RETAINED;
+                rc=confirm_terminal(worker,slot);
+            }
             if(rc==COG_OK) { retire_attempt(slot);progress=true; }
             else if(rc!=COG_ERROR_AGAIN) (void)retain_error(worker,rc);
         }
@@ -1432,7 +1448,9 @@ cog_result_t cli_worker_delegation_step(cog_cli_worker_host_t *worker,cli_delega
                (outcome!=COG_OK && reservation!=0U)) return COG_ERROR_PROTOCOL;
             if(outcome!=COG_OK) return outcome;
             h->reservation=reservation;h->deadline_ms=deadline;h->prepared=true;
-            h->pending.length=0U;h->reply.length=0U;h->codec.length=0U;return COG_OK;
+            h->pending.length=0U;h->reply.length=0U;h->codec.length=0U;
+            if(h->cancelled) return cli_worker_delegation_step(worker,h);
+            return COG_OK;
         }
         if((kind==COG_CLI_CONTROL_DELEGATE_START && m.kind!=COG_CLI_CONTROL_DELEGATE_RESULT) ||
            (kind==COG_CLI_CONTROL_CHILD_MESSAGE && m.kind!=COG_CLI_CONTROL_MESSAGE_RESULT) ||
@@ -1441,10 +1459,10 @@ cog_result_t cli_worker_delegation_step(cog_cli_worker_host_t *worker,cli_delega
         rc=bridge_output(h,&m,&count,&outcome,&effects,&group);
         if(rc==COG_ERROR_AGAIN) { h->reply.length=0U;return rc; }
         if(rc!=COG_OK) return rc;
-        if(count.used>h->output.capacity) return COG_ERROR_LIMIT;
+        if(count.used>=h->output.capacity || count.used>h->fixed.max_output_bytes) return COG_ERROR_LIMIT;
         cli_wire_writer_t write={h->output.data,0U,true};rc=bridge_output(h,&m,&write,&outcome,&effects,&group);
         if(rc!=COG_OK) return rc;
-        h->output.length=write.used;h->group=group;h->done=true;h->output_cached=true;h->codec.length=0U;
+        h->output.data[write.used]=0U;h->output.length=write.used;h->group=group;h->done=true;h->output_cached=true;h->codec.length=0U;
         h->result=(cog_tool_output_t){outcome,(const char *)h->output.data,write.used,false,effects,0,false};
         h->pending.length=0U;return COG_OK;
     }

@@ -2013,6 +2013,218 @@ static cog_result_t host_remote_child_slice(cog_cli_host_runtime_t *r, cli_execu
     return host_worker_send(r, slot->worker, &lane->pending);
 }
 
+
+static cog_result_t host_request_cache(cli_executor_slot_t *slot,
+    const cog_cli_control_message_t *m, const cog_orchestrator_event_t *event, bool *duplicate)
+{
+    cli_control_lane_t *lane = &slot->inbound[(size_t)m->lane - 1U];
+    *duplicate = false;
+    if (lane->final_valid && m->wire_id == lane->final_answered_wire) {
+        if (!host_bytes_equal(&lane->final_original, event->data, event->data_len)) return COG_ERROR_PROTOCOL;
+        *duplicate = true; return COG_OK;
+    }
+    if (m->wire_id <= lane->retired_through || (lane->final_valid && m->wire_id < lane->final_answered_wire))
+        return COG_ERROR_INVALID_STATE;
+    if (lane->pending_valid && (lane->pending_wire != m->wire_id ||
+        !host_bytes_equal(&lane->pending, event->data, event->data_len))) return COG_ERROR_AGAIN;
+    if (event->data_len > lane->pending.capacity || event->data_len > lane->final_original.capacity)
+        return COG_ERROR_LIMIT;
+    if (m->wire_id == UINT64_MAX) return COG_ERROR_LIMIT;
+    memcpy(lane->pending.data, event->data, event->data_len); lane->pending.length = event->data_len;
+    lane->pending_wire = m->wire_id; lane->pending_valid = true;
+    return COG_OK;
+}
+static cog_result_t host_request_finish(cog_cli_host_runtime_t *r, cli_executor_slot_t *slot,
+    cog_cli_control_lane_t id, cog_cli_control_kind_t kind, const void *body, size_t length)
+{
+    cli_control_lane_t *lane = &slot->inbound[(size_t)id - 1U];
+    if (!lane->pending_valid) return COG_ERROR_INVALID_STATE;
+    cog_result_t rc = host_remote_frame(r, slot, kind, id, lane->pending_wire,
+        body, length, &lane->final_reply, &lane->final_reply_wire);
+    if (rc != COG_OK) return rc;
+    if (lane->final_valid) lane->retired_through = lane->final_answered_wire;
+    memcpy(lane->final_original.data, lane->pending.data, lane->pending.length);
+    lane->final_original.length = lane->pending.length;
+    lane->final_answered_wire = lane->pending_wire; lane->final_valid = true; lane->pending_valid = false;
+    lane->provisional_wire = 0U;
+    return host_worker_send(r, slot->worker, &lane->final_reply);
+}
+static cog_result_t host_remote_mailbox(cog_cli_host_runtime_t *r, cli_executor_slot_t *slot,
+    const cog_cli_control_message_t *m, const cog_orchestrator_event_t *event)
+{
+    if (m->lane != COG_CLI_LANE_MAILBOX || m->reply_to != 0U || slot->agent == 0U ||
+        slot->phase != CLI_SLOT_STARTED) return COG_ERROR_INVALID_STATE;
+    bool duplicate;
+    cog_result_t rc = host_request_cache(slot, m, event, &duplicate);
+    if (rc != COG_OK) return rc;
+    cli_control_lane_t *lane = &slot->inbound[COG_CLI_LANE_MAILBOX - 1U];
+    if (duplicate) return host_worker_send(r, slot->worker, &lane->final_reply);
+    if (r->next_nonce > UINT64_MAX - 4U) return COG_ERROR_LIMIT;
+    if (m->kind == COG_CLI_CONTROL_CHILD_MESSAGE) {
+        cli_wire_reader_t reader = {m->payload, m->payload_len, 0U, true};
+        cog_agent_id_t target = cli_wire_get(&reader, 8U);
+        size_t n; const char *text = cli_wire_read_string(&reader, &n);
+        if (!reader.valid || reader.used != reader.length || target == 0U) return COG_ERROR_PROTOCOL;
+        cog_cli_delegation_context_t context = {.coordinator = r, .agent = slot->agent, .group = slot->group};
+        cli_delegation_handle_t request = {.context = &context, .operation = CLI_SEND_MESSAGE,
+            .started = true, .destination = target, .message = text, .message_length = n,
+            .output = {.data = r->projection_scratch.data, .capacity = r->projection_scratch.capacity}};
+        rc = cli_runtime_mailbox_step(r, &request);
+        unsigned char body[5]; cli_wire_writer_t writer = {body, 0U, true};
+        cli_wire_put(&writer, (uint32_t)rc, 4U); cli_wire_put(&writer, rc == COG_ERROR_AGAIN ? 1U : 2U, 1U);
+        if (rc == COG_ERROR_AGAIN) {
+            if (lane->provisional_wire == 0U) {
+                rc = host_remote_frame(r, slot, COG_CLI_CONTROL_MESSAGE_RESULT, m->lane, m->wire_id,
+                    body, sizeof(body), &lane->provisional_reply, &lane->provisional_wire);
+                if (rc != COG_OK) return rc;
+            }
+            return host_worker_send(r, slot->worker, &lane->provisional_reply);
+        }
+        return host_request_finish(r, slot, m->lane, COG_CLI_CONTROL_MESSAGE_RESULT, body, sizeof(body));
+    }
+    if (m->kind != COG_CLI_CONTROL_MAILBOX_POLL || m->payload_len != 0U) return COG_ERROR_PROTOCOL;
+    cli_mailbox_t *mailbox = &slot->mailbox;
+    size_t count = 0U, measured = 0U;
+    for (size_t n = 0U; n <= mailbox->count; ++n) {
+        cli_wire_writer_t json = {NULL, 0U, true}; host_mailbox_json(&json, mailbox, n, n < mailbox->count);
+        if (!json.valid || json.used >= mailbox->reply.capacity) break;
+        count = n; measured = json.used;
+    }
+    cog_result_t outcome = measured == 0U || (mailbox->count != 0U && count == 0U) ? COG_ERROR_LIMIT : COG_OK;
+    if (outcome != COG_OK) count = 0U;
+    cli_wire_writer_t writer = {r->projection_scratch.data, 0U, true};
+    cli_wire_put(&writer, (uint32_t)outcome, 4U);
+    cli_wire_put(&writer, outcome == COG_OK && count < mailbox->count ? 1U : 0U, 1U);
+    cli_wire_put(&writer, count, 2U);
+    for (size_t i = 0U; i < count; ++i) {
+        cli_mailbox_entry_t *item = &mailbox->entries[(mailbox->head + i) % mailbox->entry_capacity];
+        if (item->length + 12U > r->projection_scratch.capacity - writer.used) return COG_ERROR_LIMIT;
+        cli_wire_put(&writer, item->source, 8U);
+        cli_wire_string(&writer, (const char *)mailbox->text + item->offset, item->length);
+    }
+    rc = host_request_finish(r, slot, m->lane, COG_CLI_CONTROL_MAILBOX_RESULT, writer.bytes, writer.used);
+    /* The immutable reply owns the selected prefix even if the transport
+     * fails after caching. A retry must never expose that prefix twice. */
+    if (!lane->final_valid || lane->final_answered_wire != m->wire_id) return rc;
+    if (outcome == COG_OK) {
+        for (size_t i = 0U; i < count; ++i) {
+            mailbox->entries[mailbox->head].used = false;
+            mailbox->head = (mailbox->head + 1U) % mailbox->entry_capacity; --mailbox->count;
+        }
+        size_t offset = 0U;
+        for (size_t i = 0U; i < mailbox->count; ++i) {
+            cli_mailbox_entry_t *item = &mailbox->entries[(mailbox->head + i) % mailbox->entry_capacity];
+            memmove(mailbox->text + offset, mailbox->text + item->offset, item->length + 1U);
+            item->offset = offset; offset += item->length + 1U;
+        }
+        mailbox->text_used = offset;
+    }
+    return rc;
+}
+
+static void host_group_wire(cog_cli_host_runtime_t *r, const cli_group_record_t *group,
+    cli_wire_writer_t *writer)
+{
+    cli_wire_put(writer, group->id, 8U); cli_wire_put(writer, (uint32_t)group->aggregate, 4U);
+    cli_wire_put(writer, group->submitted, 2U);
+    for (size_t i = 0U; i < group->submitted; ++i) {
+        const cli_group_member_t *member = &group->members[i];
+        cli_wire_put(writer, member->present ? 1U : 0U, 1U);
+        if (!member->present) { cli_wire_put(writer, (uint32_t)member->outcome, 4U); continue; }
+        const cli_executor_slot_t *child = &r->executors[member->slot];
+        cli_wire_put(writer, member->agent, 8U); cli_wire_put(writer, member->attempt, 8U);
+        cli_wire_put(writer, (uint64_t)member->status, 1U);
+        cli_wire_put(writer, (uint32_t)member->outcome, 4U);
+        cli_wire_string(writer, child->session, strlen(child->session));
+        cli_wire_string(writer, (const char *)child->result.data, child->result.length);
+        cli_wire_put(writer, member->effects_uncertain ? 1U : 0U, 1U);
+    }
+}
+static cog_result_t host_remote_delegate(cog_cli_host_runtime_t *r, cli_executor_slot_t *slot,
+    const cog_cli_control_message_t *m, const cog_orchestrator_event_t *event)
+{
+    if (slot != &r->executors[r->primary_slot] || slot->agent != 0U || m->reply_to != 0U ||
+        (m->lane != COG_CLI_LANE_DELEGATE && m->lane != COG_CLI_LANE_CANCEL)) return COG_ERROR_INVALID_STATE;
+    cli_control_lane_t *lane = &slot->inbound[(size_t)m->lane - 1U];
+    cli_wire_reader_t reader = {m->payload, m->payload_len, 0U, true};
+    if (m->kind == COG_CLI_CONTROL_DELEGATE_RESULT_ACK) {
+        if (m->lane != COG_CLI_LANE_DELEGATE || m->payload_len != 16U) return COG_ERROR_PROTOCOL;
+        uint64_t id = cli_wire_get(&reader, 8U), checkpoint = cli_wire_get(&reader, 8U);
+        cli_group_record_t *group = NULL;
+        for (size_t i = 0U; i < r->group_capacity; ++i)
+            if (r->groups[i].phase != CLI_GROUP_FREE && r->groups[i].id == id) group = &r->groups[i];
+        if (group == NULL || !host_owner_equal(group->parent_owner, slot->owner) ||
+            strcmp(group->parent_session, m->session_id) != 0 || checkpoint <= group->started_checkpoint.generation)
+            return COG_ERROR_INVALID_STATE;
+        if (group->phase == CLI_GROUP_SAVED)
+            return group->result_checkpoint.generation == checkpoint ? COG_OK : COG_ERROR_PROTOCOL;
+        if (group->phase != CLI_GROUP_RESULT || !lane->final_valid ||
+            lane->final_answered_wire != group->request_wire || m->wire_id <= lane->final_answered_wire)
+            return COG_ERROR_INVALID_STATE;
+        group->result_checkpoint.generation = checkpoint; group->result_acknowledged = true;
+        group->phase = CLI_GROUP_SAVED; lane->retired_through = m->wire_id;
+        lane->final_valid = false; lane->final_original.length = 0U; lane->final_reply.length = 0U;
+        return COG_OK;
+    }
+    bool duplicate;
+    cog_result_t rc = host_request_cache(slot, m, event, &duplicate);
+    if (rc != COG_OK) return rc;
+    if (duplicate) return host_worker_send(r, slot->worker, &lane->final_reply);
+    if (m->kind == COG_CLI_CONTROL_DELEGATE_RESERVATION_RELEASE) {
+        if (m->lane != COG_CLI_LANE_CANCEL || m->payload_len != 8U) return COG_ERROR_PROTOCOL;
+        uint64_t reservation = cli_wire_get(&reader, 8U);
+        cli_group_record_t *group = host_group(r, reservation);
+        if (group == NULL || !host_owner_equal(group->parent_owner, slot->owner) ||
+            strcmp(group->parent_session, m->session_id) != 0) return COG_ERROR_INVALID_STATE;
+        rc = cli_runtime_release(r, reservation);
+        unsigned char body[21]; cli_wire_writer_t writer = {body, 0U, true};
+        cli_wire_put(&writer, (uint32_t)rc, 4U); cli_wire_put(&writer, 2U, 1U);
+        cli_wire_put(&writer, 0U, 8U); cli_wire_put(&writer, 0U, 8U);
+        return host_request_finish(r, slot, m->lane, COG_CLI_CONTROL_COMMAND_RESULT, body, sizeof(body));
+    }
+    if (m->lane != COG_CLI_LANE_DELEGATE ||
+        (m->kind != COG_CLI_CONTROL_DELEGATE_RESERVE && m->kind != COG_CLI_CONTROL_DELEGATE_START))
+        return COG_ERROR_PROTOCOL;
+    bool start = m->kind == COG_CLI_CONTROL_DELEGATE_START;
+    cli_group_request_t request = {0};
+    request.owner.epoch = cli_wire_get(&reader, 8U); request.owner.instance_id = cli_wire_get(&reader, 8U);
+    uint64_t reservation = start ? cli_wire_get(&reader, 8U) : 0U;
+    request.pinned_configuration = cli_wire_get(&reader, 8U);
+    cog_store_checkpoint_t checkpoint = {start ? cli_wire_get(&reader, 8U) : 0U};
+    request.parent_node = cli_wire_get(&reader, 8U); request.ordinal = (uint16_t)cli_wire_get(&reader, 2U);
+    size_t call_length; const char *call = cli_wire_read_string(&reader, &call_length);
+    char call_id[256];
+    if (!reader.valid || call_length == 0U || call_length >= sizeof(call_id)) return COG_ERROR_PROTOCOL;
+    memcpy(call_id, call, call_length); call_id[call_length] = '\0';
+    request.call_id = call_id; request.parent_session = m->session_id;
+    request.deadline_ms = cli_wire_get(&reader, 8U); request.count = (size_t)cli_wire_get(&reader, 2U);
+    const char *tasks[CLI_HOST_MAX_CHILDREN]; size_t lengths[CLI_HOST_MAX_CHILDREN];
+    if (!reader.valid || request.count == 0U || request.count > CLI_HOST_MAX_CHILDREN) return COG_ERROR_PROTOCOL;
+    for (size_t i = 0U; i < request.count; ++i) tasks[i] = cli_wire_read_string(&reader, &lengths[i]);
+    request.tasks = tasks; request.task_lengths = lengths;
+    if (!reader.valid || reader.used != reader.length || !host_owner_equal(request.owner, slot->owner))
+        return COG_ERROR_PROTOCOL;
+    if (!start) {
+        rc = cli_runtime_reserve(r, &request, &reservation);
+        unsigned char body[20]; cli_wire_writer_t writer = {body, 0U, true};
+        cli_wire_put(&writer, (uint32_t)rc, 4U); cli_wire_put(&writer, rc == COG_OK ? reservation : 0U, 8U);
+        cli_wire_put(&writer, request.deadline_ms, 8U);
+        return host_request_finish(r, slot, m->lane, COG_CLI_CONTROL_DELEGATE_RESERVATION, body, sizeof(body));
+    }
+    cli_group_record_t *group = host_group(r, reservation);
+    if (group == NULL || !host_same_request(group, &request) || group->parent_node != request.parent_node ||
+        group->ordinal != request.ordinal || strcmp(group->call_id, call_id) != 0 ||
+        strcmp(group->parent_session, m->session_id) != 0) return COG_ERROR_PROTOCOL;
+    group->request_wire = m->wire_id;
+    rc = cli_runtime_start(r, reservation, checkpoint);
+    if (rc != COG_OK && rc != COG_ERROR_AGAIN && group->phase != CLI_GROUP_RESULT) return rc;
+    if (group->phase != CLI_GROUP_RESULT) return COG_ERROR_AGAIN;
+    cli_wire_writer_t count = {NULL, 0U, true}; host_group_wire(r, group, &count);
+    if (!count.valid || count.used > r->projection_scratch.capacity) return COG_ERROR_LIMIT;
+    cli_wire_writer_t writer = {r->projection_scratch.data, 0U, true}; host_group_wire(r, group, &writer);
+    return host_request_finish(r, slot, m->lane, COG_CLI_CONTROL_DELEGATE_RESULT, writer.bytes, writer.used);
+}
+
 static cog_result_t host_worker_message(cog_cli_host_runtime_t *r, const cog_orchestrator_event_t *event)
 {
     cli_worker_record_t *worker = NULL;
@@ -2045,11 +2257,16 @@ static cog_result_t host_worker_message(cog_cli_host_runtime_t *r, const cog_orc
         memcpy(h->reply.data, event->data, event->data_len); h->reply.length = event->data_len;
         return COG_OK;
     }
-    cli_executor_slot_t *slot = host_agent(r, m.agent_id);
+    cli_executor_slot_t *slot = m.agent_id == 0U ? &r->executors[r->primary_slot] : host_agent(r, m.agent_id);
     if (slot == NULL || slot->attempt != m.execution_epoch || slot->owner_peer != event->peer_id ||
         !host_worker_equal(slot->worker, worker->id) || strcmp(slot->session, m.session_id) != 0)
         return COG_ERROR_INVALID_STATE;
+    if (m.kind == COG_CLI_CONTROL_DELEGATE_RESERVE || m.kind == COG_CLI_CONTROL_DELEGATE_START ||
+        m.kind == COG_CLI_CONTROL_DELEGATE_RESULT_ACK || m.kind == COG_CLI_CONTROL_DELEGATE_RESERVATION_RELEASE)
+        return host_remote_delegate(r, slot, &m, event);
     if (m.kind == COG_CLI_CONTROL_CHILD_UPDATE) return host_remote_update(r, slot, &m, event);
+    if (m.kind == COG_CLI_CONTROL_CHILD_MESSAGE || m.kind == COG_CLI_CONTROL_MAILBOX_POLL)
+        return host_remote_mailbox(r, slot, &m, event);
     if (m.kind == COG_CLI_CONTROL_COMMAND_ACK && m.lane == COG_CLI_LANE_UPDATE) {
         cli_control_lane_t *lane = &slot->inbound[COG_CLI_LANE_UPDATE - 1U];
         if (m.payload_len != 0U || !lane->final_valid || m.reply_to != lane->final_reply_wire ||
