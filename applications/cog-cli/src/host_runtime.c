@@ -571,8 +571,10 @@ static cog_result_t host_ui_ack(cog_cli_host_runtime_t *r, cli_client_record_t *
         cog_result_t rc = host_ui_result(r, m->lane, m->wire_id, 0U, COG_OK,
             &h->ack_reply, &h->ack_result_wire);
         if (rc != COG_OK) return rc;
-        h->ack_wire = m->wire_id; h->acknowledged = true; h->pending = false;
-        return host_client_queue(client, &h->ack_reply);
+        h->ack_wire = m->wire_id; h->acknowledged = true;
+        rc = host_client_queue(client, &h->ack_reply);
+        h->pending = rc == COG_ERROR_AGAIN;
+        return rc;
     }
     cli_control_lane_t *lane = host_client_lane(r, client, m->lane);
     if (lane->final_valid && m->wire_id == lane->final_answered_wire) {
@@ -595,7 +597,9 @@ static cog_result_t host_ui_ack(cog_cli_host_runtime_t *r, cli_client_record_t *
         lane->final_valid = true; lane->final_answered_wire = m->wire_id; lane->final_reply_wire = wire;
         if (command->request_wire > lane->retired_through) lane->retired_through = command->request_wire;
         command->phase = CLI_COMMAND_FREE;
-        return host_client_queue(client, &lane->final_reply);
+        rc = host_client_queue(client, &lane->final_reply);
+        lane->pending_valid = rc == COG_ERROR_AGAIN;
+        return rc;
     }
     return COG_ERROR_NOT_FOUND;
 }
@@ -1815,6 +1819,21 @@ static cog_result_t host_client_slice(cog_cli_host_runtime_t *r, cli_client_reco
             client->receipts_until_ms = r->now_ms + r->fixed.client_receipt_ms;
             client->send.length = 0U; return COG_ERROR_AGAIN;
         }
+        return rc;
+    }
+    /* Consuming an ACK retires the command record, so its retained response
+     * must survive a full client send slot independently of that record. */
+    if (client->hello.acknowledged && client->hello.pending) {
+        cog_result_t rc = host_client_queue(client, &client->hello.ack_reply);
+        if (rc == COG_OK) client->hello.pending = false;
+        return rc;
+    }
+    const cog_cli_control_lane_t reply_lanes[] = {COG_CLI_LANE_COMMAND, COG_CLI_LANE_CANCEL};
+    for (size_t i = 0U; i < sizeof(reply_lanes) / sizeof(reply_lanes[0]); ++i) {
+        cli_control_lane_t *lane = host_client_lane(r, client, reply_lanes[i]);
+        if (!lane->pending_valid) continue;
+        cog_result_t rc = host_client_queue(client, &lane->final_reply);
+        if (rc == COG_OK) lane->pending_valid = false;
         return rc;
     }
     if (!client->hello.acknowledged) return host_client_queue(client, &client->hello.reply);
