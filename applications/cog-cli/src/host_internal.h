@@ -53,12 +53,21 @@ typedef struct cli_control_lane {
     uint64_t deadline_ms; /**< Min only; duplicate never extends. */
 } cli_control_lane_t;
 /** Dedicated PROFILE lane. Re-encode exact pinned generation for duplicate
- * comparison; NEVER retain secret originals in cli_control_lane/command/events.
+ * comparison using its ORIGINAL probe snapshot below, not a worker-global
+ * current probe or a later store read. NEVER retain secret originals in
+ * cli_control_lane/command/events.
  * Only pending secret frame and scratch are reserved here; wipe ENTIRE capacity
  * on retirement/abandonment/free. IPC TX/RX fabric also has wipe_buffers=true.
  */
 typedef struct cli_secret_exchange {
     cli_stream_key_t key;
+    cog_cli_bootstrap_probe_t probe; /**< Owned by-value original session/owner/
+       checkpoint snapshot, including all128 session bytes (no borrowed text).
+       Copied/validated with this exchange before publication, then immutable
+       through pending/ACK and live-generation duplicate comparison. Independent
+       of worker/global probes and other exchanges. Retire with this exchange
+       before releasing its source-generation borrow; never reread latest G or
+       repurpose an old wire with a new probe. No secret bytes/extra allocation. */
     unsigned char *body, *frame, *scratch;
     size_t body_capacity, frame_capacity, scratch_capacity;
     size_t body_length, frame_length;

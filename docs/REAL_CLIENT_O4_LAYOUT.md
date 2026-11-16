@@ -47,7 +47,7 @@ another file's owned subrecord or invent a new authority transition.
 |---|---|---|
 | runtime clients/commands/groups/slots/streams | configured finite clients<=16, workers<=8, children<=16, executors<=18, commands<=1024; groups<=children; new before publication/fork | no outstanding sends/effects/borrows before checked close |
 | each nonsecret stream | separate inbound/outbound FULL key; pending+original/final bytes at construction; per-lane schema-specific cap | retain exact bytes through final consumption/successor proof, then scalar retired watermark |
-| PROFILE secret exchanges | one startup per worker plus one per executor; dedicated body/frame/scratch; pinned generation owner remains live | full-capacity volatile wipe on retirement/abandon/free, not generic receipt cache |
+| PROFILE secret exchanges | one startup per worker plus one per executor; fixed by-value original probe/session+owner+checkpoint in EACH exchange, dedicated body/frame/scratch; pinned generation owner remains live | original probe remains immutable through pending/ACK/live-generation duplicate proof; retire exchange/borrow then clear metadata, full-capacity volatile secret wipe, not generic receipt cache |
 | UI send/resync/projection | full committed replacement frame per admitted client plus independent projection scratch; ring configured separately | copied transfer immutable through output; no executor lifetime borrow |
 | command and forwarded operation | independent copied originals/results and COMMAND/CANCEL slots | client receipt retirement cannot free active executor operation bytes |
 | group/tasks/output/status | whole count/credit and128+1024*count+6*payload proof before STARTED; named app/tool constructors bounded afterward | prefix gate remains closed on failure; actual members stay charged until cleanup/result save |
@@ -224,3 +224,57 @@ and G++/Clang++ C++11 checks pass18/18 after all changes; no source body or runt
 fixture was created. All11 source owners retain their existing N contracts and
 O prerequisites; private-file parallel dispatch starts only after layout freeze
 and primitive completion, with shared app_internal/CMake edits coordinated.
+
+
+## Cycle1 amendment08d1b54 — original bootstrap probe retention
+
+Different final review found one missing implementation storage field: a duplicate
+CGB1 must re-encode the ORIGINAL probe after dedicated ingress/frame scratch was
+wiped, while worker-global probe state may already name another child, reload or
+handoff. `cli_secret_exchange.probe` now owns one complete
+`cog_cli_bootstrap_probe_t` by value. Its session is already a fixed128-byte array,
+owner/checkpoint are values; assignment/deep copy creates no string borrow or new
+allocation. The exchange's source pointer continues to borrow the exact retained
+resolved generation, and the host transport template remains immutable as already
+required. This is storage for existing N duplicate rules, no new authority/API.
+
+Targeted declaration pass1 (capacity and initial ownership): at each named
+constructor reserve exchange metadata with checked count*sizeof(exchange), now
+including the probe. Coordinator bounds stay workers<=8 plus executors<=18;
+each worker has its startup exchange plus<=18 executor exchanges. Secret body/
+frame/scratch byte reservations and counts do not grow. Validate/copy original
+session/current-owner/immutable-checkpoint together with original key, purpose,
+logical reload count, generation and source before exposing pending/ACK state.
+Worker/global `probe` may describe its current admission context but is NEVER
+substitute duplicate-proof storage. No heap session copy/pointer into receive
+scratch is permitted by this by-value field.
+
+Targeted pass2 (duplicate and concurrent-generation trace): exchangeA captures
+sessionS/ownerE/token5 under G1, then wipes the full temporary secret ingress.
+Normal saves may advance S to token6; exchangeB for a child/reload/handoff may
+replace the worker-global current probe with a different tuple. A duplicate of A
+is re-encoded only from A.source + A.probe + the fixed transport and its exact
+bound purpose/count/key. It compares original bytes and replays its existing ACK;
+it never reads latest G, copies B's probe, reruns a resolver or saves/adopts a
+session. Parent and worker each retain their own original value when they own
+that exchange. Receiving/copying a new profile does not mutate an admitted A.
+Changing any original probe identity/bytes is a conflicting duplicate, not a
+request to refresh it. Existing finite lane/watermark/error rules apply.
+
+Targeted pass3 (retirement, failure and lifetime): keep the probe immutable while
+pending, ACK-retained or while the live source generation supports duplicate
+comparison. Retire the exchange according to the existing bounded stale-watermark
+rules BEFORE ending its exact source-generation borrow; R12 may not free the
+borrowed generation underneath duplicate re-encoding. Once retired, stale traffic
+cannot resurrect its cleared source/probe or receive a new latest probe. Constructor
+unwind/abandonment clears metadata and wipes ENTIRE secret arenas; ordinary close
+retires exchange first, then releases its explicit generation pin. No raw secret
+original cache, extra logical generation/provider, store reread, runtime allocation
+or mutable global is introduced. Header-only strict checks below do not claim
+runtime duplicate conformance or permit O4 bodies ahead of their prerequisites.
+
+Amendment verification:18/18 full strict standalone/combined/reversed checks on
+GCC14/Clang19 C11 and G++14/Clang++19 C++11 pass, including a compile-time128-byte
+owned-session-array assertion. Only host_internal.h and this document changed;
+no .c/shared CMake/configuration/O6 edit. Different independent re-review remains
+required before the layout gate closes.
