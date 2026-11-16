@@ -18,6 +18,8 @@ static cog_result_t advance(cog_cli_host_runtime_t *host,bool *done)
     cog_cli_host_runtime_step_t step={0};cog_result_t rc=cog_cli_host_runtime_step(host,&step);
     *done=step.done;
     if(rc==COG_ERROR_AGAIN)rc=COG_OK;
+    if(rc!=COG_OK) fprintf(stderr,"native drive rc=%d done=%d coordinator_failed=%d primary=%d\n",
+        (int)rc,(int)step.done,(int)host->coordinator_failed,(int)host->primary);
     if(!step.done)(void)poll(NULL,0U,step.max_wait_ms>5U?5:(int)step.max_wait_ms);
     return rc;
 }
