@@ -21,6 +21,9 @@ Each sender stream has nonzero monotonic outer wire IDs. Replies identify the
 exact answered wire separately from CGA semantic prefix, CGR cursor and G owner.
 One accepted UI command owns its copied original bytes, admission/result and
 receipt until COMMAND_ACK; retransmit exact bytes under the SAME identity only.
+Retained native application retransmission follows the explicit copied-send
+ownership and finite retry eligibility in REAL_CLIENT_CONTROL_SEND_OWNERSHIP.md;
+accepted transport copies do not authorize continuous enqueue on every slice.
 ACK reclaims into a retired watermark; covered old IDs are uniformly stale and
 cannot re-execute. Full command reservations reject new admission before copying
 effects; duplicates remain answerable. Accepting a command does not mean its
