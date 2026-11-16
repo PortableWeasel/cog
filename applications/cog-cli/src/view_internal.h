@@ -97,6 +97,10 @@ struct cog_cli_host_client {
     size_t render_capacity, render_length;
     char line[CLI_CLIENT_LINE_BYTES], input[CLI_CLIENT_READ_BYTES];
     size_t line_length, input_length, input_cursor;
+    uint64_t input_generation, input_sequence, line_generation, line_sequence;
+    /**< Capture observed anchor when input bytes are READ, preserve it through
+       buffered line completion. A pretyped POLICY/CONTINUE never acquires a
+       later prompt/failed-leaf anchor merely because parsing was delayed. */
 };
 
 /* Source ownership/algorithm notes (declarations above, bodies only after gate):

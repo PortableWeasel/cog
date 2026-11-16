@@ -173,7 +173,12 @@ cog_result_t cog_cli_control_decode(const void *input, size_t input_len,
  * scoped, NOT a CGA semantic prefix. One
  * exact pending frame and last unconsumed final disposition are retained with
  * original bytes; after final-receipt consumption, a higher valid wire retires
- * proof into the watermark. Covered IDs are uniformly stale-rejected before
+ * proof into the watermark. UI_HELLO is a separate bounded discovery receipt:
+ * its higher wire/ACK consumes ONLY that HELLO, never a pending/final ordinary
+ * COMMAND/CANCEL receipt or authority. Retain exact mutation bytes through
+ * reconnect until its OWN final-result/ACK-of-ACK; HELLO is not successor proof
+ * for those records. Known pending correlation is resolved before watermarks.
+ * Covered IDs are uniformly stale-rejected before
  * semantic ingress. No unbounded receipt log, ID reuse or guessed byte equality.
  * Reserve fresh final/control IDs before admitting ordinary frames; UINT64_MAX
  * cannot consume required cancel/drain/terminal/receipt identities. Exhaustion

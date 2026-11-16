@@ -90,6 +90,20 @@ typedef struct cli_host_reservations {
     size_t status_bytes, result_bytes, task_bytes, mailbox_entries, mailbox_bytes;
 } cli_host_reservations_t;
 
+/** Dedicated non-effect HELLO receipt, one per bounded logical client. Not an
+ * ordinary command record/consumption proof. Three constructor slices<=512 each
+ * retain exact HELLO original, final result and final ACK-of-ACK reply. Input
+ * ACK has no payload: exact bound lease/runtime/session/ack_wire/reply_to are its
+ * full correlation. Initial nonce remains available for lost-discovery retry;
+ * known reconnect uses this record's logical lease, never steals another role.
+ * Existing COMMAND/CANCEL receipts remain separately owned during this exchange.
+ * Known active request/ACK lookup precedes per-HELLO retired watermark checks. */
+typedef struct cli_client_hello_record {
+    bool pending, final_valid, acknowledged;
+    uint64_t initial_nonce, request_sender, request_wire, result_wire;
+    uint64_t ack_wire, ack_result_wire, retired_through;
+    cli_host_bytes_t original, reply, ack_reply;
+} cli_client_hello_record_t;
 /** UI identity stays separate from actual link proof; no pointer into a core
  * event survives its handler. A reconnect binds only an existing unexpired lease.
  */
@@ -98,6 +112,7 @@ typedef struct cli_client_record {
     cog_peer_id_t peer;
     cog_ipc_peer_info_t proof;
     uint64_t logical_lease, controller_until_ms, receipts_until_ms;
+    cli_client_hello_record_t hello; /**< Independent discovery/reconnect receipt. */
     uint64_t rendered_generation, rendered_sequence, queued_sequence, gap_last;
     cli_host_bytes_t send, resync;
 } cli_client_record_t;
