@@ -36,11 +36,13 @@ def digest(path):
 
 
 def reject_paths(text, forbidden, owned=None):
+    # The fixture's current relocated prefix may live below the producer build.
+    # Scrub only that owned subtree before rejecting other build/source paths.
+    scrubbed = text.replace(str(owned), "<fixture>") if owned is not None else text
     for path in forbidden:
-        if str(path) in text:
+        if str(path) in scrubbed:
             raise RuntimeError("nonrelocatable source/build/install reference: " + str(path))
     # A temporary *current relocated prefix* is allowed, never a foreign /tmp tree.
-    scrubbed = text.replace(str(owned), "<fixture>") if owned is not None else text
     if re.search(r"/tmp/|/home/[^\s;\"']+/(?:ws-|\.codex/worktrees/)", scrubbed):
         raise RuntimeError("foreign temporary/worktree path in installed metadata")
 
@@ -96,7 +98,11 @@ def main():
             "PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR", "PKG_CONFIG_SYSROOT_DIR",
             "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "LIBRARY_PATH")}
     report = {}
-    with tempfile.TemporaryDirectory(prefix="cog-r18-") as directory:
+    scratch = args.build / "installed-consumer-tmp"
+    scratch.mkdir(exist_ok=True)
+    env["TMPDIR"] = str(scratch)
+    tsan = producer.get("COG_ENABLE_TSAN") == "ON"
+    with tempfile.TemporaryDirectory(prefix="cog-r18-", dir=scratch) as directory:
         work = pathlib.Path(directory)
         original, relocated, final = (work / name for name in ("stage", "relocated", "final"))
         source, build = work / "consumer-source", work / "consumer-build"
@@ -120,7 +126,8 @@ def main():
              "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_C_COMPILER=" + str(args.compiler),
              "-DCMAKE_PREFIX_PATH=" + str(relocated), "-DCMAKE_INSTALL_PREFIX=" + str(relocated),
              "-DCMAKE_INSTALL_BINDIR=" + str(bindir), "-DCMAKE_INSTALL_LIBDIR=" + str(libdir),
-             "-DEMBEDDER_ASAN=" + ("ON" if args.asan == "1" else "OFF")], env)
+             "-DEMBEDDER_ASAN=" + ("ON" if args.asan == "1" else "OFF"),
+             "-DEMBEDDER_TSAN=" + ("ON" if tsan else "OFF")], env)
         run(["cmake", "--build", build, "--parallel", "2"], env)
         for path in (build / "imports.txt", build / "compile_commands.json"):
             reject_paths(path.read_text(), forbidden, work)
@@ -153,7 +160,7 @@ def main():
         report["embedder_output"] = run([final / bindir / "installed_embedder", config], env, work)
         run([final / bindir / "cog-cli", "--mock", "--no-store", "--config", config, "--prompt", "embedding"], env, work)
         report.update(curl_sha256=digest(actual_curl), cares_sha256=digest(expected_cares),
-                      compiler=str(args.compiler), sanitizer=args.asan == "1",
+                      compiler=str(args.compiler), sanitizer=args.asan == "1", tsan=tsan,
                       runtime={key: [p.replace(str(final), "<relocated-prefix>") for p in values]
                                for key, values in runtime.items()})
     (args.build / "installed-embedder-report.json").write_text(json.dumps(report, indent=2) + "\n")
