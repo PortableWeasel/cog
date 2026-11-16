@@ -416,7 +416,11 @@ static cog_result_t bootstrap(cog_cli_worker_host_t *worker,const cog_cli_contro
         if(!worker->startup_ready) return COG_ERROR_INVALID_STATE;
         if(purpose==2U) {
             cog_result_t rc=open_attempt(worker,message,&slot);if(rc!=COG_OK) return rc;
-        } else if(purpose==3U) slot=&worker->executors[1];
+        } else if(purpose==3U) {
+            slot=&worker->executors[1];
+            if(slot->app!=NULL || slot->pending_profile!=NULL ||
+               (slot->session[0]!='\0' && strcmp(slot->session,message->session_id)!=0)) return COG_ERROR_INVALID_STATE;
+        }
         else {
             slot=find_attempt(worker,message);
             if(slot==NULL || slot->app==NULL || slot->agent!=0U) return COG_ERROR_INVALID_STATE;
@@ -450,6 +454,7 @@ static cog_result_t bootstrap(cog_cli_worker_host_t *worker,const cog_cli_contro
             slot->pending_profile=configuration;slot->configuration_generation=number;
             slot->phase=CLI_SLOT_PROFILE;
             if(purpose==3U) {
+                slot->cancel_latched=false;slot->local_done=false;slot->primary=COG_OK;
                 slot->kind=COG_CLI_EXECUTION_STAGED;slot->owner_peer=message->owner_peer;
                 slot->runtime=worker->runtime_incarnation;slot->worker=worker->fixed.worker;
                 strcpy(slot->session,message->session_id);
@@ -860,8 +865,28 @@ static cog_result_t handoff_receive(cog_cli_worker_host_t *worker,cli_executor_s
         if(rc==COG_OK) { slot->started=true;slot->phase=CLI_SLOT_STARTED; }
         break;
     case COG_HANDOFF_ABORT:
-        if(slot->app!=NULL) (void)cog_cli_app_shutdown(slot->app);
-        slot->cancel_latched=true;rc=COG_OK;response.kind=COG_HANDOFF_ABORT;
+        rc=prior_handoff(slot,&request);
+        if(rc!=COG_OK) return rc;
+        if(incoming->pending.length!=0U &&
+           (incoming->pending.length!=original_length ||
+            memcmp(incoming->pending.data,worker->receive_secret,original_length)!=0)) return COG_ERROR_PROTOCOL;
+        if(incoming->pending.length==0U) {
+            if(original_length>incoming->pending.capacity) return COG_ERROR_LIMIT;
+            memcpy(incoming->pending.data,worker->receive_secret,original_length);
+            incoming->pending.length=original_length;
+            slot->cancel_latched=true;
+            if(slot->app!=NULL) {
+                rc=cog_cli_app_shutdown(slot->app);
+                if(rc!=COG_OK) break;
+                if(slot->app->headless->drive==CLI_DRIVE_UNBEGUN) slot->local_done=true;
+            }
+        }
+        if(slot->app!=NULL && !slot->local_done) return COG_ERROR_AGAIN;
+        rc=dispose_execution(slot);
+        if(rc==COG_OK) {
+            slot->phase=CLI_SLOT_RETAINED;slot->started=false;slot->local_done=true;
+            response.kind=COG_HANDOFF_ABORT;
+        }
         break;
     default:return COG_ERROR_PROTOCOL;
     }
@@ -870,7 +895,9 @@ static cog_result_t handoff_receive(cog_cli_worker_host_t *worker,cli_executor_s
     unsigned char body[192];size_t length;
     cog_result_t encoded=cog_orchestrator_handoff_encode(&response,body,sizeof(body),&length);
     if(encoded!=COG_OK) return encoded;
-    return lane_reply(worker,slot,message,COG_CLI_CONTROL_HANDOFF,body,length,original_length);
+    rc=lane_reply(worker,slot,message,COG_CLI_CONTROL_HANDOFF,body,length,original_length);
+    if(rc==COG_OK) incoming->pending.length=0U;
+    return rc;
 }
 static cog_result_t queue_control(cog_cli_worker_host_t *worker,cli_executor_slot_t *slot,
     cog_cli_control_kind_t kind,cog_cli_control_lane_t kind_lane,const void *body,size_t length)
@@ -1156,7 +1183,8 @@ cog_result_t cog_cli_worker_host_step(cog_cli_worker_host_t *worker,cog_cli_host
     if(parent_deadline<step.next_deadline_ms) step.next_deadline_ms=parent_deadline;
     size_t turn=worker->round_robin++;
     if(worker->round_robin==worker->executor_capacity*CLI_HOST_LANES) worker->round_robin=0U;
-    cli_executor_slot_t *slot=&worker->executors[turn/CLI_HOST_LANES];size_t lane_index=turn%CLI_HOST_LANES;
+    cli_executor_slot_t *slot=&worker->executors[turn%worker->executor_capacity];
+    size_t lane_index=(turn/worker->executor_capacity)%CLI_HOST_LANES;
     if(slot->phase!=CLI_SLOT_FREE) {
         rc=executor_step(worker,slot,&step);if(rc==COG_OK) progress=true;
         if(rc!=COG_OK && rc!=COG_ERROR_AGAIN) (void)retain_error(worker,rc);
@@ -1194,7 +1222,11 @@ cog_result_t cog_cli_worker_host_step(cog_cli_worker_host_t *worker,cog_cli_host
             if(rc==COG_OK) { in->pending_valid=false;progress=true; } else (void)retain_error(worker,rc);
         }
         if(out->pending_valid && out->pending.length!=0U) {
-            rc=envelope_send(worker,&out->pending);if(rc==COG_OK) progress=true;else (void)retain_error(worker,rc);
+            rc=envelope_send(worker,&out->pending);
+            if(rc==COG_OK) {
+                progress=true;
+                if(lane_index==COG_CLI_LANE_CANCEL-1U) out->pending_valid=false;
+            } else (void)retain_error(worker,rc);
         }
     }
     bool drained=true;
@@ -1219,4 +1251,195 @@ cog_result_t cog_cli_worker_host_step(cog_cli_worker_host_t *worker,cog_cli_host
     if(progress || step.next_deadline_ms<=worker->now_ms) step.max_wait_ms=0U;
     step.done=worker->done;*info=step;worker->in_step=false;
     return worker->primary!=COG_OK?worker->primary:progress?COG_OK:COG_ERROR_AGAIN;
+}
+
+/* Count and emit JSON into the constructor-owned output arena. */
+static void bridge_literal(cli_wire_writer_t *w,const char *s) { cli_wire_bytes(w,s,strlen(s)); }
+static void bridge_number(cli_wire_writer_t *w,uint64_t value)
+{
+    char b[20];size_t n=0U;do { b[n++]=(char)('0'+value%10U);value/=10U; } while(value!=0U);
+    while(n!=0U) cli_wire_bytes(w,&b[--n],1U);
+}
+static void bridge_signed(cli_wire_writer_t *w,cog_result_t value)
+{
+    if(value<0) { bridge_literal(w,"-");bridge_number(w,(uint64_t)(-(int64_t)value)); }
+    else bridge_number(w,(uint64_t)value);
+}
+static void bridge_string(cli_wire_writer_t *w,const char *s,size_t n)
+{
+    static const char hex[]="0123456789abcdef";
+    bridge_literal(w,"\"");
+    for(size_t i=0U;i<n;++i) {
+        unsigned char c=(unsigned char)s[i];
+        if(c=='"' || c=='\\') { bridge_literal(w,"\\");cli_wire_bytes(w,&c,1U); }
+        else if(c<32U) { char b[6]={'\\','u','0','0',hex[c>>4U],hex[c&15U]};cli_wire_bytes(w,b,6U); }
+        else cli_wire_bytes(w,&c,1U);
+    }
+    bridge_literal(w,"\"");
+}
+static cog_result_t bridge_output(cli_delegation_handle_t *h,const cog_cli_control_message_t *m,
+    cli_wire_writer_t *w,cog_result_t *outcome,bool *effects,uint64_t *group)
+{
+    cli_wire_reader_t r={m->payload,m->payload_len,0U,true};
+    *effects=false;*group=0U;
+    if(m->kind==COG_CLI_CONTROL_DELEGATE_RESULT) {
+        *group=cli_wire_get(&r,8U);*outcome=cli_wire_signed(cli_wire_get(&r,4U));
+        size_t count=(size_t)cli_wire_get(&r,2U);
+        if(*group==0U || !cli_wire_result(*outcome) || count!=h->request.count) return COG_ERROR_PROTOCOL;
+        bridge_literal(w,"{\"group\":\"");bridge_number(w,*group);bridge_literal(w,"\",\"submitted\":");
+        bridge_number(w,count);bridge_literal(w,",\"members\":[");
+        uint64_t previous=0U;
+        for(size_t i=0U;i<count;++i) {
+            if(i!=0U) bridge_literal(w,",");
+            uint64_t present=cli_wire_get(&r,1U);
+            if(present==0U) {
+                cog_result_t failure=cli_wire_signed(cli_wire_get(&r,4U));
+                if(!cli_wire_result(failure) || failure==COG_OK || *outcome==COG_OK) return COG_ERROR_PROTOCOL;
+                bridge_literal(w,"{\"outcome\":");bridge_signed(w,failure);bridge_literal(w,"}");
+            } else if(present==1U) {
+                uint64_t agent=cli_wire_get(&r,8U),attempt=cli_wire_get(&r,8U);
+                cog_agent_status_t status=(cog_agent_status_t)cli_wire_get(&r,1U);
+                cog_result_t result=cli_wire_signed(cli_wire_get(&r,4U));size_t sn,rn;
+                const char *session=cli_wire_read_string(&r,&sn),*text=cli_wire_read_string(&r,&rn);
+                uint64_t uncertain=cli_wire_get(&r,1U);
+                if(!r.valid || agent<=previous || attempt==0U || !terminal_status(status) ||
+                   !cli_wire_result(result) || !cli_wire_session(session,sn) || uncertain>1U ||
+                   (*outcome==COG_OK && (status!=COG_AGENT_STATUS_COMPLETED || result!=COG_OK || uncertain!=0U)))
+                    return COG_ERROR_PROTOCOL;
+                previous=agent;*effects=*effects || uncertain!=0U;
+                bridge_literal(w,"{\"agent_id\":\"");bridge_number(w,agent);bridge_literal(w,"\",\"attempt\":\"");
+                bridge_number(w,attempt);bridge_literal(w,"\",\"status\":");bridge_number(w,(uint64_t)status);
+                bridge_literal(w,",\"outcome\":");bridge_signed(w,result);bridge_literal(w,",\"session\":");
+                bridge_string(w,session,sn);bridge_literal(w,",\"result\":");bridge_string(w,text,rn);
+                bridge_literal(w,",\"side_effects_possible\":");bridge_literal(w,uncertain!=0U?"true}":"false}");
+            } else return COG_ERROR_PROTOCOL;
+        }
+        bridge_literal(w,"]}");
+        if(*effects && *outcome!=COG_ERROR_INDETERMINATE) return COG_ERROR_PROTOCOL;
+    } else if(m->kind==COG_CLI_CONTROL_MESSAGE_RESULT) {
+        *outcome=cli_wire_signed(cli_wire_get(&r,4U));uint64_t state=cli_wire_get(&r,1U);
+        if(!cli_wire_result(*outcome) || (state!=1U && state!=2U)) return COG_ERROR_PROTOCOL;
+        if(!r.valid || r.used!=r.length) return COG_ERROR_PROTOCOL;
+        if(state==1U) return *outcome==COG_ERROR_AGAIN?COG_ERROR_AGAIN:COG_ERROR_PROTOCOL;
+        bridge_literal(w,*outcome==COG_OK?"{\"sent\":true}":"{\"sent\":false}");
+    } else if(m->kind==COG_CLI_CONTROL_MAILBOX_RESULT) {
+        *outcome=cli_wire_signed(cli_wire_get(&r,4U));uint64_t more=cli_wire_get(&r,1U);
+        size_t count=(size_t)cli_wire_get(&r,2U);
+        if(!cli_wire_result(*outcome) || more>1U || count>h->context->mailbox_entries ||
+           (*outcome!=COG_OK && (count!=0U || more!=0U))) return COG_ERROR_PROTOCOL;
+        bridge_literal(w,"{\"messages\":[");
+        for(size_t i=0U;i<count;++i) {
+            uint64_t source=cli_wire_get(&r,8U);size_t n;const char *s=cli_wire_read_string(&r,&n);
+            if(!r.valid || source==0U) return COG_ERROR_PROTOCOL;
+            if(i!=0U) bridge_literal(w,",");
+            bridge_literal(w,"{\"agent_id\":\"");bridge_number(w,source);bridge_literal(w,"\",\"message\":");
+            bridge_string(w,s,n);bridge_literal(w,"}");
+        }
+        bridge_literal(w,"],\"more_pending\":");bridge_literal(w,more!=0U?"true}":"false}");
+    } else return COG_ERROR_PROTOCOL;
+    return r.valid && r.used==r.length && w->valid?COG_OK:COG_ERROR_PROTOCOL;
+}
+static void bridge_request(cli_delegation_handle_t *h,cog_cli_control_kind_t kind,
+    cog_store_checkpoint_t checkpoint,cli_wire_writer_t *w)
+{
+    if(kind==COG_CLI_CONTROL_CHILD_MESSAGE) {
+        cli_wire_put(w,h->destination,8U);cli_wire_string(w,h->message,h->message_length);return;
+    }
+    if(kind==COG_CLI_CONTROL_MAILBOX_POLL) return;
+    cli_wire_put(w,h->request.owner.epoch,8U);cli_wire_put(w,h->request.owner.instance_id,8U);
+    if(kind==COG_CLI_CONTROL_DELEGATE_START) cli_wire_put(w,h->reservation,8U);
+    cli_wire_put(w,h->request.pinned_configuration,8U);
+    if(kind==COG_CLI_CONTROL_DELEGATE_START) cli_wire_put(w,checkpoint.generation,8U);
+    cli_wire_put(w,h->request.parent_node,8U);cli_wire_put(w,h->request.ordinal,2U);
+    cli_wire_string(w,h->call_id,strlen(h->call_id));cli_wire_put(w,h->deadline_ms,8U);
+    cli_wire_put(w,h->request.count,2U);
+    for(size_t i=0U;i<h->request.count;++i) cli_wire_string(w,h->tasks[i],h->task_lengths[i]);
+}
+/** One bounded send or retained response transition; never reads the socket. */
+cog_result_t cli_worker_delegation_step(cog_cli_worker_host_t *worker,cli_delegation_handle_t *h)
+{
+    if(worker==NULL || h==NULL) return COG_ERROR_NULL_PTR;
+    if(h->context==NULL || h->context->worker!=worker || !worker->authenticated || !worker->startup_ready)
+        return COG_ERROR_INVALID_STATE;
+    cli_executor_slot_t *slot=NULL;
+    for(size_t i=0U;i<worker->executor_capacity;++i)
+        if(worker->executors[i].app==h->context->app) { slot=&worker->executors[i];break; }
+    if(slot==NULL || slot->app==NULL || (h->operation==CLI_DELEGATE && slot->agent!=0U) ||
+       (h->operation!=CLI_DELEGATE && slot->agent==0U)) return COG_ERROR_INVALID_STATE;
+    if(h->cancelled && h->operation==CLI_DELEGATE && h->reservation!=0U) {
+        cli_control_lane_t *cancel=&slot->outbound[COG_CLI_LANE_CANCEL-1U];
+        if(cancel->provisional_prefix!=h->reservation) {
+            if(cancel->pending_valid) return COG_ERROR_AGAIN;
+            unsigned char body[8];cli_wire_writer_t w={body,0U,true};cli_wire_put(&w,h->reservation,8U);
+            cog_result_t rc=queue_control(worker,slot,COG_CLI_CONTROL_DELEGATE_RESERVATION_RELEASE,
+                COG_CLI_LANE_CANCEL,body,sizeof(body));
+            if(rc!=COG_OK) return rc;
+            cancel->provisional_prefix=h->reservation;
+        }
+        /* The copied cleanup request outlives destruction of this handle;
+           started groups still await their factual terminal result. */
+        if(!h->started) return COG_OK;
+    }
+    if(worker->shutdown) return COG_ERROR_INDETERMINATE;
+    bool save=h->done && h->output_cached && !h->result_saved && h->codec.length==16U;
+    if(h->done && !save) return COG_OK;
+    cog_cli_control_lane_t lane=h->operation==CLI_DELEGATE?COG_CLI_LANE_DELEGATE:COG_CLI_LANE_MAILBOX;
+    cog_cli_control_kind_t kind=save?COG_CLI_CONTROL_DELEGATE_RESULT_ACK:
+        h->operation==CLI_SEND_MESSAGE?COG_CLI_CONTROL_CHILD_MESSAGE:
+        h->operation==CLI_RECEIVE_MESSAGES?COG_CLI_CONTROL_MAILBOX_POLL:
+        h->started?COG_CLI_CONTROL_DELEGATE_START:COG_CLI_CONTROL_DELEGATE_RESERVE;
+    if(h->reply.length!=0U && !save) {
+        cog_cli_control_message_t m;size_t needed;
+        cog_result_t rc=cog_cli_control_decode(h->reply.data,h->reply.length,&m,h->codec.data,h->codec.capacity,&needed);
+        if(rc!=COG_OK) return rc;
+        if(m.reply_to!=h->request_wire) return COG_ERROR_PROTOCOL;
+        if(kind==COG_CLI_CONTROL_DELEGATE_RESERVE) {
+            if(m.kind!=COG_CLI_CONTROL_DELEGATE_RESERVATION || m.payload_len!=20U) return COG_ERROR_PROTOCOL;
+            cli_wire_reader_t r={m.payload,m.payload_len,0U,true};
+            cog_result_t outcome=cli_wire_signed(cli_wire_get(&r,4U));
+            uint64_t reservation=cli_wire_get(&r,8U),deadline=cli_wire_get(&r,8U);
+            if(!cli_wire_result(outcome) || (outcome==COG_OK && (reservation==0U || deadline>h->deadline_ms || deadline==0U)) ||
+               (outcome!=COG_OK && reservation!=0U)) return COG_ERROR_PROTOCOL;
+            if(outcome!=COG_OK) return outcome;
+            h->reservation=reservation;h->deadline_ms=deadline;h->prepared=true;
+            h->pending.length=0U;h->reply.length=0U;h->codec.length=0U;return COG_OK;
+        }
+        if((kind==COG_CLI_CONTROL_DELEGATE_START && m.kind!=COG_CLI_CONTROL_DELEGATE_RESULT) ||
+           (kind==COG_CLI_CONTROL_CHILD_MESSAGE && m.kind!=COG_CLI_CONTROL_MESSAGE_RESULT) ||
+           (kind==COG_CLI_CONTROL_MAILBOX_POLL && m.kind!=COG_CLI_CONTROL_MAILBOX_RESULT)) return COG_ERROR_PROTOCOL;
+        cli_wire_writer_t count={NULL,0U,true};cog_result_t outcome;bool effects;uint64_t group;
+        rc=bridge_output(h,&m,&count,&outcome,&effects,&group);
+        if(rc==COG_ERROR_AGAIN) { h->reply.length=0U;return rc; }
+        if(rc!=COG_OK) return rc;
+        if(count.used>h->output.capacity) return COG_ERROR_LIMIT;
+        cli_wire_writer_t write={h->output.data,0U,true};rc=bridge_output(h,&m,&write,&outcome,&effects,&group);
+        if(rc!=COG_OK) return rc;
+        h->output.length=write.used;h->group=group;h->done=true;h->output_cached=true;h->codec.length=0U;
+        h->result=(cog_tool_output_t){outcome,(const char *)h->output.data,write.used,false,effects,0,false};
+        h->pending.length=0U;return COG_OK;
+    }
+    if(h->prepared && !h->started && !save) return COG_OK;
+    if(h->pending.length==0U) {
+        cog_store_checkpoint_t checkpoint={0};
+        if(kind==COG_CLI_CONTROL_DELEGATE_START) {
+            cog_store_owner_t owner;cog_result_t rc=cog_store_owner_read(slot->app->store,h->parent_session,&owner,&checkpoint);
+            if(rc!=COG_OK) return rc;
+            if(!same_owner(owner,h->request.owner) || checkpoint.generation==0U) return COG_ERROR_INVALID_STATE;
+        }
+        size_t body_length=16U;
+        if(!save) {
+            cli_wire_writer_t count={NULL,0U,true};bridge_request(h,kind,checkpoint,&count);
+            if(!count.valid || count.used>h->codec.capacity) return COG_ERROR_LIMIT;
+            cli_wire_writer_t write={h->codec.data,0U,true};bridge_request(h,kind,checkpoint,&write);body_length=write.used;
+        }
+        uint64_t wire;cog_result_t rc=fresh_wire(&slot->outbound[(size_t)lane-1U],&wire);if(rc!=COG_OK) return rc;
+        cog_cli_control_message_t message={kind,lane,worker->runtime_incarnation,worker->fixed.worker.incarnation,
+            wire,0U,worker->fixed.worker,slot->owner_peer,slot->agent,slot->attempt,slot->session,h->codec.data,body_length};
+        rc=cog_cli_control_encode(&message,h->pending.data,h->pending.capacity,&h->pending.length);
+        if(rc!=COG_OK) return rc;
+        h->request_wire=wire;
+    }
+    cog_result_t rc=envelope_send(worker,&h->pending);
+    if(rc==COG_OK && save) { h->result_saved=true;h->pending.length=0U;h->reply.length=0U; }
+    return rc;
 }

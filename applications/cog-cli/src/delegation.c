@@ -243,6 +243,7 @@ static cog_result_t tool_start(void *opaque,uint64_t now)
     cli_delegation_handle_t *h=opaque;
     if(h->started || h->cancelled || h->done || !h->prepared) return COG_ERROR_INVALID_STATE;
     if(now<h->last_now_ms) return COG_ERROR_INVALID_ARG;
+    h->last_now_ms=now;
     if(now>=h->deadline_ms) return COG_ERROR_INVALID_STATE;
     cog_cli_app_t *app=h->context->app;cog_tool_execution_state_t state;
     cog_result_t rc=cog_session_tool_state(app->session,app->assistant,h->call_id,&state);
