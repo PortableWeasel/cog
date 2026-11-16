@@ -43,3 +43,50 @@ held request uses its executor outbound lane; no duplicate scheduler-owned buffe
 Native CGW heartbeat/shutdown and UI client reconnect/sent flags retain their own
 existing ownership; this amendment neither changes those protocols nor permits
 cross-binding replay. Bodies remain gated on independent review.
+
+## Pass 2: traces across pressure, receipts and lifetimes
+
+1. First CHILD_CANCEL W gets AGAIN: copied_wire remains different, so the exact W
+   remains eligible and cancellation is not claimed delivered. First OK transfers
+   one copy; retain cancellation latch/deadline and any required original, but no
+   further W copies. Worker factual terminal and coordinator UPDATE receipt still
+   proceed independently. Repeated cancel calls do not manufacture new W.
+2. HANDOFF COMMIT W gets OK, but READY is delayed: preserve W and the entire phase
+   tuple. Ordinary service cannot resend until next_send_ms. At that time one
+   exact W may be copied and the retry eligibility moves by another1000ms; this
+   does not move the original whole-transaction deadline. A lost READY may thus
+   recover from the target's immutable receipt; CAS/acquire never repeat as new
+   operations. ACTIVATE gets its own higher wire and is immediately eligible.
+3. Copied request W remains queued in transport while its interval elapses: a
+   bounded retry may add another exact W, at most one accepted copy per interval.
+   AGAIN leaves the due retry eligible without filling additional queue cells.
+   Service/receive/native shutdown continues while application send is deferred.
+4. Worker UPDATE RETRY for W leaves semantic prefix unchanged and preserves the
+   same request wire. It may mark existing work pending but does not bypass the
+   send interval; ACCEPTED/CANCEL_CONSUMED/TERMINAL_FIXED retain their existing
+   semantic rules. A new admissible terminal UPDATE uses its own new wire and is
+   immediately eligible. One-way cleanup confirmation stops after copied OK.
+5. PROFILE successful or failed receipt is delayed: retry only exact immutable
+   request at the finite interval, never re-resolve or reconstruct from latest.
+   The failed-reload negative ACK rule remains ticket4a38e9f: stale covered W may
+   re-arm its existing nonsecret reply R, but cannot reset R's copied_wire or
+   next_send_ms. Request proof retirement and send eligibility are independent.
+6. Receipt R copied OK is not proactively resent after pending-delivery ownership
+   clears. A matching duplicate request may re-arm R under the same eligibility
+   window. Invalid payload/auth/key does not re-arm it. Full active exact lookup
+   and existing stale-watermark rules precede any scheduling decision.
+7. A legitimate new wire after valid same-stream successor proof is eligible
+   immediately even when the previous wire's next_send_ms lies in the future.
+   No scheduler grants admission to a successor that existing protocol rejects.
+8. Send IO/protocol/native loss freezes or retires through existing driver rules;
+   never clear the copied marker to retry effects on a replacement binding. UI
+   same-lease reconnect preserves actual UI command receipts; an expired new UI
+   lease resets only its own old state under existing rules. Native CGL has no
+   transparent reconnect/rebind. Operation/native lifetime retirement clears send
+   state together with its key; physical slot reuse cannot reset retained proof.
+9. Abort/timeout keeps the original transaction deadline and unresolved receipt.
+   A new valid cleanup wire is immediately eligible. Retrying an already copied
+   cleanup wire still uses the separate next-send time, even when the original
+   transaction deadline has expired; it must not clamp retry time to that past
+   deadline and thereby recreate a busy resend loop. Native termination remains
+   bounded by its existing deadline and supplies no fictitious cleanup receipt.
