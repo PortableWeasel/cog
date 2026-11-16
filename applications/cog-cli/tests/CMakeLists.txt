@@ -6,6 +6,8 @@
 # they depend on the CLI library target.
 # -----------------------------------------------------------------------
 
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
 # Options parsing contract.
 add_executable(test_cli_options test_cli_options.c)
 target_link_libraries(test_cli_options PRIVATE cog-cli-config)
