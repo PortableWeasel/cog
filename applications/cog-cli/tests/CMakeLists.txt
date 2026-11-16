@@ -61,7 +61,23 @@ target_compile_definitions(run_cli_smoke PRIVATE
 function(cog_add_cli_scenario target)
     add_executable(${target} ${target}.c)
     target_enable_warnings(${target})
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+    set(scenario_timeout 30)
+    if(target STREQUAL "test_11_ui_reconnect" OR target STREQUAL "test_17_session_migration")
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        target_link_libraries(${target} PRIVATE cog-headless-fixture)
+        add_dependencies(${target} cog-cli)
+        if(target STREQUAL "test_11_ui_reconnect")
+            set(session_mode reconnect)
+            set(scenario_timeout 60)
+        else()
+            set(session_mode migration)
+            set(scenario_timeout 100)
+            target_link_options(${target} PRIVATE -Wl,--wrap=cog_orchestrator_copy_event)
+        endif()
+        add_test(NAME scenario-${target} COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/run_session_scenarios.py
+            $<TARGET_FILE:${target}> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} ${session_mode})
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
        AND COG_NET_CURL_BUILD_DIR AND COG_NET_CURL_LIBRARY
        AND ("${target}" STREQUAL "test_18_observability" OR "${target}" STREQUAL "test_19_connection_events"))
         find_package(Python3 COMPONENTS Interpreter REQUIRED)
@@ -74,7 +90,8 @@ function(cog_add_cli_scenario target)
     endif()
     set_tests_properties(scenario-${target} PROPERTIES
         LABELS "scenario"
-        TIMEOUT 30)
+        TIMEOUT ${scenario_timeout}
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 endfunction()
 
 set(COG_APP_SCENARIO_TESTS
@@ -105,6 +122,21 @@ target_link_libraries(test_17_session_migration PRIVATE cog::cli)
 target_link_libraries(test_18_observability PRIVATE cog::obs)
 target_link_libraries(test_19_connection_events PRIVATE cog::obs)
 target_link_libraries(test_20_interrupt_and_queue PRIVATE cog::cli)
+
+add_test(NAME scenario-test_17_session_migration-timeout COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_session_scenarios.py
+    $<TARGET_FILE:test_17_session_migration> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} migration-timeout)
+set_tests_properties(scenario-test_17_session_migration-timeout PROPERTIES
+    LABELS "scenario" TIMEOUT 60 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
+foreach(name IN ITEMS ui_buffer store_transfer)
+    add_executable(test_${name}_component components/test_${name}_component.c)
+    target_link_libraries(test_${name}_component PRIVATE cog::cli)
+    target_enable_warnings(test_${name}_component)
+    add_test(NAME component-${name} COMMAND test_${name}_component
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(component-${name} PROPERTIES LABELS "component" TIMEOUT 30)
+endforeach()
 
 # -----------------------------------------------------------------------
 # CTest registration
