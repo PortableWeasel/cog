@@ -49,7 +49,7 @@ static cog_result_t one(cog_ipc_endpoint_t *ep)
 }
 static void expect_at(cog_ipc_endpoint_t *ep, bool expected, bool uses_poll, int line)
 {
-    cog_ipc_endpoint_t before = *ep;
+    cog_ipc_endpoint_t before; memcpy(&before, ep, sizeof(before));
     unsigned char rx[136], tx[136];
     ipc_frame_t rxf[2], txf[2];
     memcpy(rx, ep->rx_data, sizeof(rx)); memcpy(tx, ep->tx_data, sizeof(tx));
@@ -166,7 +166,7 @@ int main(void)
     /* Query errors never overwrite the caller's value or mutate the endpoint. */
     const int errors[] = {EIO, EINTR, EAGAIN};
     for (size_t i = 0U; i < sizeof(errors)/sizeof(errors[0]); ++i) {
-        cog_ipc_endpoint_t before = *client;
+        cog_ipc_endpoint_t before; memcpy(&before, client, sizeof(before));
         poll_error = errors[i]; ready = (i & 1U) != 0U;
         bool initial = ready;
         assert(cog_ipc_internal_ready(client, &ready) ==
