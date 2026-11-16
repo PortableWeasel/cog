@@ -32,6 +32,23 @@ typedef struct cog_cli_safe_labels {
 cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
                                        const cog_cli_options_t *input,
                                        uint64_t generation);
+/** @brief Independently own an exact resolved generation without source IO.
+ * @param[out] out Owned unbound copy, NULL on failure; configuration_free matches.
+ * @param[in] current Resolved immutable owner, bound or unbound, unchanged.
+ * @return OK; NULL_PTR; NOMEM; LIMIT existing constructor storage bounds.
+ * Preserve generation, effective options, tool mask, selected backend and ROOT
+ * prompt/queue/session selectors, including MOCK script/delta selection. Copy
+ * all owned strings and resolved secret into independent constructor storage;
+ * retain only declared net/script/delta borrows with their original lifetimes.
+ * Never reread argv/environment/config/credential sources or invoke a resolver;
+ * no provider/store/tool/transport effects. No diagnostics expose credentials.
+ * Provider binding/model/endpoint/adapter aliases are NOT copied: the new owner
+ * is unbound and must use configuration_bind before provider construction.
+ * No resolver callback/argument authority is retained. Allocation/secret copy
+ * is explicit here and all partial storage is cleared/freed on failure.
+ */
+cog_result_t cog_cli_configuration_clone_new(cog_cli_configuration_t **out,
+    const cog_cli_configuration_t *current);
 /**
  * @brief Construct an explicit reload generation from resolved immutable state.
  * @param[out] out Owned candidate, NULL on failure; match configuration_free.
