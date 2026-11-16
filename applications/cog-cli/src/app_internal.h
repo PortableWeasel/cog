@@ -7,6 +7,8 @@
 #include <cog/workspace.h>
 /* Control-tree ownership is private; only app_reload.c needs config.h. */
 typedef struct cog_config_tree cog_config_tree_t;
+/* O4 private implementation layout; standalone constructors leave this NULL. */
+typedef struct cli_execution_state cli_execution_state_t;
 #include <stdatomic.h>
 #define CLI_NODES 1024U
 #define CLI_CALLS 16U
@@ -39,6 +41,7 @@ typedef struct cli_input {
     bool used, queued, continuation_authorized;
 } cli_input_t;
 struct cog_cli_app {
+    cli_execution_state_t *headless; /* Owned explicit app constructor reservation. */
     /* Optional host bridge borrowed past provider teardown, never net-owned.
        Application timing/error state exists even with an external observer. */
     cog_cli_observer_t *observer;
