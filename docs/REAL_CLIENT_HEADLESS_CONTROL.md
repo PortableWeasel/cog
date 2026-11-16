@@ -111,6 +111,13 @@ or forwarded from a worker. HANDOFF is target managed incarnation/number u64
 (both0 local), source must be idle/complete; no active attempt migration. SHUTDOWN
 and RESYNC have empty suffix. Watchers can request RESYNC but never any mutation.
 RESYNC cursor is the envelope's observed generation/sequence.
+Typed command observed generation AND sequence are nonzero for every opcode,
+including RESYNC. Initial unknown/zero cursor is UI_HELLO-only; runtime publishes
+its initial committed view before admitting clients. CGV1's nested CGD1 anchor
+also requires nonzero through_sequence because CGV1 is committed DATA/resync
+state. The standalone/raw public CGD1 codec still permits sequence0; this does
+not narrow that public contract. Policy ordinal is0..15, static tool name1..255
+UTF-8 bytes; descriptor/role/current-state authorization remains ingress.
 FORK suffix is node u64, complete current same-session replay-safe prefix only;
 matching current observed anchor and idle owner required. Uses existing L
 same-session fork logic with no copy/reexecution; incomplete continuation still
