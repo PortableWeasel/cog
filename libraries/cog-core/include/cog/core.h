@@ -364,7 +364,9 @@ cog_result_t cog_core_drive_begin(cog_core_t *core);
  * @return OK for progress/idle/normal stop; NULL_PTR; INVALID_STATE wrong driver/
  * reentry/already done; otherwise first service/dispatch/IPC/save/checked-clock
  * error. Valid-work failure fills info.done=true and latches that error until
- * drive_end. Invalid-call outputs/state remain unchanged.
+ * drive_end. Accepted-endpoint constructor failure propagates COG_ERROR_NOMEM
+ * through this same first-error path; no successful peer is published for that
+ * failed construction. Invalid-call outputs/state remain unchanged.
  * @note Uses the SAME checked CLOCK_MONOTONIC-ms clock and dispatch/service
  * engine as run, sampling between bounded units. At most step_event_limit
  * dispatches. Service interval, IPC/local rotation and deadlines persist across
