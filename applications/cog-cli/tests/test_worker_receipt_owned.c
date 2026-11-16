@@ -72,10 +72,15 @@ static void copied_schedule(cog_ipc_endpoint_t *sender,cog_ipc_endpoint_t *recei
     assert(due==2010U);service(sender,receiver);
     assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_OK);
     assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_ERROR_AGAIN);
+    /* A successor remains immediately eligible despite its predecessor clock. */
+    worker.now_ms=1011U;
+    assert(retained_send(&worker,&bytes,3U,&copied,&due,false)==COG_OK);
+    assert(copied==3U && due==2011U);
+    service(sender,receiver);assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_OK);
     /* One-way wire needs no future time, even at clock exhaustion. */
     worker.now_ms=UINT64_MAX;
     assert(retained_send(&worker,&bytes,2U,&copied,&due,false)==COG_ERROR_LIMIT);
-    assert(copied==1U && due==2010U);
+    assert(copied==3U && due==2011U);
     assert(retained_send(&worker,&bytes,2U,&copied,&due,true)==COG_OK);
     service(sender,receiver);assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_OK);
     assert(retained_send(&worker,&bytes,2U,&copied,&due,true)==COG_ERROR_AGAIN);
@@ -109,6 +114,7 @@ static void copied_schedule(cog_ipc_endpoint_t *sender,cog_ipc_endpoint_t *recei
     retire_attempt(&slot);
     assert(inbound[0].copied_wire==0U && inbound[0].next_send_ms==0U);
     assert(outbound[0].copied_wire==0U && outbound[0].next_send_ms==0U && outbound[0].next_wire==10U);
+
 }
 int main(int argc,char **argv)
 {
@@ -318,6 +324,30 @@ int main(int argc,char **argv)
     assert(cog_cli_control_encode(&answer,incoming_wire,sizeof(incoming_wire),&answer_length)==COG_OK);
     assert(application_receive(&host,answer_length)==COG_ERROR_DENIED);
     assert(slot.agent==0U && slot.attempt==0U && slot.phase==CLI_SLOT_RETAINED);
+    cog_cli_worker_host_t wake_worker={.parent=sender};
+    cli_control_lane_t wake_inbound[CLI_HOST_LANES]={0},wake_outbound[CLI_HOST_LANES]={0};
+    cli_executor_slot_t wake_slot={.inbound=wake_inbound,.outbound=wake_outbound};
+    /* Actual worker step must expose an unselected lane's cooldown and then
+       due eligibility, independent of another native read or duplicate demand. */
+    unsigned char receive_arena[512],decode_arena[640];
+    wake_worker.receive_secret=receive_arena;wake_worker.receive_capacity=sizeof(receive_arena);
+    wake_worker.decode_secret=decode_arena;wake_worker.decode_capacity=sizeof(decode_arena);
+    wake_worker.authenticated=true;wake_worker.startup_ready=true;wake_worker.stepped=true;
+    wake_worker.fixed.signal_fd=-1;wake_worker.executors=&wake_slot;wake_worker.executor_capacity=1U;
+    wake_worker.next_heartbeat_ms=UINT64_MAX;
+    assert(cog_cli_clock(&wake_worker.now_ms)==COG_OK);
+    cli_control_lane_t *deferred=&wake_inbound[CLI_HOST_LANES-1U];
+    deferred->pending_valid=true;deferred->final_reply=(cli_host_bytes_t){response_bytes,sizeof(response_bytes),answer_length};deferred->final_reply_wire=9U;
+    deferred->copied_wire=9U;deferred->next_send_ms=wake_worker.now_ms+500U;
+    uint64_t expected_due=deferred->next_send_ms;
+    cog_cli_host_runtime_step_t info;
+    cog_result_t stepped=cog_cli_worker_host_step(&wake_worker,&info);
+    assert((stepped==COG_OK || stepped==COG_ERROR_AGAIN) && info.next_deadline_ms==expected_due);
+    assert(deferred->pending_valid && deferred->copied_wire==9U);
+    deferred->next_send_ms=wake_worker.now_ms;
+    stepped=cog_cli_worker_host_step(&wake_worker,&info);
+    assert((stepped==COG_OK || stepped==COG_ERROR_AGAIN) && info.next_deadline_ms<=wake_worker.now_ms && info.max_wait_ms==0U);
+    assert(deferred->pending_valid);
     bool stale_safe=!host.shutdown;
     assert(cog_ipc_endpoint_free(sender)==COG_OK);
     assert(cog_ipc_endpoint_free(receiver)==COG_OK);
