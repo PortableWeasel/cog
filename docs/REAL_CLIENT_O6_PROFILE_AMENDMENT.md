@@ -80,5 +80,31 @@ store must already be DURABLE. Capacity checks include both new path strings
 and terminators before any unused-arena bytes are written. No side effect can
 precede a rejected argument, repeated call or exhausted arena.
 
-Pass3 full NULL/ordering/lifetime/compile consistency review remains pending.
-No dependent implementation bodies have been written.
+## Pass3 — consistency, errors and bounded lifetime
+
+- NULL configuration is checked first; then metadata/nonstartup/already finished/
+  bound/preexisting-net state; then required REAL net/store/workspace pointers,
+  backend/net/presence/path shape; then field/aggregate capacity. Rejected calls
+  consume no phase or byte, so caller may discard or correct a fresh constructor.
+- Real net and canonical strings are borrowed only through call except copied
+  paths; net remains host-owned through provider disconnect/config lifetime.
+  Neither success nor failure calls net, changes global runtime or frees a borrow.
+- Workspace presence cannot be enabled/disabled and both canonical strings must
+  denote original configured directory identities under host proof. Only their
+  spelling and one previously absent net attachment changes before bind. No
+  mutation of generation/secret/model/policy/limits/selectors/credential authority.
+- Fixed64KiB arena owns copied strings; compute both lengths and combined room
+  before any memcpy. No allocator/rollback allocation, hidden source read or
+  partially copied arena on LIMIT. Caller option view refresh after success is
+  explicit; prior owned string bytes remain allocated until whole owner clear.
+- Startup capability mask is distinct from per-call policy. Getter NULL output
+  or owner returns NULL_PTR without output writes. Known four-bit intersection
+  survives reload/child/bootstrap, and fixed DENY still denies all effects.
+- Existing optional bind path is unchanged: no new finalizer obligation for M,
+  no new public interface. Any partial owner still clears entire configuration
+  before free, including added private origin/finished/mask metadata.
+
+All three targeted header passes are committed before dependent bodies. Strict
+GCC/Clang C11 and G++/Clang++ C++11 self-containment/include-order checks cover the
+amended configuration header with child_profile/host option headers. Independent
+final private-header PASS remains required on10dde8a; O6 body work is not claimed.

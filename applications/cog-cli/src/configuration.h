@@ -77,6 +77,11 @@ cog_result_t cog_cli_configuration_reload_new(cog_cli_configuration_t **out,
  * resolver/env/file/argv reread, provider/store callback or secret copy/change.
  * Generation/model/secret/reference/policy/limits/selector provenance and tool
  * mask are unchanged. No live reload or new host authority is granted.
+ * Error precedence: NULL configuration first; then startup phase/mode/state;
+ * then required profile pointers/net/backend/presence/path shape; then byte
+ * ceilings/combined arena capacity. A rejected call does not consume the step.
+ * Caller refreshes its borrowed options view after successful constructor finish;
+ * prior owned string bytes remain valid until configuration_free.
  */
 cog_result_t cog_cli_configuration_finish_host(
     cog_cli_configuration_t *configuration, cog_net_ctx_t *net,
