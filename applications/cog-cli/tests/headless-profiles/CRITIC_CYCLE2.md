@@ -84,3 +84,22 @@ Runner is an independent standalone reproduction, not shared CMake mutation.
 
 No residual blocker found in this exact correction. Root owns serial O integration
 and ticket closure; O4 layout/app bodies and whole O/P/runtime gates are separate.
+
+## Approved O6-only integration
+
+Root-authorized no-ff60eb927 retains approved526e3be source/history; ONLY critic
+70c7f75 retained via6dc7994 (tests/runner/evidence). Fresh postmerge strict Release
+GCC/Clang and Clang ASan+UBSan+LSan each pass5/5 focused profile/role/config/memory
+CTest targets, plus the retained independent ID fixture and actual pre-fix source
+negative control. No shared app CMake/source registration was added; this is
+component acceptance, not installed role/runtime dispatch. Existing snippets
+remain mandatory for O4 integration. Source checkpoint6dc7994bfbbc8196496f96a63a46d5194e324bbd
+precedes this evidence-only update. MainMdacbd199/profile/build_user unchanged.
+Root-authorized O6 source/review/integration/finalize/parent and ID bug closed;
+private10dde8a header gate was already DONE and is now retained in O history.
+
+| Postmerge log | SHA256 |
+|---|---|
+| /tmp/cog-o6-join-gcc.log | 1422975d25ee32824d014adc2c24f795aaa60eafb71d8c9fdbea8d43163b2170 |
+| /tmp/cog-o6-join-clang.log | c26b13ee07296e8c234e3aca4ce715f8f149e9d98767e54dc4800b3e8172585f |
+| /tmp/cog-o6-join-asan.log | 35e73d24d4fad550297e777750473f5943c049057e2f69ce595b4b78087a0628 |
