@@ -362,6 +362,7 @@ endif()
 add_executable(test_execution_headless test_execution_headless.c)
 target_include_directories(test_execution_headless PRIVATE ../src)
 target_link_libraries(test_execution_headless PRIVATE cog::cli)
+target_link_options(test_execution_headless PRIVATE -Wl,--wrap=cog_provider_disconnect)
 target_enable_warnings(test_execution_headless)
 add_test(NAME cli-execution-headless COMMAND test_execution_headless)
 

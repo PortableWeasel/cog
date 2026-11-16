@@ -231,7 +231,6 @@ cog_result_t cog_cli_execution_close(cog_cli_app_t **owner, cog_result_t primary
     cli_execution_state_t *h = app->headless;
     if (h == NULL || h->in_step || (h->drive != CLI_DRIVE_UNBEGUN && h->drive != CLI_DRIVE_DONE) ||
         app->provider_active || (app->execution != NULL && !app->tool_done)) return COG_ERROR_INVALID_STATE;
-    if (primary == COG_OK) primary = h->primary;
     return cli_app_dispose(owner, primary);
 }
 cog_result_t cog_cli_execution_copy_policy(const cog_cli_app_t *app, uint64_t *serial,

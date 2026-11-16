@@ -4,6 +4,16 @@
 #include <stdio.h>
 #include <string.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr,"line %d: %s\n",__LINE__,#x); return 1; } } while (0)
+cog_result_t __real_cog_provider_disconnect(cog_provider_t *provider);
+cog_result_t __wrap_cog_provider_disconnect(cog_provider_t *provider);
+static bool fail_disconnect;
+cog_result_t __wrap_cog_provider_disconnect(cog_provider_t *provider)
+{
+    bool inject=fail_disconnect && provider!=NULL;
+    cog_result_t rc=__real_cog_provider_disconnect(provider);
+    if (inject) { fail_disconnect=false; return COG_ERROR_IO; }
+    return rc;
+}
 static int commit(cog_cli_app_t *app, uint64_t *sequence)
 {
     uint64_t serial=0U; cog_cli_display_snapshot_t view;
@@ -14,6 +24,34 @@ static int commit(cog_cli_app_t *app, uint64_t *sequence)
     CHECK(cog_cli_execution_commit_view(app,serial,71U,*sequence)==COG_OK);
     CHECK(cog_cli_execution_commit_view(app,serial,71U,*sequence)==COG_OK);
     CHECK(cog_cli_execution_commit_view(app,serial,71U,*sequence+1U)==COG_ERROR_PROTOCOL);
+    return 0;
+}
+static int execution_and_cleanup_outcomes(const cog_cli_options_t *input, bool cleanup_fails)
+{
+    cog_cli_options_t options=*input;
+    static const cog_mock_script_t script={.send_error=COG_ERROR_PROTOCOL};
+    options.script=&script;
+    cog_cli_configuration_t *configuration=NULL;
+    CHECK(cog_cli_configuration_new(&configuration,&options,1U)==COG_OK);
+    cog_cli_execution_admission_t admission={.kind=COG_CLI_EXECUTION_ROOT,
+        .configuration=configuration,.configuration_generation=1U};
+    cog_cli_app_t *app=NULL;
+    CHECK(cog_cli_execution_new(&app,&admission)==COG_OK);
+    CHECK(cog_cli_execution_begin(app)==COG_OK);
+    bool done=false; uint64_t sequence=0U;
+    cog_result_t primary=COG_OK;
+    for (size_t i=0U;i<128U && !done;++i) {
+        CHECK(commit(app,&sequence)==0);
+        cog_core_step_info_t info;
+        cog_result_t rc=cog_cli_execution_step(app,&info);
+        if (rc!=COG_OK && rc!=COG_ERROR_AGAIN && primary==COG_OK) primary=rc;
+        done=info.done;
+    }
+    CHECK(done && primary==COG_ERROR_PROTOCOL && cog_cli_execution_end(app)==primary);
+    fail_disconnect=cleanup_fails;
+    cog_result_t cleanup=cog_cli_execution_close(&app,COG_OK);
+    CHECK(app==NULL && cleanup==(cleanup_fails?COG_ERROR_IO:COG_OK));
+    CHECK(primary==COG_ERROR_PROTOCOL && !fail_disconnect);
     return 0;
 }
 static int resolved_reload(cog_cli_app_t *app)
@@ -142,5 +180,7 @@ int main(void)
     CHECK(done && cog_cli_execution_end(app)==COG_OK);
     CHECK(cog_cli_execution_close(&app,COG_OK)==COG_OK && app==NULL);
     CHECK(drain_while_unpublished(&options)==0);
+    CHECK(execution_and_cleanup_outcomes(&options,false)==0);
+    CHECK(execution_and_cleanup_outcomes(&options,true)==0);
     puts("headless executor: PASS"); return 0;
 }
