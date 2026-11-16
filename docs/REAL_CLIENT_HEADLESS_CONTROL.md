@@ -271,6 +271,12 @@ secret scratch, compare exact immutable bytes/identity, wipe scratch immediately
 then resend ACK. After retirement uniformly stale-reject the old wire. Parent
 re-encodes only the same pinned generation while bootstrap ACK is pending; it
 never calls resolver again. No ACK means no CHILD_START/effect admission.
+For a failed purpose4 reload, the consumed candidate cannot support duplicate
+proof. Retire that request proof while retaining its nonsecret correlated negative
+ACK independently, as specified in REAL_CLIENT_RELOAD_FAILURE_RECEIPTS.md.
+Authenticated covered retries are nonfatal stale requests, may re-arm only that
+retained failure receipt, and never decode/reapply the candidate or assert erased
+original-byte equality. Successful live-generation replay remains unchanged.
 
 Each child admitted under a later pinned generation receives its OWN child-purpose
 profile before CHILD_START; a worker's old startup configuration is not silently
