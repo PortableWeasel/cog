@@ -2042,3 +2042,182 @@ static cog_result_t host_worker_slice(cog_cli_host_runtime_t *r, bool *done, uin
     }
     return primary;
 }
+
+static void host_fail(cog_cli_host_runtime_t *r, cog_result_t result)
+{
+    if (result == COG_OK || result == COG_ERROR_AGAIN) return;
+    r->primary = host_first(r->primary, result);
+    (void)cog_cli_host_runtime_request_shutdown(r);
+}
+static bool host_handoff_owns(const cog_cli_host_runtime_t *r, size_t index)
+{
+    const cog_cli_handoff_t *h = r->handoff;
+    if (h == NULL || h->phase == CLI_HANDOFF_IDLE) return false;
+    if (index == h->target_slot && h->activation_acked && !h->abort_requested) return false;
+    return index == h->source_slot || index == h->target_slot;
+}
+static void host_step_merge(cog_cli_host_runtime_t *r, cog_cli_host_runtime_step_t *out,
+    const cog_core_step_info_t *info)
+{
+    if (info->dispatched > SIZE_MAX - out->dispatched) host_fail(r, COG_ERROR_LIMIT);
+    else out->dispatched += info->dispatched;
+    if (info->next_deadline_ms < out->next_deadline_ms) out->next_deadline_ms = info->next_deadline_ms;
+    if (info->max_wait_ms < out->max_wait_ms) out->max_wait_ms = info->max_wait_ms;
+}
+
+/** One fair bounded offer to each eligible owner; no nested run or wait. */
+cog_result_t cog_cli_host_runtime_step(cog_cli_host_runtime_t *r,
+    cog_cli_host_runtime_step_t *info)
+{
+    if (r == NULL || info == NULL) return COG_ERROR_NULL_PTR;
+    if (r->in_step || (!r->begun && !(r->shutdown && r->done))) return COG_ERROR_INVALID_STATE;
+    cog_cli_host_runtime_step_t out = {.done = r->done, .next_deadline_ms = UINT64_MAX, .max_wait_ms = 10U};
+    if (r->done) { *info = out; return r->primary; }
+    r->in_step = true;
+    uint64_t now;
+    cog_result_t rc = host_clock(&now);
+    if (rc == COG_OK) r->now_ms = now; else host_fail(r, rc);
+    if (r->fixed.signal_fd >= 0) {
+        unsigned char signal_record[128];
+        ssize_t amount = read(r->fixed.signal_fd, signal_record, sizeof(signal_record));
+        if (amount == (ssize_t)sizeof(signal_record)) (void)cog_cli_host_runtime_request_shutdown(r);
+        else if (amount > 0 || (amount < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+            host_fail(r, COG_ERROR_IO);
+    }
+    bool native_done;
+    uint64_t native_deadline;
+    rc = host_worker_slice(r, &native_done, &native_deadline);
+    host_fail(r, rc);
+    if (native_deadline < out.next_deadline_ms) out.next_deadline_ms = native_deadline;
+    if (!r->control_drive_ended) {
+        if (r->shutdown && r->now_ms >= r->shutdown_deadline_ms) cog_core_stop(r->control_core);
+        cog_core_step_info_t core_info = {0};
+        rc = cog_core_step(r->control_core, &core_info);
+        host_step_merge(r, &out, &core_info);
+        if (core_info.done) {
+            cog_result_t ended = cog_core_drive_end(r->control_core);
+            r->control_drive_ended = true;
+            if (rc != COG_OK) r->coordinator_failed = true;
+            host_fail(r, host_first(rc, ended));
+        } else host_fail(r, rc);
+    }
+    bool ready = true;
+    for (size_t i = 0U; i < r->bounds.workers; ++i) {
+        cli_worker_record_t *worker = &r->workers[i];
+        if (!worker->profile_ready) {
+            ready = false;
+            if (!r->shutdown && worker->native.health == COG_HEALTH_HEALTHY) {
+                rc = host_profile_send(r, worker, NULL, &worker->startup_profile, 1U);
+                host_fail(r, rc); out.max_wait_ms = 0U;
+            }
+        }
+    }
+    if (r->handoff != NULL) {
+        bool handoff_done;
+        uint64_t deadline;
+        rc = cog_cli_handoff_step(r->handoff, &handoff_done, &deadline);
+        host_fail(r, rc);
+        if (deadline < out.next_deadline_ms) out.next_deadline_ms = deadline;
+        cog_cli_handoff_t *h = r->handoff;
+        if (!handoff_done) out.max_wait_ms = 0U;
+        if (h->pending.length != 0U) {
+            cog_cli_control_message_t request;
+            size_t required;
+            rc = cog_cli_control_decode(h->pending.data, h->pending.length, &request,
+                r->decode.data, r->decode.capacity, &required);
+            if (rc == COG_OK) rc = host_worker_send(r, request.worker, &h->pending);
+            host_fail(r, rc);
+        }
+        if (h->phase == CLI_HANDOFF_PREPARE && h->target_peer != 0U) {
+            cli_executor_slot_t *target = &r->executors[h->target_slot];
+            for (size_t i = 0U; i < r->bounds.workers; ++i)
+                if (host_worker_equal(target->worker, r->workers[i].id) && target->profile.source != NULL) {
+                    rc = host_profile_send(r, &r->workers[i], target, &target->profile, 3U);
+                    host_fail(r, rc);
+                }
+        }
+    }
+    for (size_t n = 0U; n < r->bounds.executors; ++n) {
+        size_t index = (r->round_robin + n) % r->bounds.executors;
+        cli_executor_slot_t *slot = &r->executors[index];
+        if (slot->phase == CLI_SLOT_FREE || host_handoff_owns(r, index)) continue;
+        bool primary = index == r->primary_slot;
+        if (primary && slot->app != NULL && !slot->started && !r->shutdown && ready) {
+            rc = cog_cli_execution_begin(slot->app);
+            if (rc == COG_OK) { slot->started = true; slot->phase = CLI_SLOT_STARTED; }
+            host_fail(r, rc); out.max_wait_ms = 0U;
+        }
+        if (!primary && slot->owner_peer != 0U) {
+            bool ended = false;
+            for (size_t i = 0U; i < r->bounds.workers; ++i)
+                if (host_worker_equal(slot->worker, r->workers[i].id))
+                    ended = r->workers[i].native.reaped || r->workers[i].native.ownership_lost;
+            if (ended && !slot->terminal_copied) {
+                slot->local_done = true;
+                slot->primary = slot->first_admission_sent ? COG_ERROR_INDETERMINATE : COG_ERROR_ABORTED;
+                rc = host_local_terminal(r, slot);
+                if (rc == COG_OK) slot->phase = CLI_SLOT_RETAINED;
+                host_fail(r, rc);
+            } else if (!slot->terminal_copied) host_fail(r, host_remote_child_slice(r, slot));
+            continue;
+        }
+        if (!primary && slot->phase == CLI_SLOT_PROFILE && !slot->cancel_latched && !r->shutdown) {
+            rc = host_local_admit(r, slot);
+            if (rc != COG_OK && rc != COG_ERROR_AGAIN) {
+                slot->primary = rc; slot->cancel_latched = true; slot->local_done = true;
+                cli_group_record_t *group = host_slot_group(r, slot);
+                if (group != NULL) { group->aggregate = rc; group->phase = CLI_GROUP_ROLLBACK; }
+            }
+            out.max_wait_ms = 0U;
+            continue;
+        }
+        if (slot->app != NULL && slot->started && !slot->local_done) {
+            if (slot->cancel_latched || r->shutdown) cog_cli_app_stop(slot->app);
+            if (primary) host_fail(r, host_project_local(r, slot));
+            else if (slot->accepted_sequence == 0U && !slot->cancel_latched)
+                host_fail(r, host_local_update(r, slot, COG_AGENT_STATUS_RUNNING, COG_OK, "running", 7U));
+            cog_core_step_info_t execution_info = {0};
+            rc = cog_cli_execution_step(slot->app, &execution_info);
+            host_step_merge(r, &out, &execution_info);
+            if (rc != COG_OK && rc != COG_ERROR_AGAIN) {
+                slot->primary = host_first(slot->primary, rc); slot->cancel_latched = true;
+                if (primary) host_fail(r, rc);
+            }
+            if (execution_info.done) {
+                slot->local_done = true;
+                slot->primary = host_first(slot->primary, cog_cli_execution_end(slot->app));
+            }
+            if (primary) host_fail(r, host_project_local(r, slot));
+        }
+        if (!primary && !slot->started && slot->cancel_latched) slot->local_done = true;
+        if (!primary && slot->local_done && !slot->terminal_copied) {
+            rc = host_local_terminal(r, slot); host_fail(r, rc); out.max_wait_ms = 0U;
+        } else if (!primary && slot->terminal_copied && slot->phase != CLI_SLOT_RETAINED) {
+            host_fail(r, host_local_dispose(r, slot)); out.max_wait_ms = 0U;
+        }
+    }
+    r->round_robin = (r->round_robin + 1U) % r->bounds.executors;
+    for (size_t i = 0U; i < r->group_capacity; ++i) {
+        rc = host_group_slice(r, &r->groups[i]);
+        if (rc != COG_ERROR_ABORTED && rc != COG_ERROR_TIMEOUT) host_fail(r, rc);
+    }
+    if (!r->control_drive_ended) {
+        for (size_t i = 0U; i < r->bounds.command_records; ++i) host_fail(r, host_command_slice(r, &r->commands[i]));
+        for (size_t i = 0U; i < r->bounds.clients; ++i) host_fail(r, host_client_slice(r, &r->clients[i]));
+    }
+    if (r->shutdown) {
+        bool local_done = true;
+        for (size_t i = 0U; i < r->bounds.executors; ++i) {
+            cli_executor_slot_t *slot = &r->executors[i];
+            if (slot->app != NULL && slot->started && !slot->local_done) local_done = false;
+            if (slot->borrow_live) local_done = false;
+        }
+        bool handoff_done = r->handoff == NULL || r->handoff->phase == CLI_HANDOFF_IDLE ||
+            (r->handoff->phase == CLI_HANDOFF_FROZEN && r->handoff->pending.length == 0U);
+        r->done = local_done && native_done && r->control_drive_ended && handoff_done;
+        if (r->shutdown_deadline_ms < out.next_deadline_ms) out.next_deadline_ms = r->shutdown_deadline_ms;
+    }
+    if (out.next_deadline_ms <= r->now_ms) out.max_wait_ms = 0U;
+    out.done = r->done; r->in_step = false; *info = out;
+    return r->primary;
+}
