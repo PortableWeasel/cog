@@ -422,8 +422,6 @@ static cog_result_t bootstrap(cog_cli_worker_host_t *worker,const cog_cli_contro
             cog_result_t rc=open_attempt(worker,message,&slot);if(rc!=COG_OK) return rc;
         } else if(purpose==3U) {
             slot=&worker->executors[1];
-            if(slot->app!=NULL || slot->pending_profile!=NULL ||
-               (slot->session[0]!='\0' && strcmp(slot->session,message->session_id)!=0)) return COG_ERROR_INVALID_STATE;
         }
         else {
             slot=find_attempt(worker,message);
@@ -432,6 +430,8 @@ static cog_result_t bootstrap(cog_cli_worker_host_t *worker,const cog_cli_contro
         exchange=&slot->profile;
     }
     if(message->wire_id==exchange->wire) return bootstrap_duplicate(worker,exchange,message,original_length);
+    if(purpose==3U && (slot->app!=NULL || slot->pending_profile!=NULL || slot->primary!=COG_OK ||
+       (slot->session[0]!='\0' && strcmp(slot->session,message->session_id)!=0))) return COG_ERROR_INVALID_STATE;
     if(message->wire_id<=exchange->retired_through || exchange->pending ||
        (exchange->source!=NULL && !(purpose==4U && exchange->acknowledged && message->wire_id>exchange->wire)))
         return COG_ERROR_INVALID_STATE;
@@ -440,7 +440,7 @@ static cog_result_t bootstrap(cog_cli_worker_host_t *worker,const cog_cli_contro
     cog_cli_configuration_t *configuration=NULL;cog_cli_bootstrap_probe_t probe={0};
     cog_result_t outcome=profile_construct(worker,slot,profile,profile_length,&configuration,&probe);
     if(outcome!=COG_OK) return outcome;
-    if(slot->cancel_latched) {
+    if(slot->cancel_latched && purpose!=3U) {
         cog_cli_configuration_free(configuration);configuration=NULL;outcome=COG_ERROR_ABORTED;
     }
     cli_wire_reader_t generation={profile,profile_length,4U,true};
@@ -834,7 +834,8 @@ static cog_result_t handoff_receive(cog_cli_worker_host_t *worker,cli_executor_s
     case COG_HANDOFF_CHECKPOINTED:
         if(slot!=&worker->executors[1] || slot->owner_peer!=request.target_peer || slot->app!=NULL ||
            slot->pending_profile==NULL || slot->profile.purpose!=3U ||
-           strcmp(slot->profile.probe.session_id,session)!=0 || !same_owner(slot->profile.probe.owner,request.expected))
+           strcmp(slot->profile.probe.session_id,session)!=0 || !same_owner(slot->profile.probe.owner,request.expected) ||
+           slot->profile.probe.checkpoint.generation!=request.checkpoint.generation)
             return COG_ERROR_INVALID_STATE;
         {
             cog_cli_execution_admission_t admission={0};admission.kind=COG_CLI_EXECUTION_STAGED;
@@ -874,8 +875,21 @@ static cog_result_t handoff_receive(cog_cli_worker_host_t *worker,cli_executor_s
         if(rc==COG_OK) { slot->started=true;slot->phase=CLI_SLOT_STARTED; }
         break;
     case COG_HANDOFF_ABORT:
-        rc=prior_handoff(slot,&request);
-        if(rc!=COG_OK) return rc;
+        /* A bootstrap-only target has no prior HANDOFF response. Its immutable
+           profile probe is the cleanup binding; after reuse it also excludes
+           fresh late requests for the old disposed transaction. */
+        if(slot->phase==CLI_SLOT_PROFILE && slot->profile.purpose==3U && slot->app==NULL) {
+            if(slot->owner_peer!=request.target_peer || strcmp(slot->profile.probe.session_id,session)!=0 ||
+               !same_owner(slot->profile.probe.owner,request.expected) ||
+               slot->profile.probe.checkpoint.generation!=request.checkpoint.generation)
+                return COG_ERROR_INVALID_STATE;
+        } else {
+            rc=prior_handoff(slot,&request);
+            if(rc!=COG_OK) return rc;
+        }
+        /* Consuming failure is retained independently of the surviving pointer.
+           A later fresh request must not turn dispose(NULL) into reuse proof. */
+        if(slot->primary!=COG_OK) { rc=slot->primary;break; }
         if(incoming->pending.length!=0U &&
            (incoming->pending.length!=original_length ||
             memcmp(incoming->pending.data,worker->receive_secret,original_length)!=0)) return COG_ERROR_PROTOCOL;
@@ -900,7 +914,10 @@ static cog_result_t handoff_receive(cog_cli_worker_host_t *worker,cli_executor_s
     default:return COG_ERROR_PROTOCOL;
     }
     if(rc==COG_ERROR_AGAIN) return rc;
-    if(rc!=COG_OK) { slot->primary=rc;response.kind=COG_HANDOFF_FAILED; }
+    if(rc!=COG_OK) {
+        if(slot->primary==COG_OK) slot->primary=rc;
+        response.kind=COG_HANDOFF_FAILED;
+    }
     unsigned char body[192];size_t length;
     cog_result_t encoded=cog_orchestrator_handoff_encode(&response,body,sizeof(body),&length);
     if(encoded!=COG_OK) return encoded;

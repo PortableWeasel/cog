@@ -1,5 +1,5 @@
 # Lane A owns shared CMake; append these real-source private branch fixtures.
-foreach(name IN ITEMS worker_receipt_owned delegation_callbacks)
+foreach(name IN ITEMS worker_receipt_owned delegation_callbacks worker_handoff_critic)
     add_executable(test_${name} test_${name}.c)
     target_link_libraries(test_${name} PRIVATE cog::cli)
     target_include_directories(test_${name} PRIVATE ../src ../../../libraries/cog-ipc/private)
@@ -11,3 +11,6 @@ add_test(NAME cli-worker-receipt-owned COMMAND test_worker_receipt_owned
     ${CMAKE_BINARY_DIR}/worker-receipt.sock)
 add_test(NAME cli-delegation-callbacks COMMAND test_delegation_callbacks)
 set_tests_properties(cli-worker-receipt-owned cli-delegation-callbacks PROPERTIES TIMEOUT 10)
+
+add_test(NAME cli-worker-handoff-critic COMMAND test_worker_handoff_critic)
+set_tests_properties(cli-worker-handoff-critic PROPERTIES TIMEOUT 10)

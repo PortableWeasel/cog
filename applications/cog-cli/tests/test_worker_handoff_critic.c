@@ -67,7 +67,25 @@ static int abort_case(bool previous_failure)
         REQUIRE(cog_cli_control_encode(&response,final,sizeof(final),&lane->final_reply.length)==COG_OK);
         lane->final_valid=true;lane->final_answered_wire=19U;lane->final_reply_wire=10U;
     }
+    if(!previous_failure) {
+        cog_cli_options_t options;char program[]="review";char *argv[]={program};int code=0;
+        REQUIRE(cog_cli_options_parse(&options,1,argv,&code)==COG_OK);
+        options.config_path="/dev/null";options.model_id="synthetic/model";
+        options.credential_ref="host:review";options.credential_read=credential;
+        options.workspace_root="/work";options.store_dir="/state";
+        options.explicit_options=COG_CLI_OPT_MODEL|COG_CLI_OPT_CREDENTIAL|COG_CLI_OPT_WORKSPACE|COG_CLI_OPT_STORE_DIR;
+        REQUIRE(cog_cli_configuration_new(&slot.pending_profile,&options,1U)==COG_OK);
+        slot.profile.source=slot.pending_profile;
+        inner.checkpoint.generation=4U;
+        REQUIRE(cog_orchestrator_handoff_encode(&inner,body,sizeof(body),&length)==COG_OK);
+        REQUIRE(handoff_receive(&host,&slot,&request,total)==COG_ERROR_INVALID_STATE);
+        REQUIRE(slot.pending_profile!=NULL && !lane->final_valid);
+        inner.checkpoint.generation=3U;
+        REQUIRE(cog_orchestrator_handoff_encode(&inner,body,sizeof(body),&length)==COG_OK);
+    }
     cog_result_t actual=handoff_receive(&host,&slot,&request,total);
+    if(!previous_failure) REQUIRE(slot.pending_profile==NULL && slot.profile.source==NULL);
+
     cog_handoff_kind_t kind=0;
     if(actual==COG_OK) {
         cog_cli_control_message_t response;char session[128];size_t needed;

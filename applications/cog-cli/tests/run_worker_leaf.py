@@ -14,15 +14,19 @@ includes += ['-I' + str(root / 'applications/cog-cli/include'), '-I' + str(root 
 libraries = list(joined.glob('libraries/*/lib*.a')) + list((joined / 'applications/cog-cli').glob('lib*.a'))
 cache = (joined / 'CMakeCache.txt').read_text().splitlines()
 curl = next(Path(line.split('=', 1)[1]) for line in cache if line.startswith('CURL_LIBRARY:'))
-for compiler in ['gcc', 'clang']:
-    for name in ['worker_receipt_owned', 'delegation_callbacks']:
-        binary = out / (name + '-' + compiler)
+sanitize = os.environ.get('COG_LEAF_SANITIZE') == '1'
+for compiler in (['clang'] if sanitize else ['gcc', 'clang']):
+    for name in ['worker_receipt_owned', 'delegation_callbacks', 'worker_handoff_critic']:
+        suffix = compiler + ('-asan' if sanitize else '')
+        binary = out / (name + '-' + suffix)
         cmd = [compiler, '-std=c11', '-Wall', '-Wextra', '-Wpedantic', '-Wconversion', '-Werror',
                '-ffunction-sections', '-fdata-sections', *includes,
                str(root / ('applications/cog-cli/tests/test_' + name + '.c')),
                '-Wl,--gc-sections', '-Wl,--start-group', *map(str, libraries), '-Wl,--end-group',
                str(curl), '-Wl,-rpath,' + str(curl.parent), '-lcrypto', '-ldl', '-lm', '-o', str(binary)]
-        with (out / (name + '-' + compiler + '.log')).open('w') as log:
+        if sanitize:
+            cmd += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer']
+        with (out / (name + '-' + suffix + '.log')).open('w') as log:
             subprocess.run(cmd, check=True, env=env, cwd=root, stdout=log, stderr=log)
             args = [str(binary)]
             if name == 'worker_receipt_owned': args.append(str(out / ('receipt-' + compiler + '.sock')))
