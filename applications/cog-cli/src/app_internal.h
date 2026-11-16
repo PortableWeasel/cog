@@ -3,6 +3,7 @@
 #define COG_CLI_APP_INTERNAL_H
 #include "configuration.h"
 #include "observation.h"
+#include "session_admission.h"
 #include <cog/workspace.h>
 /* Control-tree ownership is private; only app_reload.c needs config.h. */
 typedef struct cog_config_tree cog_config_tree_t;
@@ -190,7 +191,6 @@ cog_result_t cog_cli_reload_free(cog_cli_app_t *app);
 cog_result_t cog_cli_reload_command(cog_cli_app_t *app, const char *text,
     bool *handled);
 bool cog_cli_metadata(const cog_cli_app_t *app);
-cog_result_t cog_cli_sessions_open(cog_cli_app_t *app);
 cog_result_t cog_cli_sessions_prepare(cog_cli_app_t *app);
 cog_result_t cog_cli_metadata_run(cog_cli_app_t *app);
 cog_result_t cog_cli_session_command(cog_cli_app_t *app, const char *text, bool *handled);

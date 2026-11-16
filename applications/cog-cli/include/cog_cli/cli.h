@@ -422,10 +422,25 @@ const char *cog_cli_result_name(cog_result_t rc);
  * Invalid values fail rather than being ignored. Resolves secret references only
  * during construction, validates the full candidate generation and atomically
  * adopts it. Failure retains no partial app and never falls back to mock.
- * Session actions: NEW retains the collision-refusal contract. RESUME/FORK
+ * Session actions: NEW retains the collision-refusal contract. Successful fresh
+ * DURABLE construction commits an empty session checkpoint under its new normal
+ * guard before publishing the app, including when no prompt is supplied. Failure
+ * or uncertain save returns no app; the reserved owner/ID is never deleted/reset.
+ * RESUME/FORK
  * require DURABLE and source_session_id; load an exact committed checkpoint,
  * restore into current explicit constructor reservations, admit a fresh process
  * incarnation/checked epoch and acquire its matching normal guard before work.
+ * RESUME alone also repairs an interrupted owner-only empty reservation: a valid
+ * nonzero owner and checkpoint0, absent replay-loadable data, exact owner/0 CAS
+ * to a fresh incarnation/epoch, normal guard and successful empty checkpoint save
+ * are all required before publication. A live guard still returns AGAIN; stale,
+ * corrupt/unreadable or legacy data is never treated as empty. No new fencing
+ * assertion is required for this owned no-data case; no effect can be admitted
+ * before durable intent. Absent IDs remain NOT_FOUND, NEW collisions refuse, and
+ * FORK/RECOVER never invent an empty source. Current J configuration resolves as
+ * for ordinary RESUME; no historical model/provider provenance is invented or
+ * replaced. Save errors, including INDETERMINATE, propagate without an app or
+ * subsequent work. A later explicit RESUME re-reads authoritative state.
  * RESUME/FORK adoption of unowned v1/v2 data requires the explicit prior-writer
  * quiescence/fencing assertion; it is not verification. Text-only v1 migrates
  * through a temporary require_owner=false store context, whose explicit v2 save
