@@ -82,6 +82,11 @@ cog_result_t cog_cli_handoff_request(cog_cli_handoff_t *handoff,
  * only a higher valid SAME HANDOFF stream request after final consumption or
  * native lifetime retirement can retire it. No unrelated-key slot rebind while
  * the proof is retained; pressure refuses new work rather than erasing proof.
+ * Cleanup error emits correlated FAILED, preserves first error/frozen failure
+ * and never grants reuse from partial teardown. ABORT-before-success uses the
+ * same factual cleanup receipt for addressed resources only, never permission
+ * to advance CAS/READY/ACTIVATE. Whole move remains pending until old source
+ * disposal proof is received; retain one transaction and original deadline.
  */
 cog_result_t cog_cli_handoff_step(cog_cli_handoff_t *handoff, bool *done,
     uint64_t *deadline_ms);
