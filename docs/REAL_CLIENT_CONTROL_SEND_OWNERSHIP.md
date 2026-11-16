@@ -124,3 +124,7 @@ and terminal confirmation do not queue duplicate accepted copies; actual native
 cancel completes within the existing5s cleanup oracle; actual moves complete
 within the existing15s transaction deadline with exact CAS/READY/route/ACTIVATE
 and retained disposal receipts. Full runtime acceptance remains separate.
+
+Generic re-armed response delivery has an independent pending_reply_wire selector
+under REAL_CLIENT_SEND_REPLY_RETENTION.md (81431a3). It does not overload semantic
+pending_valid or extend any of the send/deadline/retirement rules above.
