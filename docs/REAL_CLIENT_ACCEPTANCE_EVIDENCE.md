@@ -4,7 +4,8 @@ Ticket `83b30aa`, audit `267dd8b`; implementation base `84e2272`.
 The combined source checkpoint is `c6692562f7add196f403cfb2cf9d17a39d287bf7`.
 It includes the independently approved host correction `27da63e`, its contract
 and evidence follow-up `36fdd14`, and independent adapter fixtures `b22a21d` /
-`a5c1c5f`. Final independent acceptance review is still required before merge.
+`a5c1c5f`. Independent acceptance review passed on this source checkpoint;
+integration and the broader M/N/O/P gates remain separate.
 
 These cases join application ownership, real dispatch, durable state and wire
 behavior where the earlier component tests did not prove the complete assertion.
@@ -110,3 +111,27 @@ semantics. Full installed real dependency closure remains the separately
 accepted R18 fixture/provenance evidence; this host fixture makes no replacement
 claim. Linux `/proc` readiness observations are bounded test handshakes rather
 than portable application APIs or hard real-time performance claims.
+
+## Independent final review
+
+A different critic reviewed the complete `c669256` source and `e1f6055` evidence
+in a managed isolated checkout. No production revision was required after
+`27da63e`; the installed stderr test's initial readiness failure was corrected
+by selecting a guaranteed checked reload notice rather than assuming mock usage
+would print. The final runner explicitly waits for real process completion when
+LSan temporarily prevents `/proc/PID/syscall` access.
+
+Fresh all-target strict Release builds passed under GCC and Clang, plus a
+separate Clang ASan/UBSan build with leak detection enabled. All **41 tests**
+selected by `ctest -R 'cli-|header' --output-on-failure -j4` passed in each build.
+The independent build directories are `/tmp/cog-host-review-gcc`,
+`/tmp/cog-host-review-clang` and `/tmp/cog-host-review-asan`. The final trees are
+identical to the submitted source; test-only `-UNDEBUG` was verified in the
+Release helper fixture's actual compile flags. The reviewer also ran the five
+private adapter fault cases separately under strict GCC, strict Clang and
+Clang ASan/UBSan/LSan before integration.
+
+This is approval of the focused acceptance joins and host correction, not a
+full-suite or original-scenario gate. It does not close the separately routed
+empty-session issue `cd3d092`, the M live smoke, or N/O remote orchestration and
+P release validation. No paid requests or real credentials were used.
