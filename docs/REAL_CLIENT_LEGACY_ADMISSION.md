@@ -55,3 +55,26 @@ guard acquisition, and unowned/guarded first save. Ordinary complete legacy
 migration, incomplete metadata, active-guard contention and authoritative-v2
 leftovers provide positive/control coverage. Test injection targets directory-
 relative stat only, preserving real backend locks, manifests and transaction I/O.
+
+## Pass 3: consistency and edge review
+
+The probe examines exactly six names and completes all inspections before
+publishing its by-value result. ENOENT is evaluated immediately after each failed
+stat, so stale errno from another call cannot establish absence. It follows no
+symlink and reads no artifact content; any found object blocks zero-generation
+ownership, while a found metadata object still receives the existing strict
+read/type/parser validation on the legacy load/migration path.
+
+The six-name table will also serve the existing deletion classifier, avoiding
+divergent definitions. Deletion behavior itself is unchanged. Metadata-less
+legacy artifacts are conservatively ambiguous remnants, not invented committed
+authority. Valid v2 authority wins before the probe is considered. Unsupported
+data and inspection failure never trigger artifact cleanup, rollback, adoption
+or a reset to an empty snapshot. Guard construction and output session/owner
+publication retain their existing all-or-failure behavior.
+
+Existing locks serialize cooperating writers; these contracts do not claim to
+make read-only legacy loads atomic against an external process modifying files
+outside the store protocol. No broader filesystem scan or new lock is added.
+Independent final header review is required before implementing the helper or
+modifying its four production call paths.
