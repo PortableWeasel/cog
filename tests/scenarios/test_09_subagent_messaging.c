@@ -38,7 +38,7 @@ int main(int argc,char **argv)
         CHECK(snprintf(expected,sizeof(expected),"PARENT_DONE_%u",round)>0);
         CHECK(cog_cli_app_queue(parent,task,strlen(task))==COG_OK);
         cog_agent_id_t ids[2]={0U,0U};bool running[2]={false,false},terminal[2]={false,false};
-        cli_delegation_handle_t *retained=NULL;uint64_t pressure_since=0U;
+        cli_delegation_handle_t *retained=NULL;uint64_t pressure_since=0U,original_deadline=0U;
         bool pressure=false,complete=false;
         uint64_t end=headless_fixture_clock_ms()+20000U;
         while(headless_fixture_clock_ms()<end) {
@@ -64,8 +64,8 @@ int main(int argc,char **argv)
                     if(pending!=NULL && pending->operation==CLI_SEND_MESSAGE && pending->started && !pending->done &&
                         strcmp(pending->call_id,"send-9")==0) {
                         CHECK(pending->destination==ids[1] && !pending->output_cached);
-                        if(retained==NULL) {retained=pending;pressure_since=headless_fixture_clock_ms();}
-                        CHECK(retained==pending);
+                        if(retained==NULL) {retained=pending;pressure_since=headless_fixture_clock_ms();original_deadline=pending->deadline_ms;}
+                        CHECK(retained==pending && pending->deadline_ms==original_deadline && original_deadline>pressure_since);
                         if(headless_fixture_clock_ms()-pressure_since>=20U) {
                             CHECK(native->mailbox.count==8U && mark(argv[4],round));pressure=true;
                         }
