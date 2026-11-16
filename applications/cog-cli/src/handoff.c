@@ -113,6 +113,27 @@ cog_result_t cog_cli_handoff_new(cog_cli_handoff_t **out,
     return COG_OK;
 }
 
+/* Mirror the executor's no-effect quiescence preflight before reserving a
+ * target. The execution operation remains the final authority and may refuse. */
+static cog_result_t handoff_local_quiet(const cog_cli_app_t *app)
+{
+    if (app == NULL || app->headless == NULL || app->headless->in_step ||
+        app->headless->authority != CLI_AUTH_NORMAL || app->headless->drive != CLI_DRIVE_BEGUN ||
+        app->shutdown || app->guard == NULL)
+        return COG_ERROR_INVALID_STATE;
+    if (app->active || app->provider_active || app->execution != NULL || app->delta_ready ||
+        app->event_queued || app->assistant_pending || app->terminal_result_pending ||
+        app->resuming_policy || app->recovery || app->future_configuration != NULL ||
+        app->retiring_configuration != NULL || app->reload_notice_pending || app->reload_notice_queued ||
+        app->reload_in_progress || app->headless->publication_pending || app->headless->policy_pending ||
+        app->continuation_required) return COG_ERROR_AGAIN;
+    for (size_t i = 0U; i < CLI_INPUTS; ++i)
+        if (app->inputs[i].used) return COG_ERROR_AGAIN;
+    size_t count = 0U;
+    cog_result_t rc = cog_core_pending_count(app->core, cog_session_id(app->session), &count);
+    return rc != COG_OK ? rc : count == 0U ? COG_OK : COG_ERROR_AGAIN;
+}
+
 cog_result_t cog_cli_handoff_request(cog_cli_handoff_t *h, cog_worker_id_t target)
 {
     if (h == NULL) return COG_ERROR_NULL_PTR;
@@ -149,9 +170,17 @@ cog_result_t cog_cli_handoff_request(cog_cli_handoff_t *h, cog_worker_id_t targe
         peer = worker->native.peer_id;
     }
     if (peer == source->owner_peer) return COG_ERROR_INVALID_STATE;
+    if (source->owner_peer != 0U) {
+        cli_worker_record_t *old = handoff_worker(h, source->worker);
+        if (old == NULL || old->native.peer_id != source->owner_peer || old->native.reaped ||
+            old->native.ownership_lost || old->native.health != COG_HEALTH_HEALTHY) return COG_ERROR_NOT_FOUND;
+    }
     cog_result_t rc = handoff_lane_ready(source, r, source->worker, source->owner_peer);
     if (rc != COG_OK) return rc;
     rc = handoff_lane_ready(dest, r, target, peer); if (rc != COG_OK) return rc;
+    if (source->owner_peer == 0U) {
+        rc = handoff_local_quiet(source->app); if (rc != COG_OK) return rc;
+    }
     uint64_t instance;
     rc = handoff_random(&instance); if (rc != COG_OK) return rc;
     if (instance == r->primary_owner.instance_id) return COG_ERROR_IO;
@@ -197,6 +226,10 @@ static cog_result_t handoff_queue(cog_cli_handoff_t *h, size_t index, cog_handof
 {
     if (h->pending.length != 0U) return COG_OK;
     cli_executor_slot_t *s = &h->runtime->executors[index];
+    cog_worker_id_t worker = index == h->source_slot ? h->source_worker : h->target_worker;
+    cog_peer_id_t peer = index == h->source_slot ? h->source_peer : h->target_peer;
+    if (!handoff_worker_equal(s->worker, worker) || s->owner_peer != peer || peer == 0U || s->outbound == NULL)
+        return COG_ERROR_INVALID_STATE;
     cli_control_lane_t *lane = &s->outbound[COG_CLI_LANE_HANDOFF - 1U];
     if (!handoff_lane_key(lane, h->runtime, s->worker, s->owner_peer) || lane->pending_valid)
         return COG_ERROR_INVALID_STATE;
@@ -237,6 +270,9 @@ static cog_result_t handoff_receive(cog_cli_handoff_t *h, size_t index, cog_hand
     if (rc != COG_OK) return rc;
     rc = handoff_decode(&h->reply, &reply, reply_storage, sizeof(reply_storage)); if (rc != COG_OK) return rc;
     cli_executor_slot_t *s = &h->runtime->executors[index];
+    cog_worker_id_t worker = index == h->source_slot ? h->source_worker : h->target_worker;
+    cog_peer_id_t peer = index == h->source_slot ? h->source_peer : h->target_peer;
+    if (!handoff_worker_equal(s->worker, worker) || s->owner_peer != peer) return COG_ERROR_INVALID_STATE;
     if (reply.kind != COG_CLI_CONTROL_HANDOFF || reply.lane != COG_CLI_LANE_HANDOFF ||
         reply.runtime_incarnation != h->runtime->runtime_incarnation ||
         reply.sender_incarnation != s->worker.incarnation || !handoff_worker_equal(reply.worker, s->worker) ||
@@ -329,6 +365,7 @@ static cog_result_t handoff_local_dispose(cli_executor_slot_t *s)
             cog_result_t rc = cog_cli_execution_drain_step(s->app, &info);
             if (rc != COG_OK && rc != COG_ERROR_AGAIN) s->primary = handoff_first(s->primary, rc);
             if (!info.done) return COG_ERROR_AGAIN;
+            s->primary = handoff_first(s->primary, cog_cli_execution_end(s->app));
         }
         cog_result_t rc = cog_cli_execution_close(&s->app, COG_OK);
         if (s->app != NULL) return rc;
@@ -402,7 +439,7 @@ static cog_result_t handoff_phase(cog_cli_handoff_t *h)
         r->primary_slot = h->target_slot; r->primary_owner = h->next;
         r->primary_worker = h->target_worker; r->primary_peer = h->target_peer;
         target->kind = COG_CLI_EXECUTION_ROOT; target->phase = CLI_SLOT_STARTED;
-        if (h->target_peer == 0U) {
+        if (h->target_peer == 0U && !h->abort_requested) {
             rc = cog_cli_execution_begin(target->app);
             if (rc != COG_OK) return rc;
         }
@@ -414,6 +451,29 @@ static cog_result_t handoff_phase(cog_cli_handoff_t *h)
         return rc;
     default: return COG_ERROR_INVALID_STATE;
     }
+}
+
+/* Native terminal facts end transport ownership, never prove disposal or
+ * permit physical reuse. Keep the exact unresolved lane original for diagnosis. */
+static bool handoff_native_terminal(cog_cli_handoff_t *h, size_t index)
+{
+    cli_executor_slot_t *s = &h->runtime->executors[index];
+    if (s->owner_peer == 0U || s->local_done) return false;
+    cli_worker_record_t *w = handoff_worker(h, s->worker);
+    if (w == NULL || (!w->native.reaped && !w->native.ownership_lost)) return false;
+    s->primary = handoff_first(s->primary, COG_ERROR_IO);
+    s->effects_uncertain = true; s->local_done = true; s->phase = CLI_SLOT_RETAINED;
+    handoff_secret_clear(&s->profile);
+    if (h->pending.length != 0U) {
+        unsigned char storage[HANDOFF_BYTES]; cog_cli_control_message_t request;
+        if (handoff_decode(&h->pending, &request, storage, sizeof(storage)) == COG_OK &&
+            handoff_worker_equal(request.worker, s->worker) && request.owner_peer == s->owner_peer) {
+            h->pending.length = 0U; h->reply.length = 0U;
+        }
+    }
+    h->primary = handoff_first(h->primary, COG_ERROR_IO);
+    h->abort_requested = true; h->runtime->admission_frozen = true;
+    return true;
 }
 
 cog_result_t cog_cli_handoff_abort(cog_cli_handoff_t *h)
@@ -430,6 +490,8 @@ cog_result_t cog_cli_handoff_step(cog_cli_handoff_t *h, bool *done, uint64_t *de
     if (h == NULL || done == NULL || deadline_ms == NULL) return COG_ERROR_NULL_PTR;
     *done = h->phase == CLI_HANDOFF_IDLE; *deadline_ms = *done ? 0U : h->deadline_ms;
     if (*done) return h->primary;
+    (void)handoff_native_terminal(h, h->source_slot);
+    (void)handoff_native_terminal(h, h->target_slot);
     if (h->runtime->now_ms >= h->deadline_ms) {
         h->primary = handoff_first(h->primary, COG_ERROR_TIMEOUT);
         h->abort_requested = true; h->runtime->admission_frozen = true;
