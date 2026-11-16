@@ -67,3 +67,19 @@ Runtime scope:
 
 This fixture does not establish C++ standalone headers, every sparse snapshot
 edge case, O runtime behavior, all original20 plus R01-R18, or release gate P.
+
+The whole-O extension adds a second external executable linked **only** with
+`cog::cli`. Its test-only [proof boundary](project/installed_proof.h) precedes
+implementation. The existing multi-package consumer stays intact. The new host
+will exercise installed public orchestrator/CGW1/CGH1 ownership primitives,
+spawn the actual relocated `cog-cli --worker`, and prove asynchronous readiness,
+shutdown and reap. A public real application uses an explicit local TLS CA.
+Private `src/host_runtime.h` and execution/worker composition remain private;
+they are neither copied nor installed by this fixture. Actual installed CLI
+headless/attach/watch roles supply a separate binary-level proof.
+
+The custom fenced plugin wraps a real file backend through public callbacks.
+`INVALID_STATE` retains its guard; every other release result (including IO and
+AGAIN) consumes it. Acquisition OOM must happen before custom normal/recovery
+callbacks. These tests extend installed compatibility evidence for the approved
+consuming-release contract; they introduce no new production API.
