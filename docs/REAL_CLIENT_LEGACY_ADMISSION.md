@@ -119,5 +119,24 @@ installation's `include`. They use COG_ENABLE_WERROR, with COG_ENABLE_ASAN only
 in the separate sanitizer build, ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 and
 UBSAN_OPTIONS=halt_on_error=1. Test assertions remain enabled in Release.
 
-Independent final source review remains required. This scoped correction does
-not itself implement empty application checkpoint recovery or close M/N/O/P.
+Independent final source review passed without source changes. This scoped
+correction does not itself implement empty application checkpoint recovery or
+close M/N/O/P.
+
+## Independent review and integration
+
+A different critic approved source `6f5aacc` and writer evidence `53e03f6` on
+the first implementation review. Independent all-target strict GCC Release,
+Clang Release and Clang ASan/UBSan/LSan profiles each passed the same **52/52**
+selected tests. Eight optimized negative controls detected removed guards at
+each of the four entry points, and an additional probe verified unchanged
+output after detecting a remnant followed by a later inspection error. The
+detailed review is recorded on ticket `9a95735`; its temporary receipts remain
+under `/tmp/cog-legacy-review-{gcc,clang,asan}` and
+`/tmp/cog-legacy-review-negatives`. No separate reviewer source commit exists.
+
+No-ff integration `32c8cad` retained the reviewed branch history and produced
+an identical tree. Reconfigured all-target strict GCC Release build from main
+in `/tmp/cog-acceptance-main` passed all **52/52** selected store/session/CLI
+checks again. The preexisting `build_user/` and frozen dependency profile were
+untouched. Application recovery `cd3d092` and M/N/O/P remain separate gates.
