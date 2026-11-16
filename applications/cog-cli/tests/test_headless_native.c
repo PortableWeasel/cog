@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr,"native line %d: %s\n",__LINE__,#x); primary=COG_ERROR_PROTOCOL;goto finish; } } while(0)
 static uint64_t clock_ms(void)
 {
@@ -38,6 +39,7 @@ int main(int argc,char **argv)
     cog_cli_host_runtime_t *host=NULL;cog_result_t primary=COG_OK;bool curl_ready=false;
     CHECK(argc==8); /* executable, CA, URL, workspace, store, socket prefix, mode */
     bool reject=strcmp(argv[7],"limit")==0,move=strcmp(argv[7],"handoff")==0;
+    bool cancel=strcmp(argv[7],"cancel")==0,cancelled=false;
     CHECK(curl_global_init(CURL_GLOBAL_DEFAULT)==CURLE_OK);curl_ready=true;
     char ui[4096],workers[4096];
     CHECK(snprintf(ui,sizeof(ui),"%s.ui",argv[6])>0);
@@ -63,7 +65,7 @@ int main(int argc,char **argv)
     while(!host->workers[0].profile_ready && clock_ms()<deadline){primary=advance(host,&done);CHECK(primary==COG_OK&&!done);}
     CHECK(host->workers[0].profile_ready && host->workers[0].native.peer_id!=0U);
     bool native_seen=false;
-    for(unsigned int round=1U;round<=((reject || move || strcmp(argv[7],"single")==0)?1U:2U);++round){
+    for(unsigned int round=1U;round<=((reject || move || cancel || strcmp(argv[7],"single")==0)?1U:2U);++round){
         char task[64],expected[64];
         CHECK(snprintf(task,sizeof(task),"delegate round %u",round)>0);
         if(reject)CHECK(snprintf(expected,sizeof(expected),"PARENT_REFUSED")>0);
@@ -75,6 +77,16 @@ int main(int argc,char **argv)
             primary=advance(host,&done);CHECK(primary==COG_OK&&!done);
             for(size_t i=2U;i<host->bounds.executors;++i)
                 if(host->executors[i].agent!=0U && host->executors[i].owner_peer!=0U)native_seen=true;
+            if(cancel && !cancelled && native_seen) {
+                char entered[4096];CHECK(snprintf(entered,sizeof(entered),"%s/native-entered",argv[4])>0);
+                if(access(entered,F_OK)==0) for(size_t i=2U;i<host->bounds.executors;++i) {
+                    if(host->executors[i].agent!=0U && host->executors[i].owner_peer!=0U) {
+                        CHECK(cog_agent_cancel(host->control_core,host->executors[i].agent)==COG_OK);
+                        CHECK(cog_agent_cancel(host->control_core,host->executors[i].agent)==COG_OK);
+                        cancelled=true;break;
+                    }
+                }
+            }
             cog_session_node_t *leaf=cog_session_active(app->session);
             if(leaf!=NULL){const cog_message_t *message=cog_node_data(leaf)->message;
                 if(!app->active && message->role==COG_MESSAGE_ROLE_ASSISTANT && message->status==COG_MESSAGE_COMPLETE &&
@@ -97,6 +109,7 @@ int main(int argc,char **argv)
         CHECK(free_groups);
     }
     CHECK(reject?!native_seen:native_seen);
+    CHECK(!cancel || cancelled);
     if(move) for(unsigned int i=0U;i<4U;++i) {
         cog_store_owner_t before=host->primary_owner;
         cog_worker_id_t target=i%2U==0U?host->workers[0].id:(cog_worker_id_t){0};
