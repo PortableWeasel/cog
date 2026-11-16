@@ -181,6 +181,14 @@ next-ID exhaustion is not repaired by rewriting a pending frame or accepted
 terminal. These storage/deadline requirements are inputs to the architect's
 common constructor bounds, not a separate allocator API in this header.
 
+In particular, do not emit an ordinary RUNNING update at semantic UINT64_MAX:
+acceptance would leave no following terminal slot. A proposed COMPLETED may use
+the last semantic slot only if a fresh resolution wire ID is still reserved,
+because cancellation can reject that delivery and require a drained terminal
+in the same semantic slot. A final drained terminal can use the final reserved
+wire identity; it is retried unchanged, not replaced through CANCEL_CONSUMED.
+This distinction was checked in the final self-review after the three passes.
+
 ### Final consistency and implementation gate
 
 The seven traces above cover both rejection deadlocks, pending local ACK,

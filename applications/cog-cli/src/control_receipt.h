@@ -84,8 +84,9 @@ typedef enum cog_cli_control_receipt_disposition {
  * can describe a different already fixed terminal, not acceptance of this item.
  * TERMINAL_FIXED requires a verified accepted terminal at the reported prefix;
  * it never semantically accepts the pending payload. An older receipt for a
- * different wire item cannot free the current item, regress prefix or undo
- * admitted cancellation. A conflicting duplicate wire ID is a protocol error.
+ * different wire item cannot free the current item, regress prefix, forget a
+ * verified accepted terminal or undo admitted cancellation. A conflicting
+ * duplicate worker wire ID is a protocol error.
  *
  * These receipts never certify a durable parent TOOL save, release its guard,
  * prove descendants fenced, or claim factual child effects were rolled back.
