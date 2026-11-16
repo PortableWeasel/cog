@@ -15,12 +15,20 @@
 static cog_result_t (*control)(cog_cli_app_t *app);
 static bool virtual_clock;
 static uint64_t virtual_now, last_deadline;
+static uint32_t before_retry_ms;
+static bool elapsed_applied;
 cog_result_t __real_cog_cli_service(void *arg,uint64_t now,uint64_t *deadline);
 cog_result_t __wrap_cog_cli_service(void *arg,uint64_t now,uint64_t *deadline);
 cog_result_t __wrap_cog_cli_service(void *arg,uint64_t now,uint64_t *deadline)
 {
     if(control!=NULL){cog_result_t rc=control(arg);if(rc!=COG_OK)return rc;}
     cog_result_t rc=__real_cog_cli_service(arg,virtual_clock?virtual_now:now,deadline);
+    cog_cli_app_t *app=arg;
+    if(rc==COG_OK && virtual_clock && !elapsed_applied && app->delta_ready &&
+        app->delta.kind==COG_PROVIDER_DELTA_FINISH && app->delta.outcome==COG_ERROR_UNAVAILABLE){
+        elapsed_applied=true;virtual_now=app->started_at+before_retry_ms;
+        rc=__real_cog_cli_service(arg,virtual_now,deadline);
+    }
     last_deadline=*deadline;return rc;
 }
 static cog_cli_options_t options(const char *root,const char *store)
@@ -142,7 +150,7 @@ static cog_result_t retry_control(cog_cli_app_t *app)
 {
     if(cog_core_state(app->core)==CLI_BACKOFF){
         if(backoff_visits++==0U)return COG_OK;
-        assert(app->started_at==virtual_now);
+        assert(app->started_at+before_retry_ms==virtual_now);
         assert(app->retry_at==virtual_now+10U);
         assert(last_deadline==app->retry_at);
         virtual_now=app->retry_at;
@@ -151,7 +159,7 @@ static cog_result_t retry_control(cog_cli_app_t *app)
 }
 /* At elapsed zero, a delay exactly equal to either remaining budget is
  * refused. One additional millisecond admits exactly one retry. */
-static void retry_boundary(uint32_t retry_ms,uint32_t turn_ms,bool admitted)
+static void retry_boundary(uint32_t elapsed,uint32_t retry_ms,uint32_t turn_ms,bool admitted)
 {
     const cog_mock_step_t steps[]={
         {COG_MOCK_STEP_ERROR,NULL,COG_ERROR_UNAVAILABLE,429,true,10U,"synthetic"},
@@ -164,7 +172,8 @@ static void retry_boundary(uint32_t retry_ms,uint32_t turn_ms,bool admitted)
     cog_cli_app_t *app=NULL;assert(cog_cli_app_new(&app,&opts)==COG_OK);
     /* The real core drives dispatch; only its explicit app-service clock input
      * is controlled. No wall-clock sleeps or error/retry results are replaced. */
-    virtual_clock=true;backoff_visits=0U;assert(cog_cli_clock(&virtual_now)==COG_OK);control=retry_control;
+    virtual_clock=true;before_retry_ms=elapsed;elapsed_applied=false;backoff_visits=0U;
+    assert(cog_cli_clock(&virtual_now)==COG_OK);control=retry_control;
     assert(cog_cli_app_run(app)==(admitted?COG_OK:COG_ERROR_UNAVAILABLE));
     control=NULL;virtual_clock=false;
     cog_mock_state_t state;assert(cog_mock_provider_state(app->provider,&state)==COG_OK);
@@ -223,6 +232,8 @@ int main(void)
 {
     ask(false);ask(true);semantic_finish(COG_FINISH_REASON_LENGTH);
     semantic_finish(COG_FINISH_REASON_CONTENT_FILTER);
-    retry_boundary(10U,100U,false);retry_boundary(100U,10U,false);
-    retry_boundary(11U,11U,true);cumulative_context(false);cumulative_context(true);return 0;
+    retry_boundary(0U,10U,100U,false);retry_boundary(0U,100U,10U,false);
+    retry_boundary(0U,11U,11U,true);
+    retry_boundary(5U,15U,100U,false);retry_boundary(5U,100U,15U,false);
+    retry_boundary(5U,16U,16U,true);cumulative_context(false);cumulative_context(true);return 0;
 }

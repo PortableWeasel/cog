@@ -28,6 +28,7 @@ cog_result_t __wrap_cog_cli_service(void *arg,uint64_t now,uint64_t *deadline)
     cog_cli_app_t *app=arg;
     if(app->request_serial==2U && !app->active)cog_cli_app_stop(app);
     if(cog_core_state(app->core)==CLI_POLICY && stage==0U && !repeat_prompt){
+        assert(write(input_write,"allow\n",6U)==6);
         fail_error_output();stage=1U;
     }
     if(app->policy_prompt && stage<2U){
@@ -39,7 +40,8 @@ cog_result_t __wrap_cog_cli_service(void *arg,uint64_t now,uint64_t *deadline)
         stage=2U;
         /* This already available explicit decision must not rescue failed
          * delivery. Ordinary approval never authorizes a hidden request. */
-        cog_result_t rc=type_line(app,"allow\n");if(rc!=COG_OK)return rc;
+        if(repeat_prompt){cog_result_t rc=type_line(app,"allow\n");if(rc!=COG_OK)return rc;}
+        else for(unsigned i=0U;i<6U;i++){cog_result_t rc=cog_cli_idle(app,0U);if(rc!=COG_OK)return rc;}
     }
     return __real_cog_cli_service(arg,now,deadline);
 }
