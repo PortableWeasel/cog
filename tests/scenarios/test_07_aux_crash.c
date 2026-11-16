@@ -25,6 +25,20 @@ static bool once(const char *root)
     size_t size=fread(bytes,1U,sizeof(bytes),stream);bool ok=!ferror(stream)&&size==4U&&memcmp(bytes,"once",4U)==0;
     return fclose(stream)==0 && ok;
 }
+static bool durable_unknown(cog_session_t *session)
+{
+    bool ledger=false,result=false;
+    for(cog_session_node_t *n=cog_session_active(session);n!=NULL;n=cog_node_parent(n)) {
+        const cog_message_t *m=cog_node_data(n)->message;if(m==NULL)continue;
+        if(m->role==COG_MESSAGE_ROLE_TOOL && m->tool_call_id!=NULL && strcmp(m->tool_call_id,"delegate-1")==0)
+            result=m->content!=NULL && strstr(m->content,"side_effects_possible=true")!=NULL;
+        for(size_t i=0U;i<m->tool_call_count;++i)if(strcmp(m->tool_calls[i].id,"delegate-1")==0) {
+            cog_tool_execution_state_t state;
+            ledger=cog_session_tool_state(session,n,"delegate-1",&state)==COG_OK && state==COG_TOOL_EXECUTION_INDETERMINATE;
+        }
+    }
+    return ledger && result;
+}
 int main(int argc,char **argv)
 {
     headless_fixture_t f={0};cog_result_t primary=COG_OK,first=COG_OK;
@@ -73,6 +87,10 @@ int main(int argc,char **argv)
     }
     CHECK(killed && actual!=0U && uncertain && reaped && done && first!=COG_OK);
     CHECK(h->workers[0].id.incarnation==owned.incarnation && h->workers[0].id.number==owned.number);
+    cog_session_t *saved=NULL;cog_store_load_report_t report;
+    CHECK(cog_store_load_ex(h->catalog,h->primary_session,COG_STORE_LOAD_INSPECT,&saved,&report)==COG_OK);
+    bool durable=durable_unknown(saved);cog_session_free(saved);
+    CHECK(durable && report.indeterminate_tools>=1U);
     /* The after-effect shell is deliberately finite (two seconds). Worker
        death cannot prove descendants stopped: observe its final marker rather
        than claim rollback, kill a foreign PID or replay its accepted command. */
