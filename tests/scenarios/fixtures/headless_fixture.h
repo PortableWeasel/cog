@@ -66,7 +66,8 @@ cog_result_t headless_fixture_signal_worker(cog_cli_host_runtime_t *host,
  */
 cog_result_t headless_fixture_registry(cog_cli_host_runtime_t *host,const char *path);
 
-/** @brief Request shutdown, drive 10s then exact owned kill and 5s reap drain;
+/** @brief Request shutdown, observe through its unchanged deadline plus1s
+ * (at least10s, at most60s), then exact owned kill and5s reap drain;
  * consume quiescent host and curl, preserving first failure.
  * @param fixture Fixture including partially opened states. Resume explicitly
  * paused workers before calling. Never closes a live runtime after timeout.

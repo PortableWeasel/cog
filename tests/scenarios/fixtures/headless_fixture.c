@@ -134,7 +134,15 @@ cog_result_t headless_fixture_close(headless_fixture_t *f,cog_result_t primary,b
     bool consumed=f->host==NULL;
     if(f->host!=NULL){
         (void)cog_cli_host_runtime_request_shutdown(f->host);
-        bool drained=f->host->done;uint64_t until=headless_fixture_clock_ms()+10000U;
+        bool drained=f->host->done;uint64_t began=headless_fixture_clock_ms();
+        uint64_t until=began+10000U;
+        /* Runtime deadlines govern effects/leases. Observe the existing final
+         * deadline and a bounded terminal/reap slice; never extend that deadline
+         * or kill at its exact boundary before the driver can consume it. */
+        uint64_t terminal=f->host->shutdown_deadline_ms;
+        uint64_t horizon=terminal>UINT64_MAX-1000U?UINT64_MAX:terminal+1000U;
+        if(horizon>began+60000U)horizon=began+60000U;
+        if(horizon>until)until=horizon;
         while(!drained && headless_fixture_clock_ms()<until){
             cog_result_t rc=headless_fixture_step(f->host,&drained);if(primary==COG_OK)primary=rc;
         }
