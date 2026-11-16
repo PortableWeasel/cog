@@ -16,6 +16,38 @@ static int commit(cog_cli_app_t *app, uint64_t *sequence)
     CHECK(cog_cli_execution_commit_view(app,serial,71U,*sequence+1U)==COG_ERROR_PROTOCOL);
     return 0;
 }
+static int resolved_reload(cog_cli_app_t *app)
+{
+    cog_cli_configuration_t *candidate=NULL;
+    const cog_cli_reload_options_t change={.model_id="fixture/reloaded"};
+    CHECK(cog_cli_configuration_reload_new(&candidate,app->configuration,&change,8U)==COG_OK);
+    uint64_t published=123U;
+    CHECK(cog_cli_execution_reload_resolved(app,&candidate,7U,&published)==COG_OK);
+    CHECK(candidate==NULL && published==8U && app->reload_attempts==7U);
+    cog_core_step_info_t info;
+    for (size_t i=0U;i<16U;++i) CHECK(cog_cli_execution_step(app,&info)==COG_OK && !info.done);
+    CHECK(app->configuration_generation==8U && app->future_configuration==NULL);
+    CHECK(strcmp(app->opts.model_id,"fixture/reloaded")==0);
+    CHECK(!app->opts.interactive && !app->opts.show_usage && app->opts.socket_path==NULL);
+    CHECK(cog_cli_configuration_reload_new(&candidate,app->configuration,&change,7U)==COG_OK);
+    published=123U;
+    CHECK(cog_cli_execution_reload_resolved(app,&candidate,6U,&published)==COG_ERROR_INVALID_ARG);
+    CHECK(candidate==NULL && published==123U && app->reload_attempts==7U);
+    CHECK(cog_cli_configuration_reload_new(&candidate,app->configuration,&change,10U)==COG_OK);
+    CHECK(cog_cli_execution_reload_resolved(app,&candidate,8U,&published)==COG_ERROR_INVALID_ARG);
+    CHECK(candidate==NULL && published==123U && app->reload_attempts==8U);
+    cog_cli_options_t different=*cog_cli_configuration_options(app->configuration);
+    different.max_retries++; different.explicit_options|=COG_CLI_OPT_RETRIES;
+    CHECK(cog_cli_configuration_new(&candidate,&different,10U)==COG_OK);
+    CHECK(cog_cli_execution_reload_resolved(app,&candidate,9U,&published)==COG_ERROR_INVALID_ARG);
+    CHECK(candidate==NULL && published==123U && app->configuration_generation==8U);
+    CHECK(cog_cli_configuration_reload_new(&candidate,app->configuration,&change,66U)==COG_OK);
+    CHECK(cog_cli_execution_reload_resolved(app,&candidate,65U,&published)==COG_ERROR_LIMIT);
+    CHECK(candidate==NULL && published==123U && app->reload_attempts==9U);
+    cog_mock_state_t state;
+    CHECK(cog_mock_provider_state(app->provider,&state)==COG_OK && state.send_count==0U);
+    return 0;
+}
 static int drain_while_unpublished(const cog_cli_options_t *options)
 {
     cog_cli_configuration_t *configuration=NULL;
@@ -100,6 +132,7 @@ int main(void)
     }
     CHECK(completed && observed_text && sequence>=4U);
     CHECK(cog_mock_provider_state(app->provider,&state)==COG_OK && state.send_count==1U);
+    CHECK(resolved_reload(app)==0);
     CHECK(cog_cli_app_shutdown(app)==COG_OK);
     bool done=false;
     for (size_t i=0U;i<256U && !done;++i) {
