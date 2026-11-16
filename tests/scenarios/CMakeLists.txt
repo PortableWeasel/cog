@@ -7,16 +7,38 @@
 # -----------------------------------------------------------------------
 
 find_package(Threads REQUIRED)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 function(cog_add_scenario target ctest_name source)
     add_executable(${target} ${source})
     target_enable_warnings(${target})
-    add_test(NAME scenario-${ctest_name}
-        COMMAND ${target}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set(native_mode "")
+    if(target STREQUAL "test_03_subagent_lifecycle")
+        set(native_mode success)
+    elseif(target STREQUAL "test_07_aux_crash")
+        set(native_mode crash-before)
+    elseif(target STREQUAL "test_09_subagent_messaging")
+        set(native_mode messaging)
+    elseif(target STREQUAL "test_10_fan_out_fan_in")
+        set(native_mode fanout)
+    endif()
+    if(native_mode)
+        target_link_libraries(${target} PRIVATE cog-headless-fixture)
+        add_dependencies(${target} cog-cli)
+        add_test(NAME scenario-${ctest_name} COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/run_agent_scenarios.py
+            $<TARGET_FILE:${target}> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} ${native_mode})
+        set(native_timeout 90)
+    else()
+        add_test(NAME scenario-${ctest_name}
+            COMMAND ${target}
+            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+        set(native_timeout 30)
+    endif()
     set_tests_properties(scenario-${ctest_name} PROPERTIES
         LABELS "scenario"
-        TIMEOUT 30)
+        TIMEOUT ${native_timeout}
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 endfunction()
 
 set(COG_CLI_SCENARIO_TESTS
@@ -100,3 +122,15 @@ foreach(name IN ITEMS aux_crash fan_out_fan_in)
         COG_AUX_CORE_BIN="$<TARGET_FILE:aux_core>")
     add_dependencies(test_component_${name} aux_core)
 endforeach()
+
+function(cog_add_native_scenario_mode target mode)
+    add_test(NAME scenario-${target}-${mode} COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/run_agent_scenarios.py
+        $<TARGET_FILE:${target}> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} ${mode})
+    set_tests_properties(scenario-${target}-${mode} PROPERTIES
+        LABELS "scenario" TIMEOUT 90 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+endfunction()
+cog_add_native_scenario_mode(test_03_subagent_lifecycle cancel)
+cog_add_native_scenario_mode(test_07_aux_crash crash-after)
+cog_add_native_scenario_mode(test_10_fan_out_fan_in fanout-cancel)
+cog_add_native_scenario_mode(test_10_fan_out_fan_in fanout-limit)
