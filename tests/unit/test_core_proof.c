@@ -86,7 +86,7 @@ static cog_result_t service(void *arg,uint64_t now,uint64_t *deadline)
 }
 static cog_ipc_endpoint_t *listen_new(char path[108])
 {
-    (void)snprintf(path,108U,"/tmp/cog-core-proof-XXXXXX");
+    (void)snprintf(path,108U,"cog-core-proof-XXXXXX");
     int tmp=mkstemp(path);assert(tmp>=0 && close(tmp)==0 && unlink(path)==0);
     cog_ipc_endpoint_config_t cfg={0};cfg.max_frame_bytes=16U;cfg.receive_frames=2U;cfg.send_frames=2U;
     cog_ipc_endpoint_t *ep;assert(cog_ipc_endpoint_new_ex(&ep,&cfg)==COG_OK);
