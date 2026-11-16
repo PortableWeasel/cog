@@ -71,6 +71,7 @@ struct cog_cli_host_runtime {
     cli_host_reservations_t bounds;
     cog_result_t primary;
     bool begun, done, shutdown, in_step, admission_frozen, coordinator_failed;
+    bool control_drive_ended; /**< Core driver retired; independent drain may remain. */
     uint64_t now_ms, shutdown_deadline_ms, runtime_incarnation;
     uint64_t next_client_lease, next_group, next_reservation, next_nonce;
     uint64_t request_credit_used, request_credit_held;
@@ -112,8 +113,10 @@ struct cog_cli_worker_host {
     cog_ipc_endpoint_t *parent;
     cog_ipc_peer_info_t parent_proof;
     bool authenticated, startup_ready, in_step, shutdown, done;
+    bool stepped; /**< First valid step began; distinguishes never-stepped close. */
     cog_result_t primary;
     uint64_t runtime_incarnation, now_ms, shutdown_deadline_ms;
+    uint64_t next_heartbeat_ms, startup_deadline_ms; /**< Independent native timers. */
     cog_agent_id_t opened_agent_high_watermark;
     size_t round_robin, executor_capacity;
     cli_executor_slot_t *executors;
