@@ -97,6 +97,55 @@ cog_result_t cog_cli_execution_step(cog_cli_app_t *app, cog_core_step_info_t *in
  */
 cog_result_t cog_cli_execution_end(cog_cli_app_t *app);
 
+/**
+ * @brief Freeze a complete idle source and save its guarded exact checkpoint.
+ * @param[in,out] app Ordinary active owner, no current drive callback recursion.
+ * @param[in] expected Exact admitted current owner.
+ * @param[out] checkpoint New nonzero checkpoint, unchanged on failure.
+ * @return OK; NULL_PTR; AGAIN unsafe active/queued/pending state; INVALID_STATE
+ * frozen/recovery/staged/stale owner; LIMIT; IO; INDETERMINATE/store error.
+ * Host first checks no child attempts/results/intents/message/policy borrows.
+ * App checks no provider turn, retained delta/output/event, execution, STARTED/
+ * uncertain ledger, pending result/assistant, input, future reload/notice or
+ * incomplete path. No active-handle transfer or cancellation disguised as idle.
+ * Freeze input before guarded checkpoint_save. OK retains original guard and
+ * immutable checkpoint until release; exact duplicate request returns same
+ * checkpoint, never saves again. Any save error freezes without guessing its
+ * commit outcome. Source may not continue because a route still names it.
+ */
+cog_result_t cog_cli_execution_quiesce(cog_cli_app_t *app,
+    cog_store_owner_t expected, cog_store_checkpoint_t *checkpoint);
+
+/** @brief Release only the quiesced source's exact guard after target PREPARED.
+ * @param[in,out] app Frozen source. @param[in] checkpoint Retained exact token.
+ * @return OK; NULL_PTR; INVALID_STATE correlation/guard still borrowed. OK
+ * consumes and detaches the guard; a refusal retains it. Source stays frozen
+ * either way. A later CAS error cannot resurrect the released epoch. */
+cog_result_t cog_cli_execution_release_source(cog_cli_app_t *app,
+    cog_store_checkpoint_t checkpoint);
+
+/** @brief Acquire next guard for a PREPARED target after exact committed CAS.
+ * @param[in,out] app STAGED exact-checkpoint app; not driven/published.
+ * @param[in] next Retained expected next owner. @param[in] checkpoint Exact token.
+ * @return OK; NULL_PTR; INVALID_STATE tuple/checkpoint/stage mismatch; G error.
+ * Verify owner_read, acquire normal guard and remain STAGED. No save, input,
+ * provider send or tool start. OK permits READY, never ACTIVATE by itself.
+ */
+cog_result_t cog_cli_execution_stage_guard(cog_cli_app_t *app,
+    cog_store_owner_t next, cog_store_checkpoint_t checkpoint);
+
+/** @brief Activate guarded target only after trusted exact ACTIVATE correlation.
+ * @param[in,out] app Guarded STAGED app. @param[in] next Exact retained owner.
+ * @param[in] checkpoint Exact loaded/published token.
+ * @return OK (exact duplicate idempotent, no new input); NULL_PTR; INVALID_STATE.
+ * Host must already have checked authenticated coordinator role/incarnation,
+ * phase identity and successful exact publish_owner; a decoded tuple is not
+ * proof. Activation changes only admission state, no save/model/tool/input replay.
+ * Startup prompt/queue remain consumed; fresh explicit input is required.
+ */
+cog_result_t cog_cli_execution_stage_activate(cog_cli_app_t *app,
+    cog_store_owner_t next, cog_store_checkpoint_t checkpoint);
+
 #ifdef __cplusplus
 }
 #endif

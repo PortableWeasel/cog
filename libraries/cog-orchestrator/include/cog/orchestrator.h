@@ -477,7 +477,9 @@ cog_result_t cog_orchestrator_request_shutdown(cog_orchestrator_t *orch,
  * @brief Publish an advisory route only for the durably admitted active owner.
  * @param[in,out] orch Owner with borrowed shared store configured.
  * @param[in] session_id Copied UTF-8 ID <=127 bytes.
- * @param[in] peer_id Healthy authenticated destination owning its live guard.
+ * @param[in] peer_id Healthy authenticated destination owning its live guard;
+ * zero explicitly denotes the trusted local coordinator executor, never a
+ * remote/unknown peer. The app must validate the local guarded READY directly.
  * @param[in] owner Durable process-incarnation tuple, not socket identity.
  * @param[in] checkpoint Exact validated shared-store generation loaded by target.
  * @return OK (identical publication idempotent); NULL_PTR; LIMIT reserved routes;
@@ -524,17 +526,24 @@ typedef enum cog_handoff_kind {
     COG_HANDOFF_PREPARED,
     COG_HANDOFF_COMMIT,
     COG_HANDOFF_ABORT,
-    COG_HANDOFF_FAILED
+    COG_HANDOFF_FAILED,
+    COG_HANDOFF_CHECKPOINTED, /**< Source froze and saved exact generation. */
+    COG_HANDOFF_READY, /**< Target owns committed guard, still staged. */
+    COG_HANDOFF_ACTIVATE /**< Coordinator published route; permit fresh input. */
 } cog_handoff_kind_t;
 /** @brief Every ACK is correlated to exact old/new owner and checkpoint tuples. */
 typedef struct cog_handoff_message {
     cog_handoff_kind_t kind;
     const char *session_id; /**< UTF-8 <=127 bytes; exact configured shared store. */
-    cog_peer_id_t source_peer;
-    cog_peer_id_t target_peer;
+    cog_peer_id_t source_peer; /**< Actual worker peer or trusted local0. */
+    cog_peer_id_t target_peer; /**< Actual worker peer or trusted local0;
+       source/target differ and cannot both be0. No live/active-child handoff. */
     cog_store_owner_t expected;
     cog_store_owner_t next;
-    cog_store_checkpoint_t checkpoint;
+    cog_store_checkpoint_t checkpoint; /**< QUIESCE requires0 (not saved yet).
+       CHECKPOINTED/PREPARED/COMMIT/READY/ACTIVATE require exact nonzero source
+       checkpoint. ABORT/FAILED echo the current phase:0 only before source
+       checkpoint is known. No invented sentinel selects a latest generation. */
 } cog_handoff_message_t;
 /**
  * @brief Encode CGH1 correlation metadata, never a live session/provider/tool.
@@ -545,8 +554,20 @@ typedef struct cog_handoff_message {
  * expected epoch/instance, next epoch/instance, checkpoint generation as u64
  * big-endian in that order. Shared store authority is fixed/verified at peer
  * startup; no path or remote transfer is selected by an untrusted envelope.
- * PREPARED/COMMIT echo exact tuples. Receiving COMMIT is never an execution grant:
- * validate exact checkpoint and acquire the committed owner guard first.
+ * Expected/next owner tuples are nonzero with strictly increasing epoch. A
+ * coordinator admits only one handoff per session/next tuple; IDs never reused.
+ * QUIESCE carries checkpoint0 because guarded source save creates a fresh exact
+ * generation. CHECKPOINTED pins that generation; every later phase echoes it.
+ * Source remains guarded until target PREPARED; then source releases guard and
+ * coordinator CASes expected->next at that EXACT checkpoint. COMMIT permits
+ * target acquire only. READY proves guarded/still-staged target; publish_owner
+ * precedes ACTIVATE, which alone permits new work. Retries are exact phase/tuple
+ * duplicates, not a second save/CAS. No route is an execution lease.
+ * Pre-CAS abort can resume source ONLY if its original guard remains owned and
+ * durable tuple/checkpoint still match; after guard release, reacquire requires
+ * an explicit fresh owner epoch. After CAS/uncertain commit, never restore old
+ * epoch/thaw source. Failed target remains frozen; explicit recovery/reclaim
+ * advances to another fresh epoch under the same checkpoint/guard rules.
  */
 cog_result_t cog_orchestrator_handoff_encode(const cog_handoff_message_t *message,
                                              void *output, size_t capacity,

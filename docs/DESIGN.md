@@ -755,6 +755,12 @@ Resolved executor admission separates STAGED preparation from owner CAS/guard/
 activation and suppresses startup prompt/queue replay. A published runtime owns
 all native child lifetimes: construction never forks, and checked cooperative
 drain precedes consuming close. These remain pass1 declarations, not O behavior.
+Handoff separates QUIESCE from CHECKPOINTED because the guarded source save
+creates its exact immutable token. PREPARED precedes source guard release and
+exact CAS; target guarded READY precedes route publication and ACTIVATE. Trusted
+local peer0 participates explicitly; old epochs/startup input cannot be restored
+on failure. The gated O ownership matrix keeps shared app glue serial while
+IPC/core/pure codecs and later leaf modules use disjoint source locks.
 
 Stage 6 — Headers first. Design all public APIs as headers before any
 implementation. Three iterations:

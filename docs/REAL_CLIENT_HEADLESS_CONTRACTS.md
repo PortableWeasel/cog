@@ -284,3 +284,18 @@ Mandatory worker transition errors remain visible independently of return-code
 precedence: ownership_lost is retained in control/list metadata, but an earlier
 primary error wins over later IO. Event duplicate ACK memory is exactly one last
 ACK per class (two scalar IDs), not an unbounded history or global-last ambiguity.
+
+### Staged handoff phase inventory
+
+The source's guarded save creates a new token, so QUIESCE carries checkpoint0;
+CHECKPOINTED supplies the exact nonzero token. Target preparation loads only that
+token while source retains its guard. PREPARED permits source guard release;
+coordinator CASes exact expected->next at that token. COMMIT permits target guard
+acquire, READY reports guarded-but-staged state, exact route publication precedes
+ACTIVATE. No phase sends old startup prompt/queue. A duplicate phase cannot cause
+a second checkpoint save/CAS or new input. Pre-CAS abort may unfreeze only a source
+that still owns the original valid guard; after release it needs a fresh epoch.
+Post-CAS/uncertain failures stay frozen, never restore old epoch. Local peer0 is
+explicitly supported by trusted coordinator admission; both endpoints0 is invalid.
+The [gated O scaffold](REAL_CLIENT_HEADLESS_IMPLEMENTATION.md) names source locks,
+independent review oracles and conflict-safe dependency groups.
