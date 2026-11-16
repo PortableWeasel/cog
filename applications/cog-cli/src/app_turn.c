@@ -615,6 +615,11 @@ cog_result_t cli_turn_drain_one(cog_cli_app_t *app, bool *done)
 {
     if (app == NULL || done == NULL) return COG_ERROR_NULL_PTR;
     *done = false; app->observation_draining = true; app->observation_retry = false;
+    if (!app->active && app->execution == NULL && !app->provider_active &&
+        !app->assistant_pending && !app->terminal_result_pending) {
+        *done = true; app->observation_draining = false;
+        return cog_cli_observation_check(app, COG_OK);
+    }
     app->shutdown = true; app->cancelling = true; app->resuming_policy = false;
     cog_result_t rc = cog_cli_clock(&app->now);
     if (rc != COG_OK) return rc;
@@ -645,12 +650,9 @@ cog_result_t cli_turn_drain_one(cog_cli_app_t *app, bool *done)
         return app->assistant_error;
     }
     if (app->terminal_result_pending) {
-        if (app->execution != NULL && app->tool_done) {
-            rc = cog_toolkit_execution_free(app->execution);
-            if (rc != COG_OK) return rc;
-            app->execution = NULL;
-        }
-        app->active = false; *done = app->execution == NULL;
+        /* Preserve the completed handle and its guard borrow as evidence until
+           checked app disposal; failed durable save must remain inspectable. */
+        app->active = false; *done = app->execution == NULL || app->tool_done;
         return app->tool_result_error;
     }
     if (app->execution != NULL) {
