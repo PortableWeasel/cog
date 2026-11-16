@@ -271,6 +271,19 @@ static cog_result_t envelope_send(cog_cli_worker_host_t *worker,const cli_host_b
     cog_ipc_message_t frame={bytes->data,bytes->length,bytes->capacity};
     return cog_ipc_endpoint_send(worker->parent,&frame);
 }
+/* Eligibility belongs to the retained wire, never to an operation deadline. */
+static cog_result_t retained_send(cog_cli_worker_host_t *worker,const cli_host_bytes_t *bytes,
+    uint64_t wire,uint64_t *copied,uint64_t *due,bool one_way)
+{
+    if(wire==0U) return COG_ERROR_INVALID_STATE;
+    if(*copied==wire && (one_way || worker->now_ms<*due)) return COG_ERROR_AGAIN;
+    if(!one_way && worker->now_ms>UINT64_MAX-CLI_CONTROL_RETRY_MS) return COG_ERROR_LIMIT;
+    cog_result_t rc=envelope_send(worker,bytes);
+    if(rc==COG_OK) {
+        *copied=wire;*due=one_way?0U:worker->now_ms+CLI_CONTROL_RETRY_MS;
+    }
+    return rc;
+}
 static cog_cli_control_message_t reply_envelope(cog_cli_worker_host_t *worker,
     const cog_cli_control_message_t *request,cog_cli_control_kind_t kind,uint64_t wire,
     const void *payload,size_t length)
@@ -695,7 +708,7 @@ static cog_result_t queue_update(cog_cli_worker_host_t *worker,cli_executor_slot
         worker->runtime_incarnation,worker->fixed.worker.incarnation,wire,0U,worker->fixed.worker,
         slot->owner_peer,slot->agent,slot->attempt,slot->session,slot->update.data,slot->update.length};
     rc=cog_cli_control_encode(&message,lane->pending.data,lane->pending.capacity,&lane->pending.length);
-    if(rc==COG_OK) { lane->pending_valid=true;slot->pending_update_wire=wire;slot->pending_update_sequence=update.sequence; }
+    if(rc==COG_OK) { lane->pending_valid=true;lane->pending_wire=wire;slot->pending_update_wire=wire;slot->pending_update_sequence=update.sequence; }
     return rc;
 }
 static cog_result_t native_frame(cog_cli_worker_host_t *worker,size_t index,cog_worker_control_kind_t kind,
@@ -1232,7 +1245,7 @@ static cog_result_t confirm_terminal(cog_cli_worker_host_t *worker,cli_executor_
         lane->next_wire=wire==UINT64_MAX?0U:wire+1U;
         lane->pending_wire=wire;lane->pending_valid=true;
     }
-    return envelope_send(worker,&lane->pending);
+    return retained_send(worker,&lane->pending,lane->pending_wire,&lane->copied_wire,&lane->next_send_ms,true);
 }
 static void retire_attempt(cli_executor_slot_t *slot)
 {
@@ -1261,8 +1274,9 @@ static void retire_attempt(cli_executor_slot_t *slot)
 static cog_result_t send_profile_ack(cog_cli_worker_host_t *worker,cli_secret_exchange_t *exchange)
 {
     if(!exchange->pending) return COG_ERROR_AGAIN;
-    cog_ipc_message_t frame={exchange->body,exchange->body_length,exchange->body_capacity};
-    cog_result_t rc=cog_ipc_endpoint_send(worker->parent,&frame);
+    cli_host_bytes_t frame={exchange->body,exchange->body_capacity,exchange->body_length};
+    cog_result_t rc=retained_send(worker,&frame,exchange->replied_wire,
+        &exchange->copied_wire,&exchange->next_send_ms,false);
     if(rc==COG_OK) { exchange->pending=false;exchange->acknowledged=true; }
     return rc;
 }
@@ -1288,12 +1302,14 @@ static void send_application_turn(cog_cli_worker_host_t *worker,cli_executor_slo
         else (void)retain_error(worker,rc);
         cli_control_lane_t *in=&slot->inbound[lane_index],*out=&slot->outbound[lane_index];
         if(in->pending_valid && in->final_reply.length!=0U) {
-            rc=envelope_send(worker,&in->final_reply);
+            rc=retained_send(worker,&in->final_reply,in->final_reply_wire,
+                &in->copied_wire,&in->next_send_ms,false);
             if(rc==COG_OK) { in->pending_valid=false;*progress=true; } else (void)retain_error(worker,rc);
         }
         if(out->pending_valid && out->pending.length!=0U &&
            !(lane_index==COG_CLI_LANE_UPDATE-1U && slot->terminal_acked)) {
-            rc=envelope_send(worker,&out->pending);
+            rc=retained_send(worker,&out->pending,out->pending_wire,
+                &out->copied_wire,&out->next_send_ms,lane_index==COG_CLI_LANE_CANCEL-1U);
             if(rc==COG_OK) {
                 *progress=true;
                 if(lane_index==COG_CLI_LANE_CANCEL-1U) out->pending_valid=false;
@@ -1420,6 +1436,23 @@ cog_result_t cog_cli_worker_host_step(cog_cli_worker_host_t *worker,cog_cli_host
     if(worker->shutdown && worker->shutdown_deadline_ms<step.next_deadline_ms) step.next_deadline_ms=worker->shutdown_deadline_ms;
     else if(!worker->startup_ready && worker->startup_deadline_ms<step.next_deadline_ms) step.next_deadline_ms=worker->startup_deadline_ms;
     if(!worker->shutdown && worker->next_heartbeat_ms<step.next_deadline_ms) step.next_deadline_ms=worker->next_heartbeat_ms;
+    if(worker->startup_profile.pending && worker->startup_profile.next_send_ms>worker->now_ms &&
+       worker->startup_profile.next_send_ms<step.next_deadline_ms)
+        step.next_deadline_ms=worker->startup_profile.next_send_ms;
+    for(size_t i=0U;i<worker->executor_capacity;++i) {
+        cli_executor_slot_t *pending=&worker->executors[i];
+        if(pending->profile.pending && pending->profile.next_send_ms>worker->now_ms &&
+           pending->profile.next_send_ms<step.next_deadline_ms) step.next_deadline_ms=pending->profile.next_send_ms;
+        for(size_t j=0U;j<CLI_HOST_LANES;++j) for(size_t direction=0U;direction<2U;++direction) {
+            cli_control_lane_t *stream=direction==0U?&pending->inbound[j]:&pending->outbound[j];
+            /* Handle-owned requests also use outbound eligibility; future
+               clocks are safe conservative wakes even after receipt retirement. */
+            uint64_t due=stream->next_send_ms;
+            if(stream->pending_valid && due<=worker->now_ms) due=worker->now_ms;
+            if((stream->pending_valid || due>worker->now_ms) && due<step.next_deadline_ms)
+                step.next_deadline_ms=due;
+        }
+    }
     if(progress || step.next_deadline_ms<=worker->now_ms) step.max_wait_ms=0U;
     step.done=worker->done;*info=step;worker->in_step=false;
     return worker->primary!=COG_OK?worker->primary:progress?COG_OK:COG_ERROR_AGAIN;
@@ -1613,7 +1646,9 @@ cog_result_t cli_worker_delegation_step(cog_cli_worker_host_t *worker,cli_delega
         if(rc!=COG_OK) return rc;
         h->request_wire=wire;
     }
-    cog_result_t rc=envelope_send(worker,&h->pending);
+    cli_control_lane_t *stream=&slot->outbound[(size_t)lane-1U];
+    cog_result_t rc=retained_send(worker,&h->pending,h->request_wire,
+        &stream->copied_wire,&stream->next_send_ms,save);
     if(rc==COG_OK && save) { h->result_saved=true;h->pending.length=0U;h->reply.length=0U; }
     return rc;
 }

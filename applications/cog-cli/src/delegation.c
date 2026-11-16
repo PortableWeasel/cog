@@ -332,7 +332,18 @@ static cog_result_t tool_poll(void *opaque,uint64_t now,bool *done,uint64_t *dea
             else { (void)tool_cancel(h,now);return rc; }
         }
     }
-    *done=h->done;*deadline=h->done?UINT64_MAX:h->deadline_ms;return COG_OK;
+    *done=h->done;*deadline=h->done?UINT64_MAX:h->deadline_ms;
+    if(!h->done && h->pending.length!=0U && h->context->worker!=NULL) {
+        cog_cli_worker_host_t *worker=h->context->worker;
+        size_t lane=h->operation==CLI_DELEGATE?COG_CLI_LANE_DELEGATE-1U:COG_CLI_LANE_MAILBOX-1U;
+        for(size_t i=0U;i<worker->executor_capacity;++i) if(worker->executors[i].app==h->context->app) {
+            cli_control_lane_t *stream=&worker->executors[i].outbound[lane];
+            if(stream->copied_wire==h->request_wire && stream->next_send_ms>now &&
+               stream->next_send_ms<*deadline) *deadline=stream->next_send_ms;
+            break;
+        }
+    }
+    return COG_OK;
 }
 static cog_result_t tool_result(const void *opaque,cog_tool_output_t *result)
 {

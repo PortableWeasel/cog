@@ -111,10 +111,15 @@ def main():
         finally:
             release_native.set()
             if process is not None:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                # Only signal our deliberately isolated session while its
+                # leader remains an owned unreaped child. Never reuse a reaped
+                # leader's numeric PGID or allow a default/zero target.
+                if process.returncode is None:
+                    assert process.pid > 0
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                 process.wait()
             server.shutdown()
             server.server_close()
