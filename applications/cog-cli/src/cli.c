@@ -291,6 +291,8 @@ static cog_result_t construct(cog_cli_app_t **out, const cog_cli_options_t *inpu
     rc = cog_cli_configuration_bind(app->configuration, &cog_openrouter_provider_vtable,
         &cog_mock_provider_vtable, &app->script, &limits);
     if (rc != COG_OK) goto fail;
+    if (admission != NULL && cog_cli_configuration_endpoint(app->configuration)->generation !=
+        admission->configuration_generation) { rc = COG_ERROR_INVALID_ARG; goto fail; }
     if (app->opts.mock_deltas != NULL)
         rc = cog_mock_provider_new_deltas(app->opts.mock_deltas, app->opts.mock_delta_count, &app->provider);
     else rc = cog_provider_connect(cog_cli_configuration_endpoint(app->configuration), &app->provider);
