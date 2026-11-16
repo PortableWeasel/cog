@@ -81,6 +81,7 @@ static cog_orchestrator_t *fx_new(char *path,size_t capacity,bool replace)
     cog_orchestrator_config_t cfg={0};cfg.socket_path=path;cfg.max_aux_cores=8;
     cfg.health_interval_ms=200;cfg.unhealthy_threshold=3;cfg.default_core_capacity=8;
     cfg.shutdown_timeout_ms=200;cfg.auto_replace=replace;
+    cfg.max_frame_bytes=256;cfg.message_bytes=4096;cfg.message_events=8;
     cog_orchestrator_t *o=NULL;FX_CHECK(cog_orchestrator_new(&o,&cfg)==COG_OK);return o;
 }
 static cog_worker_id_t fx_spawn(cog_orchestrator_t *o)
@@ -137,11 +138,11 @@ static void test_repeated_spawn_kill(void)
     for(size_t i=0;i<5;++i) {
         cog_worker_id_t id=fx_spawn(o);pids[i]=(pid_t)fx_info(o,id).pid;
         FX_CHECK(cog_orchestrator_kill(o,id)==COG_OK);FX_CHECK(fx_wait(o,id,true));
-        FX_CHECK(kill(pids[i],0)==-1);fx_ack(o);
+        FX_CHECK(pids[i]>0&&kill(pids[i],0)==-1);fx_ack(o);
         FX_CHECK(cog_orchestrator_release_worker(o,id)==COG_OK);
     }
     fx_close(o,path,COG_OK);
-    for(size_t i=0;i<5;++i) FX_CHECK(kill(pids[i],0)==-1);
+    for(size_t i=0;i<5;++i) FX_CHECK(pids[i]>0&&kill(pids[i],0)==-1);
 }
 static void test_auto_replace_repeated(void)
 {
@@ -149,9 +150,9 @@ static void test_auto_replace_repeated(void)
     cog_worker_id_t id=fx_spawn(o);
     for(size_t i=0;i<3;++i) {
         cog_worker_id_t old=id;pid_t pid=(pid_t)fx_info(o,id).pid;
-        FX_CHECK(kill(pid,SIGKILL)==0);FX_CHECK(fx_wait(o,old,true));
+        FX_CHECK(pid>0&&fx_same(fx_info(o,id).worker_id,id)&&kill(pid,SIGKILL)==0);FX_CHECK(fx_wait(o,old,true));
         FX_CHECK(fx_info(o,old).reaped);fx_ack(o);id=fx_replacement(o,old);
-        FX_CHECK(!fx_same(old,id)&&kill(pid,0)==-1);
+        FX_CHECK(!fx_same(old,id)&&pid>0&&kill(pid,0)==-1);
     }
     fx_close(o,path,COG_OK);
 }
@@ -177,11 +178,11 @@ static void test_auto_replace_ackhang(void)
     FX_CHECK(cog_orchestrator_stop(o,id)==COG_OK);
     uint64_t end=fx_now()+50;
     while(fx_now()<end) { (void)fx_service(o);fx_pause(); }
-    FX_CHECK(fx_same(fx_info(o,id).worker_id,id)&&kill(pid,0)==0);
+    FX_CHECK(fx_same(fx_info(o,id).worker_id,id)&&pid>0&&kill(pid,0)==0);
     FX_CHECK(fx_wait(o,id,true));fx_ack(o);
     for(size_t i=0;i<20;++i) { (void)fx_service(o);fx_pause(); }
     FX_CHECK(fx_same(fx_info(o,id).worker_id,id)); /* intentional stop is not replay/replacement */
-    fx_close(o,path,COG_OK);FX_CHECK(kill(pid,0)==-1);
+    fx_close(o,path,COG_OK);FX_CHECK(pid>0&&kill(pid,0)==-1);
 }
 static void test_auto_replace_real_crash(void)
 {

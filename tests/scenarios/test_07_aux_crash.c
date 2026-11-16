@@ -156,6 +156,7 @@ static cog_orchestrator_t *fx_new(char *path,size_t capacity,bool replace)
     cog_orchestrator_config_t cfg={0};cfg.socket_path=path;cfg.max_aux_cores=8;
     cfg.health_interval_ms=200;cfg.unhealthy_threshold=3;cfg.default_core_capacity=8;
     cfg.shutdown_timeout_ms=200;cfg.auto_replace=replace;
+    cfg.max_frame_bytes=256;cfg.message_bytes=4096;cfg.message_events=8;
     cog_orchestrator_t *o=NULL;FX_CHECK(cog_orchestrator_new(&o,&cfg)==COG_OK);return o;
 }
 static cog_worker_id_t fx_spawn(cog_orchestrator_t *o)
@@ -210,7 +211,7 @@ static void scenario_auto_replace_after_reap(void)
 {
     char path[96];cog_orchestrator_t *o=fx_new(path,sizeof(path),true);
     cog_worker_id_t old=fx_spawn(o);cog_core_info_t before=fx_info(o,old);
-    CHECK(kill((pid_t)before.pid,SIGKILL)==0);
+    CHECK(before.pid>0&&fx_same(before.worker_id,old)&&kill((pid_t)before.pid,SIGKILL)==0);
     /* No service means no reap, replacement or mutation of native identity. */
     cog_core_info_t after=fx_info(o,old);CHECK(!after.reaped&&after.pid==before.pid&&after.peer_id==before.peer_id);
     CHECK(fx_wait(o,old,true));CHECK(fx_info(o,old).reaped);
