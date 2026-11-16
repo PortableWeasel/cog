@@ -80,6 +80,7 @@ static void dispose(cog_cli_app_t *app, cog_provider_t **provider,
     cog_cli_configuration_t *owned_configuration = *configuration;
     *provider = NULL; *configuration = NULL;
     cog_result_t rc = cog_provider_disconnect(owned_provider);
+    (void)cog_cli_observation_check(app, rc);
     /* Disconnect consumes even on cleanup error and releases all config borrows. */
     cog_cli_configuration_free(owned_configuration);
     cleanup_error(app, rc);
@@ -109,8 +110,9 @@ static cog_result_t candidate_provider(cog_cli_app_t *app, cog_cli_configuration
         &cog_mock_provider_vtable, &app->script, &limits);
     if (rc != COG_OK) return rc;
     if (app->opts.mock_deltas != NULL)
-        return cog_mock_provider_new_deltas(app->opts.mock_deltas, app->opts.mock_delta_count, provider);
-    return cog_provider_connect(cog_cli_configuration_endpoint(configuration), provider);
+        rc = cog_mock_provider_new_deltas(app->opts.mock_deltas, app->opts.mock_delta_count, provider);
+    else rc = cog_provider_connect(cog_cli_configuration_endpoint(configuration), provider);
+    return cog_cli_observation_check(app, rc);
 }
 static cog_result_t preflight(cog_cli_app_t *app, cog_cli_configuration_t *configuration,
     cog_provider_t *provider, uint64_t generation)
@@ -135,8 +137,9 @@ static cog_result_t preflight(cog_cli_app_t *app, cog_cli_configuration_t *confi
         .message_count = count, .stream = true, .max_tokens = options->max_output_tokens,
         .configuration_generation = generation};
     if (app->workspace != NULL) { request.tools_json = app->tools_json; request.tools_json_len = app->tools_json_len; }
-    return cog_provider_preflight(provider, &request, missing != 0U ?
+    rc = cog_provider_preflight(provider, &request, missing != 0U ?
         COG_PROVIDER_PREFLIGHT_PENDING_TOOLS : COG_PROVIDER_PREFLIGHT_COMPLETE);
+    return cog_cli_observation_check(app, rc);
 }
 cog_result_t cog_cli_app_reload(cog_cli_app_t *app,
     const cog_cli_reload_options_t *replacement, uint64_t *out_generation)
@@ -151,6 +154,7 @@ cog_result_t cog_cli_app_reload(cog_cli_app_t *app,
         atomic_load_explicit(&app->stop_requested, memory_order_acquire)) return COG_ERROR_INVALID_STATE;
     if (app->recovery || app->assistant_pending || app->terminal_result_pending || app->reload_cleanup_error != COG_OK)
         return COG_ERROR_INDETERMINATE;
+    if (cog_cli_observation_check(app, COG_OK) != COG_OK) return COG_ERROR_INDETERMINATE;
     if (app->future_configuration != NULL || app->retiring_configuration != NULL ||
         app->reload_notice_pending || app->reload_notice_queued) return COG_ERROR_AGAIN;
     if (app->reload_attempts == CLI_RELOAD_ATTEMPTS) return COG_ERROR_LIMIT;
@@ -179,6 +183,8 @@ cog_result_t cog_cli_reload_activate(cog_cli_app_t *app)
 {
     if (app == NULL) return COG_ERROR_NULL_PTR;
     if (app->future_configuration == NULL) return COG_OK;
+    cog_result_t observed = cog_cli_observation_check(app, COG_OK);
+    if (observed != COG_OK) return observed;
     if (app->stdin_eof) {
         bool admitted = false;
         for (size_t i = 0U; i < CLI_INPUTS; i++)
@@ -197,7 +203,7 @@ cog_result_t cog_cli_reload_activate(cog_cli_app_t *app)
     app->opts = *cog_cli_configuration_options(app->configuration);
     (void)cog_core_set_provider(app->core, app->provider); /* Valid core: pointer-only, infallible. */
     dispose(app, &app->retiring_provider, &app->retiring_configuration);
-    return app->reload_cleanup_error;
+    return cog_cli_observation_check(app, app->reload_cleanup_error);
 }
 cog_result_t cog_cli_reload_service(cog_cli_app_t *app)
 {
@@ -229,6 +235,7 @@ cog_result_t cog_cli_reload_command(cog_cli_app_t *app, const char *text, bool *
     uint64_t generation = 0U;
     cog_result_t rc = cog_cli_app_reload(app, &options, &generation);
     if (app->reload_cleanup_error != COG_OK) return app->reload_cleanup_error;
+    if (app->observation_error != COG_OK) return app->observation_error;
     int written = rc == COG_OK ? fprintf(stderr, "cog-cli: configuration published generation=%" PRIu64 "\n", generation) :
         fprintf(stderr, "cog-cli: reload refused: %s\n", cog_cli_result_name(rc));
     return written < 0 || fflush(stderr) != 0 ? COG_ERROR_IO : COG_OK;

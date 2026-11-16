@@ -1,5 +1,6 @@
 /** @file test_app_memory.c @brief Constructor OOM rollback and reserved text run. */
 #include "cog_cli/cli.h"
+#include "observation.h"
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,6 +48,23 @@ static void allocation_oracle_control(void)
 int main(void)
 {
     allocation_oracle_control();
+    cog_cli_observer_t *observer = NULL;
+    REQUIRE(cog_cli_observer_new(NULL, 1U) == COG_ERROR_NULL_PTR);
+    REQUIRE(cog_cli_observer_new(&observer, 0U) == COG_ERROR_INVALID_ARG && observer == NULL);
+    REQUIRE(cog_cli_observer_new(&observer, SIZE_MAX) == COG_ERROR_LIMIT && observer == NULL);
+    bool bridge_complete = false;
+    for (size_t i = 1U; i < 8U; i++) {
+        allocation = 0U; fail_at = i; inject = true;
+        cog_result_t result = cog_cli_observer_new(&observer, 4U);
+        inject = false;
+        if (result == COG_OK) {
+            REQUIRE(allocation < i);
+            cog_cli_observer_free(observer); observer = NULL;
+            bridge_complete = true; break;
+        }
+        REQUIRE(result == COG_ERROR_NOMEM && observer == NULL && allocation >= i);
+    }
+    REQUIRE(bridge_complete);
     cog_cli_options_t opts={.backend=COG_CLI_BACKEND_MOCK,.explicit_options=COG_CLI_OPT_BACKEND,.prompt="hello"};
     bool complete=false;
     for(size_t i=1;i<512;i++) {

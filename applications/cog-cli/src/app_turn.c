@@ -64,12 +64,17 @@ cog_result_t cog_cli_begin_request(cog_cli_app_t *app, bool reset)
         request.tools_json = app->tools_json; request.tools_json_len = app->tools_json_len;
     }
     if (app->request_serial == UINT64_MAX) return COG_ERROR_LIMIT;
-    rc = cog_provider_send(app->provider, &request);
+    rc = cog_cli_observation_provider_begin(app);
     if (rc != COG_OK) return rc;
-    if (reset) reset_turn(app);
-    app->request_serial++;
-    app->provider_active = true;
-    return COG_OK;
+    rc = cog_provider_send(app->provider, &request);
+    if (rc == COG_OK) {
+        if (reset) reset_turn(app);
+        app->request_serial++; app->provider_active = true;
+    }
+    (void)cog_cli_observation_check(app, rc);
+    if (rc != COG_OK) cog_cli_observation_provider_end(app, rc, 0);
+    app->observation_retry = false;
+    return cog_cli_observation_check(app, rc);
 }
 static cog_result_t append_turn(cog_cli_app_t *app, cog_message_status_t status, bool calls)
 {
@@ -111,22 +116,9 @@ static cog_result_t process_finish(cog_cli_app_t *app, cog_state_t *next)
     const cog_provider_delta_t *delta = &app->delta;
     app->provider_active = false;
     cog_result_t outcome = delta->outcome;
-    if (outcome != COG_OK && outcome != COG_ERROR_ABORTED && !app->cancelling && !app->shutdown) {
-        cog_provider_error_t error = {0};
-        cog_result_t rc = cog_provider_get_error(app->provider, &error);
-        uint32_t delay = 100U;
-        if (rc == COG_OK && error.retry_after_ms != 0U) delay = error.retry_after_ms;
-        if (delay > 5000U) delay = 5000U;
-        uint64_t elapsed = app->now - app->started_at;
-        if (rc == COG_OK && error.retryable && error.replay_safe && !error.output_accepted &&
-            !app->accepted && !app->effects && app->retries < app->opts.max_retries &&
-            elapsed < app->opts.max_retry_elapsed_ms &&
-            delay < app->opts.max_retry_elapsed_ms - elapsed &&
-            elapsed < app->opts.max_turn_ms && delay < app->opts.max_turn_ms - elapsed) {
-            app->retries++; app->retry_at = app->now + delay; *next = CLI_BACKOFF;
-            return COG_OK;
-        }
-    }
+    cog_provider_error_t error = {0};
+    cog_result_t error_result = cog_provider_get_error(app->provider, &error);
+    (void)cog_cli_observation_check(app, COG_OK);
     if ((outcome == COG_OK || outcome == COG_ERROR_ABORTED) && app->deferred_error != COG_OK) outcome = app->deferred_error;
     if (outcome == COG_OK && (delta->finish_reason == COG_FINISH_REASON_LENGTH ||
         delta->finish_reason == COG_FINISH_REASON_CONTENT_FILTER)) outcome = COG_ERROR_LIMIT;
@@ -137,6 +129,22 @@ static cog_result_t process_finish(cog_cli_app_t *app, cog_state_t *next)
         for (size_t i = 0U; i < app->call_count; i++)
             if (!app->calls[i].begun || !app->calls[i].ended) outcome = COG_ERROR_PROTOCOL;
     } else if (outcome == COG_OK && app->call_count != 0U) outcome = COG_ERROR_PROTOCOL;
+    cog_cli_observation_provider_end(app, outcome, error_result == COG_OK ? error.http_status : 0);
+    if (outcome != COG_OK && outcome != COG_ERROR_ABORTED && !app->cancelling && !app->shutdown) {
+        uint32_t delay = 100U;
+        if (error_result == COG_OK && error.retry_after_ms != 0U) delay = error.retry_after_ms;
+        if (delay > 5000U) delay = 5000U;
+        uint64_t elapsed = app->now - app->started_at;
+        if (app->observation_error == COG_OK && error_result == COG_OK && error.retryable && error.replay_safe && !error.output_accepted &&
+            !app->accepted && !app->effects && app->retries < app->opts.max_retries &&
+            elapsed < app->opts.max_retry_elapsed_ms &&
+            delay < app->opts.max_retry_elapsed_ms - elapsed &&
+            elapsed < app->opts.max_turn_ms && delay < app->opts.max_turn_ms - elapsed) {
+            app->retries++; app->observation_retry = true;
+            app->retry_at = app->now + delay; *next = CLI_BACKOFF;
+            return COG_OK;
+        }
+    }
     if (outcome != COG_OK) {
         if (outcome != COG_ERROR_ABORTED) (void)fprintf(stderr, "cog-cli: provider error: %s\n", cog_cli_result_name(outcome));
         cog_result_t saved = cog_cli_finish_partial(app, outcome);
@@ -155,7 +163,7 @@ static cog_result_t process_finish(cog_cli_app_t *app, cog_state_t *next)
         app->active = false; *next = CLI_IDLE;
         if (fputc('\n', app->out) == EOF || fflush(app->out) != 0) return COG_ERROR_IO;
     }
-    return COG_OK;
+    return cog_cli_observation_check(app, COG_OK);
 }
 static cog_result_t copy_opaque(cog_cli_app_t *app, const cog_message_opaque_t *opaque)
 {
@@ -180,6 +188,7 @@ static cog_result_t accept_delta(cog_cli_app_t *app, cog_state_t *next)
     app->sequence = d->sequence;
     if (d->kind == COG_PROVIDER_DELTA_FINISH) return process_finish(app, next);
     if (d->kind == COG_PROVIDER_DELTA_USAGE) {
+        app->provider_usage_seen = true;
         if (d->usage.currency != NULL) {
             size_t n = strlen(d->usage.currency);
             if (n >= sizeof(app->currency)) return COG_ERROR_LIMIT;
@@ -241,6 +250,8 @@ static cog_handler_result_t input(cog_core_t *core, const cog_event_t *event)
         else r.status = cog_cli_app_queue(app, event->payload, event->payload_len);
         return r;
     }
+    r.status = cog_cli_observation_check(app, COG_OK);
+    if (r.status != COG_OK) return r;
     r.status = cog_cli_reload_activate(app);
     if (r.status == COG_ERROR_AGAIN) {
         if (slot != NULL) { slot->queued = true; r.status = COG_OK; }
@@ -271,7 +282,7 @@ static cog_handler_result_t input(cog_core_t *core, const cog_event_t *event)
     app->display_sequence++;
     app->continuation_required = false;
     app->active = true; app->accepted = false; app->effects = false;
-    app->cancelling = false; app->retries = 0U; app->rounds = 0U;
+    app->cancelling = false; app->retries = 0U; app->rounds = 0U; app->observation_retry = false;
     app->deferred_error = COG_OK; app->started_at = app->now;
     app->safe_ancestor = cog_session_active(app->session);
     r.status = cog_cli_save(app);
@@ -316,12 +327,18 @@ static cog_handler_result_t cancel(cog_core_t *core, const cog_event_t *event)
         return r;
     }
     app->cancelling = true;
-    if (app->provider_active) r.status = cog_provider_cancel(app->provider);
-    if (app->execution != NULL) r.status = cog_cli_tools_cancel(app);
+    if (app->provider_active) {
+        r.status = cog_provider_cancel(app->provider);
+        (void)cog_cli_observation_check(app, r.status);
+    }
+    if (app->execution != NULL) {
+        cog_result_t tool = cog_cli_tools_cancel(app);
+        if (r.status == COG_OK) r.status = tool;
+    }
     if (cog_core_state(core) == CLI_BACKOFF) {
         r.status = cog_cli_finish_partial(app, COG_ERROR_ABORTED); r.transition = CLI_IDLE;
     }
-    return r;
+    r.status = cog_cli_observation_check(app, r.status); return r;
 }
 static cog_handler_result_t resume_policy(cog_core_t *core, const cog_event_t *event)
 {
@@ -392,6 +409,8 @@ cog_result_t cog_cli_service(void *arg, uint64_t now, uint64_t *deadline)
     }
     cog_result_t rc = read_signal(app);
     if (rc != COG_OK) return rc;
+    rc = cog_cli_observation_check(app, COG_OK);
+    if (rc != COG_OK) return rc;
     if (atomic_load_explicit(&app->stop_requested, memory_order_acquire)) return COG_OK;
     rc = cog_cli_reload_service(app);
     if (rc != COG_OK) return rc;
@@ -400,12 +419,16 @@ cog_result_t cog_cli_service(void *arg, uint64_t now, uint64_t *deadline)
     if (app->active && now - app->started_at >= app->opts.max_turn_ms && !app->cancelling) {
         app->deferred_error = COG_ERROR_TIMEOUT;
         app->cancelling = true;
-        if (app->provider_active) rc = cog_provider_cancel(app->provider);
+        if (app->provider_active) {
+            rc = cog_provider_cancel(app->provider);
+            rc = cog_cli_observation_check(app, rc);
+        }
         if (rc == COG_OK && app->execution != NULL) rc = cog_cli_tools_cancel(app);
         if (rc != COG_OK) return rc;
     }
     uint64_t next = UINT64_MAX;
     rc = cog_provider_poll(app->provider, now, &next);
+    rc = cog_cli_observation_check(app, rc);
     if (rc != COG_OK) return rc;
     if (app->provider_active && next < *deadline) *deadline = next;
     if (app->active && app->started_at + app->opts.max_turn_ms < *deadline)
@@ -417,7 +440,9 @@ cog_result_t cog_cli_service(void *arg, uint64_t now, uint64_t *deadline)
             rc = cog_provider_next(app->provider, &app->delta, app->delta_storage,
                 app->delta_capacity, &required);
             if (rc == COG_OK) app->delta_ready = true;
-            else if (rc != COG_ERROR_AGAIN) return rc == COG_ERROR_OVERFLOW ? COG_ERROR_LIMIT : rc;
+            cog_result_t observed = cog_cli_observation_check(app,
+                rc == COG_ERROR_AGAIN ? COG_OK : (rc == COG_ERROR_OVERFLOW ? COG_ERROR_LIMIT : rc));
+            if (observed != COG_OK) return observed;
         }
         if (app->delta_ready) return schedule(app, COG_EVENT_LLM_CHUNK);
     } else if (state == CLI_BACKOFF && app->active) {
@@ -514,7 +539,7 @@ cog_result_t cog_cli_idle(void *arg, uint32_t max_wait_ms)
     }
     return COG_OK;
 }
-cog_result_t cog_cli_drain(cog_cli_app_t *app)
+static cog_result_t drain_work(cog_cli_app_t *app)
 {
     if (app->terminal_result_pending) return app->tool_result_error;
     if (app->assistant_pending) {
@@ -529,6 +554,7 @@ cog_result_t cog_cli_drain(cog_cli_app_t *app)
     if (rc != COG_OK) return rc;
     if (app->provider_active) {
         rc = cog_provider_cancel(app->provider);
+        (void)cog_cli_observation_check(app, rc);
         if (rc != COG_OK) return rc;
         bool terminal = false;
         for (size_t i = 0U; i < CLI_CALLS * 8U + 64U; i++) {
@@ -536,9 +562,11 @@ cog_result_t cog_cli_drain(cog_cli_app_t *app)
                 size_t required = 0U;
                 rc = cog_provider_next(app->provider, &app->delta, app->delta_storage,
                     app->delta_capacity, &required);
+                (void)cog_cli_observation_check(app, rc == COG_ERROR_AGAIN ? COG_OK : rc);
                 if (rc == COG_ERROR_AGAIN) {
                     uint64_t deadline;
                     rc = cog_provider_poll(app->provider, app->now, &deadline);
+                    (void)cog_cli_observation_check(app, rc);
                     if (rc != COG_OK) return rc;
                     continue;
                 }
@@ -588,4 +616,12 @@ cog_result_t cog_cli_drain(cog_cli_app_t *app)
     }
     app->active = false;
     return rc;
+}
+cog_result_t cog_cli_drain(cog_cli_app_t *app)
+{
+    app->observation_draining = true; app->observation_retry = false;
+    cog_result_t result = drain_work(app);
+    (void)cog_cli_observation_check(app, result);
+    app->observation_draining = false;
+    return result;
 }

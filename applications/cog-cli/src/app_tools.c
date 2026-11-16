@@ -27,6 +27,7 @@ static cog_result_t record_result(cog_cli_app_t *app, cog_result_t status,
     bool exit_known, int exit_status, cog_tool_execution_state_t expected)
 {
     cog_message_tool_call_t *call = &app->call_views[app->tool_index];
+    cog_cli_observation_tool_end(app, status, effects, truncated);
     /* Persist execution metadata beside text. A failed/truncated command never
        masquerades as a successful complete result or permission to replay. */
     int n = snprintf(app->result_storage, 384U,
@@ -126,6 +127,8 @@ cog_result_t cog_cli_tools_step(cog_cli_app_t *app, cog_state_t *next)
             COG_TOOL_EXECUTION_PROPOSED);
     }
     if (app->execution == NULL) {
+        cog_result_t observed = cog_cli_observation_check(app, COG_OK);
+        if (observed != COG_OK) return observed;
         cog_tool_async_config_t config = {.max_output_bytes = app->opts.max_tool_output_bytes,
             .max_argument_bytes = CLI_ARGUMENT_BYTES, .max_schema_bytes = CLI_SCHEMA_BYTES,
             .max_json_depth = 64U, .codec_workspace_bytes = CLI_CODEC_BYTES,
@@ -134,6 +137,7 @@ cog_result_t cog_cli_tools_step(cog_cli_app_t *app, cog_state_t *next)
         cog_result_t rc = cog_toolkit_execution_new(&app->execution, app->core, &cog_workspace_tools,
             call->id, call->name, call->arguments, call->arguments_len, &config);
         if (rc != COG_OK) {
+            cog_cli_observation_tool_end(app, rc, false, false);
             if (rc == COG_ERROR_NOMEM || rc == COG_ERROR_IO || rc == COG_ERROR_INDETERMINATE)
                 return rc;
             const char *why = cog_cli_result_name(rc);
@@ -145,15 +149,17 @@ cog_result_t cog_cli_tools_step(cog_cli_app_t *app, cog_state_t *next)
         COG_TOOL_EXECUTION_PROPOSED, COG_TOOL_EXECUTION_STARTED);
     if (rc == COG_OK) rc = cog_cli_save(app);
     if (rc != COG_OK) { app->recovery = true; return rc; }
-    rc = cog_toolkit_execution_start(app->execution, COG_TOOLKIT_POLICY_ALLOW, app->now);
+    rc = cog_cli_observation_tool_begin(app);
+    if (rc == COG_OK) rc = cog_toolkit_execution_start(app->execution, COG_TOOLKIT_POLICY_ALLOW, app->now);
     if (rc != COG_OK) {
         /* The dispatcher guarantees start failure has no effects. Preserve the
            durable intent and an explicit failed result rather than retrying. */
         cog_result_t recorded = record_result(app, rc, "Tool start failed; no automatic retry.",
             38U, false, false, false, 0, COG_TOOL_EXECUTION_STARTED);
         (void)cog_toolkit_execution_free(app->execution); app->execution = NULL;
-        return recorded;
+        return cog_cli_observation_check(app, recorded);
     }
+    app->tool_execution_started = true;
     app->effects = true;
     *next = CLI_TOOL;
     return COG_OK;

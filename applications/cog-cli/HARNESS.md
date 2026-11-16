@@ -126,3 +126,29 @@ The exact R12 selection and supported curl recipe are in
 [R12 evidence](../../docs/REAL_CLIENT_RELOAD_EVIDENCE.md). Use separate Release
 GCC/Clang/ASan and Debug TSan directories. The selected executable count is not
 a claim that all release scenarios or full installed transport closure passed.
+
+`cli-observation-{normal,retry,stall,tls,connect,cancel}` uses the actual supported
+curl/OpenRouter/app/tool path against a disposable local TLS server. Test sinks
+copy bounded events, verify that delivery occurs outside the net callback and
+reject payload/credential markers. The normal path executes one real edit, checks
+its durable identified result and makes a generation2 request after reload with a
+copied127-byte model label. The retry path first receives HTTP429: only the admitted
+new attempt has RETRY, at its OPEN timestamp. Known usage snapshots replace rather
+than add, and the last generation's absent usage remains unavailable.
+
+Failure modes exercise actual response stall, trust failure, refused connection
+and cancellation after accepted partial text. They require one transport terminal,
+sanitized classification, checked failed duration and no invented tool execution.
+Original18/19 retain their component assertions and also run the actual retry/tool/
+reload fixture under the admitted Linux profile. These production paths supplement
+the component tests' synthetic event construction.
+
+`cli-observation-critic` independently exercises retained IDs, row exhaustion across
+contexts, final app consumption with foreign live/retained IDs and later callbacks,
+raw observer AGAIN, deferred sink failure, checked-clock failure and queue overflow.
+`cli-app-memory` exhausts each explicit bridge constructor allocation and verifies
+NULL rollback plus overflow/zero bounds, using the established optimized allocator
+positive control. Its existing allocation-free mock run and reload activation
+checks continue to execute the new app timing paths. Exact selected commands and
+supported dependency identities are in
+[observation evidence](../../docs/REAL_CLIENT_OBSERVATION_EVIDENCE.md).

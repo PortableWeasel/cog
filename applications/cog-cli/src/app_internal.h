@@ -2,6 +2,7 @@
 #ifndef COG_CLI_APP_INTERNAL_H
 #define COG_CLI_APP_INTERNAL_H
 #include "configuration.h"
+#include "observation.h"
 #include <cog/workspace.h>
 /* Control-tree ownership is private; only app_reload.c needs config.h. */
 typedef struct cog_config_tree cog_config_tree_t;
@@ -33,6 +34,18 @@ typedef struct cli_input {
     bool used, queued, continuation_authorized;
 } cli_input_t;
 struct cog_cli_app {
+    /* Optional host bridge borrowed past provider teardown, never net-owned.
+       Application timing/error state exists even with an external observer. */
+    cog_cli_observer_t *observer;
+    cog_result_t observation_error;
+    cog_cli_observation_scope_t observation_scope;
+    uint64_t observation_request_counter, provider_started_ns, tool_started_ns, tool_assistant_id;
+    size_t tool_ordinal;
+    const char *observed_tool; /* Static descriptor name or static unknown. */
+    cog_obs_span_id_t provider_span, tool_span;
+    bool provider_timed, tool_timed, tool_execution_started, tool_observed, provider_usage_seen, observation_retry;
+    bool observation_draining;
+    char log_buffer[4096]; /* Owned setvbuf storage for an explicitly opened log. */
     cog_cli_configuration_t *configuration;
     cog_cli_options_t opts;
     /* Active aliases above/below borrow current owner; future is published but
@@ -131,7 +144,9 @@ cog_result_t cog_cli_reload_init(cog_cli_app_t *app);
  * owner. No allocation, arbitrary app/resolver/
  * tool callback, wire or session mutation; provider disconnect is the destructor.
  * @return OK if no future or successfully activated; NULL_PTR; AGAIN while
- * future is blocked; consuming disconnect cleanup error records first separate
+ * future is blocked; observation checkpoints drain/check before publication or
+ * retirement and can return a frozen observation driver error. Consuming
+ * disconnect cleanup error records first separate
  * reload_cleanup_error, freezes admission and requests cancel/drain shutdown,
  * then returns that driver error. Commit/new publication are not rolled back;
  * new current/core references remain valid but may not start work. */

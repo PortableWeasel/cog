@@ -618,6 +618,32 @@ strings it passes, the buffers it supplies, and every sink destination.
 cog-obs owns only its own internal tables, released by `cog_obs_free`, which
 discards open spans rather than emitting them.
 
+### Application composition
+
+The CLI host reserves its observation bridge before constructing net. The
+constructor-borrowed callback copies numeric transport values, a checked
+monotonic timestamp and prepared bounded scope; it does no sink I/O or net
+reentry. The app owner drains after each provider operation into copied rows and
+existing obs events/diagnostics. A row keeps the actual request's pinned config
+generation and safe labels across reload; a terminal request must be released
+before its row can be reused. Only an admitted application retry creates RETRY.
+
+Provider attempts and admitted tool executions have checked durations, static
+span names and typed status/usage availability. Private configuration owners
+screen optional model/session labels against their credential before exposing
+copies. Raw URLs, credentials, bodies, tool arguments/results and opaque model
+data are absent. DEBUG records are opt-in; normal streamed output stays clean.
+
+Callback status and deferred app/sink failure remain separate from the primary
+request/effect result. Either stops later admission through ordinary cancel,
+reap and durable cleanup, without making prior work replayable. Final teardown
+ends diagnostic borrows before obs destruction and keeps host bridge memory
+alive through net destruction. An exceptional final detach invalidates the feed
+explicitly rather than stealing foreign request IDs or retaining a dangling
+target. The [composition contract](REAL_CLIENT_OBSERVABILITY_CONTRACTS.md) and
+[delivery evidence](REAL_CLIENT_OBSERVATION_EVIDENCE.md) describe the bounds and
+scoped checks.
+
 ---
 
 ## Session Tree
