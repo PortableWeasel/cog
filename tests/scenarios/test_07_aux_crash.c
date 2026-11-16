@@ -191,21 +191,33 @@ static cog_worker_id_t fx_spawn(cog_orchestrator_t *o)
     cog_core_info_t info=fx_info(o,id);FX_CHECK(info.peer_id!=0&&info.pid>0&&info.capacity==8);
     return id;
 }
-static void fx_close(cog_orchestrator_t *o,char *path,cog_result_t expected)
+static void fx_close_at(cog_orchestrator_t *o,char *path,cog_result_t expected,const char *test)
 {
     FX_CHECK(cog_orchestrator_request_shutdown(o,fx_now(),300)==COG_OK);
     bool done=false;uint64_t deadline,end=fx_now()+4000;cog_result_t rc=COG_ERROR_AGAIN;
     while(!done&&fx_now()<end) { rc=cog_orchestrator_service(o,fx_now(),&done,&deadline);fx_pause(); }
-    FX_CHECK(done);FX_CHECK(rc==expected);
+    FX_CHECK(done);
+    if(rc!=expected) (void)fprintf(stderr,"%s shutdown: actual %d expected %d done %d\n",test,(int)rc,(int)expected,(int)done);
+    FX_CHECK(rc==expected);
     cog_core_info_t infos[16];size_t count=0;FX_CHECK(cog_orchestrator_list(o,infos,16,&count)==COG_OK);
     fx_ack(o);
     for(size_t i=0;i<count&&i<16;++i) {
         FX_CHECK(infos[i].reaped&&!infos[i].ownership_lost);
-        FX_CHECK(cog_orchestrator_release_worker(o,infos[i].worker_id)==COG_OK);
+        /* Native done is not logical endpoint/event retirement. Continue the
+           actual owner service and ACK copied events before bounded release. */
+        cog_result_t released;uint64_t retire_end=fx_now()+2000;
+        do {
+            fx_ack(o);released=cog_orchestrator_release_worker(o,infos[i].worker_id);
+            if(released!=COG_ERROR_INVALID_STATE) break;
+            (void)fx_service(o);fx_pause();
+        } while(fx_now()<retire_end);
+        if(released!=COG_OK) (void)fprintf(stderr,"%s release worker %llu: actual %d reaped %d lost %d\n",test,(unsigned long long)infos[i].worker_id.number,(int)released,(int)infos[i].reaped,(int)infos[i].ownership_lost);
+        FX_CHECK(released==COG_OK);
     }
     if(done) cog_orchestrator_free(o);
     (void)unlink(path);
 }
+#define fx_close(o,p,e) fx_close_at(o,p,e,__func__)
 static cog_worker_id_t fx_replacement(cog_orchestrator_t *o,cog_worker_id_t old)
 {
     uint64_t end=fx_now()+4000;
