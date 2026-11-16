@@ -21,12 +21,16 @@
  * construct an empty matching-ID session, then CAS exact owner/checkpoint0 to a
  * fresh incarnation/epoch and acquire normal guard. The store's locked CAS must
  * refuse legacy state/stale authority/live guard; no read alone authorizes work.
- * Save the empty checkpoint before success. No checkpoint/token/owner is reused
+ * cog_store_checkpoint_save commits the empty checkpoint under that exact guard
+ * before success. No checkpoint/token/owner is reused
  * or reset. Epoch exhaustion, CAS/acquire/save failure propagates; no retry loop.
  *
- * An absent owner never creates a session through RESUME. Existing valid v1/v2,
- * unreadable/corrupt legacy, committed data and uncertain effects follow existing
- * load/migration/recovery rules. FORK/RECOVER do not fabricate an empty source.
+ * An absent owner never creates a session through RESUME. Readable legacy under
+ * an owned checkpoint0 is refused, not migrated or discarded as empty. Unowned
+ * valid v1/v2, unreadable/corrupt legacy, committed data and uncertain effects
+ * retain existing load/migration/recovery rules. FORK/RECOVER do not fabricate an
+ * empty source. A save failure consumes no session identity or earlier committed
+ * data; outer construction releases guard/store/session with no model/effects.
  * Normal owned RESUME needs no new operator fencing assertion for this no-data
  * case: a live guard excludes CAS and no committed STARTED/effect exists at0.
  * Current configuration resolves exactly as ordinary RESUME; stored nonempty

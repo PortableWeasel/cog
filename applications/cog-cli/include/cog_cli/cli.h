@@ -431,10 +431,11 @@ const char *cog_cli_result_name(cog_result_t rc);
  * restore into current explicit constructor reservations, admit a fresh process
  * incarnation/checked epoch and acquire its matching normal guard before work.
  * RESUME alone also repairs an interrupted owner-only empty reservation: a valid
- * nonzero owner and checkpoint0, absent replay-loadable data, exact owner/0 CAS
+ * nonzero owner and checkpoint0, replay load_ex reporting NOT_FOUND, exact owner/0 CAS
  * to a fresh incarnation/epoch, normal guard and successful empty checkpoint save
  * are all required before publication. A live guard still returns AGAIN; stale,
- * corrupt/unreadable or legacy data is never treated as empty. No new fencing
+ * corrupt/unreadable or legacy data is never treated as empty; the locked store
+ * CAS must also refuse legacy state. No new fencing
  * assertion is required for this owned no-data case; no effect can be admitted
  * before durable intent. Absent IDs remain NOT_FOUND, NEW collisions refuse, and
  * FORK/RECOVER never invent an empty source. Current J configuration resolves as

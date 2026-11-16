@@ -27,7 +27,9 @@ checkpoint0 reservation with no replay-loadable data. Existing public calls:
    and checked epoch+1. Locked CAS excludes live guards/stale state and refuses
    legacy state, including an incomplete legacy pair.
 5. owner_acquire confirms the newly admitted normal owner under the lock.
-6. Guarded save commits the empty checkpoint before app construction succeeds.
+6. Existing checkpoint_save with that exact normal guard commits the empty
+   checkpoint before app construction succeeds. Its output token is local; no
+   token is invented for the preceding owner-only state.
 
 No owner/data deletion, epoch reset, unowned adoption, effect replay, fabricated
 result or implicit recovery-mode downgrade occurs. No new API/option is added.
@@ -37,3 +39,45 @@ NEW collision and FORK/RECOVER semantics remain intact.
 The private `session_admission.h` owns the existing sessions_open declaration and
 documents partial construction, exact authority and all error boundaries. No
 implementation body is changed in this pass.
+
+## Pass 2: complete scenario trace
+
+This is an admission amendment, not a new turn/recovery/effect mechanism. Each
+original scenario crosses the same constructor boundary before runtime work.
+
+| Original scenario | Header coverage and change |
+|---|---|
+| 01 prompt/stream | NEW/DURABLE owner CAS/acquire -> empty checkpoint_save -> existing user save/send; no fake first message |
+| 02 network recovery | No provider before admission; existing per-turn retry and incomplete-save rules unchanged |
+| 03 subagent | No new child authority; O runtime remains separate; initial app construction must succeed first |
+| 04 cold start | Successful app_new now guarantees a durable empty snapshot even with no prompt |
+| 05 shutdown | Idle EOF/INT/TERM/free releases guard, committed empty session remains RESUME-loadable |
+| 06 parallel tools | No STARTED at checkpoint0; existing identified durable STARTED/result rules unchanged |
+| 07 aux crash | No remote failover change; owner-only restart is exact local CAS/guard and cannot replay work |
+| 08 config reload | Empty save invents no config/model/provider provenance; J and R12 generation ownership remain independent |
+| 09 peer messages | No IPC/event routing change; no new admission before constructor success |
+| 10 fan-out | No orchestrator/child behavior or fake acceptance introduced |
+| 11 disconnect/replay | Committed tree/display path unchanged; empty snapshot has zero active/node/high-water identities |
+| 12 rate limit | Empty checkpoint precedes wire; app retry budget and effect exclusion unchanged |
+| 13 persistence | Exact committed RESUME stays normal; explicit owner-only RESUME reconstructs only the proven no-data reservation |
+| 14 fork | NEW collision refusal preserved; FORK requires a real saved node and cannot invent an owner-only source |
+| 15 tool turns | Existing committed history/results/opaque/ledger all restore exactly; only checkpoint0 can use empty repair |
+| 16 errors | Initial CAS/acquire/checkpoint error returns no app/provider/effect; INDETERMINATE is never guessed success |
+| 17 migration | Unowned text-v1 migration/fencing unchanged; owned checkpoint0 with readable legacy is refused |
+| 18 observability | No request/tool span for empty persistence; no fabricated model/provider metadata or credential logging |
+| 19 diagnostics | No net construction/request from empty repair itself; host dependency lifetime unchanged |
+| 20 interrupt/queue | Constructor succeeds with checkpoint before stdin work; queued/fresh continuation authority unchanged |
+
+The checkpoint0 proof is conjunctive. NOT_FOUND from legacy load is insufficient
+by itself: exact locked owner CAS and acquire are also required, and G forbids
+adopting legacy files under this owner path. A missing nodes file with meta
+present is IO; malformed/unreadable meta is PROTOCOL/IO, never an empty proof.
+CAS refuses any newly appeared legacy meta under its lock. If another owner
+publishes a checkpoint or epoch between reads, exact CAS fails; it does not load
+that new state and retry automatically. A live normal/recovery guard returns AGAIN.
+
+Stored nonempty nodes already carry model/provider provenance and remain on the
+ordinary exact-load path. No config file or environment value is copied from an
+owner tuple or checkpoint number; current J sources remain the explicit ordinary
+RESUME configuration authority. Empty reconstruction has no nodes to attribute.
+No --fenced assertion can bypass malformed data, a live guard or failed save.
