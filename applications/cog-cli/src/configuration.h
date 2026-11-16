@@ -50,6 +50,49 @@ cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
 cog_result_t cog_cli_configuration_reload_new(cog_cli_configuration_t **out,
     const cog_cli_configuration_t *current,
     const cog_cli_reload_options_t *replacement, uint64_t generation);
+/**
+ * @brief Finish unpublished startup host attachment without source resolution.
+ * @param[in,out] configuration Fresh successful configuration_new result only,
+ * not metadata/reload/child/bootstrap, not bound and not previously finished.
+ * Its options.net must still be NULL. Owner thread, no escaped app/provider or
+ * concurrent borrowed option use. The later configuration_bind remains required.
+ * @param[in] net Borrowed actual host transport for REAL; required and remains
+ * live through every borrowing provider disconnect and configuration lifetime.
+ * MOCK requires NULL. This function never calls/owns/frees that context.
+ * @param[in] canonical_workspace NULL iff original workspace_root was NULL;
+ * otherwise copied canonical absolute UTF-8 directory path,<=4095 bytes.
+ * @param[in] canonical_store Copied canonical absolute UTF-8 durable store path,
+ * required,<=4095 bytes. DURABLE NEW/RESUME/FORK only.
+ * @pre Host independently opened/verified these are the SAME configured
+ * directory identities (creating the store directory if needed) and keeps
+ * them stable; this PURE helper checks lexical canonical form, not existence,
+ * inode identity, symlinks or access. No untrusted wire/model path override.
+ * @return OK; NULL_PTR required pointer; INVALID_STATE wrong constructor phase,
+ * metadata/nondurable/already attached or bound; INVALID_ARG backend/net/path/
+ * workspace-presence mismatch; LIMIT path/remaining64KiB copied-string arena.
+ * @post Validate all inputs/length/capacity BEFORE writes. Any failure leaves
+ * every configuration byte, option pointer/borrow and prior value unchanged.
+ * Success copies both paths into existing constructor storage, then publishes
+ * new pointers/net and consumes this one finishing step. No allocation, IO,
+ * resolver/env/file/argv reread, provider/store callback or secret copy/change.
+ * Generation/model/secret/reference/policy/limits/selector provenance and tool
+ * mask are unchanged. No live reload or new host authority is granted.
+ */
+cog_result_t cog_cli_configuration_finish_host(
+    cog_cli_configuration_t *configuration, cog_net_ctx_t *net,
+    const char *canonical_workspace, const char *canonical_store);
+/** @brief Read immutable effective WORKSPACE tool bits (COG_CLI_CHILD_*).
+ * @param[in] configuration Resolved owner, one thread, bound or unbound.
+ * @param[out] mask Known subset0..15, unchanged on failure.
+ * @return OK; NULL_PTR. No allocation, callbacks, resolution or state change.
+ * Startup sets all four workspace bits iff DURABLE+workspace present and fixed
+ * policy is not DENY, otherwise0. Reload preserves it; child stores exact
+ * intersection with requested mask; bootstrap retains validated CGB1 mask.
+ * This is not delegation permission or a per-call ALLOW/guard. Actual schema
+ * selection and every effect admission still enforce role/policy and ownership.
+ */
+cog_result_t cog_cli_configuration_tool_mask(
+    const cog_cli_configuration_t *configuration, uint32_t *mask);
 void cog_cli_configuration_free(cog_cli_configuration_t *configuration);
 const cog_cli_options_t *
 cog_cli_configuration_options(const cog_cli_configuration_t *configuration);
