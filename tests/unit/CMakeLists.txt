@@ -271,3 +271,11 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 add_test(NAME unit-ipc-o1-review COMMAND test_ipc_o1_review)
 set_tests_properties(unit-ipc-o1-review PROPERTIES LABELS "unit;ipc" TIMEOUT 20)
+
+# Private read-only work query needed by cooperative core driving (5fcaef7).
+add_executable(test_ipc_readiness test_ipc_readiness.c)
+target_link_libraries(test_ipc_readiness PRIVATE cog::ipc)
+target_enable_warnings(test_ipc_readiness)
+target_link_options(test_ipc_readiness PRIVATE -Wl,--wrap=poll,--wrap=connect,--wrap=send)
+add_test(NAME unit-ipc-readiness COMMAND test_ipc_readiness)
+set_tests_properties(unit-ipc-readiness PROPERTIES LABELS "unit;ipc" TIMEOUT 20)

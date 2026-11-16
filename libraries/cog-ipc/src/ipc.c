@@ -949,3 +949,38 @@ cog_result_t cog_ipc_internal_refuse(cog_ipc_endpoint_t *listener)
     (void)close(fd);
     return COG_OK;
 }
+
+cog_result_t cog_ipc_internal_ready(const cog_ipc_endpoint_t *ep, bool *ready)
+{
+    struct pollfd pfd;
+    if (ep == NULL || ready == NULL) return COG_ERROR_NULL_PTR;
+    if (ep->fd < 0 && ep->failure == COG_OK) return COG_ERROR_INVALID_STATE;
+    if (ep->failure != COG_OK || ep->rx_count != 0U) {
+        *ready = true;
+        return COG_OK;
+    }
+    pfd.fd = ep->fd;
+    pfd.revents = 0;
+    pfd.events = POLLIN;
+    if (!ep->listener_role) {
+        if (ep->identity_used < IPC_ID_BYTES) {
+            if (ep->connect_pending) pfd.events = POLLOUT;
+            else if (ep->native_peer_result == COG_ERROR_AGAIN) {
+                *ready = true;
+                return COG_OK;
+            } else pfd.events = ep->connecting ? POLLIN : POLLOUT;
+        } else {
+            if (ep->rx_length_known) {
+                size_t slot = (ep->rx_head + ep->rx_count) % ep->cfg.receive_frames;
+                if (ep->prefix_used != 0U || ep->rx_partial == ep->rx[slot].length) {
+                    *ready = true;
+                    return COG_OK;
+                }
+            }
+            if (ep->tx_count != 0U) pfd.events |= POLLOUT;
+        }
+    }
+    if (poll(&pfd, 1U, 0) < 0) return ipc_transient() ? COG_ERROR_AGAIN : COG_ERROR_IO;
+    *ready = (pfd.revents & (pfd.events | POLLERR | POLLHUP | POLLNVAL)) != 0;
+    return COG_OK;
+}
