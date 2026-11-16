@@ -403,6 +403,29 @@ add_test(NAME cli-headless-native-limit COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
     $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} limit)
 set_tests_properties(cli-headless-native-limit PROPERTIES TIMEOUT 70)
+
+# Shared O9 support is deliberately test-only; canonical leaves assert their
+# own actual runtime joins and keep their provider responders in disjoint files.
+add_library(cog-headless-fixture STATIC
+    ${PROJECT_SOURCE_DIR}/tests/scenarios/fixtures/headless_fixture.c)
+target_include_directories(cog-headless-fixture PUBLIC
+    ${PROJECT_SOURCE_DIR}/tests/scenarios/fixtures
+    ${PROJECT_SOURCE_DIR}/applications/cog-cli/src)
+target_link_libraries(cog-headless-fixture PUBLIC cog::cli)
+target_enable_warnings(cog-headless-fixture)
+add_executable(test_headless_fixture_smoke test_headless_fixture_smoke.c)
+target_link_libraries(test_headless_fixture_smoke PRIVATE cog-headless-fixture)
+target_enable_warnings(test_headless_fixture_smoke)
+add_dependencies(test_headless_fixture_smoke cog-cli)
+add_test(NAME cli-headless-fixture-smoke COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
+    $<TARGET_FILE:test_headless_fixture_smoke> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} single)
+set_tests_properties(cli-headless-fixture-smoke PROPERTIES TIMEOUT 70 LABELS "component;headless")
+add_test(NAME cli-headless-fixture-python COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_fixture_smoke.py
+    $<TARGET_FILE:test_headless_fixture_smoke> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR})
+set_tests_properties(cli-headless-fixture-python PROPERTIES TIMEOUT 70 LABELS "component;headless"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 # Lane A owns shared CMake; append these real-source private branch fixtures.
 foreach(name IN ITEMS worker_receipt_owned delegation_callbacks worker_handoff_critic worker_reload_failure)
     add_executable(test_${name} test_${name}.c)
