@@ -456,3 +456,8 @@ add_test(NAME cli-headless-native-cancel COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
     $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} cancel)
 set_tests_properties(cli-headless-native-cancel PROPERTIES TIMEOUT 70)
+
+add_test(NAME cli-headless-native-handoff-timeout COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
+    $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} handoff-timeout)
+set_tests_properties(cli-headless-native-handoff-timeout PROPERTIES TIMEOUT 145)

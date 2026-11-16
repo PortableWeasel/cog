@@ -4,6 +4,8 @@
 #include "composition_internal.h"
 #include <curl/curl.h>
 #include <poll.h>
+#include <signal.h>
+#include <sys/wait.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -34,11 +36,24 @@ static cog_result_t advance(cog_cli_host_runtime_t *host,bool *done)
     if(!step.done)(void)poll(NULL,0U,step.max_wait_ms>5U?5:(int)step.max_wait_ms);
     return rc;
 }
+/* Fault injection uses only this fixture's still-owned, unreaped child. Never
+   consume its wait status or signal a process group/default PID. */
+static cog_result_t signal_owned_worker(cog_cli_host_runtime_t *host,int signal_number)
+{
+    if(host==NULL || host->bounds.workers!=1U || !host->workers[0].used) return COG_ERROR_INVALID_STATE;
+    const cog_core_info_t *native=&host->workers[0].native;
+    if(native->pid<=0 || native->reaped || native->ownership_lost) return COG_ERROR_INVALID_STATE;
+    siginfo_t status;memset(&status,0,sizeof(status));
+    if(waitid(P_PID,(id_t)native->pid,&status,WEXITED|WNOHANG|WNOWAIT)!=0 || status.si_pid!=0)
+        return COG_ERROR_INVALID_STATE;
+    return kill((pid_t)native->pid,signal_number)==0?COG_OK:COG_ERROR_IO;
+}
 int main(int argc,char **argv)
 {
-    cog_cli_host_runtime_t *host=NULL;cog_result_t primary=COG_OK;bool curl_ready=false;
+    cog_cli_host_runtime_t *host=NULL;cog_result_t primary=COG_OK;bool curl_ready=false,paused_worker=false,expected_timeout=false,cleanup_complete=false;
     CHECK(argc==8); /* executable, CA, URL, workspace, store, socket prefix, mode */
-    bool reject=strcmp(argv[7],"limit")==0,move=strcmp(argv[7],"handoff")==0;
+    bool fault=strcmp(argv[7],"handoff-timeout")==0;
+    bool reject=strcmp(argv[7],"limit")==0,move=fault || strcmp(argv[7],"handoff")==0;
     bool cancel=strcmp(argv[7],"cancel")==0,cancelled=false;
     CHECK(curl_global_init(CURL_GLOBAL_DEFAULT)==CURLE_OK);curl_ready=true;
     char ui[4096],workers[4096];
@@ -57,7 +72,7 @@ int main(int argc,char **argv)
         .max_request_bytes=1024U*1024U,.max_connections=2U,.ca_bundle=argv[2],.connect_timeout_ms=3000U,.stall_timeout_ms=5000U};
     cog_cli_host_runtime_config_t config={.root_options=&options,.net_config=&transport,
         .ui_socket=ui,.worker_socket=workers,.executable=argv[1],.workers=1U,.children=2U,.child_requests=32U,
-        .shutdown_ms=move?15000U:3000U,
+        .shutdown_ms=move && !fault?15000U:3000U,
         .child_profile={.policy=COG_CLI_CHILD_POLICY_INHERIT,.tools=COG_CLI_CHILD_COMMAND,
             .max_tool_rounds=1U,.max_retries=0U},.signal_fd=-1};
     primary=cog_cli_host_runtime_new(&host,&config);CHECK(primary==COG_OK);
@@ -123,6 +138,10 @@ int main(int argc,char **argv)
         uint64_t began=clock_ms();deadline=began+20000U;
         while(host->handoff->phase!=CLI_HANDOFF_IDLE && clock_ms()<deadline) {
             cli_handoff_phase_t previous=host->handoff->phase;
+            if(fault && !paused_worker && previous==CLI_HANDOFF_GUARD) {
+                CHECK(host->handoff->source_released && host->handoff->cas_committed);
+                CHECK(signal_owned_worker(host,SIGSTOP)==COG_OK);paused_worker=true;
+            }
             primary=advance(host,&done);
             if(previous!=host->handoff->phase || primary!=COG_OK)
                 fprintf(stderr,"native handoff %u phase %d -> %d elapsed=%llu rc=%d\n",i+1U,
@@ -142,6 +161,16 @@ int main(int argc,char **argv)
                         (unsigned long long)ex->owner_peer,(unsigned long long)ex->owner.epoch,(unsigned long long)ex->owner.instance_id);
                 }
             }
+            if(fault && paused_worker && primary==COG_ERROR_TIMEOUT) {
+                cog_cli_handoff_t *h=host->handoff;cli_executor_slot_t *source=&host->executors[h->source_slot];
+                CHECK(host->admission_frozen && h->source_released && h->cas_committed &&
+                    !h->guard_acquired && !h->route_published && !h->activation_acked);
+                CHECK(source->app!=NULL && source->app->headless->authority==CLI_AUTH_SOURCE_RELEASED);
+                cog_store_owner_t actual;cog_store_checkpoint_t saved;
+                CHECK(cog_store_owner_read(host->catalog,host->primary_session,&actual,&saved)==COG_OK);
+                CHECK(actual.epoch==h->next.epoch && actual.instance_id==h->next.instance_id);
+                expected_timeout=true;goto finish;
+            }
             CHECK(primary==COG_OK&&!done);
         }
         CHECK(host->handoff->phase==CLI_HANDOFF_IDLE && host->handoff->primary==COG_OK);
@@ -155,12 +184,27 @@ int main(int argc,char **argv)
     }
 finish:
     if(host!=NULL){
+        if(paused_worker) {
+            cog_result_t resumed=signal_owned_worker(host,SIGCONT);
+            if(resumed!=COG_OK) (void)cog_orchestrator_kill(host->orchestrator,host->workers[0].id);
+            paused_worker=false;
+        }
         (void)cog_cli_host_runtime_request_shutdown(host);bool drained=host->done;uint64_t until=clock_ms()+10000U;
         while(!drained&&clock_ms()<until){cog_result_t rc=advance(host,&drained);if(primary==COG_OK)primary=rc;}
+        if(!drained) {
+            for(size_t i=0U;i<host->bounds.workers;++i)
+                if(host->workers[i].used)(void)cog_orchestrator_kill(host->orchestrator,host->workers[i].id);
+            until=clock_ms()+5000U;
+            while(!drained&&clock_ms()<until){cog_result_t rc=advance(host,&drained);if(primary==COG_OK)primary=rc;}
+        }
+        bool reaped=true;for(size_t i=0U;i<host->bounds.workers;++i)
+            if(host->workers[i].used && (!host->workers[i].native.reaped || host->workers[i].native.ownership_lost))reaped=false;
         if(!drained && primary==COG_OK)primary=COG_ERROR_TIMEOUT;
         cog_result_t closed=cog_cli_host_runtime_close(&host,primary);if(primary==COG_OK)primary=closed;
+        cleanup_complete=drained && reaped && host==NULL;
     }
     if(curl_ready)curl_global_cleanup();
+    if(expected_timeout && primary==COG_ERROR_TIMEOUT && cleanup_complete){puts("actual native timeout fenced and reaped: PASS");return 0;}
     if(primary!=COG_OK){fprintf(stderr,"native outcome: %d\n",(int)primary);return 1;}
     puts("actual native delegation/reservation oracle: PASS");return 0;
 }
