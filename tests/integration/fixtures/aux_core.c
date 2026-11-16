@@ -50,17 +50,33 @@ int main(int argc,char **argv)
     cog_result_t rc=cog_ipc_endpoint_connect(ep,argv[3],NULL);
     if(rc!=COG_OK&&rc!=COG_ERROR_AGAIN) { (void)cog_ipc_endpoint_free(ep);return 2; }
     cog_worker_control_t control={.kind=COG_WORKER_HELLO,.worker={values[0],values[1]}};
-    bool hello=false,closing=false;unsigned mode=0;uint32_t active=0;
+    bool connected=false,hello=false,closing=false;unsigned mode=0;uint32_t active=0;
     uint64_t next_heartbeat=0,exit_at=UINT64_MAX,start=now_ms();
     unsigned char bytes[256];cog_ipc_message_t message={.data=bytes,.capacity=sizeof(bytes)};
     for(;;) {
         uint64_t now=now_ms(),deadline;
         rc=cog_ipc_endpoint_service(ep,now,&deadline);
         if(rc!=COG_OK&&rc!=COG_ERROR_AGAIN) break;
+        if(!connected) {
+            cog_peer_id_t peer=0;cog_ipc_peer_info_t proof;
+            rc=cog_ipc_endpoint_get_peer_id(ep,&peer);
+            if(rc==COG_OK) {
+                rc=cog_ipc_endpoint_peer_info(ep,peer,&proof);
+                if(rc==COG_OK) {
+                    if(proof.process_id!=values[2]) break;
+                    connected=true;
+                } else if(rc!=COG_ERROR_AGAIN) break;
+            } else if(rc!=COG_ERROR_INVALID_STATE) break;
+            if(!connected) {
+                if(now-start>4000) break;
+                (void)nanosleep(&(struct timespec){0,1000000L},NULL);
+                continue;
+            }
+        }
         if(!hello) {
             rc=send_control(ep,&control);
             if(rc==COG_OK) { hello=true;next_heartbeat=now; }
-            else if(rc!=COG_ERROR_AGAIN&&rc!=COG_ERROR_INVALID_STATE) break;
+            else if(rc!=COG_ERROR_AGAIN) break;
         }
         if(hello&&!closing&&now>=next_heartbeat) {
             control.kind=COG_WORKER_HEARTBEAT;control.active_subagents=active;
