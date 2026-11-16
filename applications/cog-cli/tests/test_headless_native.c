@@ -15,11 +15,21 @@ static uint64_t clock_ms(void)
 }
 static cog_result_t advance(cog_cli_host_runtime_t *host,bool *done)
 {
+    bool was_shutdown=host->shutdown;
     cog_cli_host_runtime_step_t step={0};cog_result_t rc=cog_cli_host_runtime_step(host,&step);
     *done=step.done;
     if(rc==COG_ERROR_AGAIN)rc=COG_OK;
-    if(rc!=COG_OK) fprintf(stderr,"native drive rc=%d done=%d coordinator_failed=%d primary=%d\n",
-        (int)rc,(int)step.done,(int)host->coordinator_failed,(int)host->primary);
+    if(rc!=COG_OK && !was_shutdown) {
+        cog_cli_app_t *app=host->executors[host->primary_slot].app;
+        fprintf(stderr,"native drive rc=%d done=%d coordinator_failed=%d primary=%d control_ended=%d control_state=%u\n",
+            (int)rc,(int)step.done,(int)host->coordinator_failed,(int)host->primary,
+            (int)host->control_drive_ended,(unsigned)cog_core_state(host->control_core));
+        if(app!=NULL)fprintf(stderr,"native root primary=%d drive=%d state=%u active=%d deferred=%d tool=%d\n",
+            (int)app->headless->primary,(int)app->headless->drive,(unsigned)cog_core_state(app->core),
+            (int)app->active,(int)app->deferred_error,(int)app->tool_execution_started);
+        for(size_t i=0U;i<host->group_capacity;++i)fprintf(stderr,"native group%zu phase=%d admitted=%zu submitted=%zu\n",
+            i,(int)host->groups[i].phase,host->groups[i].admitted,host->groups[i].submitted);
+    }
     if(!step.done)(void)poll(NULL,0U,step.max_wait_ms>5U?5:(int)step.max_wait_ms);
     return rc;
 }

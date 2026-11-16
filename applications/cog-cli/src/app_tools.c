@@ -236,6 +236,9 @@ cog_result_t cog_cli_tools_step(cog_cli_app_t *app, cog_state_t *next)
             return record_result(app, rc, why, strlen(why), false, false, false, 0,
                 COG_TOOL_EXECUTION_PROPOSED);
         }
+        /* This flag belongs to the newly constructed handle. A previous
+           handle's observation identity may persist across publication. */
+        app->tool_execution_started = false;
     }
     cog_tool_execution_state_t state;
     cog_result_t rc = cog_session_tool_state(app->session, app->assistant, call->id, &state);
