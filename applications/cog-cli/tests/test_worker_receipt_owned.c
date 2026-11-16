@@ -13,9 +13,46 @@ static void service(cog_ipc_endpoint_t *a,cog_ipc_endpoint_t *b)
         assert(rc==COG_OK || rc==COG_ERROR_AGAIN);
     }
 }
+static void bridge_payloads(void)
+{
+    unsigned char body[256],output[512];
+    cog_cli_delegation_context_t context={0};context.mailbox_entries=2U;
+    cli_delegation_handle_t handle={0};handle.context=&context;handle.request.count=1U;
+    cli_wire_writer_t encoded={body,0U,true};
+    cli_wire_put(&encoded,31U,8U);cli_wire_put(&encoded,0U,4U);cli_wire_put(&encoded,1U,2U);
+    cli_wire_put(&encoded,1U,1U);cli_wire_put(&encoded,5U,8U);cli_wire_put(&encoded,1U,8U);
+    cli_wire_put(&encoded,COG_AGENT_STATUS_COMPLETED,1U);cli_wire_put(&encoded,0U,4U);
+    cli_wire_string(&encoded,"child",5U);cli_wire_string(&encoded,"ok\n",3U);cli_wire_put(&encoded,0U,1U);
+    cog_cli_control_message_t message={0};message.kind=COG_CLI_CONTROL_DELEGATE_RESULT;
+    message.payload=body;message.payload_len=encoded.used;
+    cog_result_t outcome;bool effects;uint64_t group;
+    cli_wire_writer_t count={NULL,0U,true};
+    assert(bridge_output(&handle,&message,&count,&outcome,&effects,&group)==COG_OK);
+    assert(outcome==COG_OK && !effects && group==31U && count.used<sizeof(output));
+    cli_wire_writer_t write={output,0U,true};
+    assert(bridge_output(&handle,&message,&write,&outcome,&effects,&group)==COG_OK && write.used==count.used);
+    output[write.used]=0U;assert(strstr((const char *)output,"ok\\u000a")!=NULL);
+    body[encoded.used-1U]=1U;count=(cli_wire_writer_t){NULL,0U,true};
+    assert(bridge_output(&handle,&message,&count,&outcome,&effects,&group)==COG_ERROR_PROTOCOL);
+    body[encoded.used-1U]=0U;--message.payload_len;count=(cli_wire_writer_t){NULL,0U,true};
+    assert(bridge_output(&handle,&message,&count,&outcome,&effects,&group)==COG_ERROR_PROTOCOL);
+    encoded=(cli_wire_writer_t){body,0U,true};
+    cli_wire_put(&encoded,(uint32_t)COG_ERROR_AGAIN,4U);cli_wire_put(&encoded,1U,1U);
+    message.kind=COG_CLI_CONTROL_MESSAGE_RESULT;message.payload_len=encoded.used;
+    count=(cli_wire_writer_t){NULL,0U,true};
+    assert(bridge_output(&handle,&message,&count,&outcome,&effects,&group)==COG_ERROR_AGAIN);
+    assert(count.used==0U);
+    encoded=(cli_wire_writer_t){body,0U,true};cli_wire_put(&encoded,0U,4U);
+    cli_wire_put(&encoded,0U,1U);cli_wire_put(&encoded,1U,2U);cli_wire_put(&encoded,5U,8U);
+    cli_wire_string(&encoded,"hello",5U);message.kind=COG_CLI_CONTROL_MAILBOX_RESULT;message.payload_len=encoded.used;
+    count=(cli_wire_writer_t){NULL,0U,true};
+    assert(bridge_output(&handle,&message,&count,&outcome,&effects,&group)==COG_OK);
+    context.mailbox_entries=0U;count=(cli_wire_writer_t){NULL,0U,true};
+    assert(bridge_output(&handle,&message,&count,&outcome,&effects,&group)==COG_ERROR_PROTOCOL);
+}
 int main(int argc,char **argv)
 {
-    assert(argc==2);
+    assert(argc==2);bridge_payloads();
     cog_ipc_endpoint_config_t cfg={.max_frame_bytes=512U,.receive_frames=1U,.send_frames=1U,.service_quantum=1U};
     cog_ipc_endpoint_t *listener=NULL,*sender=NULL,*receiver=NULL;
     assert(cog_ipc_endpoint_new_ex(&listener,&cfg)==COG_OK);
