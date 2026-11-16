@@ -100,7 +100,7 @@ typedef struct cog_cli_command {
     uint64_t observed_generation, observed_sequence;
     const char *text; /**< SUBMIT/CONTINUE/RELOAD only, strict full UTF-8 suffix. */
     size_t text_len;
-    const char *target_session_id; /**< POLICY only, root or admitted child. */
+    const char *target_session_id; /**< POLICY only, exact PRIMARY root ID. */
     uint64_t node_id, nonce; /**< CONTINUE/FORK node; POLICY node+nonce. */
     uint16_t call_ordinal;
     uint8_t decision; /**< POLICY deny1/allow2. */

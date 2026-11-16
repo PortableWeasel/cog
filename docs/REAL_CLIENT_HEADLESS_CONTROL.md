@@ -27,9 +27,11 @@ effects; duplicates remain answerable. Accepting a command does not mean its
 later execution succeeded. A new coordinator incarnation cannot restore volatile
 dedup from a client's claim: full resync, old pending command marked uncertain,
 no automatic retransmission as a new command. Already-applied/queued ordinary
-input remains owned after disconnect. A copied-but-not-applied POLICY/CONTINUE
-still needs its original controller role at owner validation; role expiry refuses
-that pending authorization, never transfers it to the replacement controller.
+input remains owned after disconnect. A copied-but-not-FORWARDED POLICY/CONTINUE
+still needs its original controller role at forwarding; expiry refuses it. Once
+forward-committed under a valid lease, exact grant may complete after expiry;
+worker rechecks actual state/guard, not a nonexistent remote role query. Neither
+case transfers an old decision to the replacement controller.
 
 UI_HELLO alone permits runtime_incarnation0 and EMPTY session_id(length0).
 --attach/--watch know only socket and never guess IDs or read store/config. The
@@ -73,7 +75,7 @@ illegal zero/correlation or extra bytes fail PROTOCOL before any admission.
 | CHILD_START | parent session string,parent assistant node u64,call ordinal u16,full call ID string,task string,pinned config u64,absolute deadline u64,group u64,max status/result bytes u32,member count u16 then actual member agent u64 IDs; parent→worker,exact admitted agent/attempt/owner; copied task only once |
 | CHILD_CANCEL | absolute drain deadline u64; coordinator→worker, exact attempt; duplicate never extends deadline |
 | CHILD_UPDATE | one exact CGA1 update, agreeing with outer agent/attempt/owner; worker→coordinator |
-| UPDATE_RECEIPT | exact55-byte private receipt; coordinator→worker; all outer/inner identities agree; not durable parent TOOL-save proof |
+| UPDATE_RECEIPT | exact55-byte private receipt; coordinator→worker; inner wire_id==outer.reply_to (answered worker update),NEVER the receipt's own outer wire_id; other bound identities agree; not durable parent TOOL-save proof |
 | CHILD_MESSAGE | destination agent u64, copied text string; sender exact current child attempt; coordinator relays only same current fan-out group/parent, to admitted bounded mailbox |
 | MESSAGE_RESULT | known result i32, state u8(pending1/final2); reply_to exact CHILD_MESSAGE; OK means one mailbox copy, not execution/new turn; AGAIN is provisional, retains same pending wire |
 | EXECUTOR_VIEW | mutation serial u64,exact owner epoch/instance u64,active/published config u64,reload attempts-used u32,then CGD1; current primary executor→coordinator; serial separate from canonical CGR cursor; old owner cannot publish after handoff |
@@ -84,7 +86,7 @@ illegal zero/correlation or extra bytes fail PROTOCOL before any admission.
 | DELEGATE_RESULT_ACK | group u64, parent result checkpoint u64; primary→coordinator only AFTER exact TOOL result+terminal ledger durable save, not CGA/local ACK |
 | MAILBOX_POLL | empty; current child→coordinator, exact identified receive tool wire request; copied bounded mailbox batch consumes once |
 | MAILBOX_RESULT | result i32,more-pending u8(0/1),count u16 then source agent u64 and text string; exact poll response,cached whole-message prefix; no new turn or policy input |
-| EXECUTOR_COMMAND | original client incarnation/request u64, current owner epoch/instance u64, executor prompt serial u64(0 except POLICY), then exact UI_COMMAND body; trusted coordinator→current primary or exact child CANCEL only |
+| EXECUTOR_COMMAND | original client lease/request u64,current owner epoch/instance u64,executor serial u64(POLICY prompt,CONTINUE/FORK source mutation,otherwise0),then UI_COMMAND body; trusted coordinator→current primary or exact child CANCEL only |
 | EXECUTOR_COMMAND_RESULT | result i32,state u8(pending1/final2); reply_to exact EXECUTOR_COMMAND; same immutable duplicate/final-copy/COMMAND_ACK rules, no double input admission |
 | POLICY_STATE | presence u8(pending1/retired2), executor prompt serial u64, assistant node u64, call ordinal u16,pinned generation u64,absolute deadline u64,static tool name string; exact current executor→coordinator; duplicate pending serial reuses nonce, retired serial cannot reappear |
 | RESYNC_VIEW | one complete exact CGV1 committed snapshot; coordinator→UI only after discovery+explicit CGR1 GAP, replaces at its own anchor, no input/effect |
@@ -287,8 +289,9 @@ IDs and resynchronized prompt state, never inherits queued ALLOW/CONTINUE. Old
 client may query retained outcomes read-only but cannot reclaim a replacement's
 role. Exact-original duplicate lookup and COMMAND_ACK remain read-only permitted
 for a retained old lease after role loss; NEW mutations denied. Copied pending
-POLICY/CONTINUE that never reached owner validation is refused on role expiry;
-already-applied grant/input/result is unchanged and cannot be inherited.
+POLICY/CONTINUE not yet forward-committed is refused on role expiry. Already
+forwarded exact authorization/input/result is unchanged, may complete under its
+original identity, and cannot be inherited. It is not silently revoked remotely.
 At client_receipt_ms(default30s,max300s), disconnected/nonacknowledging logical
 lease is retired with its command receipts. A global issued-lease counter never
 reuses IDs; known retired lease is uniformly stale before lookup/admission, not
@@ -461,3 +464,66 @@ attempt, candidate generation==attempt+1. Coordinator-local failure may burn an
 ID without worker construction, so received count may advance over unused IDs;
 it cannot regress, exceed64 or create a third logical generation. Exact duplicate
 wire gets cached result, no second resolver/attempt/provider constructor.
+
+### Authorization linearization and one-way state receipts
+
+Coordinator checks the current controller lease, exact observed canonical view,
+actual prompt/branch identity and original command before forwarding. Prepare/
+commit the bounded UI state that consumes this decision's nonce (or marks branch
+decision pending) before any forward send; no fallible UI append follows the
+grant's acceptance. send AGAIN accepts nothing: retain pending grant, recheck
+lease/state on retry, refuse if role expires. send OK is the SINGLE authorization
+linearization; local direct apply has the equivalent owner-thread admission.
+That original exact grant may complete after role expiry; it is not a decision
+from the new controller. No distributed revocation/current-role query is claimed.
+Original deadline, explicit cancellation, changed prompt/leaf and stale owner
+still prevent later effect admission at executor. New conflicting policy/fork
+decisions wait/refuse while this exact forwarded operation has a pending result.
+
+EXECUTOR_COMMAND carries executor prompt serial for POLICY or root mutation
+serial for CONTINUE/FORK. Owner checks actual local state, never compares raw app
+counter with a canonical CGR sequence advanced by unrelated child/control views.
+Coordinator alone checks the observed canonical anchor. A copied command that
+was never forwarded is revocable on role loss; an already accepted operation's
+cached result/input/effects remain factual. Old client lease may query exact
+original result read-only, never re-admit a mutation under replacement authority.
+
+UI_COMMAND/EXECUTOR_COMMAND CANCEL and their matching result/ACK use independent
+CANCEL lane, not a blocked ordinary command lane. Other opcodes in CANCEL lane
+are PROTOCOL. COMMAND_RESULT/ACK may use the exact request's COMMAND/CANCEL lane;
+POLICY_STATE receives COMMAND_RESULT(final result,client lease0) in POLICY lane
+after independently copied state, so sender can retire its immutable state frame
+and later send retirement. Prefix/source/attempt/serial correlation is checked;
+generic receipt never performs policy decision, CGA ACK or parent TOOL save.
+
+Placement is coordinator-owned reservation, not a fake heartbeat update. Use
+actual healthy orchestrator metadata plus local/worker reserved-slot counts;
+fixed round-robin across eligible local and authenticated workers makes an
+actual two-member local/worker group possible. Never mutate native health to
+pretend reservation/execution progress. Initial configured workers bootstrap
+before root startup input; failed readiness is a checked host failure, no hidden
+provider/worker fallback. Child delegation is advertised only for REAL durable
+workspace-enabled primary; workspace-free/MOCK UI roots remain supported without
+that tool. Child root policy/mask is enforced at lookup and before STARTED, not
+merely by omitting an advertised schema.
+
+
+Forwarded executor operation storage is independent of UI lease/receipt storage:
+retiring a dead client cannot leave a pointer into freed command bytes or forget
+an already accepted authorization. Keep fixed per-executor COMMAND/CANCEL pending
+slots until actual result/receipt disposal; report/discard old-client delivery
+without re-admitting its mutation. Generic final/ACK replies follow the exact
+request lane/role path; no recursive ACK is required for an ACK-of-ACK.
+Malformed/stale UI frames are refused per-peer/logical lease without killing
+headless model work; existing Q framing closes malformed transport as declared.
+No invented public close-one-peer operation is assumed. Actual driver/output/
+observation failures still freeze admission and retain owned cleanup.
+
+The initial child runtime emits one factual RUNNING update and one terminal
+(or early no-effect terminal without RUNNING); cancel arbitration may replace
+an UNACCEPTED terminal delivery with one new envelope, never local factual
+history. Constructor reserves final/control wire budget before any ordinary
+attempt admission, including provisional/final receipt identities. Identical
+RETRY/receipt retransmission reuses its immutable envelope bytes/ID, never burns
+unbounded new IDs. Broader public CGA1 sequences remain supported by core; this
+is the bounded initial application profile, not a new primitive restriction.

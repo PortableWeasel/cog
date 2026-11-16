@@ -93,6 +93,7 @@ walks follow in pass2; original historical substitutes are not accepted evidence
 Pass2 full sequential all20+R13/R14 traversal is recorded in
 [the pass2 retrace](REAL_CLIENT_HEADLESS_PASS2.md), including A29–A40 amendments.
 Pass3 full consistency/
-NULL/overflow/clock/OOM/lifetime/dependency/self-containment review is PENDING.
+NULL/overflow/clock/OOM/lifetime/dependency/self-containment review is recorded in
+[the pass3 audit](REAL_CLIENT_HEADLESS_PASS3.md).
 Then one more DIFFERENT final critic must approve exact coherent checkpoint.
 No O implementation ticket is ready merely because a row exists here.

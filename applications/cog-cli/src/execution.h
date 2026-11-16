@@ -124,6 +124,21 @@ cog_result_t cog_cli_execution_drain_step(cog_cli_app_t *app,
  */
 cog_result_t cog_cli_execution_end(cog_cli_app_t *app);
 
+/** @brief Checked consuming destruction, shared by public app_free wrapper.
+ * @param[in,out] app NULL pointee OK; set NULL after consuming all resources.
+ * @param[in] primary Existing failure wins over all later cleanup results.
+ * @return primary or first cleanup error; NULL_PTR; INVALID_STATE leaves live/
+ * undrained app untouched. Never-begun/staged quiescent app can be consumed.
+ * Destroys retained tool handles, then installed delegation context while app
+ * lives, workspace/core/provider/config/obs/store/session in declared order.
+ * Every provider disconnect consumes once on every return; secret cleared after
+ * return. Borrowed exact local session NOT destroyed; caller returns its stored
+ * registry borrow only after this consumption. Bridge remains until net_free.
+ * Public app_free keeps its consuming void/sanitized-report contract; runtime
+ * uses this checked result rather than losing cleanup error in a void wrapper.
+ */
+cog_result_t cog_cli_execution_close(cog_cli_app_t **app, cog_result_t primary);
+
 /**
  * @brief Freeze a complete idle source and save its guarded exact checkpoint.
  * @param[in,out] app Ordinary active owner, no current drive callback recursion.
@@ -258,8 +273,10 @@ cog_result_t cog_cli_execution_copy_configuration(const cog_cli_app_t *app,
 /** @brief Apply one independently role-checked/deduped executor command.
  * @param[in,out] app Current owner, outside callbacks; never staged/frozen source.
  * @param[in] command Bounded decoded body. @param[in] owner Exact current tuple.
- * @param[in] prompt_serial POLICY only,0 otherwise; matching actual pending call.
- * @return OK admission once; NULL_PTR; INVALID_STATE stale owner/anchor/prompt;
+ * @param[in] executor_serial POLICY prompt serial; CONTINUE/FORK actual source
+ * mutation serial;0 otherwise. Coordinator validates global CGR anchor; owner
+ * validates this actual executor version, not unrelated agent/control ring IDs.
+ * @return OK admission once; NULL_PTR; INVALID_STATE stale owner/state/prompt;
  * DENIED inappropriate child command; OVERFLOW/AGAIN nothing accepted; command
  * validation/IO/LIMIT error. Caller retains exact original/result in bounded
  * dedup cache so retry never repeats this admission. Root supports SUBMIT/
@@ -267,12 +284,17 @@ cog_result_t cog_cli_execution_copy_configuration(const cog_cli_app_t *app,
  * Coordinator-only RELOAD/
  * HANDOFF/SHUTDOWN/RESYNC do not become model text. Check full byte validity and
  * same-session safe fork or current incomplete leaf; no queued authorization.
- * POLICY checks real PROPOSED call+guard before any STARTED/effect. No command
+ * POLICY checks real PROPOSED call+guard before any STARTED/effect. Controller
+ * authorization linearizes at coordinator's valid-lease forward(send OK), not
+ * remote apply time; once forwarded exact grant may finish after lease expiry.
+ * Owner does not query/reconstruct coordinator role state. Cancellation/deadline/
+ * changed call still refuses it; old grant never becomes replacement's decision.
+ * No command
  * can change fixed child policy or use a nonce for another prompt/attempt.
  */
 cog_result_t cog_cli_execution_apply_command(cog_cli_app_t *app,
     const cog_cli_command_t *command, cog_store_owner_t owner,
-    uint64_t prompt_serial);
+    uint64_t executor_serial);
 
 #ifdef __cplusplus
 }

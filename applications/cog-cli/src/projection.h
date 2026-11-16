@@ -123,7 +123,8 @@ cog_result_t cog_cli_projection_encode(const cog_cli_projection_view_t *view,
  * @param[out] required_agents Exact count; @param[out] required_policies Count;
  * @param[out] required_storage Exact text bytes.
  * @return OK; NULL_PTR; PROTOCOL invalid status/IDs/duplicate rows/correlation/
- * anchor/UTF-8/NUL/length/trailing; UNSUPPORTED magic; OVERFLOW changes only all
+ * anchor/UTF-8/NUL/length/trailing or bad prefix; UNSUPPORTED recognizable CGV
+ * version other than1; OVERFLOW changes only all
  * required counts. Every other output untouched on error; no allocation.
  * Structural ceilings16 agents/1 PRIMARY policy and caller-declared string bounds
  * are validated by a full nonwriting scan before any nested CGD1 decode writes

@@ -792,7 +792,11 @@ actual child acceptance uses offline REAL TLS. Handoff carries consumed R12
 attempt budget as well as active generation, including failed attempts. Group
 and mailbox result capacity is proven before STARTED/copy, with no hidden text
 truncation. Direct bounded drain units replace nested app-drain waits after core
-drive completion. These remain declarations pending pass3/different final gate.
+drive completion. The full pass3 audit records authorization at valid-lease forwarding, actual
+executor version checks, independent cancel/state receipts and checked consuming
+cleanup. Gated per-file O tickets preserve one shared app source lane, disjoint
+pure codecs/profiles/projection and different critics. All three writer passes
+are complete; the different final N gate remains open, with no bodies authorized.
 
 Stage 6 — Headers first. Design all public APIs as headers before any
 implementation. Three iterations:

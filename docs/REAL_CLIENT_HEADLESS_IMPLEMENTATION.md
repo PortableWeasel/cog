@@ -1,36 +1,42 @@
-# O implementation scaffold (gated draft)
+# O implementation strategy (N gated)
 
-All bodies depend on N035219b's final independent header PASS. This matrix
-allocates ownership, not implementation authorization. `d5280b7` remains the
-orchestrator migration umbrella; do not duplicate its missing APIs. Receipt
-design300e835 is already independently passed and retained in N only. Exact child
-tickets are refined when pass1 declarations freeze, then carry source, critic,
-integration and finalize stages. No main merge on partial package approval.
+The [actual per-file tickets](REAL_CLIENT_HEADLESS_TICKETS.md) are the current
+source/review/integration/finalize ownership map. They supersede the provisional
+read-only inventory; every body depends on independent whole N035219b PASS.
+Existing d5280b7 remains the orchestrator migration umbrella, with exact native
+wire and nonblocking source children, not a duplicate task.
 
-| Group | Source lock / contract | Dependencies | Independent acceptance |
-|---|---|---|---|
-| O1 IPC | `libraries/cog-ipc/src/ipc.c`, private header; provenance/directed send/wipe unit fixtures | N | real SO_PEERCRED, wrong/retired peer, copied TX, EOF-retained RX before wipe, bounded queues |
-| O2 core | `core.c`, `agent.c`, private headers, drive/service/agent unit fixtures | N API; integrate O1 first | run/step equivalence, finite idle/stop, fair bounded yields, event proof survives EOF, exact session borrow/return and one-shot ownership |
-| O3 orchestrator | existing d5280b7: `orchestrator.c`, private header, unit-orchestrator and integration IPC/stress/aux_core fixtures; pure CGH1 codec may split after header freeze | O1 | seven actual missing functions, no synchronous handshake, auth/managed namespaces, immutable PID, SIGCHLD/exclusive reap/ECHILD, no foreign child reap, three control slots+IDs, first-error/loss metadata |
-| O4 shared application integration | `cli.c`, `app_internal.h`, `app_turn.c`, `app_tools.c`, `main.c`, production CMake, all shared dispatch/glue | O1/O2; worker glue O3 | ordinary M behavior plus bounded multi-context step/drain, retained output, no competing readers, no callback reentry or task restart |
-| O5 control leaf | new `control.c`, approved `control.h`, `control_receipt.c`; leaf codec fixtures | N | literal/golden/malformed/transactional frames, role+attempt binding, distinct wire/CGA/ACK state, bounded original-byte cache/watermark, cancel/lost receipt races |
-| O6 child/bootstrap leaf | new executor/child/worker/delegation modules; resolved child clone in `configuration.c`; leaf fixtures | O2/O3/O4/O5 | exact local tree, real provider/tool child, parent configuration pin, intersected permission/deadline/request credit, bootstrap copy wiping, cancellation/crash/descendant uncertainty |
-| O7 UI projection leaf | new projection/front-door/client modules; `app_display.c`; leaf fixtures | O4/O5, existing CGR1/CGD1 | real detached execution, DATA/GAP/CURSOR, exact committed full-state anchor, pending approval nonce, accepted-command dedup and no repeated model/effect on reconnect |
-| O8 staged handoff leaf | `app_sessions.c`, `session_admission.h`, new handoff module; leaf fixtures | O3/O4/O5; final composition O6/O7 | actual source quiesce/checkpoint/release, target PREPARED/guarded READY, exact CAS/route/ACTIVATE, fresh epoch reclaim, post-CAS failure frozen, no startup input/effect replay |
-| O9 original scenario join | originals03/07/09/10 in tests/scenarios, originals11/17 in app tests; real bounded process/TLS fixtures | all source groups and their critics | actual child/tool/result, owned-worker death, authenticated child messaging/fan-out, actual UI reconnect/GAP, true shared-store handoff; preserve historical component assertions separately |
-| O10 package integration/finalize | additive CMake registration, evidence/contracts, installed consumer | all scoped PASS | restore all six M exclusions, all original20 joined, strict full GCC/Clang/ASan builds+scoped tests, relevant separate TSan, genuine installed relocation/dependency closure; P still owns all38/full release gate |
+| Group | Source ownership | Dependencies / parallel boundary |
+|---|---|---|
+| O1 IPC | ipc.c and owned private state/socket fixtures | N; independent of pure codecs/profiles |
+| O2 core | core.c + agent.c, one owner | O1; shared run/step/proof/lease state |
+| O3 orchestrator | orchestrator_wire.c + orchestrator.c, native/unit/integration fixtures | O1/O2; restore actual nonblocking production, not fixture-only AGAIN |
+| O5 pure codecs | control.c,control_receipt.c,projection_codec.c,child_context.c | N; no I/O/effect/role authority, exact standalone focused checks |
+| O6 resolved profiles/options | configuration.c + host_options.c | N; no source reread/callback transfer, no app CMake edits |
+| O8 projection/client | projection.c + host_client.c | O1/O5/O6; bounded ring/render, no executor ownership |
+| O4 cohesive app composition | cli/execution/turn/tools/sessions/reload,host_runtime/delegation/worker_host/handoff/main | O1/O2/O3/O5/O6/O8; ONE shared source lane until internal layout/helper header stage freezes. All per-file children exist, but no circular partial-runtime reviews/stubs. |
+| O9 joined original scenarios | exact03/07/09/10/11/17 paths in ticket map | approved O4; preserve component assertions, use actual production execution |
 
-O1/O2 can implement in parallel after N because their source locks are disjoint;
-integrate IPC before core runtime tests. O3 can start against approved O1 API,
-then integrate O1 before its critic. O5 is pure codec work and can run independently
-after N. O4 is ONE shared application owner; leaf groups never race its files.
-O6/O7 can overlap after exact interfaces and glue hooks exist. O8 owns session
-admission exclusively and must coordinate root constructor changes serially with
-O4. O3 retains route/CGH implementation ownership; no app leaf edits the library.
+O4's explicit planning child commits private implementation state/helper
+interfaces BEFORE any dependent bodies; public/behavior gaps go back to N, not a
+workaround. This is implementation layout, not permission for another architecture.
+Leaf writers can split disjoint files only after that ownership handoff, and never
+race app_internal.h, main.c or shared app CMake. The static table/role/control
+contracts are already fixed by N. App display's public CGD1 implementation and
+completed ipc_replay.c stay unchanged unless a genuine traced defect requires it.
 
-One integration owner registers all test target snippets; no concurrent writes
-to shared test CMake. O3 owns legacy07/09/10 compile migration until it explicitly
-hands files to O9 for actual runtime replacement. Named constructors may allocate
-within declared bounds; service cannot grow tables. Fault/allocator oracles use
-the existing optimizer-safe positive-control policy. Offline synthetic TLS only;
-no paid model calls are required.
+Constructor allocations are explicit/named; no service table growth. O4 adds
+cog::orchestrator to CLI's actual transitive package/link graph (acyclic app→orch→
+core/IPC), installs/exports existing target names and preserves admitted dependency
+profile/relative RPATH/caller policy. Pure codec targets may use focused builds
+before the whole source composition links; they cannot substitute runtime stubs.
+One integration owner registers additive test CMake snippets; assertion execution
+and optimizer-safe allocation/fault oracles remain intact.
+
+Actual O acceptance joins local/worker prompts/tools, authenticated sibling
+mailboxes, fan-out/cancel, detached UI replay and staged same-host handoff. All six
+M exclusions must pass after actual runtime wiring; all20 plus R13/R14 run against
+production paths. GCC/Clang strict all-target builds, scoped ASan/UBSan/LSan,
+meaningful separate TSan and genuine installed/relocated consumer/CLI/worker
+checks are mandatory. Offline synthetic REAL TLS only; no paid requests needed.
+P remains responsible for all38/full supported-release acceptance.

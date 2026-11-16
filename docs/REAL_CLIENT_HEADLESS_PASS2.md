@@ -206,8 +206,8 @@ sequenceDiagram
 Coverage: projection/client/control/ipc. Fresh client discovers generated root
 without store/config access. Same root/runtime/retained lease required for old
 command lookup; retirement or restart never rewrites pending input to new lease.
-Controller role expires separately; pending not-yet-applied POLICY/CONTINUE is
-refused on role loss, already applied grant/result remains factual. No gap after
+Controller role expires separately; pending not-yet-forwarded POLICY/CONTINUE is
+refused on role loss; an exact forward-committed grant may finish after expiry. No gap after
 A13–A16/A29/A30/A36/A37.
 
 ## 12 — rate limit, backoff and input queue
@@ -254,7 +254,7 @@ sequenceDiagram
 Coverage: control/execution + existing L/session fork/copy_history. No off-active
 unresolved ledger switch, no hidden history truncation/opaque drop. Queued SUBMIT
 remains unauthorized for failure continuation. Exact command dedup forks once.
-Role loss before validation refuses stale CONTINUE, no transferred decision. No gap.
+Role loss before forwarding refuses stale CONTINUE, no transferred decision. No gap.
 
 ## 15 — real model/tool continuation
 

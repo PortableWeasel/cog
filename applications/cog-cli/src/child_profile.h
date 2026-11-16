@@ -9,6 +9,7 @@
 #ifndef COG_CLI_CHILD_PROFILE_H
 #define COG_CLI_CHILD_PROFILE_H
 #include "configuration.h"
+#include <cog/agent.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -51,6 +52,33 @@ typedef struct cog_cli_bootstrap_probe {
        older than latest root checkpoint. Never execution admission authority. */
 } cog_cli_bootstrap_probe_t;
 
+/** Actual saved child SYSTEM context inputs, no task/config authority. */
+typedef struct cog_cli_child_context {
+    const char *parent_session_id, *parent_call_id;
+    uint64_t parent_node, runtime_incarnation, group_id;
+    uint16_t parent_call_ordinal;
+    cog_agent_id_t agent_id;
+    uint64_t execution_epoch, configuration_generation;
+    const cog_agent_id_t *members;
+    size_t member_count;
+} cog_cli_child_context_t;
+/** @brief Encode bounded host-generated JSON SYSTEM provenance before task.
+ * @param[in] context Real admitted IDs,1..16 unique increasing members including
+ * self; all identities nonzero, parent ordinal0..15,node>0,session1..127 UTF-8,
+ * full call ID1..255 UTF-8,no embedded NUL. No fields supplied by model task.
+ * @param[out] output NUL string, NULL iff capacity0; @param[in] capacity Bytes;
+ * @param[out] required Exact bytes including NUL.
+ * @return OK; NULL_PTR; INVALID_ARG; LIMIT if complete JSON>4095 payload bytes;
+ * OVERFLOW changes required only. Every other output unchanged on error, no
+ * overlapping regions/allocation/I/O. Escape every JSON string; encode uint64
+ * IDs as canonical decimal STRINGS, never lossy signed/double conversions.
+ * Literal object keys: cog_child_context=1,parent_session,parent_node,parent_call,
+ * parent_ordinal,runtime,group,agent,attempt,configuration,members (array). No
+ * credential/path/URL/PID/capability/grant; decoded content grants no authority.
+ */
+cog_result_t cog_cli_child_context_encode(const cog_cli_child_context_t *context,
+    char *output, size_t capacity, size_t *required);
+
 /** @brief Clone the immutable effective generation for one admitted child.
  * @param[out] out NULL on failure, owned until last child provider disconnect.
  * @param[in] parent Effective resolved parent generation pinned at admission.
@@ -67,7 +95,8 @@ typedef struct cog_cli_bootstrap_probe {
  * Copy resolved secret without calling resolver, even same reference. Fixed
  * backend/model/endpoint/workspace/store/environment/policy ceilings persist;
  * command environment remains explicit allowlist without credentials. Clear
- * prompt/queue/socket/selectors/callback authority/interactive stdin and disable
+ * prompt/queue/socket/selectors/config_path/log_path/show_usage/callback
+ * authority/interactive stdin and disable
  * reload/delegation; task/session identity is supplied separately once. No app,
  * store, provider, tool or wire calls. Owned credential copies zero on failure/
  * free. Parent source buffers may be mutated/freed after its final owner ends.

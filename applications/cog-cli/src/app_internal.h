@@ -20,8 +20,12 @@ typedef struct cog_config_tree cog_config_tree_t;
 #define CLI_EVIDENCE_BYTES 4096U
 #define CLI_RELOAD_ATTEMPTS 64U
 
-enum { CLI_IDLE = 0, CLI_MODEL, CLI_BACKOFF, CLI_POLICY, CLI_TOOL };
-enum { CLI_EVENT_RESUME_POLICY = 0x7f00 };
+/* N headless uses PUBLICATION and PREPARE as explicit static dispatch states;
+   standalone behavior keeps original values and paths. No bodies added here. */
+enum { CLI_IDLE = 0, CLI_MODEL, CLI_BACKOFF, CLI_POLICY, CLI_TOOL,
+       CLI_PUBLICATION, CLI_PREPARE };
+enum { CLI_EVENT_RESUME_POLICY = 0x7f00,
+       CLI_EVENT_PUBLICATION = 0x7f01, CLI_EVENT_PREPARE = 0x7f02 };
 typedef struct cli_call {
     cog_message_tool_call_t view;
     char id[CLI_ID_BYTES], name[CLI_ID_BYTES];
