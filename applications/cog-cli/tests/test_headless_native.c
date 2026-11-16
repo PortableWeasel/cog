@@ -8,7 +8,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#define CHECK(x) do { if (!(x)) { fprintf(stderr,"native line %d: %s\n",__LINE__,#x); primary=COG_ERROR_PROTOCOL;goto finish; } } while(0)
+#define CHECK(x) do { if (!(x)) { fprintf(stderr,"native line %d: %s\n",__LINE__,#x); if(primary==COG_OK)primary=COG_ERROR_PROTOCOL;goto finish; } } while(0)
 static uint64_t clock_ms(void)
 {
     struct timespec now;if(clock_gettime(CLOCK_MONOTONIC,&now)!=0)return 0U;
