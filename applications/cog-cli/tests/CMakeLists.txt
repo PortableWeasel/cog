@@ -448,6 +448,13 @@ target_include_directories(cog-headless-fixture PUBLIC
     ${PROJECT_SOURCE_DIR}/applications/cog-cli/src)
 target_link_libraries(cog-headless-fixture PUBLIC cog::cli)
 target_enable_warnings(cog-headless-fixture)
+if(MSVC)
+    target_compile_options(cog-headless-fixture PRIVATE /UNDEBUG)
+elseif(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(cog-headless-fixture PRIVATE -UNDEBUG)
+else()
+    message(FATAL_ERROR "Test fixture assertions need an undefine option")
+endif()
 add_executable(test_headless_fixture_smoke test_headless_fixture_smoke.c)
 target_link_libraries(test_headless_fixture_smoke PRIVATE cog-headless-fixture)
 target_enable_warnings(test_headless_fixture_smoke)
@@ -460,6 +467,10 @@ add_test(NAME cli-headless-fixture-python COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_fixture_smoke.py
     $<TARGET_FILE:test_headless_fixture_smoke> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR})
 set_tests_properties(cli-headless-fixture-python PROPERTIES TIMEOUT 70 LABELS "component;headless"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+add_test(NAME cli-headless-fixture-cleanup COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_headless_fixture_cleanup.py ${CMAKE_BINARY_DIR})
+set_tests_properties(cli-headless-fixture-cleanup PROPERTIES TIMEOUT 20 LABELS "component;headless"
     ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 # Lane A owns shared CMake; append these real-source private branch fixtures.
 foreach(name IN ITEMS worker_receipt_owned delegation_callbacks worker_handoff_critic worker_reload_failure)
