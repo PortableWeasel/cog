@@ -74,8 +74,62 @@ static void until_read_progress(cog_ipc_endpoint_t *ep)
     assert(rc == COG_OK || rc == COG_ERROR_AGAIN);
     if (rc == COG_ERROR_AGAIN) assert(one(ep) == COG_OK);
 }
+/* Independent critic: a queued frame alone is not kernel writability. A
+ * saturated actual socket must allow a bounded host wait, then become ready
+ * when the receiver frees capacity. Query never services either direction. */
+static void blocked_transmit(void)
+{
+    cog_ipc_endpoint_config_t cfg = {.max_frame_bytes = 65536U, .receive_frames = 1U,
+        .send_frames = 1U, .service_quantum = 1U};
+    cog_ipc_endpoint_t *listener = NULL, *client = NULL, *accepted = NULL;
+    char path[] = "/tmp/cog-ready-pressure-XXXXXX";
+    int temporary = mkstemp(path);
+    assert(temporary >= 0 && close(temporary) == 0 && unlink(path) == 0);
+    assert(cog_ipc_endpoint_new_ex(&listener, &cfg) == COG_OK);
+    assert(cog_ipc_endpoint_new_ex(&client, &cfg) == COG_OK);
+    assert(cog_ipc_endpoint_listen(listener, path) == COG_OK);
+    assert(cog_ipc_endpoint_connect(client, path, NULL) == COG_ERROR_AGAIN);
+    assert(cog_ipc_endpoint_accept(listener, &accepted, NULL) == COG_OK);
+    for (unsigned i = 0U; i < 20U &&
+         (client->identity_used < IPC_ID_BYTES || accepted->identity_used < IPC_ID_BYTES); ++i) {
+        assert(one(accepted) == COG_OK);
+        assert(one(client) == COG_OK);
+    }
+    assert(client->identity_used == IPC_ID_BYTES && accepted->identity_used == IPC_ID_BYTES);
+    int small = 1024;
+    assert(setsockopt(client->fd, SOL_SOCKET, SO_SNDBUF, &small, sizeof(small)) == 0);
+    unsigned char payload[65536]; memset(payload, 'p', sizeof(payload));
+    cog_ipc_message_t frame = {payload, sizeof(payload), sizeof(payload)};
+    assert(cog_ipc_endpoint_send(client, &frame) == COG_OK);
+    bool blocked = false;
+    for (unsigned i = 0U; i < 100U && !blocked; ++i) {
+        cog_result_t rc = one(client);
+        assert(rc == COG_OK || rc == COG_ERROR_AGAIN);
+        blocked = rc == COG_ERROR_AGAIN && (client->direction & 1U) == 0U;
+    }
+    assert(blocked && client->tx_count == 1U);
+    cog_ipc_endpoint_t before; memcpy(&before, client, sizeof(before));
+    bool ready = true;
+    assert(cog_ipc_internal_ready(client, &ready) == COG_OK && !ready);
+    assert(memcmp(&before, client, sizeof(before)) == 0);
+    for (unsigned i = 0U; i < 100U && !ready; ++i) {
+        cog_result_t rc = one(accepted);
+        assert(rc == COG_OK || rc == COG_ERROR_AGAIN);
+        assert(cog_ipc_internal_ready(client, &ready) == COG_OK);
+    }
+    assert(ready && client->tx_count == 1U);
+    /* Invalid native descriptor is actionable, not a query-side mutation. */
+    assert(close(accepted->fd) == 0);
+    memcpy(&before, accepted, sizeof(before)); ready = false;
+    assert(cog_ipc_internal_ready(accepted, &ready) == COG_OK && ready);
+    assert(memcmp(&before, accepted, sizeof(before)) == 0);
+    assert(cog_ipc_endpoint_free(accepted) == COG_OK);
+    assert(cog_ipc_endpoint_free(client) == COG_OK);
+    assert(cog_ipc_endpoint_free(listener) == COG_OK);
+}
 int main(void)
 {
+    blocked_transmit();
     cog_ipc_endpoint_config_t cfg = {0};
     cfg.max_frame_bytes = 64U; cfg.receive_frames = 2U; cfg.send_frames = 2U;
     cfg.wipe_buffers = true;
