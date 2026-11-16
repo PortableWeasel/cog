@@ -86,3 +86,37 @@ recorded above.
 Independent re-review of this final correction remains required; these are
 writer results, not acceptance. No live provider calls, main changes or
 integration were performed.
+
+## Independent acceptance and scoped O integration
+
+Independent review `8ffb926` passed exact
+`22319577dfc9b60157cb8d2cc1c6613f282753fb`, including the fatal LIMIT/PROTOCOL
+regressions under both queue and arena pressure. The critic's fresh profiles
+passed GCC10/10, Clang10/10, ASan/UBSan/LSan10/10 and TSan5/5. Source tickets
+`e55f22c` and `959efdc` are complete; the earlier pending-review sentence above
+records the writer checkpoint, not the final verdict.
+
+Scoped integration `65c50c6` merged that exact source history with no-ff commit
+`16ab286282d1f205641652ee9aa5c3925e1947f0` into O integration, retaining the
+separately approved O3 header/layout gate. The sole merge conflict was two
+appended DESIGN.md sections; both the O2 accepted-endpoint allocation and O3
+wide-capacity decisions were preserved verbatim. No source conflict, semantic
+adaptation, runtime stub or unrelated implementation change was needed.
+
+Fresh postmerge GCC Debug/Werror configure and real scoped targets passed with
+the unchanged audited `build-dependencies/cmake-args.txt` profile. All10 tests in
+the GCC table above passed, and `critic-header-smoke` built and its headers-label
+CTest passed1/1. Logs are in `integrate-headless/build-o2-merge-gcc`:
+`configure.log`, `scoped-build.log`, `scoped-test.log`, `header-test.log`.
+Compiler TMPDIR was that directory's `tmp`; build/test parallelism was at most2.
+Diff whitespace checks passed and the tracked tree was clean after the merge.
+Dependency artifacts were preserved. The delta against the approved O2 tree
+contains only the separately approved O3 headers/docs.
+
+Component finalize `565225d` retains this source/profile/selection evidence.
+O3 can now consume the completed O2 component under its own approved layout;
+O3 native runtime, O4 composition, O9 joined scenarios, whole O/full38/P and any
+main merge remain separate gates. No full-target rerun was claimed while the
+known unfinished O3 header/body signature migration remains outstanding.
+Writer/reviewer worktrees remain on disk with their ignored validation evidence
+for root-managed archival; no evidence-bearing worktree was force-removed.
