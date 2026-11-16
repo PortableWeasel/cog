@@ -93,7 +93,9 @@ cog_result_t cog_cli_host_runtime_new(cog_cli_host_runtime_t **out,
 
 /** @brief Start one drive; launch/service workers only while a published owner
  * exists. No wait/dispatch here. @param[in,out] runtime Constructed inactive host.
- * @return OK; NULL_PTR; INVALID_STATE already started/ended/reentrant. */
+ * @return OK; NULL_PTR; INVALID_STATE already started/ended/shutdown/reentrant.
+ * A pre-begin shutdown is done without a drive; it never launches workers or
+ * admits the stored root prompt merely to make destruction possible. */
 cog_result_t cog_cli_host_runtime_begin(cog_cli_host_runtime_t *runtime);
 
 /**
@@ -115,6 +117,7 @@ cog_result_t cog_cli_host_runtime_step(cog_cli_host_runtime_t *runtime,
  * @param[in,out] runtime Owner thread, also valid before begin.
  * @return OK; NULL_PTR. Idempotent, never extends any earlier absolute deadline;
  * pending/retained child results and effect ledgers survive shutdown arbitration.
+ * Before begin, records done immediately (no work has been admitted/forked).
  * This is not a signal handler API and never waits for an ACK or process exit. */
 cog_result_t cog_cli_host_runtime_request_shutdown(cog_cli_host_runtime_t *runtime);
 
@@ -123,7 +126,9 @@ cog_result_t cog_cli_host_runtime_request_shutdown(cog_cli_host_runtime_t *runti
  * @param[in,out] runtime Pointer set NULL on consumption; NULL pointee is OK.
  * @param[in] primary Existing failure, preserved ahead of cleanup errors.
  * @return primary or first cleanup failure; NULL_PTR for NULL pointer argument;
- * INVALID_STATE leaves a live/not-done runtime untouched for continued stepping.
+ * INVALID_STATE leaves a begun/not-done runtime untouched for continued stepping.
+ * A never-begun quiescent runtime may be consumed directly, with or without a
+ * prior request_shutdown; do not begin it just to close it.
  * Close returns execution borrows only after app/core/provider/config/tool/guard
  * borrowers drain; all consumed provider handles are detached and disconnected
  * once on every return, then matching secret storage clears. Net callbacks end
