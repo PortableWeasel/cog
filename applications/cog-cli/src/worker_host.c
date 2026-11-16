@@ -871,6 +871,8 @@ static cog_result_t handoff_receive(cog_cli_worker_host_t *worker,cli_executor_s
     case COG_HANDOFF_CHECKPOINTED:
         if(slot!=&worker->executors[1] || slot->owner_peer!=request.target_peer || slot->app!=NULL ||
            slot->pending_profile==NULL || slot->profile.purpose!=3U ||
+           slot->outbound[COG_CLI_LANE_VIEW-1U].pending_valid ||
+           slot->outbound[COG_CLI_LANE_POLICY-1U].pending_valid ||
            strcmp(slot->profile.probe.session_id,session)!=0 || !same_owner(slot->profile.probe.owner,request.expected) ||
            slot->profile.probe.checkpoint.generation!=request.checkpoint.generation)
             return COG_ERROR_INVALID_STATE;
@@ -886,7 +888,13 @@ static cog_result_t handoff_receive(cog_cli_worker_host_t *worker,cli_executor_s
                 cog_cli_delegation_context_t *bridge;
                 rc=cog_cli_delegation_context_new(&bridge,slot->app,NULL,worker,0U,0U,0U,0U);
             }
-            if(rc==COG_OK) { slot->kind=COG_CLI_EXECUTION_STAGED;slot->phase=CLI_SLOT_PREPARED;response.kind=COG_HANDOFF_PREPARED; }
+            if(rc==COG_OK) {
+                /* These serials belong to the newly constructed executor, not
+                   the retained native stream. Wire receipts/counters survive. */
+                slot->outbound[COG_CLI_LANE_VIEW-1U].provisional_prefix=0U;
+                slot->outbound[COG_CLI_LANE_POLICY-1U].provisional_prefix=0U;
+                slot->kind=COG_CLI_EXECUTION_STAGED;slot->phase=CLI_SLOT_PREPARED;response.kind=COG_HANDOFF_PREPARED;
+            }
         }
         break;
     case COG_HANDOFF_PREPARED:
@@ -942,6 +950,16 @@ static cog_result_t handoff_receive(cog_cli_worker_host_t *worker,cli_executor_s
             }
         }
         if(slot->app!=NULL && !slot->local_done) return COG_ERROR_AGAIN;
+        /* Ordered final disposal must follow consumption of old executor state.
+           Otherwise an unsent old POLICY (which has no owner epoch field) could
+           survive resource reuse and impersonate a new executor prompt. */
+        {
+            cli_control_lane_t *view=&slot->outbound[COG_CLI_LANE_VIEW-1U];
+            cli_control_lane_t *policy=&slot->outbound[COG_CLI_LANE_POLICY-1U];
+            if(view->pending_valid || policy->pending_valid ||
+               (policy->provisional_reply.length!=0U && policy->provisional_reply.data[0]==1U))
+                return COG_ERROR_AGAIN;
+        }
         rc=dispose_execution(slot);
         if(rc==COG_OK) {
             slot->phase=CLI_SLOT_RETAINED;slot->started=false;slot->local_done=true;
