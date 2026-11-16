@@ -27,6 +27,14 @@ target_enable_warnings(cog-cli-config)
 
 add_library(cog-cli-lib STATIC
     src/cli.c
+    src/execution.c
+    src/control.c
+    src/control_receipt.c
+    src/projection_codec.c
+    src/child_context.c
+    src/projection.c
+    src/host_client.c
+    src/host_options.c
     src/app_turn.c
     src/app_tools.c
     src/app_display.c
@@ -44,10 +52,11 @@ target_include_directories(cog-cli-lib
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 target_compile_features(cog-cli-lib PUBLIC c_std_11)
+target_include_directories(cog-cli-lib PRIVATE ${PROJECT_SOURCE_DIR}/libraries/cog-ipc/src)
 
 # cli.c and mock_provider.c use POSIX facilities (select, nanosleep,
 # signal); the _POSIX_C_SOURCE define lives in each source file.
-target_link_libraries(cog-cli-lib PUBLIC cog::core cog::provider cog::obs cog::toolkit cog::net cog::config cog-cli-config)
+target_link_libraries(cog-cli-lib PUBLIC cog::core cog::provider cog::obs cog::toolkit cog::net cog::config cog::orchestrator cog-cli-config)
 
 target_enable_warnings(cog-cli-lib)
 
