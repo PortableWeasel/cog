@@ -55,6 +55,8 @@ with tempfile.TemporaryDirectory(prefix='cog-app-tls-') as root:
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
     try:
         env={key:value for key,value in os.environ.items() if not key.startswith('COG_')}
+        env.update(HOME=root, XDG_CONFIG_HOME=os.path.join(root,'config'),
+                   XDG_STATE_HOME=os.path.join(root,'state-home'))
         env.update(OPENROUTER_API_KEY='synthetic',COG_NET_TEST_CA=cert,COG_APP_TEST_ROOT=root,COG_APP_TEST_STORE=root+'/state/parents',COG_APP_TEST_URL=f'https://localhost:{server.server_port}/v1',COG_OBSERVATION_MODE=mode)
         reserved=None
         if mode=='connect':
