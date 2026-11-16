@@ -1518,6 +1518,10 @@ static cog_result_t host_copied_send(cog_cli_host_runtime_t *r, cog_worker_id_t 
     if (wire == 0U || frame->length == 0U) return COG_ERROR_INVALID_STATE;
     if (*copied == wire && (one_way || r->now_ms < *next)) return COG_ERROR_AGAIN;
     if (!one_way && r->now_ms > UINT64_MAX - CLI_CONTROL_RETRY_MS) return COG_ERROR_LIMIT;
+    /* Missed heartbeat is not a lost native reservation. Service owns its
+     * escalation; retain the exact exchange and its original deadline. */
+    if (cog_orchestrator_health(r->orchestrator, worker) == COG_HEALTH_DEGRADED)
+        return COG_ERROR_AGAIN;
     cog_ipc_message_t bytes = {.data = frame->data, .len = frame->length, .capacity = frame->capacity};
     cog_result_t rc = cog_orchestrator_send(r->orchestrator, worker, &bytes);
     if (rc == COG_OK) {

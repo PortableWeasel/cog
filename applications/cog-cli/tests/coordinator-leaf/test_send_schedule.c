@@ -39,6 +39,11 @@ static void copied_schedule(cog_ipc_endpoint_t *sender,cog_ipc_endpoint_t *recei
     assert(due==2010U);service(sender,receiver);
     assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_OK);
     assert(cog_ipc_endpoint_recv(receiver,&incoming)==COG_ERROR_AGAIN);
+    /* A retry while the exact managed worker is degraded is not a protocol error. */
+    orch.config.unhealthy_threshold=3U;orch.now_ms=1000U;worker.now_ms=2010U;
+    assert(host_copied_send(&worker,managed.id,&bytes,1U,&copied,&due,false)==COG_ERROR_AGAIN);
+    assert(copied==1U && due==2010U);
+    orch.now_ms=0U;
     /* One-way wire needs no future time, even at clock exhaustion. */
     worker.now_ms=UINT64_MAX;
     assert(host_copied_send(&worker,managed.id,&bytes,2U,&copied,&due,false)==COG_ERROR_LIMIT);
