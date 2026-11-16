@@ -245,3 +245,16 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 target_enable_warnings(test_ipc_replay_critic)
 add_test(NAME unit-ipc-replay-critic COMMAND test_ipc_replay_critic)
+
+# O1 native provenance and secret-retirement oracles; no production wrapper.
+add_executable(test_ipc_authenticated test_ipc_authenticated.c)
+target_link_libraries(test_ipc_authenticated PRIVATE cog::ipc)
+target_enable_warnings(test_ipc_authenticated)
+target_link_options(test_ipc_authenticated PRIVATE
+    -Wl,--wrap=getsockopt,--wrap=malloc,--wrap=calloc,--wrap=free,--wrap=send)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_ipc_authenticated PRIVATE
+        -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-free)
+endif()
+add_test(NAME unit-ipc-authenticated COMMAND test_ipc_authenticated)
+set_tests_properties(unit-ipc-authenticated PROPERTIES LABELS "unit;ipc" TIMEOUT 20)

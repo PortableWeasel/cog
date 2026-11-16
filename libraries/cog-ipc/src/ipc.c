@@ -16,53 +16,44 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-#define IPC_DEFAULT_FRAME ((size_t)1048576)
-#define IPC_ID_BYTES 8U
-#define IPC_SESSION_BYTES 128U
-#define IPC_IO_BYTES ((size_t)65536)
-
-typedef struct ipc_frame {
-    size_t length;
-    size_t cursor;
-} ipc_frame_t;
-typedef struct ipc_route {
-    char id[IPC_SESSION_BYTES];
-    cog_peer_id_t peer;
-} ipc_route_t;
-struct cog_ipc_endpoint {
-    int fd;
-    int listener_role;
-    int connecting;
-    int connected;
-    int connect_pending;
-    int clock_set;
-    uint64_t last_now;
-    uint64_t handshake_deadline;
-    cog_result_t failure;
-    cog_peer_id_t peer_id;
-    cog_peer_id_t next_peer;
-    cog_ipc_endpoint_config_t cfg;
-    ipc_frame_t *rx;
-    ipc_frame_t *tx;
-    unsigned char *rx_data;
-    unsigned char *tx_data;
-    ipc_route_t *routes;
-    size_t route_count;
-    size_t rx_head, rx_count, tx_head, tx_count;
-    unsigned char prefix[4];
-    size_t prefix_used;
-    size_t rx_partial;
-    int rx_length_known;
-    unsigned char identity[IPC_ID_BYTES];
-    size_t identity_used;
-    unsigned int direction;
-    cog_ipc_endpoint_t *parent, *next, *previous, *peers, *service_peer;
-    char path[sizeof(((struct sockaddr_un *)0)->sun_path)];
-};
+#include "ipc_internal.h"
 
 static size_t ipc_stride(const cog_ipc_endpoint_t *ep)
 {
     return ep->cfg.max_frame_bytes + 4U;
+}
+/* Volatile stores keep secret retirement observable under Release optimization. */
+static void ipc_wipe(void *data, size_t length)
+{
+    volatile unsigned char *bytes = data;
+    if (bytes != NULL) {
+        while (length != 0U) { *bytes++ = 0U; --length; }
+    }
+}
+static void ipc_wipe_buffers(cog_ipc_endpoint_t *ep)
+{
+    if (ep->cfg.wipe_buffers) {
+        ipc_wipe(ep->rx_data, ep->cfg.receive_frames * ipc_stride(ep));
+        ipc_wipe(ep->tx_data, ep->cfg.send_frames * ipc_stride(ep));
+    }
+}
+static void ipc_native_capture(cog_ipc_endpoint_t *ep)
+{
+#ifdef SO_PEERCRED
+    struct ucred native;
+    socklen_t length = sizeof(native);
+    if (getsockopt(ep->fd, SOL_SOCKET, SO_PEERCRED, &native, &length) < 0 ||
+        length != sizeof(native) || native.pid <= 0) {
+        ep->native_peer_result = COG_ERROR_IO;
+        return;
+    }
+    ep->native_peer.process_id = (uint64_t)native.pid;
+    ep->native_peer.user_id = (uint64_t)native.uid;
+    ep->native_peer.group_id = (uint64_t)native.gid;
+    ep->native_peer_result = COG_OK;
+#else
+    ep->native_peer_result = COG_ERROR_UNSUPPORTED;
+#endif
 }
 static uint32_t ipc_length(const unsigned char *p)
 {
@@ -119,6 +110,21 @@ static cog_result_t ipc_fail(cog_ipc_endpoint_t *ep, cog_result_t rc)
     if (ep->fd >= 0) {
         (void)close(ep->fd);
         ep->fd = -1;
+    }
+    if (ep->cfg.wipe_buffers) {
+        ipc_wipe(ep->tx_data, ep->cfg.send_frames * ipc_stride(ep));
+        memset(ep->tx, 0, ep->cfg.send_frames * sizeof(*ep->tx));
+        ep->tx_head = 0U;
+        ep->tx_count = 0U;
+        if (ep->rx_count < ep->cfg.receive_frames) {
+            size_t slot = (ep->rx_head + ep->rx_count) % ep->cfg.receive_frames;
+            ipc_wipe(ep->rx_data + slot * ipc_stride(ep), ipc_stride(ep));
+            memset(&ep->rx[slot], 0, sizeof(ep->rx[slot]));
+        }
+        ipc_wipe(ep->prefix, sizeof(ep->prefix));
+        ep->prefix_used = 0U;
+        ep->rx_partial = 0U;
+        ep->rx_length_known = 0;
     }
     /* Keep identity and retained complete frames until disconnect/free. */
     ep->failure = rc;
@@ -198,6 +204,7 @@ cog_result_t cog_ipc_endpoint_new_ex(cog_ipc_endpoint_t **out,
         return COG_ERROR_NOMEM;
     }
     ep->fd = -1;
+    ep->native_peer_result = COG_ERROR_AGAIN;
     ep->cfg = cfg;
     ep->rx = calloc(cfg.receive_frames, sizeof(*ep->rx));
     ep->tx = calloc(cfg.send_frames, sizeof(*ep->tx));
@@ -239,6 +246,9 @@ cog_result_t cog_ipc_endpoint_disconnect(cog_ipc_endpoint_t *ep)
     if (ep->fd >= 0) {
         (void)close(ep->fd);
     }
+    ipc_wipe_buffers(ep);
+    memset(&ep->native_peer, 0, sizeof(ep->native_peer));
+    ep->native_peer_result = COG_ERROR_AGAIN;
     ep->fd = -1;
     ep->listener_role = 0;
     ep->connected = 0;
@@ -274,6 +284,7 @@ cog_result_t cog_ipc_endpoint_free(cog_ipc_endpoint_t *ep)
     if (ep->fd >= 0 || ep->failure != COG_OK) {
         (void)cog_ipc_endpoint_disconnect(ep);
     }
+    ipc_wipe_buffers(ep);
     free(ep->rx);
     free(ep->tx);
     free(ep->rx_data);
@@ -360,6 +371,7 @@ cog_result_t cog_ipc_endpoint_accept(cog_ipc_endpoint_t *listener,
         return rc;
     }
     ep->fd = fd;
+    ipc_native_capture(ep);
     ep->connected = 1;
     ep->peer_id = listener->next_peer++;
     for (i = 0U; i < IPC_ID_BYTES; ++i) {
@@ -410,6 +422,7 @@ cog_result_t cog_ipc_endpoint_connect(cog_ipc_endpoint_t *ep, const char *path,
     ep->fd = fd;
     ep->connecting = 1;
     ep->connect_pending = result < 0;
+    if (result == 0) ipc_native_capture(ep);
     return COG_ERROR_AGAIN;
 }
 static cog_result_t ipc_handshake(cog_ipc_endpoint_t *ep)
@@ -431,6 +444,10 @@ static cog_result_t ipc_handshake(cog_ipc_endpoint_t *ep)
             return ipc_fail(ep, COG_ERROR_IO);
         }
         ep->connect_pending = 0;
+        return COG_OK;
+    }
+    if (ep->native_peer_result == COG_ERROR_AGAIN) {
+        ipc_native_capture(ep);
         return COG_OK;
     }
     if (ep->connecting) {
@@ -538,6 +555,10 @@ static cog_result_t ipc_write_unit(cog_ipc_endpoint_t *ep)
     }
     frame->cursor += (size_t)n;
     if (frame->cursor == frame->length + 4U) {
+        if (ep->cfg.wipe_buffers) {
+            ipc_wipe(ep->tx_data + ep->tx_head * ipc_stride(ep), ipc_stride(ep));
+            memset(frame, 0, sizeof(*frame));
+        }
         ep->tx_head = (ep->tx_head + 1U) % ep->cfg.send_frames;
         --ep->tx_count;
     }
@@ -687,6 +708,10 @@ cog_result_t cog_ipc_endpoint_recv(cog_ipc_endpoint_t *ep, cog_ipc_message_t *ms
         return COG_ERROR_OVERFLOW;
     }
     memcpy(msg->data, ep->rx_data + ep->rx_head * ipc_stride(ep), length);
+    if (ep->cfg.wipe_buffers) {
+        ipc_wipe(ep->rx_data + ep->rx_head * ipc_stride(ep), ipc_stride(ep));
+        memset(&ep->rx[ep->rx_head], 0, sizeof(ep->rx[ep->rx_head]));
+    }
     ep->rx_head = (ep->rx_head + 1U) % ep->cfg.receive_frames;
     --ep->rx_count;
     return COG_OK;
@@ -702,6 +727,47 @@ cog_result_t cog_ipc_endpoint_get_peer_id(const cog_ipc_endpoint_t *ep,
     }
     *peer_id = ep->peer_id;
     return COG_OK;
+}
+cog_result_t cog_ipc_endpoint_peer_info(const cog_ipc_endpoint_t *ep,
+                                         cog_peer_id_t peer_id,
+                                         cog_ipc_peer_info_t *info)
+{
+    const cog_ipc_endpoint_t *peer = ep;
+    cog_ipc_peer_info_t copy;
+    if (ep == NULL || info == NULL) return COG_ERROR_NULL_PTR;
+    if (peer_id == 0U) return COG_ERROR_INVALID_ARG;
+    if (ep->fd < 0 && ep->failure == COG_OK) return COG_ERROR_INVALID_STATE;
+    if (ep->listener_role) {
+        for (peer = ep->peers; peer != NULL; peer = peer->next) {
+            if (peer->peer_id == peer_id) break;
+        }
+    }
+    if (peer == NULL || peer->fd < 0 || peer->failure != COG_OK)
+        return COG_ERROR_NOT_FOUND;
+    if (peer->peer_id != 0U && peer->peer_id != peer_id) return COG_ERROR_NOT_FOUND;
+    if (peer->identity_used != IPC_ID_BYTES) return COG_ERROR_AGAIN;
+    if (peer->native_peer_result != COG_OK) return peer->native_peer_result;
+    copy = peer->native_peer;
+    copy.peer_id = peer->peer_id;
+    *info = copy;
+    return COG_OK;
+}
+cog_result_t cog_ipc_send_to_peer(cog_ipc_endpoint_t *listener,
+                                   cog_peer_id_t peer_id,
+                                   const cog_ipc_message_t *message)
+{
+    cog_ipc_endpoint_t *peer;
+    if (listener == NULL || message == NULL) return COG_ERROR_NULL_PTR;
+    if (peer_id == 0U || message->data == NULL || message->len > message->capacity)
+        return COG_ERROR_INVALID_ARG;
+    if (!listener->listener_role || listener->fd < 0) return COG_ERROR_INVALID_STATE;
+    for (peer = listener->peers; peer != NULL; peer = peer->next) {
+        if (peer->peer_id == peer_id) break;
+    }
+    if (peer == NULL || peer->fd < 0 || peer->failure != COG_OK)
+        return COG_ERROR_NOT_FOUND;
+    if (peer->identity_used != IPC_ID_BYTES) return COG_ERROR_INVALID_STATE;
+    return cog_ipc_endpoint_send(peer, message);
 }
 cog_result_t cog_ipc_endpoint_poll(cog_ipc_endpoint_t *ep, int events, int timeout_ms,
                                    int *revents)
