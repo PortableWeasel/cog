@@ -51,6 +51,23 @@ cog_result_t cog_cli_handoff_request(cog_cli_handoff_t *handoff,
  * INDETERMINATE stays frozen for explicit L
  * recovery, no owner_read guess or lost-ACK automatic task reconstruction.
  */
+/** Application-private CGH1 role/phase mapping (see
+ * docs/REAL_CLIENT_HANDOFF_PHASES.md): coordinator QUIESCE to source receives
+ * CHECKPOINTED. After dedicated purpose3 profile ACK, CHECKPOINTED to target
+ * performs exact staged construction and receives PREPARED. Coordinator then
+ * forwards PREPARED to the frozen source; source releases its exact guard and
+ * echoes PREPARED only after successful actual release. Those two PREPARED
+ * replies are distinguished by exact request wire, managed peer and phase.
+ * Only then coordinator CASes; COMMIT goes ONLY to target for guard acquisition,
+ * receives READY, then exact route publication precedes ACTIVATE/ACTIVATE echo.
+ * Every remote reply is HANDOFF lane with outer reply_to naming its request;
+ * exact native binding/session/source/target/expected/next/checkpoint and current
+ * retained phase must match. Send-OK never substitutes for an operation ACK.
+ * Local endpoints use actual direct operation returns, never fabricated replies.
+ * Duplicate retained phases replay their immutable reply without save/release/
+ * CAS/acquire/activation repetition. Unknown retired phases cannot resurrect work.
+ * No failure, timeout or ABORT restores source admission or old owner authority.
+ */
 cog_result_t cog_cli_handoff_step(cog_cli_handoff_t *handoff, bool *done,
     uint64_t *deadline_ms);
 /** @brief Freeze/cancel one phase without rolling back committed authority.
