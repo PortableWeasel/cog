@@ -52,7 +52,9 @@ target_include_directories(cog-cli-lib
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 target_compile_features(cog-cli-lib PUBLIC c_std_11)
-target_include_directories(cog-cli-lib PRIVATE ${PROJECT_SOURCE_DIR}/libraries/cog-ipc/src)
+target_include_directories(cog-cli-lib PRIVATE
+    ${PROJECT_SOURCE_DIR}/libraries/cog-ipc/src
+    ${PROJECT_SOURCE_DIR}/libraries/cog-ipc/private)
 
 # cli.c and mock_provider.c use POSIX facilities (select, nanosleep,
 # signal); the _POSIX_C_SOURCE define lives in each source file.

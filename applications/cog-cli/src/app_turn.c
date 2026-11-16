@@ -110,6 +110,14 @@ cog_result_t cog_cli_finish_partial(cog_cli_app_t *app, cog_result_t reason)
         COG_MESSAGE_INCOMPLETE, false);
     app->active = false; app->provider_active = false; app->continuation_required = true;
     if (app->headless == NULL && (fputc('\n', app->out) == EOF || fflush(app->out) != 0)) return COG_ERROR_IO;
+    if (rc == COG_OK && app->headless != NULL) {
+        if (app->headless->policy_pending) {
+            app->headless->policy_pending = false; app->headless->policy_retirement_pending = true;
+            app->headless->retired_prompt_serial = app->headless->prompt_serial;
+        }
+        cog_state_t next;
+        rc = cli_execution_barrier(app, CLI_AFTER_ASSISTANT_SAVE, CLI_IDLE, &next);
+    }
     return rc;
 }
 static cog_result_t process_finish(cog_cli_app_t *app, cog_state_t *next)

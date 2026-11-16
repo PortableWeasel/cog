@@ -199,6 +199,12 @@ cog_result_t cog_cli_tools_step(cog_cli_app_t *app, cog_state_t *next)
             return COG_ERROR_AGAIN;
         } else return COG_ERROR_AGAIN;
     }
+    if (denied && app->headless != NULL && app->headless->policy_pending) {
+        cli_execution_state_t *h = app->headless;
+        h->policy_pending = false; h->policy_retirement_pending = true;
+        h->retired_prompt_serial = h->prompt_serial;
+        return cli_execution_barrier(app, CLI_AFTER_CONTROL, CLI_POLICY, next);
+    }
     if (denied) {
         static const char text[] = "Tool was not executed: policy denied or durable workspace unavailable.";
         cog_tool_execution_state_t state = COG_TOOL_EXECUTION_PROPOSED;

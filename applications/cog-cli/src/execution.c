@@ -145,6 +145,7 @@ cog_result_t cog_cli_execution_commit_view(cog_cli_app_t *app, uint64_t serial,
         return COG_ERROR_INVALID_STATE;
     h->committed_serial = serial; h->committed_generation = generation; h->committed_sequence = sequence;
     h->publication_pending = false;
+    if (h->policy_retirement_pending) h->policy_retirement_pending = false;
     if (h->newer_view_dirty) {
         h->newer_view_dirty = false; cog_state_t next;
         return cli_execution_barrier(app, h->after_publication, h->resume_state, &next);
@@ -352,6 +353,10 @@ cog_result_t cog_cli_execution_apply_command(cog_cli_app_t *app, const cog_cli_c
     cog_tool_execution_state_t state;
     rc = cog_session_tool_state(app->session, app->assistant, app->call_views[app->tool_index].id, &state);
     if (rc != COG_OK || state != COG_TOOL_EXECUTION_PROPOSED) return COG_ERROR_INVALID_STATE;
+    if (h->publication_pending) return COG_ERROR_AGAIN;
+    cog_state_t next;
+    rc = cli_execution_barrier(app, CLI_AFTER_CONTROL, CLI_POLICY, &next);
+    if (rc != COG_OK) return rc;
     app->policy_decision = cmd->decision == 2U ? COG_TOOLKIT_POLICY_ALLOW : COG_TOOLKIT_POLICY_DENY;
     h->policy_pending = false; h->policy_retirement_pending = true; h->retired_prompt_serial = h->prompt_serial;
     return COG_OK;
