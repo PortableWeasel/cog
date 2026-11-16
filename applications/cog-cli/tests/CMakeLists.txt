@@ -464,6 +464,7 @@ set_tests_properties(cli-headless-native-handoff-timeout PROPERTIES TIMEOUT 145)
 # Includes the actual coordinator source. Link real orchestrator and Q implementations.
 add_executable(test_coordinator_send_schedule coordinator-leaf/test_send_schedule.c)
 target_link_libraries(test_coordinator_send_schedule PRIVATE cog-cli-lib)
+target_enable_warnings(test_coordinator_send_schedule)
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(test_coordinator_send_schedule PRIVATE -ffunction-sections -fdata-sections)
   target_link_options(test_coordinator_send_schedule PRIVATE -Wl,--gc-sections)
