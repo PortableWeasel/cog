@@ -728,6 +728,15 @@ Stage 7 — Implementation. See `docs/IMPLEMENTATION_STRATEGY.md`.
 
 ## Stage 14.G shared fork points
 
+The file backend also preserves the bootstrap no-data boundary when no nonzero
+checkpoint is authoritative. Its finite legacy-name probe refuses ambiguous
+metadata/nodes/index remnants (including their legacy temporary names) during
+ownership admission, guard acquisition or an attempted empty first save/load.
+Inspection errors are not absence. Strict explicit v1 migration and existing
+committed-v2 authority retain their prior behavior; unreferenced v2 generations
+remain nonauthoritative. [Targeted contract](REAL_CLIENT_LEGACY_ADMISSION.md)
+records the header-first scope and preserves the application/store boundary.
+
 The structured session implementation preserves assistant/effect identity by
 returning the existing immutable shared fork point. A nonleaf selection retains
 the current active leaf until explicit `add_message(parent=fork_point)` creates

@@ -23,6 +23,7 @@ set(COG_UNIT_TESTS
     test_session_store
     test_store_adversarial
     test_store_fencing
+    test_store_legacy_admission
     test_obs
     test_obs_types
     test_obs_critic
@@ -102,6 +103,9 @@ endif()
 target_link_options(test_store_fencing PRIVATE
     -Wl,--wrap=fsync,--wrap=renameat,--wrap=linkat,--wrap=write,--wrap=unlinkat
     -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=strdup)
+target_include_directories(test_store_legacy_admission PRIVATE
+    ${PROJECT_SOURCE_DIR}/libraries/cog-core/src)
+target_link_options(test_store_legacy_admission PRIVATE -Wl,--wrap=fstatat)
 # Allocator linker wrappers invalidate the corresponding builtin effects.
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(test_store_fencing PRIVATE
@@ -134,6 +138,8 @@ add_test(NAME unit-session-allocations
 add_test(NAME unit-store-fencing
     COMMAND test_store_fencing
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+add_test(NAME unit-store-legacy-admission COMMAND test_store_legacy_admission)
+set_tests_properties(unit-store-legacy-admission PROPERTIES TIMEOUT 20)
 
 add_test(NAME unit-event
     COMMAND test_event

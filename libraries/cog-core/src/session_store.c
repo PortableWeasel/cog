@@ -5,6 +5,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "cog/session_store.h"
 #include "session_store_codec.h"
+#include "session_store_file.h"
 #include "session_internal.h"
 #include <assert.h>
 #include <errno.h>
@@ -50,6 +51,25 @@ struct cog_store {
     bool auto_save, require_owner, recover_tail;
     cog_store_owner_guard_t *guards;
 };
+
+static const char *const legacy_names[] = {
+    "meta.json", "nodes.jsonl", "index.bin",
+    "meta.json.tmp", "nodes.jsonl.tmp", "index.bin.tmp"
+};
+cog_result_t cog_store_file_legacy_probe(int dir, cog_store_legacy_files_t *out)
+{
+    if (out == NULL) return COG_ERROR_NULL_PTR;
+    cog_store_legacy_files_t found = {0};
+    for (size_t i = 0U; i < sizeof(legacy_names) / sizeof(legacy_names[0]); ++i) {
+        struct stat info;
+        if (fstatat(dir, legacy_names[i], &info, AT_SYMLINK_NOFOLLOW) == 0) {
+            found.present = true;
+            if (i == 0U) found.metadata = true;
+        } else if (errno != ENOENT) return COG_ERROR_IO;
+    }
+    *out = found;
+    return COG_OK;
+}
 
 static cog_result_t valid_id(const char *id)
 {
@@ -274,7 +294,11 @@ static cog_result_t legacy_read(cog_store_t *s, int dir, const char *id,
     cog_store_load_mode_t mode, cog_session_snapshot_t *v, cog_store_load_report_t *report)
 {
     size_t mn = 0U, nn = 0U;
-    cog_result_t rc = read_at(dir, "meta.json", s->write_buffer, s->capacity, &mn);
+    cog_store_legacy_files_t files;
+    cog_result_t rc = cog_store_file_legacy_probe(dir, &files);
+    if (rc != COG_OK) return rc;
+    if (!files.metadata) return files.present ? COG_ERROR_UNSUPPORTED : COG_ERROR_NOT_FOUND;
+    rc = read_at(dir, "meta.json", s->write_buffer, s->capacity, &mn);
     if (rc != COG_OK) return rc;
     rc = read_at(dir, "nodes.jsonl", s->read_buffer, s->capacity, &nn);
     if (rc != COG_OK) return rc == COG_ERROR_NOT_FOUND ? COG_ERROR_IO : rc;
@@ -575,8 +599,11 @@ static cog_result_t file_commit(cog_store_t *s, const cog_session_t *session,
             }
         }
     } else {
-        struct stat st;
-        if (fstatat(dir, "meta.json", &st, AT_SYMLINK_NOFOLLOW) == 0) {
+        cog_store_legacy_files_t files;
+        rc = cog_store_file_legacy_probe(dir, &files);
+        if (rc != COG_OK) goto done;
+        if (files.present && !files.metadata) { rc = COG_ERROR_UNSUPPORTED; goto done; }
+        if (files.metadata) {
             if (append) { rc = COG_ERROR_UNSUPPORTED; goto done; }
             cog_store_load_report_t report;
             rc = legacy_read(s, dir, v.session_id, COG_STORE_LOAD_REPLAY, &old, &report);
@@ -732,8 +759,10 @@ static cog_result_t file_owner_cas(void *ctx, const char *id, cog_store_owner_t 
         if (rc != COG_OK) goto done;
         if (v.inspection_only || (m.owner.epoch == 0U && uncertainty(&v))) { rc = COG_ERROR_INDETERMINATE; goto done; }
     } else {
-        struct stat st;
-        if (fstatat(dir, "meta.json", &st, AT_SYMLINK_NOFOLLOW) == 0) { rc = COG_ERROR_UNSUPPORTED; goto done; }
+        cog_store_legacy_files_t files;
+        rc = cog_store_file_legacy_probe(dir, &files);
+        if (rc != COG_OK) goto done;
+        if (files.present) { rc = COG_ERROR_UNSUPPORTED; goto done; }
     }
     if (!m.present && s->max_sessions != 0U) {
         rc = domain_lock(s, &admission_base, &admission_domain);
@@ -775,6 +804,10 @@ static cog_result_t file_acquire_common(cog_store_t *s, const char *id, cog_stor
         if (rc == COG_OK) rc = validate(&v, id);
         if (rc == COG_OK && v.inspection_only) rc = COG_ERROR_UNSUPPORTED;
         if (rc == COG_OK) uncertain = uncertainty(&v);
+    } else if (rc == COG_OK) {
+        cog_store_legacy_files_t files;
+        rc = cog_store_file_legacy_probe(dir, &files);
+        if (rc == COG_OK && files.present) rc = COG_ERROR_UNSUPPORTED;
     }
     if (rc == COG_OK && uncertain != recovery) rc = recovery ? COG_ERROR_INVALID_STATE : COG_ERROR_INDETERMINATE;
     if (rc == COG_OK && durable_confirm(dir, &m) != COG_OK) rc = COG_ERROR_INDETERMINATE;
@@ -812,8 +845,8 @@ static cog_result_t file_release(void *ctx, void *guard)
 
 static bool legacy_file(const char *name)
 {
-    static const char *const names[] = {"meta.json", "nodes.jsonl", "index.bin", "meta.json.tmp", "nodes.jsonl.tmp", "index.bin.tmp"};
-    for (size_t i = 0U; i < sizeof(names) / sizeof(names[0]); ++i) if (strcmp(name, names[i]) == 0) return true;
+    for (size_t i = 0U; i < sizeof(legacy_names) / sizeof(legacy_names[0]); ++i)
+        if (strcmp(name, legacy_names[i]) == 0) return true;
     return false;
 }
 static cog_result_t file_delete(void *ctx, const char *id)
