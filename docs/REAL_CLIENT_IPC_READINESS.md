@@ -157,3 +157,35 @@ EAGAIN. These are scoped IPC checks, not completed cooperative core/O acceptance
 Independent source/runtime review and O-branch integration remain required
 before dependent core bodies. Main and the accepted frozen profile are untouched;
 no paid requests or gate closure occurred.
+
+## Independent implementation review
+
+Different critic reviewed exact author850fd52 (helperf79ea01) against the private
+88946e8 gate, actual handshake/read/write/one-unit service code and queue ownership.
+No production defect found. The helper's sole syscall is one poll(timeout0), and
+it neither mutates endpoint/queue/clock/auth proof nor allocates. Handshake branch
+selection matches the native pending-connect/capture/sender/receiver stages. Local
+completed payload/zero-frame publication and retained RX/failure remain actionable;
+partial native data needs IN. Established idle socket writability never qualifies.
+Finite core deadlines/event pressure and first-proof capture remain caller-owned;
+aggregate service is not a substitute for the one-unit credential-proof barrier.
+
+Independent addition to the existing readiness fixture uses a real connected Unix
+pair with SO_SNDBUF pressure and a 64KiB queued actual frame. After the write returns
+AGAIN with retained TX and no inbound data, readiness is false without mutation;
+receiving real peer bytes makes it true again, without flushing the sender. Actual
+invalid-native-fd POLLNVAL is actionable without endpoint mutation. A temporary O3
+mutation that returns true merely for queued TX is rejected by this new assertion.
+No production source or shared CMake was edited by the critic.
+
+Fresh independent strict Release GCC14/Clang19 and separate Clang ASan+UBSan+LSan:
+8/8 identical exact selected IPC tests EACH, including strengthened readiness and
+O1 provenance/wipe critics. Separate GCC Debug TSan:6/6 non-replay IPC tests PASS.
+ASan leak/halt and UBSan/TSan halt options were set. Independent build/log prefix
+is `/tmp/cog-ready-independent-{gcc,clang,asan,tsan}`; the frozen shipped curl/c-ares
+profile was passed through the same explicit audited paths as author evidence.
+Builds cover the selected real IPC targets rather than claiming unfinished O core
+bodies/full application runtime. Main, O integration and dependency bytes unchanged.
+
+Scoped independent implementation verdict: **PASS** helper850fd52 plus the retained
+critic test/evidence amendment. This is5fcaef7 only, not a whole O/runtime/P gate.
