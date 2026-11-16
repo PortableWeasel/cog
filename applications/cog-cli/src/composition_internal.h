@@ -171,6 +171,13 @@ struct cli_delegation_handle {
     size_t task_lengths[CLI_HOST_MAX_CHILDREN];
     cli_host_bytes_t arguments, output, codec, pending, reply;
     uint64_t reservation, group, request_wire, deadline_ms;
+    uint64_t last_now_ms; /**< This handle's last validated start/poll/cancel
+       callback sample, initially0. Check required pointers and callback state,
+       then reject now<last_now_ms with INVALID_ARG before any output/state/IO
+       mutation. Equal timestamps are valid. After validation retain now even
+       if later drive reports a failure; never move the clock backward or use
+       another handle/app clock as this history. Original deadline_ms remains
+       independent and cannot be extended by poll/cancel/retry. */
     cog_agent_id_t destination;
     const char *message; /**< Borrow into this handle's copied argument arena. */
     size_t message_length;
