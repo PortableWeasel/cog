@@ -11,6 +11,8 @@
 #define COG_CLI_EXECUTION_H
 #include "configuration.h"
 #include "observation.h"
+#include "control.h"
+#include "projection.h"
 #include <cog/agent.h>
 #include <cog/orchestrator.h>
 
@@ -170,10 +172,18 @@ cog_result_t cog_cli_execution_reload_resolved(cog_cli_app_t *app,
  * @param[out] mutation_serial Exact nonreused local serial, not CGR cursor.
  * @param[out] view Complete actual history+active/incomplete snapshot.
  * @return OK; NULL_PTR; AGAIN no pending view; LIMIT actual view cannot fit.
- * View is immutable until exact commit or app cleanup; encode/copy before step.
+ * View borrows a DEDICATED frozen copy arena, distinct from actual mutable drain
+ * buffers. It is immutable until exact commit or explicit failed-feed teardown;
+ * This publication barrier applies to PRIMARY conversation. Child conversation
+ * remains actual durable K state but is not a root CGD1 projection; children
+ * publish bounded CGA status/result, never wait for an undeclared conversation
+ * ACK. Child ASK is noninteractive identified no-effect DENY before STARTED.
+ * later drain mutations set newer_view_dirty and cannot overwrite this copy.
  * A private static PUBLICATION state gates headless effects: save/stage new user,
  * accepted TEXT, terminal assistant/result and policy/control changes, then
- * yield before provider send/tool start/next input. One-dispatch headless slices
+ * yield before provider send/tool start/next input. Split those phases INSIDE
+ * existing input/finish/STARTED handlers; one-dispatch alone is insufficient.
+ * One-dispatch headless slices
  * leave no second ordinary handler between mutation and capture. Do not fwrite
  * uncommitted headless text. Existing standalone rendering remains unchanged.
  * Control/cancel/provider/tool drain and deadlines still make bounded progress;
@@ -189,11 +199,51 @@ cog_result_t cog_cli_execution_copy_view(cog_cli_app_t *app,
  * @return OK (exact duplicate idempotent); NULL_PTR; INVALID_STATE mismatch;
  * PROTOCOL conflicting duplicate. No allocation/effect/input in this call;
  * static publication event resumes next ordinary action on a later owner slice.
+ * A newer_view_dirty marker forces capture/commit of newer actual drain state
+ * before ordinary work resumes. Lost parent/projection feed may end teardown
+ * only with retained error and durable incomplete state, never forged commit.
  * Identity exhaustion freezes without dropping accepted output; source app view
  * remains inspectable/durable even if no successful wire publication occurred.
  */
 cog_result_t cog_cli_execution_commit_view(cog_cli_app_t *app,
     uint64_t mutation_serial, uint64_t generation, uint64_t sequence);
+
+/** @brief Copy actual current ASK metadata, no approval or prompt output.
+ * @param[in] app Owner. @param[out] serial Nonreused executor prompt serial.
+ * @param[out] view Nonce0 until coordinator assignment, exact session/node/
+ * ordinal/generation/deadline/static descriptor name. Copy before next mutation.
+ * @return OK; NULL_PTR; AGAIN no current prompt. No allocation or state changes.
+ * Worker POLICY_STATE carries this structure; do not encode it in status text.
+ */
+cog_result_t cog_cli_execution_copy_policy(const cog_cli_app_t *app,
+    uint64_t *serial, cog_cli_policy_view_t *view);
+
+/** @brief Copy real active/published R12 generation identities, never infer from
+ * a publication ACK. @param[in] app Owner. @param[out] active Current pinned
+ * provider generation; @param[out] published Future if present else current.
+ * @return OK; NULL_PTR. No callbacks/allocation/mutation. Remote view/delegate
+ * frames carry these facts so old-turn delegation clones the OLD pinned mirror. */
+cog_result_t cog_cli_execution_copy_configuration(const cog_cli_app_t *app,
+    uint64_t *active, uint64_t *published);
+
+/** @brief Apply one independently role-checked/deduped executor command.
+ * @param[in,out] app Current owner, outside callbacks; never staged/frozen source.
+ * @param[in] command Bounded decoded body. @param[in] owner Exact current tuple.
+ * @param[in] prompt_serial POLICY only,0 otherwise; matching actual pending call.
+ * @return OK admission once; NULL_PTR; INVALID_STATE stale owner/anchor/prompt;
+ * DENIED inappropriate child command; OVERFLOW/AGAIN nothing accepted; command
+ * validation/IO/LIMIT error. Caller retains exact original/result in bounded
+ * dedup cache so retry never repeats this admission. Root supports SUBMIT/
+ * CONTINUE/POLICY/CANCEL/FORK; child CANCEL only (ASK denies noninteractively).
+ * Coordinator-only RELOAD/
+ * HANDOFF/SHUTDOWN/RESYNC do not become model text. Check full byte validity and
+ * same-session safe fork or current incomplete leaf; no queued authorization.
+ * POLICY checks real PROPOSED call+guard before any STARTED/effect. No command
+ * can change fixed child policy or use a nonce for another prompt/attempt.
+ */
+cog_result_t cog_cli_execution_apply_command(cog_cli_app_t *app,
+    const cog_cli_command_t *command, cog_store_owner_t owner,
+    uint64_t prompt_serial);
 
 #ifdef __cplusplus
 }

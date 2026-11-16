@@ -38,8 +38,25 @@ typedef enum cog_cli_control_kind {
     COG_CLI_CONTROL_DELEGATE_RESULT,
     COG_CLI_CONTROL_DELEGATE_RESULT_ACK,
     COG_CLI_CONTROL_MAILBOX_POLL,
-    COG_CLI_CONTROL_MAILBOX_RESULT
+    COG_CLI_CONTROL_MAILBOX_RESULT,
+    COG_CLI_CONTROL_EXECUTOR_COMMAND,
+    COG_CLI_CONTROL_EXECUTOR_COMMAND_RESULT,
+    COG_CLI_CONTROL_POLICY_STATE,
+    COG_CLI_CONTROL_RESYNC_VIEW,
+    COG_CLI_CONTROL_DELEGATE_RESERVE,
+    COG_CLI_CONTROL_DELEGATE_RESERVATION,
+    COG_CLI_CONTROL_DELEGATE_RESERVATION_RELEASE,
+    COG_CLI_CONTROL_CHILD_START_ACK
 } cog_cli_control_kind_t;
+
+/** Independent stop/wait lanes; IDs/cache/watermark are scoped by full identity
+ * AND this lane. A sibling's higher wire ID never consumes another receipt. */
+typedef enum cog_cli_control_lane {
+    COG_CLI_LANE_COMMAND = 1, COG_CLI_LANE_UPDATE, COG_CLI_LANE_VIEW,
+    COG_CLI_LANE_POLICY, COG_CLI_LANE_DELEGATE, COG_CLI_LANE_MAILBOX,
+    COG_CLI_LANE_PROFILE, COG_CLI_LANE_HANDOFF, COG_CLI_LANE_REPLAY,
+    COG_CLI_LANE_CANCEL
+} cog_cli_control_lane_t;
 
 /** Every field is copied/validated before ingress can acquire a role. Bind this
  * view to the protected (fabric,actual peer,immutable kernel proof) and retained
@@ -49,6 +66,7 @@ typedef enum cog_cli_control_kind {
  */
 typedef struct cog_cli_control_message {
     cog_cli_control_kind_t kind;
+    cog_cli_control_lane_t lane;
     uint64_t runtime_incarnation; /**< Fresh nonzero coordinator lifetime, checked
        entropy, never restored from PID/time/store/client claim. UI_HELLO may
        use0 to discover it; all other messages require the known exact value. */
@@ -70,6 +88,45 @@ typedef struct cog_cli_control_message {
     size_t payload_len; /**< Exact constructor-bounded bytes, at most UINT32_MAX. */
 } cog_cli_control_message_t;
 
+/** Typed UI/executor command union; unused scalar/pointer fields MUST be0/NULL. */
+typedef enum cog_cli_command_kind {
+    COG_CLI_COMMAND_SUBMIT = 1, COG_CLI_COMMAND_CONTINUE,
+    COG_CLI_COMMAND_POLICY, COG_CLI_COMMAND_CANCEL, COG_CLI_COMMAND_RELOAD,
+    COG_CLI_COMMAND_HANDOFF, COG_CLI_COMMAND_SHUTDOWN, COG_CLI_COMMAND_RESYNC,
+    COG_CLI_COMMAND_FORK
+} cog_cli_command_kind_t;
+typedef struct cog_cli_command {
+    cog_cli_command_kind_t kind;
+    uint64_t observed_generation, observed_sequence;
+    const char *text; /**< SUBMIT/CONTINUE/RELOAD only, strict full UTF-8 suffix. */
+    size_t text_len;
+    const char *target_session_id; /**< POLICY only, root or admitted child. */
+    uint64_t node_id, nonce; /**< CONTINUE/FORK node; POLICY node+nonce. */
+    uint16_t call_ordinal;
+    uint8_t decision; /**< POLICY deny1/allow2. */
+    uint8_t reload_field; /**< RELOAD model1/base-url2/credential-ref3. */
+    cog_agent_id_t agent_id; /**< CANCEL,0 primary. */
+    cog_worker_id_t target; /**< HANDOFF,both0 local. */
+} cog_cli_command_t;
+
+/** @brief Encode exact typed command body from HEADLESS_CONTROL's opcode table.
+ * @param[in] command Borrowed view. @param[out] output NULL iff capacity0.
+ * @param[in] capacity Bytes. @param[out] required Exact bytes.
+ * @return OK; NULL_PTR; INVALID_ARG scalar/unused field; LIMIT; OVERFLOW changes
+ * required only. All regions nonoverlapping; no other output changes on failure.
+ * No allocation/authorization/admission; same prefix/error order as CGL1 codec. */
+cog_result_t cog_cli_command_encode(const cog_cli_command_t *command,
+    void *output, size_t capacity, size_t *required);
+/** @brief Decode command transactionally, strings copied to caller arena.
+ * @param[in] input Bytes; @param[in] input_len Exact length.
+ * @param[out] command View; @param[out] storage Text+ID NUL strings;
+ * @param[in] capacity Bytes, NULL storage iff0; @param[out] required Exact bytes.
+ * @return OK; NULL_PTR; PROTOCOL opcode/shape/UTF-8/scalar/trailing; LIMIT;
+ * OVERFLOW changes required only. Outputs unchanged otherwise; nonoverlap.
+ * Same pointer/shape-before-capacity validation, no callbacks or allocation. */
+cog_result_t cog_cli_command_decode(const void *input, size_t input_len,
+    cog_cli_command_t *command, void *storage, size_t capacity, size_t *required);
+
 /**
  * @brief Encode one structurally valid immutable CGL1 frame.
  * @param[in] message Caller view; @param[out] output NULL iff capacity0.
@@ -77,10 +134,10 @@ typedef struct cog_cli_control_message {
  * @return OK; NULL_PTR; INVALID_ARG scalar/type/length mismatch; LIMIT arithmetic;
  * OVERFLOW changes only required. Other errors change no output, including
  * required. No allocation, secret logging, semantic acceptance or callbacks.
- * Literal layout: magic CGL1(4), kind u8, runtime/sender/wire/reply u64, worker
+ * Literal layout: magic CGL1(4), kind u8,lane u8, runtime/sender/wire/reply u64, worker
  * incarnation/number u64, owner_peer/agent/attempt u64, session-length u8 then
  * session UTF-8 bytes, payload-length u32 then payload; all integers big-endian.
- * Kind values1..21 above are pinned. No padding/trailing/native pointers.
+ * Kind values1..29/lane1..10 above are pinned. No padding/trailing/native pointers.
  * Discovery exception: UI_HELLO alone permits runtime0/session empty(length0),
  * worker/owner/agent/attempt0. Client knows only socket; server's authenticated
  * response supplies actual root session/runtime before any bound command.
@@ -108,7 +165,8 @@ cog_result_t cog_cli_control_decode(const void *input, size_t input_len,
     cog_cli_control_message_t *message, void *storage, size_t capacity,
     size_t *required);
 
-/** Retired watermark is sender-stream scoped, NOT a CGA semantic prefix. One
+/** Retired watermark is (runtime,sender,managed worker,session,agent,attempt,LANE)
+ * scoped, NOT a CGA semantic prefix. One
  * exact pending frame and last unconsumed final disposition are retained with
  * original bytes; after final-receipt consumption, a higher valid wire retires
  * proof into the watermark. Covered IDs are uniformly stale-rejected before

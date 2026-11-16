@@ -776,6 +776,15 @@ nonces and cannot replay input/effects. Static application tool-table references
 reuse original workspace descriptors alongside bounded delegation/mailbox tools;
 failed partial group reservation drains nonexecuting registry prefixes. Dedicated
 worker/client step hosts retain one endpoint reader and explicit cleanup owners.
+The [N iteration map](REAL_CLIENT_HEADLESS_PASSES.md) and
+[process/authority diagram](headless-integration.svg) assemble the pass1 surface
+and all20/R13/R14 call paths. Native worker management is library-owned CGW1;
+private CGL1 uses independently reserved per-attempt lanes, authoritative global
+pre-STARTED reservation and actual pinned generation facts. Primary ASK is
+resynchronized; child ASK deliberately denies noninteractively with durable
+identified no-effect results. Child SYSTEM context records real provenance before
+effects, but volatile receipt/prefix/placement state is never claimed recoverable
+after coordinator crash. No automatic replay/rebind or live migration is added.
 
 Stage 6 — Headers first. Design all public APIs as headers before any
 implementation. Three iterations:

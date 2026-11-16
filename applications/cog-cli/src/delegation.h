@@ -19,7 +19,9 @@ extern "C" {
 #endif
 
 /** @brief Constructor for one app's bounded coordinator/worker tool bridge.
- * @param[out] out NULL on failure, match free.
+ * @param[out] out NULL on failure; on success app owns installed context until
+ * app_free calls context_free after all tool handles are destroyed. Caller has
+ * a borrowed pointer only, not a second destruction obligation.
  * @param[in,out] app Borrowed ordinary executor; outlives tool handles/context.
  * @param[in,out] coordinator Local coordinator or NULL.
  * @param[in,out] worker Worker host or NULL; EXACTLY one bridge owner non-NULL.
@@ -27,7 +29,11 @@ extern "C" {
  * zero for primary. Child group members/placement are trusted admitted state.
  * @param[in] mailbox_entries Finite count,default8,max64; @param[in] mailbox_bytes
  * Copied text total,default65536,max1MiB; fixed constructor arrays, no growth.
- * @return OK; NULL_PTR; INVALID_ARG; LIMIT; NOMEM. No model/tool/task side effect.
+ * @return OK; NULL_PTR; INVALID_ARG; INVALID_STATE app already begun/attached;
+ * LIMIT; NOMEM. No model/tool/task side effect. Attach exactly once after resolved
+ * execution_new but BEFORE begin. Static descriptor schemas are selected by
+ * executor role before provider preflight; userdata binds here, and restored
+ * PROPOSED admission cannot run before this attachment. No late tool registration.
  * Static context tag selects local/worker adapter; no mutable registry or host
  * callback registration. No credentials or resolver authority is retained here.
  */
@@ -35,15 +41,36 @@ cog_result_t cog_cli_delegation_context_new(cog_cli_delegation_context_t **out,
     cog_cli_app_t *app, cog_cli_host_runtime_t *coordinator,
     cog_cli_worker_host_t *worker, cog_agent_id_t agent, uint64_t group,
     size_t mailbox_entries, size_t mailbox_bytes);
-/** @brief Consume bridge only after every borrowing tool handle is destroyed.
+/** @brief App-private destructor after every borrowing tool handle is destroyed.
  * @param[in,out] context NULL is OK. @return OK; INVALID_STATE live tool borrow.
+ * Clears app alias while app is alive; app_free then continues context teardown.
  * Does not release core registry or accepted task ownership behind caller. */
 cog_result_t cog_cli_delegation_context_free(cog_cli_delegation_context_t *context);
+
+/** @brief Resolve coordinator-owned reservation while parent call is PROPOSED.
+ * @param[in,out] context App bridge with one prepared validated delegation handle.
+ * @param[out] ready True only for exact held global slot/request-credit grant.
+ * @return OK; AGAIN pending remote reply; NULL_PTR; LIMIT exhausted global budget;
+ * ABORTED/timeout/driver error. Owner service only, no callbacks/recursive run.
+ * Local bridge reserves directly; remote PRIMARY exchanges DELEGATE_RESERVE/
+ * RESERVATION without starting a task or saving STARTED. State binds exact
+ * parent owner/node/ordinal/call ID/pinned config/deadline/tasks. Handle new_
+ * reserves local output/state only; it cannot promise global credit itself.
+ * App's static PREPARE phase polls this helper BEFORE durable STARTED/start.
+ * Refusal denies unstarted call with no effect. Save failure/prepared cancel/
+ * destruction releases held reservation (or expires without task execution).
+ * Grant is monotonic/idempotent, consumes no tool permission and cannot extend
+ * parent deadline. Started group permanently charges worst-case request credit;
+ * known-never-started reservation can refund held credit, unknown usage cannot.
+ */
+cog_result_t cog_cli_delegation_prepare(cog_cli_delegation_context_t *context,
+    bool *ready);
 
 /** Static strict schemas with additionalProperties=false, all six async ops:
  * delegate: {"tasks":[{"task":STRING},...]} required1..16 tasks (host child count
  * may be lower), no placement/config/policy/path/model fields. Primary only.
- * send_message: {"agent_id":INTEGER,"message":STRING}, positive admitted sibling
+ * send_message: {"agent_id":STRING,"message":STRING}, canonical1..20 digit
+ * nonzero decimal uint64 (no leading zero; overflow checked), admitted sibling
  * ID in same group/parent only. receive_messages: {} copies current bounded
  * mailbox once, no wait/new model turn. Child only; no recursive delegate.
  * Text bounds use argument/mailbox constructor capacities; JSON depth bounded.
@@ -56,8 +83,9 @@ cog_result_t cog_cli_delegation_context_free(cog_cli_delegation_context_t *conte
 extern const cog_tool_table_t cog_cli_delegation_tools;
 
 /** Execution invariants for the static tool table:
- * - new_ validates/copies strict args and reserves finite slots/credits/output,
- *   no task execution. start runs once only AFTER parent durable STARTED save.
+ * - new_ validates/copies strict args and reserves local output/state, no task
+ *   execution. Owner PREPARE obtains global reservation before STARTED. start
+ *   runs once only AFTER that grant and actual parent durable STARTED save.
  * - delegate reserves whole group's slots/credit before effects, pins resolved
  *   parent generation/child permission/deadline, uses agent_spawn/copy_config and
  *   exact local borrow or authenticated worker control. Existing agent_spawn is

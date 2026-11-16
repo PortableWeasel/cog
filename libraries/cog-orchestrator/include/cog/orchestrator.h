@@ -89,7 +89,8 @@ typedef struct cog_orchestrator_config {
     /** Missed heartbeats before marking a core as dead. */
     uint32_t unhealthy_threshold;
 
-    /** Maximum subagents per core (for placement decisions). */
+    /** Maximum subagents per core (placement);0 defaults4,<=UINT32_MAX so the
+     * native heartbeat representation never silently truncates capacity. */
     size_t default_core_capacity;
 
     /** If true, automatically spawn a replacement when a core dies. */
@@ -131,6 +132,47 @@ typedef struct cog_orchestrator_event {
     const void *data; /**< Application frame in caller storage, NULL for control. */
     size_t data_len;
 } cog_orchestrator_event_t;
+
+/** Native management frames use this type; app-private frames use any other
+ * permitted type (headless CGL1 uses APPLICATION_TYPE), never guessed text. */
+enum { COG_ORCHESTRATOR_CONTROL_TYPE = 0x7f01,
+       COG_ORCHESTRATOR_APPLICATION_TYPE = 0x7f02 };
+typedef enum cog_worker_control_kind {
+    COG_WORKER_HELLO = 1, COG_WORKER_HEARTBEAT,
+    COG_WORKER_SHUTDOWN, COG_WORKER_SHUTDOWN_ACK
+} cog_worker_control_kind_t;
+/** Pure scalar CGW1 native protocol. PID/UID never come from its bytes. */
+typedef struct cog_worker_control {
+    cog_worker_control_kind_t kind;
+    cog_worker_id_t worker;
+    uint32_t active_subagents;
+    uint64_t deadline_ms;
+    cog_result_t outcome;
+} cog_worker_control_t;
+/** @brief Encode one native worker HELLO/heartbeat/shutdown record.
+ * @param[in] message Scalar view; @param[out] output NULL iff capacity0.
+ * @param[in] capacity Bytes; @param[out] required Exact37 bytes on OK/OVERFLOW.
+ * @return OK; NULL_PTR; INVALID_ARG; OVERFLOW changes required only. All regions
+ * nonoverlapping; every other output unchanged. No allocation/IO/authority.
+ * Literal37 bytes: CGW1(4),kind u8,worker incarnation/number u64,active u32,
+ * deadline u64,outcome signed i32, all big-endian. HELLO active/deadline0,OK;
+ * HEARTBEAT deadline0,OK; SHUTDOWN active0,deadline>0,OK; ACK active0,deadline>0,
+ * known outcome0/-1..-18. Worker ID both nonzero; trailing bytes invalid.
+ * Runtime additionally checks live spawn/kernel proof, configured capacity,
+ * current role, exact shutdown deadline and managed identity. ACK means local
+ * executors drained, not CGA result acceptance or proof escaped descendants died.
+ */
+cog_result_t cog_orchestrator_worker_encode(const cog_worker_control_t *message,
+    void *output, size_t capacity, size_t *required);
+/** @brief Decode CGW1 scalar record transactionally, no retained input pointer.
+ * @param[in] input Required bytes; @param[in] input_len Exact37;
+ * @param[out] message Output unchanged on failure, no overlapping input/output.
+ * @return OK; NULL_PTR; PROTOCOL bad prefix/kind/scalars/length; UNSUPPORTED
+ * recognizable CGW version other than1. Pointer/prefix/shape order, no allocation.
+ * Decoding cannot register/authenticate worker, update heartbeat, kill or reap.
+ */
+cog_result_t cog_orchestrator_worker_decode(const void *input, size_t input_len,
+    cog_worker_control_t *message);
 
 /* ── Lifecycle ──────────────────────────────────────────────────── */
 
@@ -182,13 +224,20 @@ void cog_orchestrator_free(cog_orchestrator_t *orch);
  * and HELLO echoes the exact managed incarnation/number. Connection order and
  * user-provided PID text grant nothing. HEALTHY/placement require validated
  * readiness; no session task is admitted on UNKNOWN readiness.
+ * Child exec has an explicit minimal PATH=/usr/bin:/bin,LC_ALL=C.UTF-8 environment;
+ * no inherited credential/config/proxy/loader variables. Fixed startup argv
+ * conveys control path, managed identity, native parent PID and constructor
+ * capacity/frame reservations only. Trust/net/profile settings follow private
+ * authenticated bootstrap, never a generic arbitrary argv/environment override.
+ * Reset inherited blocked INT/TERM in the child before exec; host mask unchanged.
  *
  * A late connection/HELLO from a reaped worker cannot bind its replacement even
  * if an OS PID is recycled. Endpoint/role references close on retirement; worker
  * IDs never reuse. Pre-auth stop/kill uses the owned reservation's native PID.
  *
  * @param[in,out] orch       Orchestrator.
- * @param[in]     binary_path Path to the cog core binary.
+ * @param[in]     binary_path Trusted absolute path to the cog core binary;
+ * no shell/PATH search or task/model-selected executable.
  * @param[out]    out_worker_id Managed process reservation, unchanged on failure.
  * @return COG_OK on success.
  * @return COG_ERROR_NULL_PTR if @p orch, @p binary_path, or

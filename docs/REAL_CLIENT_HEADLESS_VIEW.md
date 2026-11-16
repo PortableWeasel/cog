@@ -13,6 +13,10 @@ PUBLICATION state and one-dispatch core slices. Save/stage user input before
 provider send; retain accepted TEXT; save terminal assistant/tool result before
 next tool/model. Each visible change marks one immutable pending view, yields
 before the next ordinary effect, and disables direct app fwrite. Between slices
+the actual in-handler user/save→send and STARTED→start phases are separated;
+one dispatch per slice alone cannot make that guarantee. A dedicated frozen-copy
+arena holds the pending view while cancellation/drain may mutate actual app
+buffers; newer_view_dirty must commit a later copy before ordinary work resumes.
 execution_copy_view copies the complete actual app snapshot. Local capture calls
 projection_commit directly. Remote primary encodes EXECUTOR_VIEW with its exact
 current owner tuple and nonreused mutation serial, retaining bytes until exact
@@ -33,6 +37,14 @@ No client output socket backpressures the canonical ring. Each bounded client
 owns copied send/resync frames. A slow client gets explicit eviction GAP and a
 full committed snapshot at one anchor, then requests DATA after it; another GAP
 repeats resync. Accepted input/task/tool effects are never invoked for display.
+The wire order is REPLAY(GAP,empty payload) then RESYNC_VIEW(exact copied CGV1).
+Only a client awaiting resync may install that noncontiguous anchor, with matching
+discovered session/current generation and sequence>=reported GAP last. Server may
+advance meanwhile but cannot mutate the copied transfer. After full decode/render
+the client sends RESYNC with observed anchor; server then sends DATA after it or
+another GAP. No DATA/render/input/policy is accepted from a partial resync. Runtime
+commits initial actual empty/root view before publishing/accepting UI clients, so
+fresh discovery never relies on an unrelated manufactured snapshot.
 An app result being durable, a child semantic update accepted, a command copied,
 a canonical view committed and a client render acknowledged are distinct facts.
 
@@ -48,24 +60,26 @@ are nonzero, published>=active; no view claims future publication was activated.
 Agent row order is ascending admitted agent ID, no duplicates: agent ID u64,
 attempt u64, group u64, pinned config generation u64, session string, status u8,
 outcome signed i32, status text string, result text string. IDs/attempt/config
-nonzero; status/outcome obey existing CGA1 predicates. Nonterminal result empty;
+nonzero; PENDING/RUNNING/COMPLETED require OK; FAILED/CANCELLED/TIMEOUT require
+known negative result. These are core-meaningful predicates, not reliance on a
+looser nested codec. Nonterminal result empty;
 terminal result is the copied actual accepted notification, not invented history.
 Core notification copies/outbox lifetime precede local ACK; UI ring success is
 not required to dispose a failed feed during drain, but copied result ownership
 is retained until parent result persistence or consuming teardown with failure.
 
-Policy rows are sorted by(session UTF-8 bytes,assistant node,call ordinal), no
-duplicates: session string, assistant node u64, zero-based immutable call ordinal
+Policy count is0 or1, PRIMARY only: session string, assistant node u64,
+zero-based immutable call ordinal
 u16, prompt nonce u64, pinned config generation u64, absolute deadline u64, static
-tool name string. Node/nonce/config/deadline nonzero. Session names root or one
-currently admitted child row. Ordinal resolves exact original tool-call order,
+tool name string. Node/nonce/config/deadline nonzero; configuration equals actual
+root active generation. Session names root. Ordinal resolves exact original tool-call order,
 including literal IDs containing whitespace/newline/@-looking bytes; it never
 selects a filtered pending list or changes a full original ID. Tool name is the
 known descriptor name, no arguments/credentials/opaque values. Nonce is fresh
 monotonic coordinator identity, checked exhaustion before prompt/STARTED/effects.
 
-Constructor proves worst-case root display+bounded agent status/results+all
-root/child policy rows fit ONE projection/frame and all snapshot/send arenas.
+Constructor proves worst-case root display+bounded agent status/results+one
+root policy row fit ONE projection/frame and all snapshot/send arenas.
 No truncation of text/status/results to make it fit. CGV1 decoder validates all
 lengths/scalars/ordering/identity/UTF-8/anchors BEFORE writes; small caller arenas
 return only required counts/bytes and preserve every other byte/metadata.
@@ -79,8 +93,9 @@ commit, POLICY includes exact observed canonical anchor/session/node/immutable
 ordinal/nonreused nonce and decision. Coordinator checks current controller and
 still-current prompt, then owner rechecks actual PROPOSED call and guard before
 ALLOW. Exact prompt retransmission is not a persistent grant. Parent approval of
-delegate never changes child global policy. Child ASK is independent and visible
-after UI reconnect/GAP. Stale/prequeued/cross-session/cross-attempt ALLOW fails
+delegate never changes child global policy. Child ASK denies noninteractively
+with identified durable no-effect result before STARTED; no child UI approval
+feature is promised. Stale/prequeued/cross-session/cross-attempt ALLOW fails
 without STARTED/effect; no policy callback authority crosses a worker boundary.
 
 Ordinary SUBMIT queued during active work retains continuation_authorized=false.

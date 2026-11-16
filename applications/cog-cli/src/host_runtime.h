@@ -49,9 +49,14 @@ typedef struct cog_cli_host_runtime_config {
        arithmetic; no refund from unknown usage and no fan-out multiplication.
        Credit exhaustion refuses admission before STARTED/spawn, never truncates. */
     cog_cli_child_profile_t child_profile; /**< Immutable child ceiling. Zero
-       tool mask means text-only children. CLI --child-tools explicitly selects
+       tool mask disables workspace tools; admitted sibling messaging stays
+       available under the same policy. CLI --child-tools explicitly selects
        read/search/edit/command subset; never enables anything parent forbids. */
     size_t ui_clients; /**< Default4, max16; one controller, others read-only. */
+    uint32_t controller_reconnect_ms; /**< Default3000,max30000. Disconnected
+       controller role lease expires independently of accepted command receipts;
+       new client may claim role afterward, never inherit its old command IDs or
+       queued answers. Old incarnation may query receipts as read-only only. */
     size_t command_records; /**< Default64, max1024; bounded accepted-command
        receipts. Saturation refuses new commands, not old duplicate lookup. */
     size_t replay_records; /**< Default64, max4096; existing CGR1 bounded ring. */

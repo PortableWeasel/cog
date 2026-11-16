@@ -50,7 +50,7 @@ typedef struct cog_cli_projection_config {
     uint64_t generation;
     size_t records, replay_bytes, projection_bytes;
     size_t max_display_bytes; /**< Maximum full encoded CGD1 including overhead. */
-    size_t max_agents; /**<≤16; reserve max_agents+1 policy rows. */
+    size_t max_agents; /**<≤16; exactly one possible PRIMARY policy row. */
     size_t max_status_bytes, max_result_bytes; /**< Per agent including NUL. */
 } cog_cli_projection_config_t;
 
@@ -125,6 +125,10 @@ cog_result_t cog_cli_projection_encode(const cog_cli_projection_view_t *view,
  * @return OK; NULL_PTR; PROTOCOL invalid status/IDs/duplicate rows/correlation/
  * anchor/UTF-8/NUL/length/trailing; UNSUPPORTED magic; OVERFLOW changes only all
  * required counts. Every other output untouched on error; no allocation.
+ * Structural ceilings16 agents/1 PRIMARY policy and caller-declared string bounds
+ * are validated by a full nonwriting scan before any nested CGD1 decode writes
+ * final caller arrays. Validate full shape/correlations before capacities; use
+ * second writing pass only after all checks, preserving outer transactionality.
  */
 cog_result_t cog_cli_projection_decode(const void *input, size_t input_len,
     cog_cli_projection_view_t *view, cog_cli_display_item_t *items,

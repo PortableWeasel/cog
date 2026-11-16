@@ -30,7 +30,9 @@ enum {
 typedef struct cog_cli_child_profile {
     cog_cli_child_policy_t policy; /**< INHERIT may preserve explicit global
        ALLOW; an ASK answer for parent delegate is never inherited as ALLOW.
-       ASK cannot elevate parent DENY; DENY dominates every child option. */
+       ASK cannot elevate parent DENY; DENY dominates every child option.
+       Child profile is noninteractive: effective ASK produces identified
+       no-effect DENY before STARTED, never a hidden UI approval wait. */
     uint32_t tools; /**< Explicit subset of parent-enabled workspace bits;
        unknown bits invalid. Zero disables workspace effects, not unlimited. */
     uint32_t timeout_ms; /**<0 inherits finite remaining parent allowance. */
@@ -76,6 +78,8 @@ cog_result_t cog_cli_configuration_child_new(cog_cli_configuration_t **out,
 /** @brief Encode resolved fixed bootstrap, including secret, into caller arena.
  * @param[in] configuration Resolved child/primary target profile, REAL only.
  * @param[in] probe Immutable root identity probe/current owner, copied by codec.
+ * @param[in] transport Fixed finite parent transport settings/CA path, no
+ * observer or dependency/global-init authority is serialized.
  * @param[out] output Secret arena, NULL iff capacity0; @param[in] capacity Bytes.
  * @param[out] required Exact bytes; @return OK; NULL_PTR; INVALID_ARG; LIMIT;
  * OVERFLOW changes required only; UNSUPPORTED mock/provider/host profile.
@@ -88,7 +92,23 @@ cog_result_t cog_cli_configuration_child_new(cog_cli_configuration_t **out,
 cog_result_t cog_cli_configuration_bootstrap_encode(
     const cog_cli_configuration_t *configuration,
     const cog_cli_bootstrap_probe_t *probe,
+    const cog_net_config_t *transport,
     void *output, size_t capacity, size_t *required);
+
+/** @brief Pure full-frame validation/copy of fixed worker transport template.
+ * @param[in] input CGB1 bytes; @param[in] input_len Exact length.
+ * @param[out] transport Scalar copy, ca_bundle points into storage if present.
+ * host_runtime_initialized=false, dependency_memory unset and observer/user=NULL;
+ * caller supplies actual initialized-host acknowledgement/owned observer only.
+ * @param[out] storage CA path,NUL; @param[in] capacity Bytes,NULL iff0;
+ * @param[out] required Required path bytes,0 for system trust.
+ * @return OK; NULL_PTR; PROTOCOL malformed full profile; UNSUPPORTED version;
+ * LIMIT; OVERFLOW changes required only. All output transactional, no secret
+ * output, allocation, IO, startup reread or effect. Validate before net_new, then
+ * bootstrap_new copies generation under that exact borrowing transport. */
+cog_result_t cog_cli_bootstrap_transport_decode(const void *input,
+    size_t input_len, cog_net_config_t *transport, char *storage, size_t capacity,
+    size_t *required);
 
 /** @brief Construct worker generation from authenticated copied CGB1 bytes.
  * @param[out] out NULL on failure, matching configuration_free.
