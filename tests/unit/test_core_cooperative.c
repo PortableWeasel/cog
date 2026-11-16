@@ -238,8 +238,52 @@ static void budgets_and_signal(void)
     assert(sigaction(SIGUSR1,&previous,NULL)==0);
     atomic_store_explicit(&signal_target,NULL,memory_order_relaxed);drop(&f);
 }
+typedef struct observer_fixture {
+    cog_core_t *core;
+    unsigned start, stop, error, destroy;
+} observer_fixture_t;
+static cog_result_t lifecycle_sink(void *user,const char *record,size_t length)
+{
+    observer_fixture_t *f=user;(void)length;
+    if(f->core==NULL) return COG_OK;
+    invalid_reentry(f->core);
+    if(strstr(record,"core.run_start")!=NULL) ++f->start;
+    if(strstr(record,"core.run_stop")!=NULL) ++f->stop;
+    if(strstr(record,"core.run_error")!=NULL) ++f->error;
+    if(strstr(record,"core.destroyed")!=NULL) ++f->destroy;
+    return COG_OK;
+}
+static cog_result_t failed_service(void *arg,uint64_t now,uint64_t *deadline)
+{
+    (void)arg;(void)now;*deadline=UINT64_MAX;return COG_ERROR_PROTOCOL;
+}
+static void observer_boundaries(void)
+{
+    observer_fixture_t observed={0};
+    const cog_obs_sink_t sink={"lifecycle",lifecycle_sink,&observed,COG_OBS_TRACE};
+    const cog_obs_sink_table_t sinks={&sink,1U};
+    cog_obs_config_t obs_config={0};obs_config.sinks=&sinks;
+    cog_obs_t *obs;assert(cog_obs_new(&obs,&obs_config)==COG_OK);
+    fixture_t f={0};cog_core_config_t config={0};
+    assert(cog_session_new(&f.session,NULL)==COG_OK);
+    config.session=f.session;config.dispatch_table=table;config.dispatch_table_size=3U;
+    config.obs=obs;config.user=&f;config.service_fn=failed_service;
+    assert(cog_core_new(&f.core,&config)==COG_OK);observed.core=f.core;
+    enqueue(&f);
+    assert(cog_core_drive_begin(f.core)==COG_OK);
+    cog_core_step_info_t info;
+    assert(cog_core_step(f.core,&info)==COG_ERROR_PROTOCOL && info.done && info.dispatched==0U);
+    assert(f.handled==0U && cog_event_queue_count(f.core->event_queue)==1U);
+    assert(cog_core_drive_end(f.core)==COG_ERROR_PROTOCOL);
+    assert(cog_core_drive_begin(f.core)==COG_OK);cog_core_stop(f.core);
+    assert(cog_core_step(f.core,&info)==COG_OK && info.done);
+    assert(cog_core_drive_end(f.core)==COG_OK);
+    drop(&f);
+    assert(observed.start==2U && observed.stop==1U && observed.error==1U && observed.destroy==1U);
+    cog_obs_free(obs);
+}
 int main(void)
 {
-    drive();clock_failures();borrow();budgets_and_signal();
+    observer_boundaries();drive();clock_failures();borrow();budgets_and_signal();
     puts("cooperative driver and exact child borrow PASS");return 0;
 }
