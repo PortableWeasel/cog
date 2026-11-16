@@ -172,6 +172,14 @@ static int local_operations(const char *base, const char *socket)
     CHECK(cog_cli_execution_release_source(source, h->checkpoint) == COG_OK);
     CHECK(cog_cli_execution_release_source(source, h->checkpoint) == COG_OK);
     CHECK(cog_store_owner_compare_exchange(catalog, "local-stages", h->expected, h->next, h->checkpoint) == COG_OK);
+    cog_store_owner_guard_t *contender = NULL;
+    CHECK(cog_store_owner_acquire(catalog, "local-stages", h->next, &contender) == COG_OK);
+    h->phase = CLI_HANDOFF_GUARD;
+    bool waiting_done = false; uint64_t waiting_deadline = 0U;
+    CHECK(cog_cli_handoff_step(h, &waiting_done, &waiting_deadline) == COG_ERROR_AGAIN);
+    CHECK(!waiting_done && h->primary == COG_OK && !h->abort_requested && !f.runtime.admission_frozen);
+    CHECK(target->guard == NULL && target->headless->authority == CLI_AUTH_STAGED);
+    CHECK(cog_store_owner_release(contender) == COG_OK);
     CHECK(cog_cli_execution_stage_guard(target, h->next, h->checkpoint) == COG_OK);
     CHECK(target->headless->authority == CLI_AUTH_TARGET_GUARDED);
     CHECK(cog_orchestrator_publish_owner(orch, "local-stages", 0U, h->next, h->checkpoint) == COG_OK);
@@ -224,6 +232,13 @@ static int local_operations(const char *base, const char *socket)
 int main(int argc, char **argv)
 {
     CHECK(argc == 3);
+    fixture_t waiting; fixture_init(&waiting);
+    waiting.handoff.phase = CLI_HANDOFF_RELEASE;
+    waiting.handoff.checkpoint.generation = 1U;
+    bool done = false; uint64_t deadline = 0U;
+    CHECK(cog_cli_handoff_step(&waiting.handoff, &done, &deadline) == COG_ERROR_AGAIN);
+    CHECK(!done && waiting.handoff.primary == COG_OK && !waiting.handoff.abort_requested &&
+        !waiting.runtime.admission_frozen && waiting.handoff.pending.length != 0U);
     CHECK(protocol() == 0);
     CHECK(local_operations(argv[1], argv[2]) == 0);
     puts("handoff leaf: actual codec/cache and store/staged/drain checks PASS");

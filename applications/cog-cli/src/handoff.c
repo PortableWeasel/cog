@@ -393,8 +393,17 @@ static cog_result_t handoff_local_dispose(cli_executor_slot_t *s)
 static cog_result_t handoff_dispose(cog_cli_handoff_t *h, size_t index, uint64_t offset)
 {
     cli_executor_slot_t *s = &h->runtime->executors[index];
+    if (s->owner_peer == 0U) {
+        cog_result_t rc = s->local_done ? s->primary : handoff_local_dispose(s);
+        /* A completed destructor's AGAIN is a consumed cleanup failure, not
+           cooperative progress. Preserve it before generic phase filtering. */
+        if (s->local_done && rc != COG_OK) {
+            h->primary = handoff_first(h->primary, rc);
+            h->abort_requested = true; h->runtime->admission_frozen = true;
+        }
+        return rc;
+    }
     if (s->local_done) return s->primary;
-    if (s->owner_peer == 0U) return handoff_local_dispose(s);
     /* Before any PROFILE was accepted there is no remote target resource; the
        locally reserved profile still must be wiped and its borrow detached. */
     if (index == h->target_slot && !s->first_admission_sent && !h->prepared && h->pending.length == 0U) {
@@ -429,6 +438,12 @@ static cog_result_t handoff_phase(cog_cli_handoff_t *h)
         rc = h->source_peer == 0U ? cog_cli_execution_release_source(source->app, h->checkpoint) :
             handoff_exchange(h, h->source_slot, COG_HANDOFF_PREPARED, COG_HANDOFF_PREPARED, 2U);
         if (rc == COG_OK) { h->source_released = true; h->phase = CLI_HANDOFF_CAS; }
+        else if (h->source_peer == 0U) {
+            /* Local release is synchronous: even AGAIN is a final cleanup
+               result. Remote exchange AGAIN still means awaiting its reply. */
+            h->primary = handoff_first(h->primary, rc);
+            h->abort_requested = true; r->admission_frozen = true;
+        }
         return rc;
     case CLI_HANDOFF_CAS:
         rc = cog_store_owner_compare_exchange(h->catalog, r->primary_session, h->expected, h->next, h->checkpoint);
