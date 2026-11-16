@@ -84,3 +84,30 @@ initial prompt state or accepting another line. Existing IO dispatch failure and
 ordinary drain deny the still-PROPOSED call; no public contract changes.
 The main fix remains independent of that probe: a full FIFO/socket can no longer
 block masked-signal service or final cleanup inside the installed output adapter.
+
+## Writer verification and handoff
+
+Private header checkpoint `cafd105` independently passed after commits `e6cdb9d`,
+`bfdb31e`, `cafd105`; GCC/Clang C11 and G++/Clang++ C++11 standalone checks pass.
+Confirmed ASK reproduction led to private contract `72207b4` before the two
+checked write/flush corrections. Production checkpoint `27da63e` is approved for
+independent acceptance composition; no main merge was performed by the writer.
+
+Fresh strict all-target GCC14 Release, Clang19 Release and Clang19
+RelWithDebInfo ASan/UBSan builds pass against the accepted shipped curl/c-ares
+profile. Each passes the same **32/32** scoped CTests (**96/96**), selecting
+`^(cli-|scenario-test_(15|18|19|20))`. ASan enables leak detection/halt-on-error;
+UBSan enables halt-on-error/stack traces. Build directories are `build-host-gcc`,
+`build-host-clang`, `build-host-asan`; logs are
+`/tmp/cog-host-{gcc,clang,asan}-{full-build,tests}.log`.
+
+Direct actual-host probes confirm bounded IO exit for full stdout/stderr pipes
+and sockets while parent file-status flags remain exact. A regular file with an
+existing prefix retains its shared offset and is appended at that position.
+The acceptance writer's companion fixture checkpoint `4fcd3cf` independently
+reports both failed ASK prompts as IO with no effect/STARTED and eight installed
+full-pipe cases (stdout/stderr, INT/TERM, write-first/signal-first), including real
+signal-mask/core readiness, seeded-checkpoint resume/guard cleanup and descriptor
+flags/offset checks. Its owned permanent tests and the different critic's private
+helper fault tests compose under `83b30aa`; their final review/integration evidence
+is separate. All traffic is synthetic/offline, with no paid requests.
