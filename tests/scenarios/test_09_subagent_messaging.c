@@ -21,7 +21,7 @@
  *      back to the parent session, and that session id can be registered
  *      in the routing table so the subagent is reachable by session.
  *
- * Peers run on helper threads because the IPC transport is blocking.
+ * Peers run on helper threads, each owning and servicing its nonblocking endpoint.
  * All sockets are local temporary paths; every endpoint is owned and
  * released by this test.  Messaging is synchronized deterministically:
  * the hub sends a "ready" handshake once both sessions are registered,
@@ -41,6 +41,7 @@
 #include "agent_internal.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -90,19 +91,33 @@ static int failures = 0;
     } while (0)
 
 /** Create a unique temporary socket path; caller unlinks it when done. */
-static int make_socket_path(char *buf, size_t bufsize)
+static int make_socket_path(char *buf,size_t size)
 {
-    char tmpl[] = "/tmp/cog-scn09-XXXXXX";
-    int fd = mkstemp(tmpl);
-
-    if (fd < 0) {
-        return -1;
-    }
-    (void)close(fd);
-    (void)unlink(tmpl);
-    (void)snprintf(buf, bufsize, "%s", tmpl);
-    return 0;
+    static unsigned serial;int n=snprintf(buf,size,"scn09-%ld-%u.sock",(long)getpid(),++serial);
+    if(n<0||(size_t)n>=size) return -1;
+    (void)unlink(buf);return 0;
 }
+static uint64_t ipc_now(void)
+{
+    struct timespec ts;if(clock_gettime(CLOCK_MONOTONIC,&ts)!=0) abort();
+    return (uint64_t)ts.tv_sec*1000U+(uint64_t)ts.tv_nsec/1000000U;
+}
+static void ipc_pause(void) { (void)nanosleep(&(struct timespec){0,1000000L},NULL); }
+static cog_result_t ipc_step(cog_ipc_endpoint_t *ep)
+{ uint64_t deadline;return cog_ipc_endpoint_service(ep,ipc_now(),&deadline); }
+static cog_result_t connect_ready(cog_ipc_endpoint_t *ep,const char *path)
+{
+    cog_result_t rc=cog_ipc_endpoint_connect(ep,path,NULL);
+    if(rc!=COG_OK&&rc!=COG_ERROR_AGAIN) return rc;
+    uint64_t end=ipc_now()+4000;cog_peer_id_t peer;
+    do {
+        rc=ipc_step(ep);if(rc!=COG_OK&&rc!=COG_ERROR_AGAIN) return rc;
+        if(cog_ipc_endpoint_get_peer_id(ep,&peer)==COG_OK&&peer!=0) return COG_OK;
+        ipc_pause();
+    } while(ipc_now()<end);
+    return COG_ERROR_TIMEOUT;
+}
+static atomic_uint clients_done;
 
 /* ------------------------------------------------------------------ */
 /* Core handler: session-routed messaging                              */
@@ -228,13 +243,13 @@ static void ipc_wait_fn(void *arg)
     (void)nanosleep(&ts, NULL);
 
     ctx->calls++;
-    if (g_routed >= 2 || ctx->calls > 5000) {
+    if (atomic_load(&clients_done) == 2U || ctx->calls > 5000) {
         cog_core_stop(ctx->core);
     }
 }
 
 /* ------------------------------------------------------------------ */
-/* Peer threads (the transport is blocking, so peers run off-thread).  */
+/* Peer threads own their nonblocking service and message loops.  */
 /* ------------------------------------------------------------------ */
 
 /** Send a NUL-terminated string as a framed message. */
@@ -250,7 +265,9 @@ static int send_str(cog_ipc_endpoint_t *ep, const char *text)
     }
     (void)memcpy(msg.data, text, len);
     msg.len = len;
-    rc = cog_ipc_endpoint_send(ep, &msg);
+    uint64_t end=ipc_now()+4000;
+    do { rc=cog_ipc_endpoint_send(ep,&msg);if(rc!=COG_ERROR_AGAIN) break;(void)ipc_step(ep);ipc_pause(); } while(ipc_now()<end);
+    if(rc==COG_OK) { cog_result_t step=ipc_step(ep);if(step!=COG_OK&&step!=COG_ERROR_AGAIN) rc=step; }
     (void)cog_ipc_message_free(&msg);
     return (rc == COG_OK) ? 0 : -1;
 }
@@ -260,17 +277,14 @@ static int recv_str(cog_ipc_endpoint_t *ep, char *out, size_t out_cap,
                     int timeout_ms)
 {
     cog_ipc_message_t msg;
-    int revents = 0;
     cog_result_t rc;
-
-    rc = cog_ipc_endpoint_poll(ep, COG_IPC_POLL_IN, timeout_ms, &revents);
-    if (rc != COG_OK || (revents & COG_IPC_POLL_IN) == 0) {
-        return -1;
-    }
-    if (cog_ipc_message_new(&msg, out_cap) != COG_OK) {
-        return -1;
-    }
-    rc = cog_ipc_endpoint_recv(ep, &msg);
+    if(cog_ipc_message_new(&msg,out_cap)!=COG_OK) return -1;
+    uint64_t end=ipc_now()+(uint64_t)timeout_ms;
+    do {
+        (void)ipc_step(ep);rc=cog_ipc_endpoint_recv(ep,&msg);
+        if(rc!=COG_ERROR_AGAIN) break;
+        ipc_pause();
+    } while(ipc_now()<end);
     if (rc == COG_OK && msg.len < out_cap) {
         (void)memcpy(out, msg.data, msg.len);
         out[msg.len] = '\0';
@@ -299,7 +313,7 @@ static void *client_a_thread(void *arg)
     if (cog_ipc_endpoint_new(&ep) != COG_OK) {
         return NULL;
     }
-    if (cog_ipc_endpoint_connect(ep, c->path, NULL) != COG_OK) {
+    if (connect_ready(ep, c->path) != COG_OK) {
         (void)cog_ipc_endpoint_free(ep);
         return NULL;
     }
@@ -324,6 +338,7 @@ static void *client_a_thread(void *arg)
         c->ok = 1;
     }
     (void)cog_ipc_endpoint_free(ep);
+    (void)atomic_fetch_add(&clients_done,1U);
     return NULL;
 }
 
@@ -340,7 +355,7 @@ static void *client_b_thread(void *arg)
     if (cog_ipc_endpoint_new(&ep) != COG_OK) {
         return NULL;
     }
-    if (cog_ipc_endpoint_connect(ep, c->path, NULL) != COG_OK) {
+    if (connect_ready(ep, c->path) != COG_OK) {
         (void)cog_ipc_endpoint_free(ep);
         return NULL;
     }
@@ -358,6 +373,7 @@ static void *client_b_thread(void *arg)
     /* Reply to the origin session. */
     (void)send_str(ep, "to:agent-a|pong");
     (void)cog_ipc_endpoint_free(ep);
+    (void)atomic_fetch_add(&clients_done,1U);
     return NULL;
 }
 
@@ -413,6 +429,7 @@ static void scenario_session_routing(void)
     g_last_msg_type = 0U;
     g_routed = 0;
     g_registered = 0;
+    atomic_store(&clients_done,0U);
 
     /* Start the two aux-core peers, then run the hub loop. */
     (void)memset(&ca, 0, sizeof(ca));
@@ -514,8 +531,10 @@ static void scenario_agent_session_metadata(void)
     CHECK(cog_ipc_endpoint_new(&listener) == COG_OK);
     CHECK(cog_ipc_endpoint_listen(listener, path) == COG_OK);
     CHECK(cog_ipc_endpoint_new(&client) == COG_OK);
-    CHECK(cog_ipc_endpoint_connect(client, path, &pid) == COG_OK);
-    CHECK(cog_ipc_endpoint_accept(listener, &server, &pid) == COG_OK);
+    CHECK(cog_ipc_endpoint_connect(client,path,NULL)==COG_ERROR_AGAIN);
+    CHECK(cog_ipc_endpoint_accept(listener,&server,&pid)==COG_OK);
+    for(unsigned i=0;i<20;++i) { (void)ipc_step(server);(void)ipc_step(client); }
+    cog_peer_id_t actual=0;CHECK(cog_ipc_endpoint_get_peer_id(client,&actual)==COG_OK&&actual==pid);
     CHECK(cog_ipc_register_session(listener, child_sid, pid) == COG_OK);
 
     CHECK(cog_ipc_message_new(&out, 64U) == COG_OK);
@@ -523,7 +542,9 @@ static void scenario_agent_session_metadata(void)
     out.len = strlen(payload);
     CHECK(cog_ipc_send_to_session(listener, child_sid, &out) == COG_OK);
     CHECK(cog_ipc_message_new(&in, 64U) == COG_OK);
-    CHECK(cog_ipc_endpoint_recv(client, &in) == COG_OK);
+    cog_result_t received=COG_ERROR_AGAIN;uint64_t end=ipc_now()+2000;
+    while(received==COG_ERROR_AGAIN&&ipc_now()<end) { (void)ipc_step(server);(void)ipc_step(client);received=cog_ipc_endpoint_recv(client,&in);ipc_pause(); }
+    CHECK(received==COG_OK);
     CHECK_EQ_INT((long long)in.len, (long long)strlen(payload));
     CHECK(memcmp(in.data, payload, strlen(payload)) == 0);
 

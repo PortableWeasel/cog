@@ -944,3 +944,15 @@ driver state and child session borrows never grow during driving. This corrects
 the overly broad step comment; it admits no new allocation class.
 [Targeted resource/error/shutdown passes](REAL_CLIENT_CORE_O2_ALLOCATION.md)
 record the clarification gate, separate from recovered implementation acceptance.
+
+### Stage 14.O3 native orchestrator delivery checkpoint
+
+The approved managed-worker design now has bounded runtime bodies and real
+nonblocking native component fixtures. Fresh worker identity, immutable owned
+PID and kernel-bound CGW HELLO gate READY; classed copied events retain proof
+and mandatory control identities through queue pressure and reap. The legacy
+synchronous text/PID protocol is removed. Exact-PID cleanup and advisory fenced
+route checks preserve the approved N/O3 authority boundaries.
+[O3 writer evidence](REAL_CLIENT_ORCHESTRATOR_O3_EVIDENCE.md) records strict full
+GCC/Clang builds and scoped sanitizer/component tests. Independent runtime
+review and O/P integration remain distinct from these writer results.

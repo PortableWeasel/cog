@@ -308,3 +308,16 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 add_test(NAME unit-core-reservations COMMAND test_core_reservations)
 set_tests_properties(unit-core-reservations PROPERTIES LABELS "unit;core" TIMEOUT 20)
+
+# O3 allocator failure/steady-state oracle covers real constructors and runtime.
+target_link_options(test_orchestrator PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_orchestrator PRIVATE
+        -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc)
+endif()
+add_executable(test_orchestrator_wire ../orchestrator-wire/test_orchestrator_wire.c)
+target_link_libraries(test_orchestrator_wire PRIVATE cog::orchestrator)
+target_enable_warnings(test_orchestrator_wire)
+target_link_options(test_orchestrator_wire PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+add_test(NAME unit-orchestrator-wire COMMAND test_orchestrator_wire)
+set_tests_properties(unit-orchestrator-wire PROPERTIES LABELS "unit;orchestrator" TIMEOUT 20)

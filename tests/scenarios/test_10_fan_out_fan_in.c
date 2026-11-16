@@ -9,7 +9,7 @@
  *
  *   1. parallel placement across aux cores: cog_orchestrator_place
  *      distributes new subagents across healthy aux cores, preferring
- *      the least-loaded core as reported by cog_orchestrator_heartbeat;
+ *      the least-loaded core as reported by actual binary worker heartbeats;
  *   2. fan-out grouping: cog_agent_spawn with a shared group_id creates
  *      a fan-out group of subagents, each with its own child session;
  *   3. ordered fan-in: each subagent runs to completion and
@@ -23,6 +23,9 @@
  * COG_AUX_CORE_BIN (falling back to argv[1]).  Every spawned pid is
  * owned by this test and reaped by the orchestrator; all sockets are
  * local temporary paths.
+ *
+ * These are preserved component assertions; O9 owns actual joined application
+ * fan-out execution and cancellation.
  *
  * Ticket: 0d8ff50 (Stage 12.6c — Scenario tests 06-10).
  */
@@ -39,6 +42,7 @@
 #include "agent_test_helpers.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -77,138 +81,156 @@ static int failures = 0;
         }                                                               \
     } while (0)
 
-/** Create a unique temporary socket path; caller unlinks it when done. */
-static int make_socket_path(char *buf, size_t bufsize)
-{
-    char tmpl[] = "/tmp/cog-scn10-XXXXXX";
-    int fd = mkstemp(tmpl);
 
-    if (fd < 0) {
-        return -1;
-    }
-    (void)close(fd);
-    (void)unlink(tmpl);
-    (void)snprintf(buf, bufsize, "%s", tmpl);
-    return 0;
+#define FX_CHECK(x) CHECK(x)
+static uint64_t fx_now(void)
+{
+    struct timespec ts;FX_CHECK(clock_gettime(CLOCK_MONOTONIC,&ts)==0);
+    return (uint64_t)ts.tv_sec*1000U+(uint64_t)ts.tv_nsec/1000000U;
 }
-
-/** Set the fixture behaviour environment for the next spawned core. */
-static void set_aux_env(const char *mode, const char *session)
+static void fx_pause(void) { (void)nanosleep(&(struct timespec){0,1000000L},NULL); }
+static bool fx_same(cog_worker_id_t a,cog_worker_id_t b)
+{ return a.incarnation==b.incarnation&&a.number==b.number; }
+static cog_result_t fx_service(cog_orchestrator_t *o)
 {
-    if (mode != NULL) {
-        (void)setenv("COG_AUX_MODE", mode, 1);
-    }
-    if (session != NULL) {
-        (void)setenv("COG_AUX_SESSION", session, 1);
-    } else {
-        (void)unsetenv("COG_AUX_SESSION");
-    }
-    (void)setenv("COG_AUX_INTERVAL_MS", "40", 1);
+    bool done=false;uint64_t deadline;
+    cog_result_t rc=cog_orchestrator_service(o,fx_now(),&done,&deadline);
+    FX_CHECK(rc==COG_OK||rc==COG_ERROR_AGAIN||rc==COG_ERROR_TIMEOUT);
+    return rc;
 }
-
-/** Drive the orchestrator until @p pred returns true or timeout. */
-static int poll_until(cog_orchestrator_t *orch, int (*pred)(cog_orchestrator_t *),
-                      int timeout_ms)
+/* Failed prerequisites drain every owned lifetime before stopping this test.
+ * Never continue a stress iteration with an all-zero identity or PID. */
+static void fx_abort(cog_orchestrator_t *o)
 {
-    struct timespec ts;
-    int waited = 0;
-
-    ts.tv_sec = 0;
-    ts.tv_nsec = 10000000L; /* 10 ms */
-    while (waited < timeout_ms) {
-        (void)cog_orchestrator_poll(orch, 0);
-        if (pred(orch)) {
-            return 0;
-        }
-        (void)nanosleep(&ts, NULL);
-        waited += 10;
+    if(o!=NULL) {
+        bool done=false;uint64_t deadline,end=fx_now()+4000;
+        (void)cog_orchestrator_request_shutdown(o,fx_now(),1);
+        while(!done&&fx_now()<end) { (void)cog_orchestrator_service(o,fx_now(),&done,&deadline);fx_pause(); }
+        if(done) cog_orchestrator_free(o);
+        else (void)fprintf(stderr,"fixture fatal: native cleanup did not complete\n");
     }
-    return -1;
+    exit(EXIT_FAILURE);
 }
-
-/** Predicate: the given peer is HEALTHY. */
-static cog_peer_id_t g_healthy_peer = COG_PEER_ID_INVALID;
-static int pred_healthy(cog_orchestrator_t *orch)
+static cog_core_info_t fx_info(cog_orchestrator_t *o,cog_worker_id_t id)
 {
-    return cog_orchestrator_health(orch, g_healthy_peer) == COG_HEALTH_HEALTHY;
+    cog_core_info_t info[16],found={0};size_t count=0;
+    FX_CHECK(cog_orchestrator_list(o,info,16,&count)==COG_OK);
+    for(size_t i=0;i<count&&i<16;++i) if(fx_same(info[i].worker_id,id)) return info[i];
+    return found;
 }
-
-/** Predicate: the orchestrator has exactly @p g_want_cores cores. */
-static size_t g_want_cores = 0U;
-static int pred_core_count(cog_orchestrator_t *orch)
+static bool fx_wait(cog_orchestrator_t *o,cog_worker_id_t id,bool reaped)
 {
-    size_t count = 0U;
-
-    (void)cog_orchestrator_list(orch, NULL, 0U, &count);
-    return count == g_want_cores;
+    uint64_t end=fx_now()+4000;
+    do {
+        (void)fx_service(o);cog_core_info_t info=fx_info(o,id);
+        if(reaped?info.reaped:info.health==COG_HEALTH_HEALTHY) return true;
+        fx_pause();
+    } while(fx_now()<end);
+    return false;
 }
-
-/* ------------------------------------------------------------------ */
-/* 1. Parallel placement across aux cores                              */
-/* ------------------------------------------------------------------ */
-
-static void scenario_placement_across_cores(void)
+static void fx_ack(cog_orchestrator_t *o)
 {
-    char path[128];
-    cog_orchestrator_config_t cfg;
-    cog_orchestrator_t *orch = NULL;
-    cog_peer_id_t p1 = COG_PEER_ID_INVALID;
-    cog_peer_id_t p2 = COG_PEER_ID_INVALID;
-    cog_core_info_t infos[4];
-    size_t count = 0U;
-
-    if (make_socket_path(path, sizeof(path)) != 0) {
-        CHECK(0);
-        return;
+    unsigned char data[256];cog_orchestrator_event_t event;size_t required;
+    for(int cls=COG_ORCHESTRATOR_CONTROL_EVENTS;cls<=COG_ORCHESTRATOR_MESSAGE_EVENTS;++cls) {
+        cog_result_t rc;
+        while((rc=cog_orchestrator_copy_event(o,(cog_orchestrator_event_class_t)cls,&event,data,sizeof(data),&required))==COG_OK)
+            FX_CHECK(cog_orchestrator_ack_event(o,event.event_id)==COG_OK);
+        FX_CHECK(rc==COG_ERROR_AGAIN);
     }
-    (void)memset(&cfg, 0, sizeof(cfg));
-    cfg.socket_path = path;
-    cfg.max_aux_cores = 4;
-    cfg.health_interval_ms = 200;
-    cfg.unhealthy_threshold = 3;
-    cfg.default_core_capacity = 8;
-    cfg.auto_replace = false;
-    CHECK(cog_orchestrator_new(&orch, &cfg) == COG_OK);
-    if (orch == NULL) {
-        return;
+}
+static cog_result_t fx_release(cog_orchestrator_t *o,cog_worker_id_t id)
+{
+    cog_result_t rc;uint64_t end=fx_now()+2000;
+    do {
+        fx_ack(o);rc=cog_orchestrator_release_worker(o,id);
+        if(rc!=COG_ERROR_INVALID_STATE) return rc;
+        (void)fx_service(o);fx_pause();
+    } while(fx_now()<end);
+    return rc;
+}
+static void fx_command(cog_orchestrator_t *o,cog_worker_id_t id,unsigned char mode,unsigned char active)
+{
+    unsigned char bytes[6]={'F','X','M','1',mode,active};
+    cog_ipc_message_t message={.data=bytes,.capacity=sizeof(bytes),.len=sizeof(bytes)};
+    FX_CHECK(cog_orchestrator_send(o,id,&message)==COG_OK);
+    uint64_t end=fx_now()+2000;bool received=false;
+    while(fx_now()<end&&!received) {
+        unsigned char data[256];cog_orchestrator_event_t event;size_t required;
+        (void)fx_service(o);
+        cog_result_t rc=cog_orchestrator_copy_event(o,COG_ORCHESTRATOR_MESSAGE_EVENTS,&event,data,sizeof(data),&required);
+        if(rc==COG_OK) {
+            FX_CHECK(fx_same(event.worker_id,id)&&required==6&&memcmp(data,bytes,6)==0);
+            FX_CHECK(cog_orchestrator_ack_event(o,event.event_id)==COG_OK);received=true;
+        } else FX_CHECK(rc==COG_ERROR_AGAIN);
+        fx_pause();
     }
-
-    /* Two healthy aux cores. */
-    set_aux_env("hb", NULL);
-    CHECK(cog_orchestrator_spawn(orch, COG_AUX_CORE_BIN, &p1) == COG_OK);
-    CHECK(cog_orchestrator_spawn(orch, COG_AUX_CORE_BIN, &p2) == COG_OK);
-    g_want_cores = 2U;
-    CHECK(poll_until(orch, pred_core_count, 3000) == 0);
-    g_healthy_peer = p1;
-    CHECK(poll_until(orch, pred_healthy, 3000) == 0);
-    g_healthy_peer = p2;
-    CHECK(poll_until(orch, pred_healthy, 3000) == 0);
-
-    /* Both cores start with equal free capacity; placement picks the
-     * first healthy core. */
-    CHECK(cog_orchestrator_place(orch, 0U) == p1);
-
-    /* Load core 1; placement moves to core 2 (least loaded). */
-    CHECK(cog_orchestrator_heartbeat(orch, p1, 5U) == COG_OK);
-    CHECK(cog_orchestrator_place(orch, 0U) == p2);
-
-    /* Load core 2; placement moves back to core 1. */
-    CHECK(cog_orchestrator_heartbeat(orch, p2, 5U) == COG_OK);
-    CHECK(cog_orchestrator_place(orch, 0U) == p1);
-
-    /* A core at capacity is skipped. */
-    CHECK(cog_orchestrator_heartbeat(orch, p1, 8U) == COG_OK);
-    CHECK(cog_orchestrator_place(orch, 0U) == p2);
-
-    /* List reports both cores with their reported load. */
-    CHECK(cog_orchestrator_list(orch, infos, 4U, &count) == COG_OK);
-    CHECK_EQ_INT((long long)count, 2LL);
-
-    CHECK(cog_orchestrator_shutdown(orch, 2000) == COG_OK);
-    cog_orchestrator_free(orch);
+    FX_CHECK(received);
+}
+static cog_orchestrator_t *fx_new(char *path,size_t capacity,bool replace)
+{
+    static unsigned serial=0;
+    int n=snprintf(path,capacity,"orch-%ld-%u.sock",(long)getpid(),++serial);
+    FX_CHECK(n>0&&(size_t)n<capacity);(void)unlink(path);
+    cog_orchestrator_config_t cfg={0};cfg.socket_path=path;cfg.max_aux_cores=8;
+    cfg.health_interval_ms=200;cfg.unhealthy_threshold=3;cfg.default_core_capacity=8;
+    cfg.shutdown_timeout_ms=200;cfg.auto_replace=replace;
+    cfg.max_frame_bytes=256;cfg.message_bytes=4096;cfg.message_events=8;
+    cog_orchestrator_t *o=NULL;
+    cog_result_t rc=cog_orchestrator_new(&o,&cfg);FX_CHECK(rc==COG_OK);
+    if(rc!=COG_OK||o==NULL) fx_abort(o);
+    return o;
+}
+static cog_worker_id_t fx_spawn(cog_orchestrator_t *o)
+{
+    cog_worker_id_t id={0};
+    cog_result_t rc=cog_orchestrator_spawn(o,COG_AUX_CORE_BIN,&id);FX_CHECK(rc==COG_OK);
+    if(rc!=COG_OK||id.incarnation==0||id.number==0) fx_abort(o);
+    bool ready=fx_wait(o,id,false);FX_CHECK(ready);if(!ready) fx_abort(o);
+    cog_core_info_t info=fx_info(o,id);FX_CHECK(info.peer_id!=0&&info.pid>0&&info.capacity==8);
+    return id;
+}
+static void fx_close_at(cog_orchestrator_t *o,char *path,cog_result_t expected,const char *test)
+{
+    FX_CHECK(cog_orchestrator_request_shutdown(o,fx_now(),300)==COG_OK);
+    bool done=false;uint64_t deadline,end=fx_now()+4000;cog_result_t rc=COG_ERROR_AGAIN;
+    while(!done&&fx_now()<end) { rc=cog_orchestrator_service(o,fx_now(),&done,&deadline);fx_pause(); }
+    FX_CHECK(done);
+    if(rc!=expected) (void)fprintf(stderr,"%s shutdown: actual %d expected %d done %d\n",test,(int)rc,(int)expected,(int)done);
+    FX_CHECK(rc==expected);
+    cog_core_info_t infos[16];size_t count=0;FX_CHECK(cog_orchestrator_list(o,infos,16,&count)==COG_OK);
+    fx_ack(o);
+    for(size_t i=0;i<count&&i<16;++i) {
+        FX_CHECK(infos[i].reaped&&!infos[i].ownership_lost);
+        /* Native done is not logical endpoint/event retirement. Continue the
+           actual owner service and ACK copied events before bounded release. */
+        cog_result_t released=fx_release(o,infos[i].worker_id);
+        if(released!=COG_OK) (void)fprintf(stderr,"%s release worker %llu: actual %d reaped %d lost %d\n",test,(unsigned long long)infos[i].worker_id.number,(int)released,(int)infos[i].reaped,(int)infos[i].ownership_lost);
+        FX_CHECK(released==COG_OK);
+    }
+    if(done) cog_orchestrator_free(o);
     (void)unlink(path);
 }
+#define fx_close(o,p,e) fx_close_at(o,p,e,__func__)
 
+static void fx_load(cog_orchestrator_t *o,cog_worker_id_t id,unsigned char load)
+{
+    fx_command(o,id,4,load);uint64_t end=fx_now()+2000;
+    while(fx_now()<end&&fx_info(o,id).active_subagents!=load) { (void)fx_service(o);fx_pause(); }
+    CHECK(fx_info(o,id).active_subagents==load);
+}
+static void scenario_placement_across_cores(void)
+{
+    char path[96];cog_orchestrator_t *o=fx_new(path,sizeof(path),false);
+    cog_worker_id_t first=fx_spawn(o),second=fx_spawn(o);
+    cog_peer_id_t p1=fx_info(o,first).peer_id,p2=fx_info(o,second).peer_id;
+    CHECK(p1!=p2&&cog_orchestrator_place(o,0)==p1);
+    fx_load(o,first,5);CHECK(cog_orchestrator_place(o,0)==p2);
+    fx_load(o,second,5);CHECK(cog_orchestrator_place(o,0)==p1);
+    fx_load(o,first,8);CHECK(cog_orchestrator_place(o,0)==p2);
+    cog_core_info_t infos[4];size_t count=0;CHECK(cog_orchestrator_list(o,infos,4,&count)==COG_OK);
+    CHECK_EQ_INT(count,2);CHECK(fx_info(o,first).active_subagents==8&&fx_info(o,second).active_subagents==5);
+    fx_close(o,path,COG_OK);
+}
 /* ------------------------------------------------------------------ */
 /* 2+3. Fan-out with group_id and ordered fan-in results               */
 /* ------------------------------------------------------------------ */
@@ -286,41 +308,41 @@ static void scenario_fan_out_fan_in(void)
 /* 4. Broadcast cancel + late-result rejection                         */
 /* ------------------------------------------------------------------ */
 
-/** Peer thread: connect to a listener and wait for a broadcast. */
-typedef struct peer_ctx {
-    char path[128];
-    char received[64];
-    int ok;
-} peer_ctx_t;
-
+static int make_socket_path(char *path,size_t size)
+{
+    int n=snprintf(path,size,"scn10-%ld.sock",(long)getpid());
+    if(n<0||(size_t)n>=size) return -1;
+    (void)unlink(path);return 0;
+}
+static cog_result_t ipc_step(cog_ipc_endpoint_t *ep)
+{ uint64_t deadline;return cog_ipc_endpoint_service(ep,fx_now(),&deadline); }
+typedef struct peer_ctx { char path[128];char received[64];int ok; } peer_ctx_t;
+static atomic_uint peers_done;
 static void *peer_thread(void *arg)
 {
-    peer_ctx_t *p = (peer_ctx_t *)arg;
-    cog_ipc_endpoint_t *ep = NULL;
-    cog_ipc_message_t msg;
-    int revents = 0;
-    cog_result_t rc;
-
-    if (cog_ipc_endpoint_new(&ep) != COG_OK) {
-        return NULL;
-    }
-    if (cog_ipc_endpoint_connect(ep, p->path, NULL) != COG_OK) {
-        (void)cog_ipc_endpoint_free(ep);
-        return NULL;
-    }
-    rc = cog_ipc_endpoint_poll(ep, COG_IPC_POLL_IN, 5000, &revents);
-    if (rc == COG_OK && (revents & COG_IPC_POLL_IN) != 0 &&
-        cog_ipc_message_new(&msg, 64U) == COG_OK) {
-        rc = cog_ipc_endpoint_recv(ep, &msg);
-        if (rc == COG_OK && msg.len < sizeof(p->received)) {
-            (void)memcpy(p->received, msg.data, msg.len);
-            p->received[msg.len] = '\0';
-            p->ok = 1;
+    peer_ctx_t *p=arg;cog_ipc_endpoint_t *ep=NULL;
+    if(cog_ipc_endpoint_new(&ep)!=COG_OK) return NULL;
+    cog_result_t rc=cog_ipc_endpoint_connect(ep,p->path,NULL);
+    if(rc!=COG_OK&&rc!=COG_ERROR_AGAIN) { (void)cog_ipc_endpoint_free(ep);return NULL; }
+    unsigned char data[64];cog_ipc_message_t msg={.data=data,.capacity=sizeof(data)};
+    uint64_t end=fx_now()+4000;bool connected=false;
+    do {
+        (void)ipc_step(ep);
+        if(!connected) {
+            cog_peer_id_t peer=0;rc=cog_ipc_endpoint_get_peer_id(ep,&peer);
+            if(rc==COG_OK&&peer!=0) connected=true;
+            else if(rc!=COG_ERROR_INVALID_STATE) break;
+            if(!connected) { fx_pause();continue; }
         }
-        (void)cog_ipc_message_free(&msg);
-    }
-    (void)cog_ipc_endpoint_free(ep);
-    return NULL;
+        rc=cog_ipc_endpoint_recv(ep,&msg);
+        if(rc==COG_OK) {
+            if(msg.len<sizeof(p->received)) { memcpy(p->received,data,msg.len);p->received[msg.len]='\0';p->ok=1; }
+            break;
+        }
+        if(rc!=COG_ERROR_AGAIN) break;
+        fx_pause();
+    } while(fx_now()<end);
+    (void)cog_ipc_endpoint_free(ep);(void)atomic_fetch_add(&peers_done,1U);return NULL;
 }
 
 static void scenario_broadcast_cancel(void)
@@ -347,12 +369,17 @@ static void scenario_broadcast_cancel(void)
     (void)snprintf(pa.path, sizeof(pa.path), "%s", path);
     (void)memset(&pb, 0, sizeof(pb));
     (void)snprintf(pb.path, sizeof(pb.path), "%s", path);
+    atomic_store(&peers_done,0U);
     CHECK(pthread_create(&ta, NULL, peer_thread, &pa) == 0);
     CHECK(pthread_create(&tb, NULL, peer_thread, &pb) == 0);
     (void)nanosleep(&(struct timespec){0, 50000000L}, NULL); /* 50 ms */
 
-    CHECK(cog_ipc_endpoint_accept(listener, &s1, &pid1) == COG_OK);
-    CHECK(cog_ipc_endpoint_accept(listener, &s2, &pid2) == COG_OK);
+    uint64_t end=fx_now()+4000;cog_result_t rc=COG_ERROR_AGAIN;
+    while(rc==COG_ERROR_AGAIN&&fx_now()<end) { rc=cog_ipc_endpoint_accept(listener,&s1,&pid1);fx_pause(); }
+    CHECK(rc==COG_OK);rc=COG_ERROR_AGAIN;
+    while(rc==COG_ERROR_AGAIN&&fx_now()<end) { rc=cog_ipc_endpoint_accept(listener,&s2,&pid2);fx_pause(); }
+    CHECK(rc==COG_OK);
+    for(unsigned i=0;i<20;++i) { (void)ipc_step(s1);(void)ipc_step(s2);fx_pause(); }
 
     CHECK(cog_ipc_message_new(&out, 64U) == COG_OK);
     (void)memcpy(out.data, "cancel", 6U);
@@ -360,6 +387,9 @@ static void scenario_broadcast_cancel(void)
     CHECK(cog_ipc_broadcast(listener, &out) == COG_OK);
     (void)cog_ipc_message_free(&out);
 
+    end=fx_now()+4000;
+    while(atomic_load(&peers_done)!=2U&&fx_now()<end) { (void)ipc_step(s1);(void)ipc_step(s2);fx_pause(); }
+    CHECK(atomic_load(&peers_done)==2U);
     (void)pthread_join(ta, NULL);
     (void)pthread_join(tb, NULL);
     CHECK(pa.ok);

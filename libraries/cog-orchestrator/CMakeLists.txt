@@ -13,6 +13,7 @@
 # keeps the dependency graph acyclic (cog-orchestrator is a leaf).
 add_library(cog-orchestrator STATIC
     src/orchestrator.c
+    src/orchestrator_wire.c
 )
 add_library(cog::orchestrator ALIAS cog-orchestrator)
 
