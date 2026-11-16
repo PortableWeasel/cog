@@ -34,6 +34,12 @@ control bytes and actual /dev/full output failure with unchanged cursor/view;
 server-incarnation change with pending input, expired unknown/known detach
 deadlines, independently progressing CANCEL, read-batch anchors across a newer
 view, and late older results that cannot overwrite the last input outcome.
+Independent critic controls additionally cover retained valid frames followed by
+fatal partial framing, malformed/negative timespec fields, millisecond multiply
+and add overflow, backward time, clock syscall failure and normal clock progress.
+Clock faults preserve the previous clock/deadline/view and latch IO through close.
+The clock wrapper is linked only into the client fixture; the projection-only
+fixture has no clock wrapper (including sanitizer runtime references).
 
 The client renders complete JSON replacement records (also preceded by a fixed
 clear/home sequence for terminal mode). Decimal 64-bit IDs are JSON strings.

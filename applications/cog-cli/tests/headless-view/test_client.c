@@ -4,6 +4,7 @@
 #include "codec_internal.h"
 #include "../headless-codecs/check.h"
 #include <fcntl.h>
+#include <errno.h>
 #include <time.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -11,12 +12,13 @@
 
 int __real_clock_gettime(clockid_t, struct timespec *);
 int __wrap_clock_gettime(clockid_t, struct timespec *);
-static bool invalid_nanoseconds;
+static int clock_fault;
+static struct timespec clock_sample;
 int __wrap_clock_gettime(clockid_t id, struct timespec *ts)
 {
-    int rc=__real_clock_gettime(id,ts);
-    if(rc==0 && id==CLOCK_MONOTONIC && invalid_nanoseconds) ts->tv_nsec=1000000000L;
-    return rc;
+    if (id == CLOCK_MONOTONIC && clock_fault == 1) { errno = EIO; return -1; }
+    if (id == CLOCK_MONOTONIC && clock_fault == 2) { *ts = clock_sample; return 0; }
+    return __real_clock_gettime(id, ts);
 }
 
 
@@ -123,7 +125,8 @@ static void view(fixture_t *f, uint64_t sequence, bool gap)
 static void cleanup(fixture_t *f)
 {
     OK(cog_cli_host_client_close(&f->client, COG_OK)); CHECK(f->client == NULL);
-    OK(cog_ipc_endpoint_free(f->peer)); OK(cog_ipc_endpoint_free(f->listener));
+    if (f->peer != NULL) OK(cog_ipc_endpoint_free(f->peer));
+    OK(cog_ipc_endpoint_free(f->listener));
     CHECK(close(f->input[0]) == 0);
     if (f->input[1] >= 0) CHECK(close(f->input[1]) == 0);
     CHECK(fclose(f->output) == 0);
@@ -250,7 +253,8 @@ static void output_failure_case(const char *path)
 static void error_cleanup(fixture_t *f, cog_result_t expected)
 {
     CHECK(cog_cli_host_client_close(&f->client, COG_OK) == expected);
-    OK(cog_ipc_endpoint_free(f->peer)); OK(cog_ipc_endpoint_free(f->listener));
+    if (f->peer != NULL) OK(cog_ipc_endpoint_free(f->peer));
+    OK(cog_ipc_endpoint_free(f->listener));
     CHECK(close(f->input[0]) == 0 && close(f->input[1]) == 0);
     CHECK(fclose(f->output) == 0);
 }
@@ -344,17 +348,42 @@ static void fatal_after_retained_case(const char *path)
 }
 static void bad_clock_case(const char *path)
 {
-    fixture_t f;setup(&f,path,false);
-    invalid_nanoseconds=true;
+    const struct timespec samples[] = {
+        {1, -1L}, {1, 1000000000L}, {-1, 0L},
+        {(time_t)(UINT64_MAX / 1000U + 1U), 0L},
+        {(time_t)(UINT64_MAX / 1000U), 999000000L}, {0, 0L}
+    };
+    for (size_t i = 0U; i <= sizeof(samples) / sizeof(samples[0]); ++i) {
+        fixture_t f; setup(&f, path, false);
+        uint64_t previous = f.client->now_ms, bound = f.client->deadline_ms;
+        clock_fault = i == sizeof(samples) / sizeof(samples[0]) ? 1 : 2;
+        if (clock_fault == 2) clock_sample = samples[i];
+        cog_cli_host_runtime_step_t info;
+        cog_result_t rc = cog_cli_host_client_step(f.client, &info);
+        clock_fault = 0;
+        CHECK(rc == COG_ERROR_IO && info.done);
+        CHECK(f.client->now_ms == previous && f.client->deadline_ms == bound);
+        CHECK(f.client->rendered_sequence == 0U && !f.client->have_view);
+        CHECK(cog_cli_host_client_step(f.client, &info) == COG_ERROR_IO && info.done);
+        CHECK(cog_cli_host_client_close(&f.client, COG_OK) == COG_ERROR_IO);
+        if (f.peer != NULL) OK(cog_ipc_endpoint_free(f.peer));
+        OK(cog_ipc_endpoint_free(f.listener));
+        CHECK(close(f.input[0]) == 0 && close(f.input[1]) == 0 && fclose(f.output) == 0);
+    }
+    /* A valid sample is still admitted; malformed checks must not reject the
+     * normalized ordinary path or change the fixed reconnect deadline. */
+    fixture_t f; setup(&f, path, false);
+    uint64_t next = f.client->now_ms + 1U, bound = f.client->deadline_ms;
+    clock_sample.tv_sec = (time_t)(next / 1000U);
+    clock_sample.tv_nsec = (long)((next % 1000U) * 1000000U);
+    clock_fault = 2;
     cog_cli_host_runtime_step_t info;
-    cog_result_t rc=cog_cli_host_client_step(f.client,&info);
-    invalid_nanoseconds=false;
-    fprintf(stderr,"invalid nanoseconds: rc=%d done=%d\n",(int)rc,(int)info.done);
-    CHECK(rc==COG_ERROR_IO && info.done);
-    CHECK(cog_cli_host_client_close(&f.client,COG_OK)==COG_ERROR_IO);
-    OK(cog_ipc_endpoint_free(f.peer));OK(cog_ipc_endpoint_free(f.listener));
-    CHECK(close(f.input[0])==0 && close(f.input[1])==0 && fclose(f.output)==0);
+    cog_result_t rc = cog_cli_host_client_step(f.client, &info);
+    clock_fault = 0;
+    CHECK(rc == COG_OK && !info.done && f.client->now_ms == next && f.client->deadline_ms == bound);
+    cleanup(&f);
 }
+
 int main(int argc, char **argv)
 {
     (void)test_negative_control(argc, argv);

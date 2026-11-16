@@ -47,7 +47,7 @@ def main():
     for name in ['projection_owner', 'client']:
         exe = args.build_dir / ('test_' + name)
         subprocess.run([args.cc, *flags, *includes, str(HERE / ('test_' + name + '.c')), *objects,
-                        '-Wl,--gc-sections', '-Wl,--wrap=cog_ipc_replay_append', '-Wl,--wrap=clock_gettime', '-o', str(exe)], check=True)
+                        '-Wl,--gc-sections', '-Wl,--wrap=cog_ipc_replay_append', *(['-Wl,--wrap=clock_gettime'] if name == 'client' else []), '-o', str(exe)], check=True)
         subprocess.run([str(exe), *([str(args.build_dir.resolve() / 'peer.sock')] if name == 'client' else [])], check=True, env=env, timeout=20)
         negative = subprocess.run([str(exe), '--negative-control'], capture_output=True, env=env, timeout=20)
         if negative.returncode == 0 or b'CHECK(false)' not in negative.stderr and b': false' not in negative.stderr:

@@ -15,8 +15,12 @@ static cog_result_t client_clock(cog_cli_host_client_t *c)
 {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0 || ts.tv_sec < 0 ||
+        ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000L ||
         (uint64_t)ts.tv_sec > UINT64_MAX / 1000U) return COG_ERROR_IO;
-    uint64_t now = (uint64_t)ts.tv_sec * 1000U + (uint64_t)ts.tv_nsec / 1000000U;
+    uint64_t seconds_ms = (uint64_t)ts.tv_sec * 1000U;
+    uint64_t fraction_ms = (uint64_t)ts.tv_nsec / 1000000U;
+    if (fraction_ms > UINT64_MAX - seconds_ms) return COG_ERROR_IO;
+    uint64_t now = seconds_ms + fraction_ms;
     if (now < c->now_ms) return COG_ERROR_IO;
     c->now_ms = now;
     return COG_OK;
