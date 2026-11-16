@@ -127,8 +127,15 @@ cog_result_t cog_cli_execution_end(cog_cli_app_t *app);
 /** @brief Checked consuming destruction, shared by public app_free wrapper.
  * @param[in,out] app NULL pointee OK; set NULL after consuming all resources.
  * @param[in] primary Existing failure wins over all later cleanup results.
- * @return primary or first cleanup error; NULL_PTR; INVALID_STATE leaves live/
- * undrained app untouched. Never-begun/staged quiescent app can be consumed.
+ * @return primary or first cleanup error; NULL_PTR; preflight INVALID_STATE
+ * leaves live/undrained app untouched. Never-begun/staged quiescent app can be
+ * consumed. A late nonconsuming guard-release refusal retains a cleanup-only
+ * app, with every already-consumed subordinate pointer cleared. Return actual
+ * refusal unless primary already failed; the nonNULL output then identifies
+ * remaining ownership regardless of result precedence. No execution may resume;
+ * after outstanding guard refusal is resolved, retry only checked destruction.
+ * Consuming guard cleanup errors detach the guard and continue teardown; on
+ * complete consumption output is NULL even when primary/cleanup error is returned.
  * Destroys retained tool handles, then installed delegation context while app
  * lives, workspace/core/provider/config/obs/store/session in declared order.
  * Every provider disconnect consumes once on every return; secret cleared after

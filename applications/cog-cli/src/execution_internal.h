@@ -79,12 +79,17 @@ typedef struct cli_execution_state {
 cog_result_t cli_app_construct_resolved(cog_cli_app_t **out,
     cog_cli_execution_admission_t *admission);
 /** @brief cli.c consuming resource disposal AFTER checked close preconditions.
- * @param[in,out] app Consumed/NULL on return; NULL pointee OK.
+ * @param[in,out] app Consumed/NULL on completed teardown; NULL pointee OK.
  * @param[in] primary First error wins. @return primary/first cleanup/NULL_PTR.
  * Destroy toolkit handles then delegation while app lives; core must not drive;
  * provider consuming disconnect precedes matching secret/config free. Never free
  * borrowed registry session. Net/observer remain caller-slot owned in that order.
  * execution_close validates live/drain/borrow conditions before invoking this.
+ * Clear each consumed subordinate alias immediately, even on cleanup error.
+ * A consuming guard-release error must not stop remaining owned teardown.
+ * A nonconsuming guard refusal retains only the still-owned cleanup-only app;
+ * no dangling pointer or retry of an already-consumed resource is permitted.
+ * Caller reads the output pointer for consumption even when primary wins.
  */
 cog_result_t cli_app_dispose(cog_cli_app_t **app, cog_result_t primary);
 /** @brief execution.c stage visible state and select publication continuation.
