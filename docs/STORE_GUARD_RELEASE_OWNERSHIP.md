@@ -69,3 +69,35 @@ layout change or automatic adapter hides this compatibility obligation.
    implementation layout. No guard alias survives under a different backend or
    new owner epoch, and NULL-release remains an independent no-op, not evidence
    that a previous failed release succeeded.
+
+## Pass 3: consistency and compatibility audit
+
+| Boundary | Required ownership/error behavior |
+|---|---|
+| NULL public guard | OK no-op, no callback, no inferred prior-release success. |
+| Valid borrowed guard | INVALID_STATE, still live, callback not entered; existing borrow count unchanged. |
+| Valid backend refusal | INVALID_STATE consumes neither backend guard nor wrapper; caller retains authority only under prior frozen/borrow constraints. |
+| Successful cleanup | Both handles consumed once, caller aliases cleared, successful release may be recorded. |
+| IO/other cleanup error | Both handles consumed once, original error retained; no repeat release, execution thaw or successful handoff proof. |
+| Custom backend returning AGAIN | Not a deferred-release protocol: as a non-INVALID_STATE error it consumes. Backends must quiesce asynchronous work before this destructor. |
+| Earlier app primary failure | First error wins; app output pointer still truthfully distinguishes complete consumption from retained cleanup-only ownership. |
+| Partial app cleanup refusal | Every consumed pointer is NULL; remaining owner/guard cannot run work, but may complete cleanup after refusal resolution. |
+| Exact source retry | Existing frozen failure remains failure; a cleared consumed guard never grants release success or CAS. |
+| Constructor rollback | Backend handle construction failure creates no owner; wrapper allocation failure after successful acquire invokes the same consuming release discipline. |
+| Context/store destruction | Store outlives guards; consumed guards are absent from its bookkeeping even on cleanup error, so later store free cannot revisit them. |
+| ABI and migration | No slot/signature/layout/version changes; nevertheless custom callback error semantics are explicitly amended and require audit/conformance updates. |
+
+The scenario coverage is scenario05 graceful teardown, scenario13 durable store
+ownership, scenario17 migration, and scenario20 cancelled/drained work. Existing
+static backend dispatch remains unchanged. No allocator, secret lifetime, output
+buffer, wire protocol or retry timer is added. Native close errors are preserved
+without assuming file-specific internals for custom backends. A backend which
+retains a handle on IO is nonconforming after this amendment; caller-side probing
+or silently replaying its destructor is not an adaptation mechanism.
+
+Validation: session_store.h, execution.h, execution_internal.h and
+composition_internal.h passed16 strict standalone checks: GCC/Clang C11 and
+G++/Clang++ C++11 with Werror. Commands/results are retained under
+build-store-release-contract/checks.log. This is a header-only gate: source fixes
+and real file/custom-backend fault regressions remain required after independent
+approval. The existing fae1e27 failing regression is not claimed fixed here.

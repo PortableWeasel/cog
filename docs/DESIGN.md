@@ -969,3 +969,17 @@ kinds, buffers, runtime allocations, process rebinding, or semantic ACK shortcut
 Generic retained response delivery additionally has an independent selector under
 `REAL_CLIENT_SEND_REPLY_RETENTION.md` (81431a3), so throttling cannot silently lose
 a re-armed reply or misuse a still-pending semantic request flag.
+
+### Guard release failures and cleanup ownership
+
+The public fenced guard destructor and its custom-backend vtable callback share
+one result/ownership classification: valid-handle INVALID_STATE refuses without
+consumption; OK and cleanup errors consume both backend handle and public wrapper.
+A consuming IO is retained failure, not successful release or handoff evidence.
+Callers clear consumed aliases, continue remaining teardown, preserve first error,
+and keep failed handoff sources frozen. Checked app output pointers distinguish
+complete consumption from a late nonconsuming guard refusal and cleanup-only
+remaining ownership. Custom retain-on-error backends require explicit semantic
+migration; no ABI layout change or file-backend-specific guess supplies it.
+See `STORE_GUARD_RELEASE_OWNERSHIP.md` for the three resource/borrow/custom/handoff
+traces and the d97a81b header gate addressing independently reproduced fae1e27.
