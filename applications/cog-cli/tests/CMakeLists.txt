@@ -507,3 +507,13 @@ add_test(NAME cli-view-projection COMMAND test_view_projection_owner)
 add_test(NAME cli-view-client COMMAND test_view_client view-client.sock)
 set_tests_properties(cli-view-projection cli-view-client PROPERTIES
     TIMEOUT 30 LABELS "unit;cli;headless")
+
+add_executable(test_handoff_release_again_critic test_handoff_release_again_critic.c)
+target_include_directories(test_handoff_release_again_critic PRIVATE ../src)
+target_link_libraries(test_handoff_release_again_critic PRIVATE cog::cli)
+target_enable_warnings(test_handoff_release_again_critic)
+target_link_options(test_handoff_release_again_critic PRIVATE
+    -Wl,--wrap=close -Wl,--wrap=cog_store_owner_release)
+add_test(NAME cli-handoff-release-again-critic COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_execution_tools.py
+    $<TARGET_FILE:test_handoff_release_again_critic> ${CMAKE_BINARY_DIR})
