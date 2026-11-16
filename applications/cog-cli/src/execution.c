@@ -294,7 +294,8 @@ cog_result_t cog_cli_execution_release_source(cog_cli_app_t *app, cog_store_chec
     cog_result_t rc = cog_store_owner_release(app->guard);
     if (rc != COG_ERROR_INVALID_STATE) app->guard = NULL;
     if (rc == COG_OK) { h->source_released = true; h->authority = CLI_AUTH_SOURCE_RELEASED; }
-    else if (rc != COG_ERROR_INVALID_STATE) (void)remember(app, rc);
+    else if (rc != COG_ERROR_INVALID_STATE && h->primary == COG_OK)
+        h->primary = rc; /* Synchronous consuming cleanup includes AGAIN. */
     return rc;
 }
 cog_result_t cog_cli_execution_stage_guard(cog_cli_app_t *app, cog_store_owner_t next,

@@ -483,3 +483,12 @@ foreach(name IN ITEMS app_close_guard_critic guard_backend_ownership)
 endforeach()
 target_link_options(test_app_close_guard_critic PRIVATE -Wl,--wrap=close -Wl,--wrap=cog_store_owner_release)
 target_link_options(test_guard_backend_ownership PRIVATE -Wl,--wrap=calloc)
+
+add_executable(test_guard_again_critic test_guard_again_critic.c)
+target_include_directories(test_guard_again_critic PRIVATE ../src)
+target_link_libraries(test_guard_again_critic PRIVATE cog::cli)
+target_enable_warnings(test_guard_again_critic)
+target_link_options(test_guard_again_critic PRIVATE -Wl,--wrap=close -Wl,--wrap=cog_store_owner_release)
+add_test(NAME cli-guard-again-critic COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_execution_tools.py
+    $<TARGET_FILE:test_guard_again_critic> ${CMAKE_BINARY_DIR})
