@@ -67,6 +67,7 @@ int main(int argc,char **argv)
                 CHECK(a!=NULL && a->execution_epoch==s->attempt && a->owner_peer==s->owner_peer);
                 CHECK(a->parent_session_id!=NULL && strcmp(a->parent_session_id,h->primary_session)==0);
                 CHECK(a->session_id!=NULL && strcmp(a->session_id,h->primary_session)!=0);
+                CHECK(cog_session_parent_id(a->session)!=NULL);
                 CHECK(strcmp(cog_session_parent_id(a->session),h->primary_session)==0);
                 linked[k]=true;
                 if(a->status==COG_AGENT_STATUS_RUNNING) running[k]=true;
