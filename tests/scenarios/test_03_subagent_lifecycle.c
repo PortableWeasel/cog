@@ -52,7 +52,7 @@ int main(int argc,char **argv)
         CHECK(snprintf(task,sizeof(task),"delegate round %u",round)>0);
         CHECK(snprintf(expected,sizeof(expected),"PARENT_DONE_%u",round)>0);
         CHECK(cog_cli_app_queue(parent,task,strlen(task))==COG_OK);
-        cog_agent_id_t ids[2]={0U,0U};bool running[2]={false,false};
+        cog_agent_id_t ids[2]={0U,0U};char sessions[2][128]={{0},{0}};bool running[2]={false,false};
         bool terminals[2]={false,false},linked[2]={false,false},cancelled=false,complete=false;
         uint64_t end=headless_fixture_clock_ms()+20000U;
         while (headless_fixture_clock_ms()<end) {
@@ -67,6 +67,9 @@ int main(int argc,char **argv)
                 CHECK(a!=NULL && a->execution_epoch==s->attempt && a->owner_peer==s->owner_peer);
                 CHECK(a->parent_session_id!=NULL && strcmp(a->parent_session_id,h->primary_session)==0);
                 CHECK(a->session_id!=NULL && strcmp(a->session_id,h->primary_session)!=0);
+                CHECK(strlen(a->session_id)<sizeof(sessions[k]));
+                if(sessions[k][0]=='\0')strcpy(sessions[k],a->session_id);
+                CHECK(strcmp(sessions[k],a->session_id)==0);
                 CHECK(cog_session_parent_id(a->session)!=NULL);
                 CHECK(strcmp(cog_session_parent_id(a->session),h->primary_session)==0);
                 linked[k]=true;
@@ -100,6 +103,13 @@ int main(int argc,char **argv)
         cog_session_t *saved=NULL;
         CHECK(cog_store_load(h->catalog,h->primary_session,&saved)==COG_OK);
         bool durable=saved_delegate(saved,round,cancel);cog_session_free(saved);CHECK(durable);
+        CHECK(strcmp(sessions[0],sessions[1])!=0);
+        for(size_t k=0U;k<2U;++k) {
+            cog_store_load_report_t report;saved=NULL;
+            CHECK(cog_store_load_ex(h->catalog,sessions[k],COG_STORE_LOAD_INSPECT,&saved,&report)==COG_OK);
+            bool child_link=cog_session_parent_id(saved)!=NULL && strcmp(cog_session_parent_id(saved),h->primary_session)==0;
+            cog_session_free(saved);CHECK(child_link && report.source_version==COG_STORE_FORMAT_V2);
+        }
         end=headless_fixture_clock_ms()+5000U;bool retired=false;
         while(headless_fixture_clock_ms()<end) {
             retired=true;
