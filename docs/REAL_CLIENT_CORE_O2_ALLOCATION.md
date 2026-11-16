@@ -1,0 +1,35 @@
+# O2 accepted-endpoint allocation clarification
+
+Ticket b55dd9e; dependent source tickets e55f22c/959efdc, parent 99c42ec.
+Recovered body commit 64386bc is preserved, but its pre-OOM test reports are
+not current acceptance evidence. This amendment changes comments and design
+only; independent header review precedes further dependent body changes.
+
+## Pass 1 — resource ownership
+
+Goal: reconcile cooperative step with the existing Q/M core configuration and
+IPC constructor contracts, without adding storage or changing capacities.
+Existing core listener service is the sole affected block; no new diagram node,
+API, PoC, dependency or dispatch path is required. The existing IPC/core boundary
+continues to own accepted endpoints.
+
+```text
+host -> core_new: reserve tracking/queues/arena and transfer listener
+host -> drive_begin -> step (or run -> same engine)
+core -> endpoint_accept: construct one endpoint only below peer capacity
+core -> reserved peer record: retain endpoint and copied connection proof
+core -> endpoint_free: retire endpoint once, release reserved record
+```
+
+| Call/resource | Header contract | Bound/owner |
+|---|---|---|
+| core_new / ipc_endpoint | cog/core.h | successful construction transfers listener; fixed records/arena |
+| core_step / core_run | cog/core.h | same bounded listener service; no driver or per-message growth |
+| endpoint_accept | cog/ipc.h | explicit inherited bounded framing workspaces |
+| endpoint_free | cog/ipc.h | core pairs each successful accepted constructor with disposal |
+| agent execution borrow/return | cog/agent.h | existing exact session only; no allocation |
+
+Gap fixed: step's blanket allocation prohibition contradicted its own config
+contract. The named accepted-endpoint constructor remains admitted in manual
+and run modes; `ipc_peer_capacity` caps live accepted endpoints, not the number
+of connections over the entire core lifetime. Full capacity cannot grow tables.

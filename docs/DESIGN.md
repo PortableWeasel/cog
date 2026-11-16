@@ -921,3 +921,14 @@ including consuming-disconnect error handling, retained notices and EOF-aware
 input admission. [Scoped writer evidence](REAL_CLIENT_RELOAD_EVIDENCE.md) records
 actual two-generation composition; independent package/integration gates remain
 separate from the original header approval.
+
+### O2 cooperative accepted-endpoint allocation clarification
+
+The cooperative driver preserves Q/M's existing explicit constructor profile.
+Both run and manual step can call `cog_ipc_endpoint_accept` during listener
+service, with live accepted objects bounded by `ipc_peer_capacity` and each
+paired with `cog_ipc_endpoint_free`. Tracking records, queues, payload arenas,
+driver state and child session borrows never grow during driving. This corrects
+the overly broad step comment; it admits no new allocation class.
+[Targeted resource/error/shutdown passes](REAL_CLIENT_CORE_O2_ALLOCATION.md)
+record the clarification gate, separate from recovered implementation acceptance.

@@ -163,7 +163,8 @@ typedef struct cog_core_config {
      *
      * May be NULL for single-process operation (the default).  If
      * non-NULL, the core takes ownership of the endpoint: it drains
-     * incoming connections and messages during @c cog_core_run,
+     * incoming connections and messages during @c cog_core_run or
+     * an active manual drive,
      * enqueuing them as COG_EVENT_IPC_* events into the local queue,
      * and destroys the endpoint in @c cog_core_free.  The endpoint must
      * be bound (listening or connected) before it is passed to the
@@ -379,7 +380,11 @@ cog_result_t cog_core_drive_begin(cog_core_t *core);
  * actionable work return a due deadline even when enqueue is temporarily full.
  * Hooks/handlers must obey bounded-work contracts.
  * Popped IPC/agent/event leases release after handler on EVERY path; budget yield
- * never acknowledges/drops unprocessed work. No allocation. Stop is still the
+ * never acknowledges/drops unprocessed work. No per-message, driver-state or
+ * borrowed-session allocation or storage growth. As in run(), listener service
+ * may call the explicit cog_ipc_endpoint_accept constructor, bounded by
+ * ipc_peer_capacity, with each accepted endpoint paired with
+ * cog_ipc_endpoint_free; see cog_core_config_t::ipc_endpoint. Stop is still the
  * sole cross-thread/signal-safe operation and is checked between units.
  * App-owned asynchronous work remains owned and must explicitly drain.
  */
