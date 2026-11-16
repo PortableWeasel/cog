@@ -1183,9 +1183,57 @@ static cog_result_t send_profile_ack(cog_cli_worker_host_t *worker,cli_secret_ex
     if(rc==COG_OK) { exchange->pending=false;exchange->acknowledged=true; }
     return rc;
 }
+static void send_native_turn(cog_cli_worker_host_t *worker,cli_executor_slot_t *slot,
+    size_t lane_index,bool *progress)
+{
+    (void)slot;(void)lane_index;cog_result_t rc;
+        for(size_t i=0U;i<2U;++i) if(worker->native_pending[i]) {
+            rc=envelope_send(worker,&worker->native_control[i]);
+            if(rc==COG_OK) {
+                worker->native_pending[i]=false;*progress=true;
+                if(i==1U) worker->next_heartbeat_ms=worker->now_ms>UINT64_MAX-100U?UINT64_MAX:worker->now_ms+100U;
+            } else (void)retain_error(worker,rc);
+        }
+}
+static void send_application_turn(cog_cli_worker_host_t *worker,cli_executor_slot_t *slot,
+    size_t lane_index,bool *progress)
+{
+    cog_result_t rc;
+        rc=send_profile_ack(worker,&worker->startup_profile);if(rc==COG_OK) *progress=true;
+        else (void)retain_error(worker,rc);
+        rc=send_profile_ack(worker,&slot->profile);if(rc==COG_OK) *progress=true;
+        else (void)retain_error(worker,rc);
+        cli_control_lane_t *in=&slot->inbound[lane_index],*out=&slot->outbound[lane_index];
+        if(in->pending_valid && in->final_reply.length!=0U) {
+            rc=envelope_send(worker,&in->final_reply);
+            if(rc==COG_OK) { in->pending_valid=false;*progress=true; } else (void)retain_error(worker,rc);
+        }
+        if(out->pending_valid && out->pending.length!=0U &&
+           !(lane_index==COG_CLI_LANE_UPDATE-1U && slot->terminal_acked)) {
+            rc=envelope_send(worker,&out->pending);
+            if(rc==COG_OK) {
+                *progress=true;
+                if(lane_index==COG_CLI_LANE_CANCEL-1U) out->pending_valid=false;
+            } else (void)retain_error(worker,rc);
+        }
+}
+static void send_transport_turn(cog_cli_worker_host_t *worker,cli_executor_slot_t *slot,
+    size_t lane_index,size_t phase,bool *progress)
+{
+    typedef void (*send_fn)(cog_cli_worker_host_t *,cli_executor_slot_t *,size_t,bool *);
+    /* Three phases prevent priority from locking to IPC's alternating RX/TX
+       units: every selected lane sees native-first and two application-first
+       opportunities. Both classes progress even with saturated copied TX. */
+    static const send_fn order[3][2]={
+        {send_native_turn,send_application_turn},
+        {send_application_turn,send_native_turn},
+        {send_application_turn,send_native_turn}};
+    for(size_t i=0U;i<2U;++i) order[phase][i](worker,slot,lane_index,progress);
+}
 static cog_result_t parent_step(cog_cli_worker_host_t *worker,bool *progress,uint64_t *deadline)
 {
     cog_result_t serviced=cog_ipc_internal_service_one(worker->parent,worker->now_ms,deadline);
+    if(serviced==COG_OK) *progress=true;
     if(!worker->authenticated) {
         cog_peer_id_t peer;cog_result_t rc=cog_ipc_endpoint_get_peer_id(worker->parent,&peer);
         if(rc==COG_OK) rc=cog_ipc_endpoint_peer_info(worker->parent,peer,&worker->parent_proof);
@@ -1239,9 +1287,10 @@ cog_result_t cog_cli_worker_host_step(cog_cli_worker_host_t *worker,cog_cli_host
     rc=parent_step(worker,&progress,&parent_deadline);(void)retain_error(worker,rc);
     if(parent_deadline<step.next_deadline_ms) step.next_deadline_ms=parent_deadline;
     size_t turn=worker->round_robin++;
-    if(worker->round_robin==worker->executor_capacity*CLI_HOST_LANES) worker->round_robin=0U;
-    cli_executor_slot_t *slot=&worker->executors[turn%worker->executor_capacity];
-    size_t lane_index=(turn/worker->executor_capacity)%CLI_HOST_LANES;
+    if(worker->round_robin==worker->executor_capacity*CLI_HOST_LANES*3U) worker->round_robin=0U;
+    size_t logical=turn/3U;
+    cli_executor_slot_t *slot=&worker->executors[logical%worker->executor_capacity];
+    size_t lane_index=(logical/worker->executor_capacity)%CLI_HOST_LANES;
     if(slot->phase!=CLI_SLOT_FREE) {
         rc=executor_step(worker,slot,&step);if(rc==COG_OK) progress=true;
         if(rc!=COG_OK && rc!=COG_ERROR_AGAIN) (void)retain_error(worker,rc);
@@ -1267,30 +1316,7 @@ cog_result_t cog_cli_worker_host_step(cog_cli_worker_host_t *worker,cog_cli_host
             if(worker->executors[i].started && !worker->executors[i].local_done) ++active;
         if(!worker->shutdown && worker->now_ms>=worker->next_heartbeat_ms && !worker->native_pending[1])
             (void)retain_error(worker,native_frame(worker,1U,COG_WORKER_HEARTBEAT,active,0U,COG_OK));
-        for(size_t i=0U;i<2U;++i) if(worker->native_pending[i]) {
-            rc=envelope_send(worker,&worker->native_control[i]);
-            if(rc==COG_OK) {
-                worker->native_pending[i]=false;progress=true;
-                if(i==1U) worker->next_heartbeat_ms=worker->now_ms>UINT64_MAX-100U?UINT64_MAX:worker->now_ms+100U;
-            } else (void)retain_error(worker,rc);
-        }
-        rc=send_profile_ack(worker,&worker->startup_profile);if(rc==COG_OK) progress=true;
-        else (void)retain_error(worker,rc);
-        rc=send_profile_ack(worker,&slot->profile);if(rc==COG_OK) progress=true;
-        else (void)retain_error(worker,rc);
-        cli_control_lane_t *in=&slot->inbound[lane_index],*out=&slot->outbound[lane_index];
-        if(in->pending_valid && in->final_reply.length!=0U) {
-            rc=envelope_send(worker,&in->final_reply);
-            if(rc==COG_OK) { in->pending_valid=false;progress=true; } else (void)retain_error(worker,rc);
-        }
-        if(out->pending_valid && out->pending.length!=0U &&
-           !(lane_index==COG_CLI_LANE_UPDATE-1U && slot->terminal_acked)) {
-            rc=envelope_send(worker,&out->pending);
-            if(rc==COG_OK) {
-                progress=true;
-                if(lane_index==COG_CLI_LANE_CANCEL-1U) out->pending_valid=false;
-            } else (void)retain_error(worker,rc);
-        }
+        send_transport_turn(worker,slot,lane_index,turn%3U,&progress);
     }
     bool drained=true;
     for(size_t i=0U;i<worker->executor_capacity;++i)

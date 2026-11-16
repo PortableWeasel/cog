@@ -123,6 +123,28 @@ int main(int argc,char **argv)
     assert(message.agent_id==17U && message.execution_epoch==2U && message.owner_peer==9U);
     assert(message.runtime_incarnation==7U && message.sender_incarnation==11U);
     assert(strcmp(message.session_id,"child")==0);
+    /* Continuous native and application contenders share actual one-frame TX.
+       Alternate single native I/O units, as the production outer step does. */
+    cli_control_lane_t incoming[CLI_HOST_LANES]={0};slot.inbound=incoming;
+    slot.terminal_acked=false;host.now_ms=1U;
+    unsigned char native_bytes[WORKER_NATIVE_BYTES];
+    host.native_control[1]=(cli_host_bytes_t){native_bytes,sizeof(native_bytes),0U};
+    assert(native_frame(&host,1U,COG_WORKER_HEARTBEAT,0U,0U,COG_OK)==COG_OK);
+    assert(cog_cli_control_encode(&message,pending,sizeof(pending),&lane->pending.length)==COG_OK);
+    lane->pending_valid=true;
+    unsigned native_seen=0U,application_seen=0U;uint64_t next;
+    for(size_t turn=0U;turn<72U;++turn) {
+        bool progress=false;host.native_pending[1]=true;
+        send_transport_turn(&host,&slot,COG_CLI_LANE_UPDATE-1U,turn%3U,&progress);
+        rc=cog_ipc_internal_service_one(sender,1U,&next);assert(rc==COG_OK || rc==COG_ERROR_AGAIN);
+        rc=cog_ipc_internal_service_one(receiver,1U,&next);assert(rc==COG_OK || rc==COG_ERROR_AGAIN);
+        received.len=0U;rc=cog_ipc_endpoint_recv(receiver,&received);
+        if(rc==COG_OK) {
+            if(memcmp(rx,"CGW",3U)==0) ++native_seen;
+            else { assert(memcmp(rx,"CGL",3U)==0);++application_seen; }
+        } else assert(rc==COG_ERROR_AGAIN);
+    }
+    assert(native_seen>0U && application_seen>0U);
     assert(cog_ipc_endpoint_free(sender)==COG_OK);
     assert(cog_ipc_endpoint_free(receiver)==COG_OK);
     assert(cog_ipc_endpoint_free(listener)==COG_OK);
