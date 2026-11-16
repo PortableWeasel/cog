@@ -38,6 +38,7 @@ cog_result_t cog_cli_projection_new(cog_cli_projection_t **out,
     size_t sid = strlen(config->session_id);
     if (sid == 0U || sid > 127U || !cli_wire_session(config->session_id, sid))
         return COG_ERROR_INVALID_ARG;
+    if (config->max_display_bytes < 25U + sid) return COG_ERROR_LIMIT;
     size_t row = 174U, worst = 452U;
     if (!add_size(row, config->max_status_bytes, &row) ||
         !add_size(row, config->max_result_bytes, &row) ||
@@ -55,7 +56,12 @@ cog_result_t cog_cli_projection_new(cog_cli_projection_t **out,
     p->item_capacity = config->max_display_bytes / 14U;
     cog_result_t rc = cog_ipc_replay_new(&p->replay, p->session,
         config->generation, config->records, config->replay_bytes);
-    if (rc != COG_OK) { cog_cli_projection_free(p); return rc; }
+    if (rc != COG_OK) {
+        cog_cli_projection_free(p);
+        /* All scalar/ID inputs are validated above; remaining ring INVALID_ARG
+         * is its checked entry-array arithmetic refusal. */
+        return rc == COG_ERROR_INVALID_ARG ? COG_ERROR_LIMIT : rc;
+    }
     for (size_t i = 0U; i < 2U; ++i) {
         cli_view_bank_t *b = &p->banks[i];
         b->items = calloc(p->item_capacity == 0U ? 1U : p->item_capacity, sizeof(*b->items));

@@ -25,6 +25,10 @@ int main(int argc, char **argv)
     CHECK(cog_cli_projection_new(&p, &bad) == COG_ERROR_LIMIT && p == NULL);
     bad = cfg; bad.max_status_bytes = SIZE_MAX;
     CHECK(cog_cli_projection_new(&p, &bad) == COG_ERROR_LIMIT && p == NULL);
+    bad = cfg; bad.records = SIZE_MAX;
+    CHECK(cog_cli_projection_new(&p, &bad) == COG_ERROR_LIMIT && p == NULL);
+    bad = cfg; bad.max_display_bytes = 1U;
+    CHECK(cog_cli_projection_new(&p, &bad) == COG_ERROR_LIMIT && p == NULL);
     bad = cfg; bad.session_id = "bad/root";
     CHECK(cog_cli_projection_new(&p, &bad) == COG_ERROR_INVALID_ARG && p == NULL);
     OK(cog_cli_projection_new(&p, &cfg));

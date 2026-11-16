@@ -30,7 +30,10 @@ input and final-result/ACK-of-ACK drain, exact old command bytes across higher-w
 reconnect HELLO, lost initial HELLO cleanup and original nonce retry, typed
 continue/fork/cancel/reload/handoff/shutdown, unknown slash and stale policy
 refusal, watcher mutation refusal, GAP full replacement/RESYNC, escaped terminal
-control bytes and actual /dev/full output failure with unchanged cursor/view.
+control bytes and actual /dev/full output failure with unchanged cursor/view;
+server-incarnation change with pending input, expired unknown/known detach
+deadlines, independently progressing CANCEL, read-batch anchors across a newer
+view, and late older results that cannot overwrite the last input outcome.
 
 The client renders complete JSON replacement records (also preceded by a fixed
 clear/home sequence for terminal mode). Decimal 64-bit IDs are JSON strings.

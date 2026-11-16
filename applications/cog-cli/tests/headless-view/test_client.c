@@ -13,7 +13,7 @@ typedef struct fixture {
     FILE *output;
     int input[2];
     unsigned char receive[8192], storage[8192];
-    uint64_t server_wire;
+    uint64_t server_wire, runtime;
 } fixture_t;
 static uint64_t now(void)
 {
@@ -56,7 +56,7 @@ static void send_frame(fixture_t *f, cog_cli_control_kind_t kind, cog_cli_contro
     uint64_t reply, const void *body, size_t length)
 {
     cog_cli_control_message_t m = {0};
-    m.kind = kind; m.lane = lane; m.runtime_incarnation = 42U; m.sender_incarnation = 42U;
+    m.kind = kind; m.lane = lane; m.runtime_incarnation = f->runtime; m.sender_incarnation = f->runtime;
     m.wire_id = ++f->server_wire; m.reply_to = reply; m.session_id = "root";
     m.payload = body; m.payload_len = length;
     unsigned char frame[8192]; size_t required;
@@ -74,7 +74,7 @@ static void send_result(fixture_t *f, const cog_cli_control_message_t *request,
 }
 static void setup(fixture_t *f, const char *path, bool watch)
 {
-    memset(f, 0, sizeof(*f)); CHECK(pipe(f->input) == 0);
+    memset(f, 0, sizeof(*f)); f->runtime = 42U; CHECK(pipe(f->input) == 0);
     char output_path[512];
     CHECK(snprintf(output_path, sizeof(output_path), "%s.out", path) > 0);
     f->output = fopen(output_path, "w+"); CHECK(f->output != NULL);
@@ -233,6 +233,75 @@ static void output_failure_case(const char *path)
     CHECK(close(f.input[0]) == 0 && close(f.input[1]) == 0);
     CHECK(fclose(f.output) == 0); (void)fclose(bad);
 }
+
+static void error_cleanup(fixture_t *f, cog_result_t expected)
+{
+    CHECK(cog_cli_host_client_close(&f->client, COG_OK) == expected);
+    OK(cog_ipc_endpoint_free(f->peer)); OK(cog_ipc_endpoint_free(f->listener));
+    CHECK(close(f->input[0]) == 0 && close(f->input[1]) == 0);
+    CHECK(fclose(f->output) == 0);
+}
+static void identity_case(const char *path)
+{
+    fixture_t f; setup(&f, path, false); online(&f);
+    CHECK(write(f.input[1], "once\n", 5U) == 5);
+    cog_cli_control_message_t m = next_frame(&f);
+    f.runtime = 43U; send_result(&f, &m, COG_OK, 0U);
+    cog_result_t rc = COG_OK;
+    for (size_t i = 0U; i < 1000U && rc == COG_OK; ++i) {
+        uint64_t next; cog_result_t svc = cog_ipc_endpoint_service(f.peer, now(), &next);
+        CHECK(svc == COG_OK || svc == COG_ERROR_AGAIN);
+        cog_cli_host_runtime_step_t info; rc = cog_cli_host_client_step(f.client, &info);
+    }
+    CHECK(rc == COG_ERROR_INDETERMINATE && f.client->runtime == 42U && f.client->lease == 77U);
+    error_cleanup(&f, COG_ERROR_INDETERMINATE);
+}
+static void deadline_case(const char *path, bool known)
+{
+    fixture_t f; setup(&f, path, false); online(&f);
+    CHECK(write(f.input[1], "once\n", 5U) == 5);
+    cog_cli_control_message_t m = next_frame(&f);
+    if (known) {
+        send_result(&f, &m, COG_OK, 0U);
+        cog_cli_control_message_t ack = next_frame(&f); CHECK(ack.kind == COG_CLI_CONTROL_COMMAND_ACK);
+    }
+    /* Inject an expired absolute detach deadline without sleeping or replacing
+     * any IPC/clock implementation. */
+    f.client->stopping = true; f.client->deadline_ms = 1U;
+    cog_cli_host_runtime_step_t info;
+    cog_result_t expected = known ? COG_ERROR_IO : COG_ERROR_INDETERMINATE;
+    CHECK(cog_cli_host_client_step(f.client, &info) == expected && info.done);
+    error_cleanup(&f, expected);
+}
+static void independent_cancel_case(const char *path)
+{
+    fixture_t f; setup(&f, path, false); online(&f);
+    CHECK(write(f.input[1], "first\n/cancel\n", 14U) == 14);
+    cog_cli_control_message_t first = next_frame(&f);
+    CHECK(first.kind == COG_CLI_CONTROL_UI_COMMAND && first.lane == COG_CLI_LANE_COMMAND);
+    uint64_t first_wire = first.wire_id;
+    /* A later rendered view must not replace the read-batch anchor of CANCEL. */
+    view(&f, 2U, false);
+    cog_cli_control_message_t cancel = next_frame(&f);
+    if (cancel.kind == COG_CLI_CONTROL_REPLAY) cancel = next_frame(&f);
+    CHECK(cancel.kind == COG_CLI_CONTROL_UI_COMMAND && cancel.lane == COG_CLI_LANE_CANCEL);
+    cog_cli_command_t cmd; char buf[256]; size_t required;
+    OK(cog_cli_command_decode(cancel.payload, cancel.payload_len, &cmd, buf, sizeof(buf), &required));
+    CHECK(cmd.kind == COG_CLI_COMMAND_CANCEL && cmd.observed_sequence == 1U);
+    send_result(&f, &cancel, COG_OK, 0U);
+    cog_cli_control_message_t ack = next_frame(&f);
+    if (ack.kind == COG_CLI_CONTROL_REPLAY) ack = next_frame(&f);
+    CHECK(ack.kind == COG_CLI_CONTROL_COMMAND_ACK && ack.lane == COG_CLI_LANE_CANCEL);
+    send_result(&f, &ack, COG_OK, 0U);
+    for (size_t i = 0U; i < 30U; ++i) pump(&f);
+    first.wire_id = first_wire; first.lane = COG_CLI_LANE_COMMAND;
+    send_result(&f, &first, COG_ERROR_DENIED, 0U);
+    ack = next_frame(&f); CHECK(ack.kind == COG_CLI_CONTROL_COMMAND_ACK);
+    send_result(&f, &ack, COG_OK, 0U);
+    for (size_t i = 0U; i < 30U; ++i) pump(&f);
+    CHECK(f.client->final_input_result == COG_OK && f.client->last_input_serial == 2U);
+    cleanup(&f);
+}
 int main(int argc, char **argv)
 {
     (void)test_negative_control(argc, argv);
@@ -257,5 +326,7 @@ int main(int argc, char **argv)
     cleanup(&f);
     reconnect_case(argv[1]); lost_hello_ack_case(argv[1]);
     grammar_case(argv[1]); gap_case(argv[1]); output_failure_case(argv[1]);
+    identity_case(argv[1]); deadline_case(argv[1], false); deadline_case(argv[1], true);
+    independent_cancel_case(argv[1]);
     return 0;
 }
