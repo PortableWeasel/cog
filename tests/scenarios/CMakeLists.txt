@@ -78,3 +78,25 @@ add_dependencies(test_10_fan_out_fan_in aux_core)
 
 set_tests_properties(scenario-test_05b_shutdown_cancel_contract PROPERTIES
     LABELS "scenario;regression")
+
+# Retain the historical registry/aux/transport proofs as component coverage.
+# Canonical O9 tests independently join real installed workers and REAL TLS.
+foreach(name IN ITEMS agent_lifecycle aux_crash subagent_messaging fan_out_fan_in)
+    add_executable(test_component_${name} components/test_${name}.c)
+    target_enable_warnings(test_component_${name})
+    target_link_libraries(test_component_${name} PRIVATE cog::cli)
+    target_include_directories(test_component_${name} PRIVATE
+        ${PROJECT_SOURCE_DIR}/libraries/cog-core/src)
+    add_test(NAME component-${name} COMMAND test_component_${name}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(component-${name} PROPERTIES LABELS "component" TIMEOUT 30)
+endforeach()
+target_link_libraries(test_component_subagent_messaging PRIVATE cog::ipc Threads::Threads)
+foreach(name IN ITEMS aux_crash fan_out_fan_in)
+    target_link_libraries(test_component_${name} PRIVATE cog::orchestrator Threads::Threads)
+    target_include_directories(test_component_${name} PRIVATE
+        ${PROJECT_SOURCE_DIR}/libraries/cog-orchestrator/src)
+    target_compile_definitions(test_component_${name} PRIVATE
+        COG_AUX_CORE_BIN="$<TARGET_FILE:aux_core>")
+    add_dependencies(test_component_${name} aux_core)
+endforeach()
