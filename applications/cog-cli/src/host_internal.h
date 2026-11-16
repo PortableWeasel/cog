@@ -58,6 +58,13 @@ typedef struct cli_control_lane {
  * cli_control_lane/command/events.
  * Only pending secret frame and scratch are reserved here; wipe ENTIRE capacity
  * on retirement/abandonment/free. IPC TX/RX fabric also has wipe_buffers=true.
+ * Failed purpose4 reload exception: detach candidate proof/source before the
+ * consuming reload call; publish a live exact-source proof only on success.
+ * On failure retire the request wire before returning ingress, retaining only
+ * correlation scalars and the nonsecret negative ACK in body. Covered retries
+ * are uniformly stale, never new reloads or binding failures; they may re-arm
+ * that identical retained ACK without claiming exact original-byte equality.
+ * See docs/REAL_CLIENT_RELOAD_FAILURE_RECEIPTS.md for bounded receipt lifetime.
  */
 typedef struct cli_secret_exchange {
     cli_stream_key_t key;
