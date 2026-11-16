@@ -103,3 +103,31 @@ Independent runtime review235ca88 remains required. These component scenarios
 retain their assertions but do not claim O9's future joined O4 app/executor
 composition. Whole O/P, installed-worker end-to-end and all38 release acceptance
 remain separate gates. No integration or parent completion is claimed here.
+
+## Approved component integration and finalize
+
+Independent review `235ca88` passed exact source
+`e5870c2e50cf6fb7c82db5e6004e09b523291dfa`, with the seven affected tests passing
+under strict GCC, strict Clang, ASan/UBSan/LSan and TSan. Scoped integration
+`048a4d0` merged that exact history into O integration with no-ff commit
+`b76aba5babcc173be5c02acb50be0fc69bde736d`. There were no conflicts or semantic
+adaptations; the merge tree exactly matched the independently approved tree.
+
+Fresh postmerge checks used GCC Debug/Werror and the unchanged audited
+`integrate-headless/build-dependencies/cmake-args.txt` shipped dependency profile.
+The complete default build passed, followed by the explicit critic-header-smoke
+build. All seven affected tests passed: unit-orchestrator, unit-orchestrator-wire,
+integration-orchestrator-ipc, integration-orchestrator-stress and original
+scenario07/09/10 component tests. The headers-label CTest passed1/1. Compiler
+TMPDIR, build artifacts and logs stayed in `build-o3-merge-gcc`; build and test
+parallelism was at most2. Logs: `configure.log`, `default-build.log`,
+`header-build.log`, `affected-test.log`, `header-test.log`. Whitespace checks
+passed, the tracked merge tree was clean, and dependency artifacts were preserved.
+
+Component finalize `904975c` closes source `9ccb5d5`/`dff0484`, fixture `f268a60`
+and parent `d5280b7` with this retained evidence. O4 may now consume the completed
+O3 dependency under its own header/layout gate. Original07/09/10 remain restored
+component assertions; O9 actual application joins, whole O/full38/P acceptance
+and main merge remain separate. No O4 source or main branch was changed.
+Evidence-bearing writer/reviewer worktrees remain on disk for root-managed
+archival; no ignored evidence was force-deleted.
