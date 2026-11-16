@@ -6,6 +6,19 @@
 #include <fcntl.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/socket.h>
+#include "../../../../libraries/cog-ipc/src/ipc_internal.h"
+
+int __real_clock_gettime(clockid_t, struct timespec *);
+int __wrap_clock_gettime(clockid_t, struct timespec *);
+static bool invalid_nanoseconds;
+int __wrap_clock_gettime(clockid_t id, struct timespec *ts)
+{
+    int rc=__real_clock_gettime(id,ts);
+    if(rc==0 && id==CLOCK_MONOTONIC && invalid_nanoseconds) ts->tv_nsec=1000000000L;
+    return rc;
+}
+
 
 typedef struct fixture {
     cog_cli_host_client_t *client;
@@ -302,10 +315,50 @@ static void independent_cancel_case(const char *path)
     CHECK(f.client->final_input_result == COG_OK && f.client->last_input_serial == 2U);
     cleanup(&f);
 }
+static void fatal_after_retained_case(const char *path)
+{
+    fixture_t f;setup(&f,path,false);handshake(&f);view(&f,1U,false);
+    uint64_t next;
+    for(size_t i=0U;i<32U;++i) {
+        cog_result_t serviced=cog_ipc_endpoint_service(f.peer,now(),&next);
+        CHECK(serviced==COG_OK || serviced==COG_ERROR_AGAIN);
+    }
+    const unsigned char partial[]={0U,0U};
+    CHECK(write(f.peer->fd,partial,sizeof(partial))==(ssize_t)sizeof(partial));
+    CHECK(shutdown(f.peer->fd,SHUT_WR)==0);
+    cog_result_t rc=COG_OK;uint64_t before=0U;
+    cog_cli_host_runtime_step_t info;
+    for(size_t i=0U;i<16U;++i) {
+        before=f.client->rendered_sequence;
+        rc=cog_cli_host_client_step(f.client,&info);
+        if(f.client->endpoint->failure==COG_ERROR_PROTOCOL) break;
+        OK(rc);
+    }
+    CHECK(f.client->endpoint->failure==COG_ERROR_PROTOCOL);
+    fprintf(stderr,"fatal framing: rc=%d done=%d rendered=%llu\n",(int)rc,
+        (int)info.done,(unsigned long long)f.client->rendered_sequence);
+    CHECK(rc==COG_ERROR_PROTOCOL && info.done && f.client->rendered_sequence==before);
+    CHECK(cog_cli_host_client_close(&f.client,COG_OK)==COG_ERROR_PROTOCOL);
+    OK(cog_ipc_endpoint_free(f.peer));OK(cog_ipc_endpoint_free(f.listener));
+    CHECK(close(f.input[0])==0 && close(f.input[1])==0 && fclose(f.output)==0);
+}
+static void bad_clock_case(const char *path)
+{
+    fixture_t f;setup(&f,path,false);
+    invalid_nanoseconds=true;
+    cog_cli_host_runtime_step_t info;
+    cog_result_t rc=cog_cli_host_client_step(f.client,&info);
+    invalid_nanoseconds=false;
+    fprintf(stderr,"invalid nanoseconds: rc=%d done=%d\n",(int)rc,(int)info.done);
+    CHECK(rc==COG_ERROR_IO && info.done);
+    CHECK(cog_cli_host_client_close(&f.client,COG_OK)==COG_ERROR_IO);
+    OK(cog_ipc_endpoint_free(f.peer));OK(cog_ipc_endpoint_free(f.listener));
+    CHECK(close(f.input[0])==0 && close(f.input[1])==0 && fclose(f.output)==0);
+}
 int main(int argc, char **argv)
 {
     (void)test_negative_control(argc, argv);
-    CHECK(argc == 2); fixture_t f; setup(&f, argv[1], false); handshake(&f);
+    CHECK(argc == 2); fatal_after_retained_case(argv[1]); bad_clock_case(argv[1]); fixture_t f; setup(&f, argv[1], false); handshake(&f);
     view(&f, 1U, false);
     cog_cli_control_message_t cursor = next_frame(&f);
     CHECK(cursor.kind == COG_CLI_CONTROL_REPLAY && f.client->rendered_sequence == 1U);
