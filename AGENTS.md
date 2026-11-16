@@ -129,21 +129,13 @@ TSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-tsan --output-on-failure
 cmake --install build --prefix install/stage
 install/stage/bin/cog-cli --prompt hello
 
-# Verify all headers compile standalone
-for f in $(find libraries -name "*.h" | sort); do
-  gcc -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Wshadow \
-      -Wsign-conversion -Wmissing-prototypes -Wstrict-prototypes \
-      -Wundef -Wpointer-arith -Wcast-align -Wwrite-strings \
-      -Wlogical-op -Wformat=2 -Werror -c -x c "$f" -o /dev/null \
-      -I libraries/cog-core/include \
-      -I libraries/cog-provider/include \
-      -I libraries/cog-toolkit/include \
-      -I libraries/cog-ipc/include \
-      -I libraries/cog-obs/include \
-      -I libraries/cog-config/include \
-      -I libraries/cog-net/include \
-      -I libraries/cog-orchestrator/include
-done
+# Verify every public header standalone and compile the maintained smoke fixtures.
+# Covers libraries/*/include/**/*.h and applications/cog-cli/include/**/*.h;
+# private implementation/vendor headers are not standalone public contracts.
+# Uses the configured C compiler, project strict warnings and test-only Werror.
+cmake --build build --target critic-header-smoke
+ctest --test-dir build -L headers --output-on-failure
+# Repeat with a separate -DCMAKE_C_COMPILER=clang build for Clang coverage.
 ```
 
 ## Design constraints (non-negotiable)
