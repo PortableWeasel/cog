@@ -36,11 +36,13 @@ def digest(path):
 
 
 def reject_paths(text, forbidden, owned=None):
-    # The fixture's current relocated prefix may live below the producer build.
-    # Scrub only that owned subtree before rejecting other build/source paths.
+    # The current relocated prefix may live below a forbidden producer/source
+    # ancestor. That exception must not hide explicitly forbidden old install
+    # prefixes within the fixture itself.
     scrubbed = text.replace(str(owned), "<fixture>") if owned is not None else text
     for path in forbidden:
-        if str(path) in scrubbed:
+        checked = scrubbed if owned is not None and pathlib.Path(path) in pathlib.Path(owned).parents else text
+        if str(path) in checked:
             raise RuntimeError("nonrelocatable source/build/install reference: " + str(path))
     # A temporary *current relocated prefix* is allowed, never a foreign /tmp tree.
     if re.search(r"/tmp/|/home/[^\s;\"']+/(?:ws-|\.codex/worktrees/)", scrubbed):
