@@ -1,0 +1,43 @@
+# Standalone component verification while O4 owns shared app target registration.
+cmake_minimum_required(VERSION 3.20)
+project(cog_headless_profiles C)
+include(CTest)
+get_filename_component(COG_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../.." ABSOLUTE)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+option(PROFILES_SANITIZERS "ASan/UBSan on component fixtures" OFF)
+set(profile_sources "${COG_SOURCE_ROOT}/applications/cog-cli/src/options.c"
+    "${COG_SOURCE_ROOT}/applications/cog-cli/src/configuration.c")
+set(host_source "${COG_SOURCE_ROOT}/applications/cog-cli/src/host_options.c")
+function(profile_target name)
+    target_include_directories(${name} PRIVATE "${COG_SOURCE_ROOT}/applications/cog-cli/src"
+        "${COG_SOURCE_ROOT}/applications/cog-cli/include")
+    foreach(module core provider toolkit net obs ipc orchestrator config)
+        target_include_directories(${name} PRIVATE "${COG_SOURCE_ROOT}/libraries/cog-${module}/include")
+    endforeach()
+    target_compile_options(${name} PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Wconversion
+        -Wsign-conversion -Wmissing-prototypes -Wstrict-prototypes -Wundef -Wpointer-arith
+        -Wcast-align -Wwrite-strings -Wformat=2 -Werror -UNDEBUG)
+    if(PROFILES_SANITIZERS)
+        target_compile_options(${name} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(${name} PRIVATE -fsanitize=address,undefined)
+    endif()
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+add_executable(o6-profiles test_profiles.c ${profile_sources})
+profile_target(o6-profiles)
+add_executable(o6-host-options test_host_options.c "${COG_SOURCE_ROOT}/applications/cog-cli/src/options.c" ${host_source})
+profile_target(o6-host-options)
+add_executable(o6-memory test_memory.c ${profile_sources} ${host_source})
+profile_target(o6-memory)
+target_compile_options(o6-memory PRIVATE -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-free)
+target_link_options(o6-memory PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free,--wrap=getenv,--wrap=fopen)
+# Existing tests remain meaningful regression coverage for J/R12 behavior.
+add_executable(o6-existing-configuration ../test_configuration.c ${profile_sources})
+profile_target(o6-existing-configuration)
+add_executable(o6-existing-memory ../test_configuration_memory.c ${profile_sources}
+    "${COG_SOURCE_ROOT}/libraries/cog-config/src/config.c")
+profile_target(o6-existing-memory)
+target_compile_options(o6-existing-memory PRIVATE -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-free)
+target_link_options(o6-existing-memory PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=free)

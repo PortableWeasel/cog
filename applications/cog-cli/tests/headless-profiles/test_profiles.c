@@ -185,6 +185,30 @@ static int bootstrap(void)
     CHECK(cog_cli_configuration_bootstrap_new(&decoded, modified, length, (cog_net_ctx_t *)(void *)&o, &copy) == COG_ERROR_UNSUPPORTED);
     modified[secret_at] = 0U;
     CHECK(cog_cli_configuration_bootstrap_new(&decoded, modified, length, (cog_net_ctx_t *)(void *)&o, &copy) == COG_ERROR_PROTOCOL);
+    /* Zero/overflowed numeric limits, malformed canonical paths/reference and
+       oversized real fields are rejected before publication, not deferred to IO. */
+    static const size_t numeric_offsets[] = {14U, 18U, 22U, 26U, 30U, 38U, 50U};
+    for (size_t i = 0U; i < sizeof(numeric_offsets) / sizeof(numeric_offsets[0]); ++i) {
+        size_t width = numeric_offsets[i] == 30U || numeric_offsets[i] == 38U ? 8U : 4U;
+        memcpy(modified, wire, length); memset(modified + numeric_offsets[i], 0, width);
+        CHECK(cog_cli_configuration_bootstrap_new(&decoded, modified, length, (cog_net_ctx_t *)(void *)&o, &copy) == COG_ERROR_PROTOCOL && decoded == NULL);
+    }
+    memcpy(modified, wire, length); memset(modified + 38U, 255, 8U);
+    CHECK(cog_cli_configuration_bootstrap_new(&decoded, modified, length, (cog_net_ctx_t *)(void *)&o, &copy) == COG_ERROR_LIMIT);
+    size_t store_at = field_offset(wire, 6U) + 4U;
+    memcpy(modified, wire, length); modified[store_at] = 'x';
+    CHECK(cog_cli_configuration_bootstrap_new(&decoded, modified, length, (cog_net_ctx_t *)(void *)&o, &copy) == COG_ERROR_PROTOCOL);
+    size_t reference_at = field_offset(wire, 4U) + 4U;
+    memcpy(modified, wire, length); memcpy(modified + reference_at, "env:!", 5U);
+    CHECK(cog_cli_configuration_bootstrap_new(&decoded, modified, length, (cog_net_ctx_t *)(void *)&o, &copy) == COG_ERROR_PROTOCOL);
+    size_t model_at = field_offset(wire, 0U), old_model_bytes = strlen(o.model_id);
+    memcpy(modified, wire, model_at); modified[model_at] = 0U; modified[model_at+1U] = 0U;
+    modified[model_at+2U] = 16U; modified[model_at+3U] = 0U;
+    memset(modified + model_at + 4U, 'x', 4096U);
+    memcpy(modified + model_at + 4U + 4096U, wire + model_at + 4U + old_model_bytes,
+        length - model_at - 4U - old_model_bytes);
+    CHECK(cog_cli_configuration_bootstrap_new(&decoded, modified, length + 4096U - old_model_bytes,
+        (cog_net_ctx_t *)(void *)&o, &copy) == COG_ERROR_LIMIT && decoded == NULL);
     CHECK(resolver_calls == calls);
     cog_cli_configuration_free(parent);
     return 0;
