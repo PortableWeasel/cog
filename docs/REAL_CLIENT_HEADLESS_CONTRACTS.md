@@ -33,7 +33,7 @@ passes and different final review gate every dependent O implementation.
 | Public IPC identity/directed send | OS peer credentials plus existing nonblocking endpoint/framing/peer lifetime | 1,3 |
 | Cooperative core/app drive | Existing Q fair dispatch, event/agent leases and deadlines; no nested run | 2,5 |
 | Headless front door | One bounded control core/UI listener, command receipts and client roles; no execution lease | 1,3 |
-| Executing application | Existing K state machine, durable session guard, replay owner and atomic display anchor | 1,2,5 |
+| Executing application | Existing K state machine, durable session guard and retained uncommitted visible projection | 1,2,5 |
 | Child registry binding | Existing copied agent intents/CGA1 retained update/ack, explicit execution-session borrow | 2,3 |
 | Orchestrator | Separate worker-control listener, immutable fork PIDs, bounded handshake/health/shutdown/reap | 2,3 |
 | Configuration/permissions | J-owned resolved clone and fixed child profile, no retained resolver authority | 4,5 |
@@ -89,7 +89,7 @@ not end-to-end acceptance for O.
 | N03 | core_run/app_run block; nested local child loops violate fairness | bounded nonrecursive core/app step lifecycle sharing existing dispatch/service/lease semantics |
 | N04 | registry owns child session but app_new always creates another | explicit session execution borrow/return and child constructor binding exact identity/parentage/guard |
 | N05 | CGA1 encodes updates, not spawn/cancel/config/permission requests or receipts | bounded role-checked control envelope, immutable accepted command IDs, retained receipts/dedup, cancellation receipt sequencing |
-| N06 | private display_sequence and replay append sequence are independent | one app-owned canonical commit bridge; CGR1 DATA carries CGD1 replacement state at the exact same anchor |
+| N06 | private display_sequence and replay append sequence are independent | one coordinator-owned canonical projection commit bridge; CGR1 DATA carries CGD1 replacement state at the exact same coordinator anchor |
 | N07 | GAP snapshot omits current interactive permission control | targeted atomic policy state/nonce after resync, bound to exact node/call; no stale/prequeued approval |
 | N08 | RESUME constructor acquires/advances authority immediately | explicit staged exact-checkpoint application preparation/activation lifecycle for CGH1, no nested app_new workaround |
 | N09 | child resolver/secret/config authority not defined | constructor-owned resolved clone; bounded authenticated private bootstrap; permission/limit intersection and scrubbing |
@@ -236,3 +236,51 @@ READY/disconnect/final transition, as well as independent byte slots. Before
 fork/capture, LIMIT freezes new admission rather than stealing those final IDs.
 Sensitive IPC copies wipe on logical retirement/explicit abandonment; complete
 retained frames remain intact across physical EOF until copied/retired.
+
+## Incremental application lifetime boundary
+
+`src/host_runtime.h` is an installed-host PRIVATE composition API, not a new
+embedding surface. Existing public app constructors/run/free remain compatible.
+One stable coordinator owns its own control session and all child registry
+records, independent of the primary executor's placement. `parent_session_id`
+explicitly names the actual executing parent; the registry-host core does not
+load or mutate that parent through an ID string. Local child app/core borrows
+the exact registry-owned child tree. Remote execution owns its own guarded tree;
+the coordinator's record remains an identity/status shadow, never fabricated
+remote conversation history. Moving the primary does not move that registry,
+change a child owner_peer or lose retained results. Registry lifetime exceeds
+every execution borrow and copied/acknowledged terminal delivery.
+
+`src/execution.h` separates ordinary root admission, exact local child borrow,
+new remote child identity and handoff STAGED preparation. It consumes an already
+resolved configuration on every constructor return; no second environment/file/
+argv pass or resolver authority. STAGED construction loads one exact immutable
+checkpoint and allocates/preflights resources but performs no CAS, guard acquire,
+save, prompt/queue enqueue or effect. Later guarded activation is a distinct
+phase, still to be declared in the handoff subset. Failure never thaws a source.
+
+The runtime constructor reserves bounds and creates listeners/root resources
+without forking. Only a published drive may spawn children. Failed construction
+therefore has no native child requiring a hidden blocking destructor. Once begun,
+driver failure freezes admission while cooperative steps continue drain/reap;
+checked close refuses a live runtime and consumes a done one with primary error
+preserved. Contexts use the same Q begin/step/end engine and retained round-robin
+cursor. No nested app_run/core_run, competing stdin/socket reader or output thread.
+Default depth1, aggregate child slots and worst-case model-request credit are
+finite; child deadlines inherit remaining parent allowance, not a fresh timeout.
+
+The coordinator alone publishes the UI projection and owns its canonical CGR1
+generation/sequence. An executor's existing standalone display counter is NOT a
+wire replay cursor. The projection consists only of validated, copied actual
+executor display data plus separately correlated current control state; it never
+reconstructs missing conversation from an agent result/route/receipt. A local
+mutation commits through the owner bridge; a remote executor retains its copied
+pending view until the coordinator commits and receipts it, applying backpressure
+before further effect admission. CGD1 inside CGR1 uses the coordinator's exact
+committed anchor. The next control/projection subset must pin byte layout,
+snapshot transaction and failure behavior before pass1 can close.
+
+Mandatory worker transition errors remain visible independently of return-code
+precedence: ownership_lost is retained in control/list metadata, but an earlier
+primary error wins over later IO. Event duplicate ACK memory is exactly one last
+ACK per class (two scalar IDs), not an unbounded history or global-last ambiguity.

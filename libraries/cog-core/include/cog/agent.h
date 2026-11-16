@@ -95,7 +95,11 @@ typedef struct cog_agent_config {
  * validated bounded remote protocol; core does not know or silently send it.
  * Core gains no provider/orchestrator implementation dependency.
  *
- * @param[in,out] core   Core instance that owns the parent session.
+ * @param[in,out] core   Registry-host core. The explicit parent_session_id may
+ * name an application session hosted by another executor; core does not borrow,
+ * load, mutate or claim ownership of that parent through the string. The child
+ * session is owned by THIS registry core until release/core_free. Keep this core
+ * alive through all child execution borrows, copied terminal delivery and ack.
  * @param[in]     config Subagent configuration; must be non-NULL.
  * @param[out]    out_id Receives the new agent id on success.
  * @return COG_OK on success.

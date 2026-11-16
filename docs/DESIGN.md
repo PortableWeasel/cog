@@ -746,6 +746,15 @@ identity; nonblocking spawn and pre-auth stop/kill cannot masquerade as actual
 listener peers. Ready placement and CGA1/CGH1/routes retain actual fabric-scoped
 peer IDs. Immutable native spawn PID, kernel credentials and matching managed
 bootstrap identity are all required before worker readiness.
+The draft private host runtime keeps one coordinator/child registry alive across
+primary executor handoff. Explicit parent-session IDs link actual execution;
+local child apps borrow the registry's exact tree, while remote registry records
+are status/identity shadows. Only the coordinator publishes the canonical replay
+projection; an executor's standalone display counter is not a wire cursor.
+Resolved executor admission separates STAGED preparation from owner CAS/guard/
+activation and suppresses startup prompt/queue replay. A published runtime owns
+all native child lifetimes: construction never forks, and checked cooperative
+drain precedes consuming close. These remain pass1 declarations, not O behavior.
 
 Stage 6 — Headers first. Design all public APIs as headers before any
 implementation. Three iterations:

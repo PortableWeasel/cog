@@ -324,7 +324,8 @@ cog_result_t cog_orchestrator_copy_event(const cog_orchestrator_t *orch,
 /**
  * @brief Acknowledge one independently copied/processed retained event.
  * @param[in,out] orch Owner. @param[in] event_id Exact retained event identity.
- * @return OK (latest duplicate ack idempotent); NULL_PTR; NOT_FOUND stale/retired;
+ * @return OK (latest duplicate ack IN EACH CLASS idempotent); NULL_PTR;
+ * NOT_FOUND stale/retired;
  * INVALID_STATE not the oldest retained event in its class. No mutation on error.
  * No native endpoint buffer is borrowed after return. This frees transport event
  * storage ONLY, never acknowledges/applies a CGA1 update or durable tool result.
@@ -443,6 +444,9 @@ cog_result_t cog_orchestrator_sessions(const cog_orchestrator_t *orch,
  * @return OK; AGAIN no progress; NULL_PTR; INVALID_ARG clock; IO/PROTOCOL/LIMIT/
  * NOMEM/UNSUPPORTED driver failure. Failure retains owned state; later service
  * still advances shutdown/reap while admission is frozen, reporting first error.
+ * ownership_lost remains observable in its control event and retained core_info
+ * even when an earlier error determines the return. IO is returned for lost
+ * ownership only if no earlier primary error exists; done never means success.
  * @note Bounded by constructor service_quantum even with continuous traffic.
  * No blocking handshake/waitpid or foreign-PID signals. Dead owner sessions
  * stay failed/frozen; auto_replace creates idle capacity, never replays tools.
@@ -460,8 +464,10 @@ cog_result_t cog_orchestrator_service(cog_orchestrator_t *orch, uint64_t now_ms,
  * @param[in] timeout_ms Finite graceful deadline before owned-child KILL/reap.
  * @return OK; NULL_PTR; INVALID_ARG. Idempotent, never extends earlier deadline.
  * @note No peer wait; service reports TIMEOUT only with out_shutdown_done=true
- * after all owned children are reaped. Lost ownership reports IO with done once
- * no owned lifetime remains; it never authorizes failover or effect replay.
+ * after all owned children are reaped. Lost ownership remains explicitly visible
+ * and reports IO with done if it is the first error, once no owned lifetime
+ * remains; it never authorizes failover or effect replay. An earlier primary
+ * driver error remains the return rather than being replaced by cleanup IO.
  * Other errors retain ownership for explicit cleanup and do not make free safe.
  */
 cog_result_t cog_orchestrator_request_shutdown(cog_orchestrator_t *orch,
