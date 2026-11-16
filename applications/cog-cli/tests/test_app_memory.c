@@ -1,5 +1,6 @@
 /** @file test_app_memory.c @brief Constructor OOM rollback and reserved text run. */
 #include "cog_cli/cli.h"
+#include "observation.h"
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,6 +48,23 @@ static void allocation_oracle_control(void)
 int main(void)
 {
     allocation_oracle_control();
+    cog_cli_observer_t *observer = NULL;
+    REQUIRE(cog_cli_observer_new(NULL, 1U) == COG_ERROR_NULL_PTR);
+    REQUIRE(cog_cli_observer_new(&observer, 0U) == COG_ERROR_INVALID_ARG && observer == NULL);
+    REQUIRE(cog_cli_observer_new(&observer, SIZE_MAX) == COG_ERROR_LIMIT && observer == NULL);
+    bool bridge_complete = false;
+    for (size_t i = 1U; i < 8U; i++) {
+        allocation = 0U; fail_at = i; inject = true;
+        cog_result_t result = cog_cli_observer_new(&observer, 4U);
+        inject = false;
+        if (result == COG_OK) {
+            REQUIRE(allocation < i);
+            cog_cli_observer_free(observer); observer = NULL;
+            bridge_complete = true; break;
+        }
+        REQUIRE(result == COG_ERROR_NOMEM && observer == NULL && allocation >= i);
+    }
+    REQUIRE(bridge_complete);
     cog_cli_options_t opts={.backend=COG_CLI_BACKEND_MOCK,.explicit_options=COG_CLI_OPT_BACKEND,.prompt="hello"};
     bool complete=false;
     for(size_t i=1;i<512;i++) {
@@ -56,9 +74,31 @@ int main(void)
         REQUIRE(rc==COG_ERROR_NOMEM && app==NULL);
     }
     REQUIRE(complete);
+    complete=false;
+    for(size_t i=1U;i<32U;i++) {
+        cog_cli_app_t *candidate_app=NULL;REQUIRE(cog_cli_app_new(&candidate_app,&opts)==COG_OK);
+        uint64_t published=777U;allocation=0U;fail_at=i;inject=true;
+        cog_result_t candidate_result=cog_cli_app_reload(candidate_app,
+            &(cog_cli_reload_options_t){.model_id="replacement"},&published);
+        inject=false;
+        cog_mock_state_t state;REQUIRE(cog_mock_provider_state(cog_cli_app_provider(candidate_app),&state)==COG_OK && state.send_count==0U);
+        if(candidate_result==COG_OK){REQUIRE(published==2U);complete=true;cog_cli_app_free(candidate_app);break;}
+        REQUIRE(candidate_result==COG_ERROR_NOMEM && published==777U);
+        cog_cli_app_free(candidate_app);
+    }
+    REQUIRE(complete);
     cog_cli_app_t *app=NULL;REQUIRE(cog_cli_app_new(&app,&opts)==COG_OK);
     allocation=0;fail_at=1;inject=true;
     cog_result_t rc=cog_cli_app_run(app);inject=false;
     REQUIRE(rc==COG_OK && allocation==0U);
+    cog_cli_app_free(app);
+    /* Reload's explicit constructors may allocate; publication's later service,
+       activation, notification and next model turn use only reserved storage. */
+    REQUIRE(cog_cli_app_new(&app,&opts)==COG_OK);
+    uint64_t generation=0U;
+    REQUIRE(cog_cli_app_reload(app,&(cog_cli_reload_options_t){.model_id="replacement"},&generation)==COG_OK);
+    allocation=0;fail_at=1U;inject=true;
+    rc=cog_cli_app_run(app);inject=false;
+    REQUIRE(rc==COG_OK && allocation==0U && generation==2U);
     cog_cli_app_free(app);return 0;
 }

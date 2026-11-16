@@ -45,7 +45,7 @@ int main(void)
     };
 
     static const cog_tool_t tools[] = {
-        {"dummy", "A dummy tool.", NULL, dummy_tool},
+        {"dummy", "A dummy tool.", NULL, dummy_tool, NULL, 0U},
     };
 
     const cog_tool_table_t tool_table = {tools, 1U};

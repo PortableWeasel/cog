@@ -9,6 +9,15 @@
 #include <cog/openrouter.h>
 #include <cog_cli/cli.h>
 typedef struct cog_cli_configuration cog_cli_configuration_t;
+/** Immutable cached log labels only. Optional strings are safe ASCII, at most
+ *127 bytes, screened against this generation's credential bytes/reference.
+ * Unavailable/long/unsafe values are NULL, never truncated or config failures.
+ * Session cache covers explicit session/source selectors; auto-generated IDs
+ * remain unavailable. No secret or resolver authority is exposed. */
+typedef struct cog_cli_safe_labels {
+    const char *session, *model;
+    bool session_available, model_available;
+} cog_cli_safe_labels_t;
 /** Resolve sources and secrets without opening a provider or durable store.
  * Normal REAL execution needs an explicitly configured model. LIST/RECOVER
  * metadata actions need only a usable durable store location: no model, secret
@@ -23,9 +32,31 @@ typedef struct cog_cli_configuration cog_cli_configuration_t;
 cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
                                        const cog_cli_options_t *input,
                                        uint64_t generation);
+/**
+ * @brief Construct an explicit reload generation from resolved immutable state.
+ * @param[out] out Owned candidate, NULL on failure; match configuration_free.
+ * @param[in] current Resolved current generation; remains unchanged.
+ * @param[in] replacement Public reload subset, borrowed only until return.
+ * @param[in] generation Nonzero fresh configuration ID supplied by app owner.
+ * @return OK; NULL_PTR; INVALID_ARG; LIMIT; NOMEM; NOT_FOUND/DENIED/IO/PROTOCOL/
+ * UNSUPPORTED from explicit credential resolution or fixed profile validation.
+ * @note No argv/environment/file precedence rerun. Only an explicit credential
+ * reference is resolved (callback or env:); otherwise copy the old secret into
+ * separate candidate storage. Copy all effective strings in existing J bounds;
+ * retain only existing declared net/script borrows. Never retain resolver
+ * authority. Same fixed nonreloadable options/resources; no provider/store/tool
+ * calls. Constructor allocation is explicit and candidate secrets clear on free.
+ */
+cog_result_t cog_cli_configuration_reload_new(cog_cli_configuration_t **out,
+    const cog_cli_configuration_t *current,
+    const cog_cli_reload_options_t *replacement, uint64_t generation);
 void cog_cli_configuration_free(cog_cli_configuration_t *configuration);
 const cog_cli_options_t *
 cog_cli_configuration_options(const cog_cli_configuration_t *configuration);
+/** Borrow constructor-computed labels until configuration_free; bridge copies
+ * them before drive. NULL config returns NULL. No runtime allocation/authority. */
+const cog_cli_safe_labels_t *
+cog_cli_configuration_labels(const cog_cli_configuration_t *configuration);
 /** Final constructor step. Uses supplied static implementation, no dispatch.
  * REAL requires non-NULL real implementation and input.net; MOCK requires its
  * explicitly supplied mock implementation. Mock script is implementation_config,

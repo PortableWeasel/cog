@@ -81,3 +81,16 @@ changes caller strings, rejects a third credential resolution, frees the newer
 generation and confirms the older borrowed generation remains unchanged. No
 provider is dispatched by that test. Actual provider request-generation mismatch,
 active transport reload and app publication remain H/K integration obligations.
+
+## Live application composition follow-up
+
+Audit `501659c` found that J component generation ownership and original08's
+transaction snapshots do not implement app provider publication. Design `dffc59e`
+now specifies explicit `cog_cli_app_reload` with three replaceable fields and a
+bounded app-owned config transaction, candidate provider/preflight before commit,
+infallible future publication, whole-old-turn pinning and next-idle activation.
+`cog_core_set_provider` replaces the observable borrowed reference before old
+disconnect/secret clearing; no private core write. Both normal request and restored
+PROPOSED preflight use pinned configuration identity, not display incarnation.
+The [header-first reload contract](../REAL_CLIENT_RELOAD_CONTRACTS.md) gates delivery
+`af6956a`; no new executable pass follows from these declarations.

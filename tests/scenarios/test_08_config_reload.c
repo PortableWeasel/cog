@@ -29,6 +29,7 @@
 
 #include "cog/config.h"
 #include "cog/core.h"
+#include "cog_cli/cli.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -338,6 +339,38 @@ static void scenario_config_changed_event(void)
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
+static void scenario_actual_application_reload(void)
+{
+    cog_cli_options_t options={.backend=COG_CLI_BACKEND_MOCK,.model_id="old/config",
+        .explicit_options=COG_CLI_OPT_BACKEND|COG_CLI_OPT_MODEL|COG_CLI_OPT_RETRIES,
+        .max_retries=0U,.prompt="old input",.chunks="generation"};
+    cog_cli_app_t *app=NULL;
+    CHECK(cog_cli_app_new(&app,&options)==COG_OK);
+    if(app==NULL)return;
+    CHECK(cog_cli_app_run(app)==COG_OK);
+    cog_mock_state_t state;
+    CHECK(cog_mock_provider_state(cog_cli_app_provider(app),&state)==COG_OK);
+    if(state.last_request==NULL){CHECK(false);cog_cli_app_free(app);return;}
+    CHECK(state.last_request->configuration_generation==1U);
+    CHECK(strcmp(state.last_request->model_id,"old/config")==0);
+    cog_provider_t *old=cog_cli_app_provider(app);uint64_t generation=0U;
+    const cog_cli_reload_options_t replacement={.model_id="new/config"};
+    CHECK(cog_cli_app_reload(app,&replacement,&generation)==COG_OK && generation==2U);
+    CHECK(cog_cli_app_provider(app)==old && cog_core_provider(cog_cli_app_core(app))==old);
+    CHECK(cog_cli_app_submit(app,"next input",10U)==COG_OK);
+    CHECK(cog_cli_app_run(app)==COG_OK);
+    CHECK(cog_core_provider(cog_cli_app_core(app))==cog_cli_app_provider(app));
+    CHECK(cog_mock_provider_state(cog_cli_app_provider(app),&state)==COG_OK);
+    CHECK(state.last_request!=NULL);
+    if(state.last_request!=NULL){
+        CHECK(state.last_request->configuration_generation==2U);
+        CHECK(strcmp(state.last_request->model_id,"new/config")==0);
+        CHECK(state.last_request->message_count==3U);
+        CHECK(strcmp(state.last_request->messages[0].content,"old input")==0);
+        CHECK(strcmp(state.last_request->messages[2].content,"next input")==0);
+    }
+    cog_cli_app_free(app);
+}
 int main(void)
 {
     (void)printf("Scenario 08: hot config reload\n");
@@ -345,6 +378,7 @@ int main(void)
     scenario_validator_rejects();
     scenario_rollback_discards();
     scenario_config_changed_event();
+    scenario_actual_application_reload();
 
     if (failures != 0) {
         (void)fprintf(stderr, "test_08_config_reload: %d failure(s)\n",

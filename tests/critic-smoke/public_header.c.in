@@ -1,0 +1,2 @@
+/* This translation unit includes exactly one installed public contract. */
+#include <@header_name@>

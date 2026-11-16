@@ -1,5 +1,21 @@
 # Cog — System Design Blueprint
 
+> Runtime observability design `d32fafd` passed independent header gate
+> `a26a179` at `7096360`. Transport facts travel through an optional
+> constructor-borrowed numeric net observer, independent of retained body queues.
+> A host-owned bounded bridge queues numeric values with callback-time timestamps
+> and copied scope, then drains outside net/provider calls into stable sanitized
+> obs rows and pinned application metadata. Connection readiness comes from real
+> DNS/TCP/TLS readiness; retries belong only to app admission. Typed provider/tool
+> duration/status and explicit usage availability use existing obs calls.
+> Observer failure is latched separately from transport/effect outcomes and halts
+> later app admission through normal cleanup; it never makes a completed POST or
+> tool replayable. No Cog runtime allocation, mutable global, observer registry
+> or net-to-obs/app dependency is added. Net primitive delivery `1a2b9c8` passed
+> independent source review; its [evidence](REAL_CLIENT_NET_OBSERVATION_EVIDENCE.md)
+> records the scoped result. Application bridge/timing delivery `b64ee7c` remains
+> pending after R12 `af6956a`; this does not close the full release gate.
+
 > Stage 14.H provider delivery passed independent revision review and is
 > integrated. [H evidence](REAL_CLIENT_H_EVIDENCE.md) records bounded JSON/SSE,
 > retained typed output, final opaque preservation, mock conformance, offline
@@ -602,6 +618,32 @@ strings it passes, the buffers it supplies, and every sink destination.
 cog-obs owns only its own internal tables, released by `cog_obs_free`, which
 discards open spans rather than emitting them.
 
+### Application composition
+
+The CLI host reserves its observation bridge before constructing net. The
+constructor-borrowed callback copies numeric transport values, a checked
+monotonic timestamp and prepared bounded scope; it does no sink I/O or net
+reentry. The app owner drains after each provider operation into copied rows and
+existing obs events/diagnostics. A row keeps the actual request's pinned config
+generation and safe labels across reload; a terminal request must be released
+before its row can be reused. Only an admitted application retry creates RETRY.
+
+Provider attempts and admitted tool executions have checked durations, static
+span names and typed status/usage availability. Private configuration owners
+screen optional model/session labels against their credential before exposing
+copies. Raw URLs, credentials, bodies, tool arguments/results and opaque model
+data are absent. DEBUG records are opt-in; normal streamed output stays clean.
+
+Callback status and deferred app/sink failure remain separate from the primary
+request/effect result. Either stops later admission through ordinary cancel,
+reap and durable cleanup, without making prior work replayable. Final teardown
+ends diagnostic borrows before obs destruction and keeps host bridge memory
+alive through net destruction. An exceptional final detach invalidates the feed
+explicitly rather than stealing foreign request IDs or retaining a dangling
+target. The [composition contract](REAL_CLIENT_OBSERVABILITY_CONTRACTS.md) and
+[delivery evidence](REAL_CLIENT_OBSERVATION_EVIDENCE.md) describe the bounds and
+scoped checks.
+
 ---
 
 ## Session Tree
@@ -646,6 +688,16 @@ Sessions are persisted via a pluggable backend (`cog_store_vtable_t`):
 The store supports incremental saves (`append`), full saves, loads, deletes,
 and listing. Auto-save after each exchange is configurable.
 
+The application commits an empty durable checkpoint before exposing a fresh app,
+so idle shutdown before first input is resumable. Explicit RESUME can repair an
+old owner-only checkpoint0 reservation only after checked absence of legacy data,
+exact owner/0 CAS to a fresh epoch, normal guard acquisition and successful empty
+checkpoint save. This performs no model/tool/input work and invents no historical
+model/config provenance. Initial save failure exposes no app and never resets or
+deletes durable authority; a later explicit construction re-reads that state.
+NEW collisions and uncertain-effect recovery remain separate. The
+[contract and evidence](REAL_CLIENT_EMPTY_SESSION.md) trace this admission rule.
+
 ---
 
 ## Network Transport
@@ -685,6 +737,15 @@ implementation. Three iterations:
 Stage 7 — Implementation. See `docs/IMPLEMENTATION_STRATEGY.md`.
 
 ## Stage 14.G shared fork points
+
+The file backend also preserves the bootstrap no-data boundary when no nonzero
+checkpoint is authoritative. Its finite legacy-name probe refuses ambiguous
+metadata/nodes/index remnants (including their legacy temporary names) during
+ownership admission, guard acquisition or an attempted empty first save/load.
+Inspection errors are not absence. Strict explicit v1 migration and existing
+committed-v2 authority retain their prior behavior; unreferenced v2 generations
+remain nonauthoritative. [Targeted contract](REAL_CLIENT_LEGACY_ADMISSION.md)
+records the header-first scope and preserves the application/store boundary.
 
 The structured session implementation preserves assistant/effect identity by
 returning the existing immutable shared fork point. A nonleaf selection retains
@@ -767,3 +828,21 @@ L retains J/K's one immutable configuration/provider generation per application;
 requests and restored-prefix preflight use generation 1. Live reload, generation
 publication/retirement and the core's observable provider lifetime are a separate
 header-first follow-up (`dffc59e`/`af6956a`), not part of session UX acceptance.
+
+### R12 bounded live generation publication (header amendment)
+
+After integrated L, explicit application reload admits only model/base-URL/
+credential-reference changes, retaining fixed store/guard/workspace/policy and
+reservation profiles. A real app-owned config transaction prepares an idle copied
+provider generation and generic compatibility checks before commit, then publishes
+one future generation infallibly. The whole existing model/tool turn keeps its
+old configuration. Safe idle activation updates both app and public core provider
+references before disconnecting the old provider and clearing its secret. The
+new core setter changes a borrowed pointer only; it imports no provider runtime
+link or private-structure dependency. [Reload contract](REAL_CLIENT_RELOAD_CONTRACTS.md)
+records bounds, transaction/error/lifetime semantics and the required three-pass
+plus independent review gate. The application delivery now uses that boundary,
+including consuming-disconnect error handling, retained notices and EOF-aware
+input admission. [Scoped writer evidence](REAL_CLIENT_RELOAD_EVIDENCE.md) records
+actual two-generation composition; independent package/integration gates remain
+separate from the original header approval.

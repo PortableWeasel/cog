@@ -16,6 +16,19 @@ Teardown drains the app, releases transport, cleans up the dependency runtime,
 closes the signal descriptor and restores the host mask. Embedders instead
 provide `opts.net` with their own explicit dependency lifetime.
 
+Before parsing, the installed Linux host explicitly constructs bounded stdout/
+stderr adapters. FIFO/terminal writes use an independently opened nonblocking
+description; socket writes use per-call nonblocking sends. Parent/shared file
+status flags are never modified. Regular-file writes share the original offset
+and append semantics; ordinary filesystem latency remains outside this bound.
+Unsupported/unavailable independent endpoints fail at startup. Saturation, short
+write or output error fails as IO, with no waiting, retry or output replay. The
+host checks final output closure while preserving a prior work error, restores
+standard FILE bindings and keeps SIGPIPE ignored through the final diagnostic.
+Embedding applications retain their existing FILE behavior. Initial/repeated
+ASK prompts must write and flush successfully before a later answer can authorize
+execution; prompt failure takes ordinary IO cleanup before STARTED/effects.
+
 REAL is the default and requires an explicit model and usable credential
 reference. Configuration errors never select MOCK. `--mock` is an explicit
 fixture selection. CLI > environment > config file > defaults and presence bits
@@ -26,6 +39,7 @@ is included in app error messages.
 The private implementation is split into `cli.c` (ownership/construction),
 `app_turn.c` (static dispatch, service and input), `app_tools.c` (durable tools),
 `app_sessions.c` (selection, guarded restore and terminal recovery),
+`app_reload.c` (bounded generation publication and retirement),
 `app_display.c` (snapshots/CGD1), and `main.c` (host composition). J's immutable
 configuration generation and secret remain alive until provider disconnect.
 All contexts are explicit; dispatch and tool descriptors are static const.
@@ -154,6 +168,19 @@ node IDs, tool/results/audits and opaque bytes remain intact. Selecting a nonlea
 alone does not overwrite the active leaf or durably create a branch. Active or
 queued work refuses selection, and unresolved/unsafe history cannot be forked.
 
+Fresh DURABLE construction commits an empty checkpoint under its normal guard
+before publishing an app, even before the first input. Idle EOF/signals therefore
+leave a resumable session. An old interrupted owner-only reservation (validated
+nonzero owner, checkpoint0) may be repaired only by explicit RESUME: public replay
+load must report NOT_FOUND, exact owner/0 CAS must admit a fresh incarnation/epoch,
+the normal guard must acquire and empty checkpoint save must succeed. G refuses
+recognized legacy remnants instead of claiming they are absent. Reads alone never
+grant authority; stale/live/failed admission never falls back or retries implicitly.
+There is no model/tool/input execution or invented historical config during repair.
+NEW collisions still refuse and FORK/RECOVER cannot fabricate an empty source.
+Any initial-save error leaves no app; a durable owner/checkpoint may remain and
+the next explicit RESUME re-reads it. No deletion, owner reset or effect replay.
+
 Unowned v1/v2 adoption requires `--fenced`, the operator assertion that old writers
 are quiescent and prior command processes stopped/reaped or externally fenced.
 The application does not verify or perform that cleanup from an opaque owner ID.
@@ -188,3 +215,69 @@ so EPIPE reaches cleanup, then restores its prior disposition.
 The `cog-cli-runtime` install component installs the actual executable for the
 offline installed-binary restart tests. Shipped real transport dependency closure
 remains P's packaging gate; installing this component alone makes no such claim.
+
+R12 adds explicit owner-thread `cog_cli_app_reload` and terminal
+`/reload model VALUE`, `/reload base-url VALUE`, `/reload credential-ref VALUE`.
+The host API can replace all three fields atomically; terminal commands take the
+entire suffix as one value and never echo it. REAL accepts the three-field subset;
+MOCK accepts model only. Credential authority belongs to that explicit call:
+omission copies the current owned secret, while a supplied reference resolves
+again through its supplied callback or the env-only default. Terminal reload has
+no retained host callback authority. No watcher, startup-source reread, config-file
+write or backend/resource/store/guard/workspace/policy change is introduced.
+
+Each execution app owns one constructor-reserved real config tree:64 aggregate
+nodes,65536 string bytes,65 transaction identities and one static validator. It
+stores only effective model/URL/credential reference. Startup uses identity1;
+64 eligible attempts burn IDs2..65, including failed preparation. Mode/busy and
+initial invalid-pointer/presence refusals burn none. Candidate config/secret,
+endpoint and idle provider are constructed and generically preflighted before
+real commit. Failure rolls back and disposes only that candidate. Commit success
+has only infallible publication remaining; its returned ID means published future
+configuration, not completed activation. Further reload waits until that future
+activates/retires and its retained by-value CONFIG_CHANGED notice is handled.
+
+The whole existing application turn stays pinned, including retry/backoff, model
+and tool rounds, current policy and retained output. At a safe owner boundary
+before queued/fresh input, activation switches app and core references together.
+There are at most two live owners. Provider aliases detach before exactly one
+consuming disconnect; matching configuration/secret clears after every return.
+An exceptional cleanup error freezes admission and reaches driver cancel/drain;
+it never retries the consumed handle or undoes committed publication. Candidate
+discard preserves its primary preparation/commit API error and records cleanup
+error separately. Terminal refusal handling cannot conceal that freeze.
+
+Normal requests and restored pending-prefix preflight use the pinned generation
+ID. Candidate preflight checks only the known selected prefix, using a pending
+fork point when present. New bytes from old work are revalidated at later send;
+capacity/compatibility failure preserves the old data without implicit replay or
+truncation. Publication does not authorize incomplete-turn continuation. Known
+EOF with no eligible input leaves a future generation pending for teardown;
+already-admitted/final unterminated input retains ordinary execution semantics.
+Provider getters expose the current borrowed instance and must be reacquired
+after mutating/drive calls. [R12 evidence](../../docs/REAL_CLIENT_RELOAD_EVIDENCE.md)
+records the scoped checks and remaining review/release gates.
+
+Application observability now uses the approved numeric net observer and existing
+typed obs APIs. The standalone host explicitly reserves four rows and eighteen
+queue entries before net construction. Its callback only captures checked time,
+numeric facts and prepared safe scope; owner-thread drain performs formatting,
+diagnostic publication and sink delivery after every provider operation. Row
+labels are owned copies, remain pinned across reload and are cleared only after
+their request ID is released. External apps keep their host's configured observer.
+
+Static provider/tool spans and typed completion/usage records report real duration
+and status. Unknown tokens/cost and unavailable labels are explicit and omit their
+numeric/string values. Optional labels have at most127 safe ASCII bytes and are
+screened inside their configuration owner against its credential bytes/reference.
+Transport records contain no raw URL, header, body, tool argument/output, model
+text or opaque continuation. Normal UI output is unchanged; `--verbose` or an
+explicit log path opts into DEBUG records.
+
+Observation failure freezes later admission without rewriting a completed wire
+or tool outcome. Raw net callback error and deferred sink/timing error are checked
+separately; AGAIN from a failed observer becomes fatal IO at the app/core boundary.
+Primary work failure wins while ordinary cancel/drain/reap and durable tool result
+recording still run. Before consuming app/obs, final teardown clears borrowed
+diagnostics and ends the target borrow; it never cancels unrelated shared-net IDs.
+The bridge stays host-owned until every borrowing net is destroyed.

@@ -10,6 +10,7 @@
 #define FIELD_BYTES 4096U
 #define SECRET_BYTES 16384U
 #define STRING_BYTES 65536U
+#define LABEL_BYTES 128U
 struct cog_cli_configuration {
     cog_cli_options_t options;
     cog_endpoint_t endpoint;
@@ -22,6 +23,8 @@ struct cog_cli_configuration {
     char strings[STRING_BYTES];
     char secret[SECRET_BYTES];
     char file[FILE_BYTES + 1U];
+    cog_cli_safe_labels_t labels;
+    char session_label[LABEL_BYTES], model_label[LABEL_BYTES];
 };
 static void clear(void *data, size_t size)
 {
@@ -410,13 +413,79 @@ static cog_result_t credential(cog_cli_configuration_t *c)
             return COG_ERROR_INVALID_ARG;
     return COG_OK;
 }
+static bool safe_label(const cog_cli_configuration_t *c, const char *input,
+    char output[LABEL_BYTES])
+{
+    if (input == NULL || *input == '\0') return false;
+    size_t length = strlen(input);
+    if (length >= LABEL_BYTES) return false;
+    /* A real credential that cannot be screened in this small label profile
+       makes labels unavailable; it never makes the actual configuration fail. */
+    if (c->options.backend == COG_CLI_BACKEND_REAL &&
+        (c->secret[0] == '\0' || strlen(c->secret) >= LABEL_BYTES)) return false;
+    if (c->secret[0] != '\0' && strstr(input, c->secret) != NULL) return false;
+    if (c->options.credential_ref != NULL && c->options.credential_ref[0] != '\0' &&
+        strstr(input, c->options.credential_ref) != NULL) return false;
+    for (size_t i = 0U; i < length; i++) {
+        unsigned char ch = (unsigned char)input[i];
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+            (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == ':' || ch == '/' || ch == '-'))
+            return false;
+    }
+    memcpy(output, input, length + 1U); return true;
+}
+static void cache_labels(cog_cli_configuration_t *c)
+{
+    const char *session = c->options.session_action == COG_CLI_SESSION_NEW ?
+        c->options.session_id : c->options.source_session_id;
+    c->labels.session_available = safe_label(c, session, c->session_label);
+    c->labels.model_available = safe_label(c, c->options.model_id, c->model_label);
+    c->labels.session = c->labels.session_available ? c->session_label : NULL;
+    c->labels.model = c->labels.model_available ? c->model_label : NULL;
+}
+/* Both constructors deep-copy this exact set of effective string fields. */
+static cog_result_t copy_option_strings(cog_cli_configuration_t *c)
+{
+    size_t i;
+    cog_result_t rc;
+    for (i = 0U; i < cog_cli_field_count; ++i)
+        if (cog_cli_fields[i].kind == CLI_STRING) {
+            unsigned char *field =
+                (unsigned char *)&c->options + cog_cli_fields[i].offset;
+            const char *string;
+            memcpy(&string, field, sizeof(string));
+            /* Default store path was already copied into this arena. */
+            if (cog_cli_fields[i].bit == COG_CLI_OPT_STORE_DIR &&
+                c->options.store_dir == c->strings)
+                continue;
+            rc = owned(c, &string);
+            memcpy(field, &string, sizeof(string));
+            if (rc != COG_OK)
+                return rc;
+        }
+#define OWN(member)                                                                    \
+    do {                                                                               \
+        rc = owned(c, &c->options.member);                                             \
+        if (rc != COG_OK)                                                              \
+            return rc;                                                                 \
+    } while (0)
+    OWN(prompt);
+    OWN(session_id);
+    OWN(source_session_id);
+    OWN(config_path);
+    OWN(log_path);
+    OWN(socket_path);
+    OWN(chunks);
+    OWN(queue_text);
+#undef OWN
+    return COG_OK;
+}
 cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
                                        const cog_cli_options_t *input,
                                        uint64_t generation)
 {
     cog_cli_configuration_t *c;
     cog_result_t rc;
-    size_t i;
     if (out == NULL)
         return COG_ERROR_NULL_PTR;
     *out = NULL;
@@ -465,36 +534,9 @@ cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
     rc = validate(c);
     if (rc != COG_OK)
         goto fail;
-    for (i = 0U; i < cog_cli_field_count; ++i)
-        if (cog_cli_fields[i].kind == CLI_STRING) {
-            unsigned char *field =
-                (unsigned char *)&c->options + cog_cli_fields[i].offset;
-            const char *string;
-            memcpy(&string, field, sizeof(string));
-            /* Default store path was already copied into this arena. */
-            if (cog_cli_fields[i].bit == COG_CLI_OPT_STORE_DIR &&
-                c->options.store_dir == c->strings)
-                continue;
-            rc = owned(c, &string);
-            memcpy(field, &string, sizeof(string));
-            if (rc != COG_OK)
-                goto fail;
-        }
-#define OWN(member)                                                                    \
-    do {                                                                               \
-        rc = owned(c, &c->options.member);                                             \
-        if (rc != COG_OK)                                                              \
-            goto fail;                                                                 \
-    } while (0)
-    OWN(prompt);
-    OWN(session_id);
-    OWN(source_session_id);
-    OWN(config_path);
-    OWN(log_path);
-    OWN(socket_path);
-    OWN(chunks);
-    OWN(queue_text);
-#undef OWN
+    rc = copy_option_strings(c);
+    if (rc != COG_OK)
+        goto fail;
     rc = credential(c);
     if (rc != COG_OK)
         goto fail;
@@ -503,6 +545,74 @@ cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
     c->options.credential_read = NULL;
     c->options.credential_arg = NULL;
     clear(c->file, sizeof(c->file));
+    cache_labels(c);
+    *out = c;
+    return COG_OK;
+fail:
+    cog_cli_configuration_free(c);
+    return rc;
+}
+cog_result_t cog_cli_configuration_reload_new(
+    cog_cli_configuration_t **out, const cog_cli_configuration_t *current,
+    const cog_cli_reload_options_t *replacement, uint64_t generation)
+{
+    cog_cli_configuration_t *c;
+    cog_result_t rc;
+    if (out == NULL)
+        return COG_ERROR_NULL_PTR;
+    *out = NULL;
+    if (current == NULL || replacement == NULL)
+        return COG_ERROR_NULL_PTR;
+    if (generation == 0U || generation == current->generation ||
+        metadata_action(current->options.session_action) ||
+        (replacement->model_id == NULL && replacement->base_url == NULL &&
+         replacement->credential_ref == NULL) ||
+        (replacement->credential_ref == NULL &&
+         (replacement->credential_read != NULL || replacement->credential_arg != NULL)))
+        return COG_ERROR_INVALID_ARG;
+    if (current->options.backend == COG_CLI_BACKEND_MOCK &&
+        (replacement->base_url != NULL || replacement->credential_ref != NULL))
+        return COG_ERROR_UNSUPPORTED;
+    c = calloc(1U, sizeof(*c));
+    if (c == NULL)
+        return COG_ERROR_NOMEM;
+    /* This is resolved state, not a second invocation of startup precedence.
+     * The fresh zeroed owner has no endpoint/model/adapter aliases into current. */
+    c->options = current->options;
+    c->generation = generation;
+    c->endpoint_present = current->endpoint_present;
+    c->options.credential_read = NULL;
+    c->options.credential_arg = NULL;
+    if (replacement->model_id != NULL)
+        c->options.model_id = replacement->model_id;
+    if (replacement->base_url != NULL)
+        c->options.base_url = replacement->base_url;
+    if (replacement->credential_ref != NULL)
+        c->options.credential_ref = replacement->credential_ref;
+    /* Copy first to enforce both per-field and aggregate J byte ceilings before
+     * protocol validation or an explicit resolver can observe the candidate. */
+    rc = copy_option_strings(c);
+    if (rc != COG_OK)
+        goto fail;
+    if (!token(c->options.model_id) || !cog_cli_utf8_valid(c->options.model_id) ||
+        (c->options.backend == COG_CLI_BACKEND_REAL &&
+         !https_url(c->options.base_url)) ||
+        (replacement->credential_ref != NULL && *c->options.credential_ref == '\0')) {
+        rc = COG_ERROR_INVALID_ARG;
+        goto fail;
+    }
+    if (replacement->credential_ref == NULL) {
+        memcpy(c->secret, current->secret, sizeof(c->secret));
+    } else {
+        c->options.credential_read = replacement->credential_read;
+        c->options.credential_arg = replacement->credential_arg;
+        rc = credential(c);
+        c->options.credential_read = NULL;
+        c->options.credential_arg = NULL;
+        if (rc != COG_OK)
+            goto fail;
+    }
+    cache_labels(c);
     *out = c;
     return COG_OK;
 fail:
@@ -519,6 +629,10 @@ void cog_cli_configuration_free(cog_cli_configuration_t *c)
 const cog_cli_options_t *cog_cli_configuration_options(const cog_cli_configuration_t *c)
 {
     return c != NULL ? &c->options : NULL;
+}
+const cog_cli_safe_labels_t *cog_cli_configuration_labels(const cog_cli_configuration_t *c)
+{
+    return c != NULL ? &c->labels : NULL;
 }
 cog_result_t cog_cli_configuration_bind(cog_cli_configuration_t *c,
                                         const cog_provider_vtable_t *real,

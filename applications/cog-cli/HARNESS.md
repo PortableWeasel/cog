@@ -107,3 +107,68 @@ has not been replaced by the injected failure, no call is reexecuted, and only a
 new explicit recovery decision after restart can close the durable uncertainty.
 Use separate sanitizer directories and preserve these failure paths in Release;
 assertion workloads are kept enabled by the shared test build policy.
+
+`cli-app-reload` uses real app/config/provider objects with explicit owner-hook
+controls between dispatches. It exercises two providers, retained OVERFLOW,
+whole-turn retry/tool/policy pinning, pending restore, real validator rejection
+and actual reset-LIMIT, consuming cleanup faults, source/resolver lifetime,
+known-prefix REAL compatibility and queue/EOF/fresh-input boundaries. Linker
+interposition supplies failure injection while still running the real commit,
+disconnect and copied-generation implementations. No paid request is made.
+`cli-app-reload-critic` independently checks pipe EOF during delayed old work and
+64 successful publications, with an exact two-live-owner peak and65 total
+constructors/destructors. Original08 preserves its component assertions and now
+also drives actual app generation1/2 sends. Installed session tests additionally
+drive terminal reload; app-memory tests exhaust explicit candidate constructors
+and reject all allocations during later activation/service/send.
+
+The exact R12 selection and supported curl recipe are in
+[R12 evidence](../../docs/REAL_CLIENT_RELOAD_EVIDENCE.md). Use separate Release
+GCC/Clang/ASan and Debug TSan directories. The selected executable count is not
+a claim that all release scenarios or full installed transport closure passed.
+
+`cli-observation-{normal,retry,stall,tls,connect,cancel}` uses the actual supported
+curl/OpenRouter/app/tool path against a disposable local TLS server. Test sinks
+copy bounded events, verify that delivery occurs outside the net callback and
+reject payload/credential markers. The normal path executes one real edit, checks
+its durable identified result and makes a generation2 request after reload with a
+copied127-byte model label. The retry path first receives HTTP429: only the admitted
+new attempt has RETRY, at its OPEN timestamp. Known usage snapshots replace rather
+than add, and the last generation's absent usage remains unavailable.
+
+Failure modes exercise actual response stall, trust failure, refused connection
+and cancellation after accepted partial text. They require one transport terminal,
+sanitized classification, checked failed duration and no invented tool execution.
+Original18/19 retain their component assertions and also run the actual retry/tool/
+reload fixture under the admitted Linux profile. These production paths supplement
+the component tests' synthetic event construction.
+
+`cli-observation-critic` independently exercises retained IDs, row exhaustion across
+contexts, final app consumption with foreign live/retained IDs and later callbacks,
+raw observer AGAIN, deferred sink failure, checked-clock failure and queue overflow.
+`cli-app-memory` exhausts each explicit bridge constructor allocation and verifies
+NULL rollback plus overflow/zero bounds, using the established optimized allocator
+positive control. Its existing allocation-free mock run and reload activation
+checks continue to execute the new app timing paths. Exact selected commands and
+supported dependency identities are in
+[observation evidence](../../docs/REAL_CLIENT_OBSERVATION_EVIDENCE.md).
+
+`cli-empty-session` verifies successful empty checkpoint publication before app
+construction returns, exact guarded repair of an interrupted owner-only reservation
+and zero provider sends. A real child holds the old guard, proves live contention,
+then exits without releasing it; subsequent explicit RESUME uses a new epoch and
+commits an empty snapshot. Before/after-publication IO/INDETERMINATE are tested for
+both NEW and owner-only RESUME, alongside CAS uncertainty/races, acquire failure,
+epoch exhaustion, selector/collision refusal, unchanged legacy remnants and stored
+model/provider provenance under current J configuration. Fault wrappers exercise
+existing store operations; they do not replace admission or effect logic.
+
+`cli-installed-empty-session` normally installs the executable runtime component
+and exercises actual idle EOF, SIGINT and SIGTERM before any input. It waits for
+real core readiness and the host's blocked-signal mask, holds stdin open until
+signal exit and then resumes each session. A public-store fixture also seeds an
+old owner-only reservation; the installed host repairs it. Public snapshot/owner
+inspection checks zero nodes/ledger/identity high-water, exact epoch advance and
+unchanged committed empty checkpoint on ordinary restart. This runtime-component
+test is separate from R18's full dependency-install/relocation closure. See
+[empty session evidence](../../docs/REAL_CLIENT_EMPTY_SESSION.md).

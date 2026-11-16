@@ -20,6 +20,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef COG_CLI_OBSERVATION_PROFILE
+#include "observation_fixture.h"
+#endif
 
 static int failures = 0;
 
@@ -205,6 +208,9 @@ static void test_connection_events(void)
 int main(void)
 {
     test_connection_events();
+#ifdef COG_CLI_OBSERVATION_PROFILE
+    CHECK(cog_test_observation_runtime()==0);
+#endif
 
     if (failures != 0) {
         (void)fprintf(stderr, "test_19_connection_events: %d failure(s)\n",
