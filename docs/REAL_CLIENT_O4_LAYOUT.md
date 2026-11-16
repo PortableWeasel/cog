@@ -296,3 +296,15 @@ Closing ONLY layout860d5cc and amendment08d1b54 under root authorization. O4
 parent/body/review/integration/finalize and ALL missing primitive/runtime gates
 remain open; private layout approval never dispatches bodies by itself. Main
 remainsMdacbd199, no frozen profile/build_user/installation changes or paid calls.
+
+## Amendment 5ff5ec8 — explicit native timers and driver retirement
+
+Pass1: O4 body traces require four additional private scalar fields; no public
+API, wire shape, callback, allocation class or authority changes. Worker
+next_heartbeat_ms and startup_deadline_ms retain independent bounded monotonic
+native timers. Worker stepped distinguishes an owner whose first valid step began
+from a constructor-only owner for the existing checked-close contract.
+Coordinator control_drive_ended records the one-time end of its control core;
+whole-runtime begun/done and coordinator_failed cannot represent this fact while
+successful or failed core termination is followed by independent owned cleanup.
+Bodies consuming these fields remain gated on an independent header-only review.
