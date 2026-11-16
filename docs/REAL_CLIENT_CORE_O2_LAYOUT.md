@@ -206,3 +206,13 @@ O orchestrator/application/scenario integration or final P acceptance.
 Header verification: strict standalone/repeated include checks passed6/6 — core
 layout with GCC/Clang C11, agent layout with GCC/Clang C11 and G++/Clang++ C++11.
 Production core.c and agent.c remain unchanged at this header-only checkpoint.
+
+## Post-OOM clarification checkpoint
+
+Recovered body commit 64386bc follows the approved private-layout gate. Its
+pre-OOM execution reports are historical, not current acceptance evidence.
+The [accepted-endpoint clarification](REAL_CLIENT_CORE_O2_ALLOCATION.md) corrects
+the public step comment to match the already admitted Q/M constructor profile.
+Its three targeted passes and fresh include checks require an independent gate
+before further dependent source changes. It does not reopen the private layout
+or approve the recovered implementation.

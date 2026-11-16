@@ -62,3 +62,36 @@ inherited fixed workspaces from forbidden peer-table, message, driver or borrow
 growth. Inject failure at each constructor allocation and verify no leaked
 socket/workspace, published peer, event or second effect. These are acceptance
 requirements, not claims of new runtime tests in this header-only pass.
+
+## Pass 3 — shutdown, rebegin and consistency
+
+```text
+core accepts endpoint -> handshake proof -> retained frame/event
+host -> stop -> step(done) -> drive_end: release only driver ownership
+host -> drive_begin -> step: reuse endpoint, proof and reserved tracking slot
+core -> peer retirement: endpoint_free once; clear matching record
+host -> stop/end -> external work drained and child borrows returned
+host -> core_free: free remaining accepted endpoints before owned listener
+```
+
+End/begin does not discard a live connection or construct a replacement.
+Retirement and final core destruction own the matching accepted destructor;
+record compaction moves endpoint/proof/publication state together. Event proof
+copies survive endpoint retirement for their bounded handler lease. No borrowed
+child tree, driver state or queued payload gains a constructor exception.
+
+Rechecked the resource table against core.h's config, run/begin/step/end/free,
+ipc.h's accept/new_ex/free, and agent.h's exact borrow/return contracts. All20
+scenario traces in REAL_CLIENT_CORE_O2_LAYOUT.md retain their existing meaning;
+04/05 cover cold start/shutdown, 07/11 cover peer failure/reconnect, 16 covers
+first-error propagation and 03/10/17 preserve exact child lifetime. No API,
+capacity, type, source body or CMake change is needed for this clarification.
+Final self-review found no remaining allocation-contract gap in this scope.
+
+Fresh post-recovery validation: 12/12 standalone/repeated public include checks
+passed for core.h, ipc.h and agent.h using GCC/Clang C11 and G++/Clang++ C++11,
+strict project warning flags applicable to each language with Werror. Commands
+and output are retained in build-o2-header-recovery/headers.log. Diff whitespace
+check passed. No heavy build, live model call or source runtime validation was
+performed. Independent clarification review remains required; recovered body
+64386bc still needs fresh runtime, allocation-failure and sanitizer evidence.

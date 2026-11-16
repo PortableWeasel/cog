@@ -400,6 +400,8 @@ cog_result_t cog_core_step(cog_core_t *core, cog_core_step_info_t *info);
  * intents remain leased. Core becomes inactive even when returning latched work
  * error. No implicit cancellation/free/new begin. Host cancels/drains/reaps its
  * own work; ending this driver alone does not make context destruction safe.
+ * Accepted endpoints remain core-owned across end/begin until peer retirement
+ * or core_free; ending a drive neither frees them nor allocates replacements.
  * run() uses the same engine internally with its checked clock/bounded wait
  * hooks; manual APIs from run callbacks always fail INVALID_STATE.
  */
