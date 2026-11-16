@@ -554,7 +554,8 @@ typedef struct cog_handoff_message {
  * expected epoch/instance, next epoch/instance, checkpoint generation as u64
  * big-endian in that order. Shared store authority is fixed/verified at peer
  * startup; no path or remote transfer is selected by an untrusted envelope.
- * Expected/next owner tuples are nonzero with strictly increasing epoch. A
+ * Expected/next owner tuples are nonzero with next.epoch==expected.epoch+1
+ * checked without overflow; exhaustion refuses admission before source freeze. A
  * coordinator admits only one handoff per session/next tuple; IDs never reused.
  * QUIESCE carries checkpoint0 because guarded source save creates a fresh exact
  * generation. CHECKPOINTED pins that generation; every later phase echoes it.
@@ -563,10 +564,11 @@ typedef struct cog_handoff_message {
  * target acquire only. READY proves guarded/still-staged target; publish_owner
  * precedes ACTIVATE, which alone permits new work. Retries are exact phase/tuple
  * duplicates, not a second save/CAS. No route is an execution lease.
- * Pre-CAS abort can resume source ONLY if its original guard remains owned and
- * durable tuple/checkpoint still match; after guard release, reacquire requires
- * an explicit fresh owner epoch. After CAS/uncertain commit, never restore old
- * epoch/thaw source. Failed target remains frozen; explicit recovery/reclaim
+ * Abort never thaws the quiesced source under its old epoch, even before CAS;
+ * discard target resources, release source guard after safe cleanup and require
+ * explicit fresh-epoch source reclaim through the same staged admission path.
+ * After CAS/uncertain commit, never restore old epoch/thaw source. Failed target
+ * remains frozen; explicit recovery/reclaim
  * advances to another fresh epoch under the same checkpoint/guard rules.
  */
 cog_result_t cog_orchestrator_handoff_encode(const cog_handoff_message_t *message,

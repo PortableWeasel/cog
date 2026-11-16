@@ -39,6 +39,8 @@ typedef struct cog_cli_execution_admission {
     const char *session_id; /**< REMOTE_CHILD/STAGED exact copied identity. */
     const char *parent_session_id; /**< Child only: exact immutable parent link,
        already copied in registry admission, not an arbitrary worker choice. */
+    const char *task; /**< LOCAL/REMOTE_CHILD only, bounded copied task admitted
+       once after initial checkpoint/guard. Never inherited root prompt/queue. */
     uint64_t configuration_generation; /**< Pinned parent admission generation,
        nonzero; no relabel on later parent reload. */
     uint64_t absolute_deadline_ms; /**< Finite child monotonic deadline; capped
@@ -103,7 +105,8 @@ cog_result_t cog_cli_execution_end(cog_cli_app_t *app);
  * @param[in] expected Exact admitted current owner.
  * @param[out] checkpoint New nonzero checkpoint, unchanged on failure.
  * @return OK; NULL_PTR; AGAIN unsafe active/queued/pending state; INVALID_STATE
- * frozen/recovery/staged/stale owner; LIMIT; IO; INDETERMINATE/store error.
+ * frozen-without-matching-success/recovery/staged/stale owner; LIMIT; IO;
+ * INDETERMINATE/store error.
  * Host first checks no child attempts/results/intents/message/policy borrows.
  * App checks no provider turn, retained delta/output/event, execution, STARTED/
  * uncertain ledger, pending result/assistant, input, future reload/notice or
@@ -145,6 +148,22 @@ cog_result_t cog_cli_execution_stage_guard(cog_cli_app_t *app,
  */
 cog_result_t cog_cli_execution_stage_activate(cog_cli_app_t *app,
     cog_store_owner_t next, cog_store_checkpoint_t checkpoint);
+
+/** @brief Apply explicit coordinator-resolved R12 candidate at owning executor.
+ * @param[in,out] app Ordinary primary owner, not child/staged/frozen.
+ * @param[in,out] candidate Owned already-resolved generation, consumed and NULL
+ * on EVERY return. net belongs to this app; no resolver authority is transferred.
+ * @param[out] published Generation only on success, unchanged on failure.
+ * @return Existing R12 errors, INVALID_ARG if any field outside the THREE
+ * reloadable fields differs. Same candidate tree validation/provider prepare/
+ * preflight/commit/rollback/publication and checked cleanup ordering as app_reload.
+ * No extra re-resolution, callbacks, store/policy/workspace/limit changes or
+ * implicit activation. At most current/future logical generations, pinned whole
+ * turn; copied coordinator mirror is bounded transport state, never a third
+ * generation or provider. Cleanup error freezes the owner and reaches runtime.
+ */
+cog_result_t cog_cli_execution_reload_resolved(cog_cli_app_t *app,
+    cog_cli_configuration_t **candidate, uint64_t *published);
 
 #ifdef __cplusplus
 }

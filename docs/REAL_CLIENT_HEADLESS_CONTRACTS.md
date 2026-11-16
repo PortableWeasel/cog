@@ -293,8 +293,8 @@ token while source retains its guard. PREPARED permits source guard release;
 coordinator CASes exact expected->next at that token. COMMIT permits target guard
 acquire, READY reports guarded-but-staged state, exact route publication precedes
 ACTIVATE. No phase sends old startup prompt/queue. A duplicate phase cannot cause
-a second checkpoint save/CAS or new input. Pre-CAS abort may unfreeze only a source
-that still owns the original valid guard; after release it needs a fresh epoch.
+a second checkpoint save/CAS or new input. Abort never thaws the old source,
+including pre-CAS; explicit reclaim stages the source under a fresh epoch.
 Post-CAS/uncertain failures stay frozen, never restore old epoch. Local peer0 is
 explicitly supported by trusted coordinator admission; both endpoints0 is invalid.
 The [gated O scaffold](REAL_CLIENT_HEADLESS_IMPLEMENTATION.md) names source locks,

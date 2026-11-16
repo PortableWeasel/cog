@@ -63,7 +63,7 @@ typedef struct cog_cli_host_runtime_config {
 } cog_cli_host_runtime_config_t;
 
 /** One cooperative host slice, same monotonic clock as core driving. */
-typedef struct cog_cli_host_runtime_step {
+typedef struct cog_cli_host_runtime_step_info {
     bool done; /**< All local apps drained, child borrows returned and native
        owned lifetimes reaped or explicitly lost; NOT proof of success/effect undo. */
     size_t dispatched; /**< Sum of bounded context dispatch, overflow checked. */

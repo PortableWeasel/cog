@@ -761,6 +761,14 @@ exact CAS; target guarded READY precedes route publication and ACTIVATE. Trusted
 local peer0 participates explicitly; old epochs/startup input cannot be restored
 on failure. The gated O ownership matrix keeps shared app glue serial while
 IPC/core/pure codecs and later leaf modules use disjoint source locks.
+The private CGL1 protocol has static role/kind ingress and distinct wire IDs,
+semantic CGA sequences, command receipts and replay cursors. Resolved credential
+bootstrap travels only coordinator-to-authenticated-worker in dedicated wiped
+arenas/IPC TX storage, outside UI/replay/generic event or receipt caches. Worker
+configuration never rereads startup sources or retains resolver authority.
+Explicit primary reload resolves at the coordinator and preserves R12's exact
+three-field transaction and whole-turn pinning at the owning executor. Aborted
+handoff always requires a fresh epoch; no pre-CAS old-guard thaw is authorized.
 
 Stage 6 — Headers first. Design all public APIs as headers before any
 implementation. Three iterations:
