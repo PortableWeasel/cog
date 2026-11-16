@@ -35,7 +35,7 @@ sequenceDiagram
     W->>E: new wire item w+1, admissible terminal k+1
 ```
 
-The payload is fixed55 bytes: version1, explicit disposition, six big-endian
+The payload is fixed 55 bytes: version1, explicit disposition, six big-endian
 u64 identities/prefix fields, accepted-terminal status u8 and signed outcome
 i32. There are no strings, secret bytes, native structures or borrowed payload
 pointers. Parent runtime incarnation is distinct from durable owner epoch,
@@ -101,3 +101,99 @@ session, admitted worker placement, actual owner peer, agent/attempt and pending
 wire. Reject wrong peers/epochs, conflicting reused wire IDs, unverified higher
 prefixes and malformed data. Neither stale traffic nor a receipt prefix alone
 can authorize slot retirement, new effects, semantic skipping or recovery.
+
+## Pass 3: bounded storage, literal codec and consistency review
+
+The codec owns no receipt engine or allocation. Its only operations are
+`cog_cli_control_receipt_encode` and `cog_cli_control_receipt_decode`. The common
+envelope alone supplies the payload tag, framing, send retry identity, roles and
+outer session/fabric binding. No magic, worker-ID typedef, public header change,
+application driver, persistence promise or function body is added here.
+
+| Offset | Width | Literal field |
+|---:|---:|---|
+| 0 | 1 | Payload version, exactly1 |
+| 1 | 1 | Disposition: ACCEPTED1, RETRY2, CANCEL_CONSUMED3, TERMINAL_FIXED4 |
+| 2 | 8 | Parent runtime incarnation, nonzero |
+| 10 | 8 | Agent ID, nonzero |
+| 18 | 8 | Execution epoch, nonzero |
+| 26 | 8 | Actual control-fabric owner peer, nonzero |
+| 34 | 8 | Answered immutable worker wire ID, nonzero |
+| 42 | 8 | Parent semantic accepted-prefix snapshot, zero allowed |
+| 50 | 1 | Accepted terminal: absent0, COMPLETED2, FAILED3, CANCELLED4, TIMEOUT5 |
+| 51 | 4 | Outcome: signed two's-complement0 or known -1 through -18 |
+
+Unsigned integers are big-endian. No padding or native enum representation is
+serialized. Absence requires PENDING/OK; COMPLETED requires OK; other present
+terminals require a known negative result. Present terminal implies positive
+prefix. ACCEPTED implies positive prefix; CANCEL_CONSUMED implies no terminal
+and prefix/wire ID below UINT64_MAX; TERMINAL_FIXED implies present terminal.
+RETRY can include a terminal while parent notification delivery is pending, but
+still does not retire the item. Structural codec validation cannot authenticate
+or prove these assertions against an actual registry; the caller must do that.
+
+Encode returns INVALID_ARG for invalid fields before capacity testing, otherwise
+OVERFLOW reports exact required55 without writing output. NULL output is valid
+only at zero capacity. Mandatory NULL pointers return NULL_PTR. Decode requires
+exactly55 bytes before reading version; zero version/disposition is PROTOCOL,
+unknown nonzero version/disposition is UNSUPPORTED, and malformed identities,
+terminal predicates or trailing bytes are PROTOCOL. All failures preserve the
+destination; only encode required changes on OVERFLOW. Caller objects do not
+overlap. Neither codec allocates, touches core/IPC, updates a cursor or executes
+an effect. Strict standalone GCC and Clang C11 checks pass after all three passes.
+
+### Provisional replies and bounded tombstones
+
+RETRY is not a committed final disposition. One worker item can receive RETRY
+while parent copy/queue/local ACK is blocked, followed by ACCEPTED or another
+final disposition. Each individual outbound receipt envelope remains immutable
+under the common envelope's identity. Once a final disposition is committed for
+the answered wire ID, retries replay that exact final receipt, not a rewritten
+snapshot of newer state. A delayed RETRY cannot reopen a retired item. A conflict
+between two final dispositions for the same wire ID fails closed.
+
+The runtime reserves bounded per-attempt state: an exact pending worker update,
+space for a drain terminal, the parent notification copy/queue reservation, a
+retained final receipt and retired-wire identity tracking. Stop-and-wait admits
+at most one unresolved worker update per attempt. A later valid fresh worker
+item is the agreed proof that the previous final disposition was consumed;
+only then can its receipt be reclaimed and its wire ID covered by a retired
+watermark. Until that proof, lost receipt retries must remain answerable.
+
+Late IDs covered by the retired watermark are rejected **before** semantic
+ingress. If the exact original final receipt is still cached, it may be replayed;
+otherwise common-envelope stale/error handling applies, without a new ACCEPTED
+claim or core ACK. Such an older frame cannot be the current pending item of a
+conforming stop-and-wait sender: admission of its successor proved retirement.
+A restarted sender cannot treat that observation as authority to restore its
+old volatile state. This avoids both unbounded tombstone history and allowing
+late RUNNINGn to conflict with its replacement CANCELLEDn.
+
+If a required pending/receipt/notification/resolution slot cannot be reserved,
+do not accept another item, discard old bytes, claim success, or evict the last
+unconsumed final receipt. Use existing owner backpressure and bounded deadlines;
+permanent capacity exhaustion freezes new admission and reports LIMIT through
+the common owner. Continue actual local drain without claiming an unavailable
+semantic terminal was delivered. Reserve identity space as well as bytes:
+ordinary progress and proposed COMPLETED need room for one fresh resolution
+wire ID and semantic k+1. No counter wraps or identity is recycled; impossible
+next-ID exhaustion is not repaired by rewriting a pending frame or accepted
+terminal. These storage/deadline requirements are inputs to the architect's
+common constructor bounds, not a separate allocator API in this header.
+
+### Final consistency and implementation gate
+
+The seven traces above cover both rejection deadlocks, pending local ACK,
+accepted-terminal arbitration, lost positive/negative receipt, duplicate/late
+traffic, worker death and parent restart. No new public core operation is needed
+to skip a rejected CGA1 sequence: only an unaccepted slot is filled under a new
+wire identity. Parent semantic acceptance remains volatile until separately
+made durable by an explicitly defined application path; this receipt does not
+invent such persistence or certify parent TOOL save. Actual child ledger/effect
+facts, accepted terminals, fencing rules and notification/intent leases remain
+authoritative.
+
+Implementation is gated on the independent receipt review and the overarching
+N three-pass/final header gate. O will supply a cohesive private codec and common
+receipt storage/dispatch bodies plus real cancel/loss/crash oracles. This subset
+does not close N or establish runtime acceptance.

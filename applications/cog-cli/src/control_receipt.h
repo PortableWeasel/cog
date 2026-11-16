@@ -65,8 +65,12 @@ typedef enum cog_cli_control_receipt_disposition {
  * Wire IDs are fresh, increasing and never reused within this parent/attempt
  * identity, independent of CGA1 semantic sequence. CANCEL_CONSUMED permits a
  * new wire ID to fill an unaccepted semantic slot; it cannot modify a retried
- * envelope's bytes or an already accepted update. A cached receipt is immutable
- * on retransmission, including its prefix snapshot; current state may be newer.
+ * envelope's bytes or an already accepted update. A committed final disposition
+ * (anything except RETRY) for a wire ID is immutable on retransmission, including
+ * its prefix snapshot; current state may be newer. RETRY is provisional and may
+ * be superseded by a final disposition. Each individual receipt envelope still
+ * has immutable bytes under the outer protocol's own identity; wire_id below
+ * always identifies the WORKER update being answered, not that receipt envelope.
  *
  * Before consuming a receipt, compare every identity with the exact retained
  * worker item. ACCEPTED requires prefix==that item's CGA1 sequence and matching
@@ -76,6 +80,8 @@ typedef enum cog_cli_control_receipt_disposition {
  * it is not cog_agent_ack_update for that sequence. Only this disposition allows
  * a new envelope to fill the unaccepted slot after drain. RETRY never retires
  * even when its prefix/terminal metadata shows successful core ingress.
+ * For a pending CGA1 sequence n, RETRY's verified prefix is n-1 or n; metadata
+ * can describe a different already fixed terminal, not acceptance of this item.
  * TERMINAL_FIXED requires a verified accepted terminal at the reported prefix;
  * it never semantically accepts the pending payload. An older receipt for a
  * different wire item cannot free the current item, regress prefix or undo
@@ -110,21 +116,25 @@ typedef struct cog_cli_control_receipt {
  * @return OK; OVERFLOW changes only required; NULL_PTR for mandatory NULL or
  * output NULL with positive capacity; INVALID_ARG for invalid scalar/predicate.
  * @pre receipt, required and the output region do not overlap.
- * @post OK writes exactly55 bytes; bytes beyond55 remain unchanged. Every
+ * @post OK writes exactly 55 bytes; bytes beyond 55 remain unchanged. Every
  * failure leaves output untouched. No allocation, core calls or consumption.
  *
  * Version1 literal layout, no native structs/padding/pointers or magic:
  * offset0 version u8=1; offset1 disposition u8; offset2 parent incarnation u64;
  * offset10 agent ID u64; offset18 attempt epoch u64; offset26 owner peer u64;
  * offset34 wire ID u64; offset42 parent accepted prefix u64;
- * offset50 terminal status u8; offset51 terminal outcome signed i32.
+ * offset50 terminal status u8; offset51 terminal outcome signed i32. Terminal
+ * byte values are absent=0, COMPLETED=2, FAILED=3, CANCELLED=4, TIMEOUT=5.
  * Multi-byte fields are big-endian, signed outcome two's complement.
  *
  * Scalar predicates: all identities nonzero; terminal absent iff status=PENDING
  * with outcome=OK. Present status is COMPLETED with OK, or FAILED/CANCELLED/
- * TIMEOUT with a known negative cog_result_t. RUNNING/unknown status/outcome
+ * TIMEOUT with a known negative cog_result_t (wire codes -1 through -18 in
+ * version1; zero is OK). RUNNING/unknown status/outcome
  * invalid. Present terminal requires nonzero prefix. ACCEPTED requires nonzero
- * prefix; CANCEL_CONSUMED requires absent terminal; TERMINAL_FIXED requires
+ * prefix; CANCEL_CONSUMED requires absent terminal, prefix<UINT64_MAX and
+ * wire_id<UINT64_MAX (a new resolution item must remain representable).
+ * TERMINAL_FIXED requires
  * present terminal. RETRY may include an accepted terminal while notification
  * delivery remains blocked, but does not release the pending wire item.
  */
@@ -144,6 +154,10 @@ cog_result_t cog_cli_control_receipt_encode(
  * role/fabric/session/incarnation/placement/attempt/exact pending wire identity
  * and compares the prefix/disposition with its retained CGA1 update before any
  * retirement/rebase. Decode is never an ACK, proof of drain or execution lease.
+ * @note Validation order: mandatory pointers, exact length, version, disposition,
+ * then remaining scalars/predicates. Length mismatch is PROTOCOL before reading
+ * a version byte; unknown nonzero version/disposition is UNSUPPORTED before
+ * interpreting remaining fields. Output commits only after all checks pass.
  */
 cog_result_t cog_cli_control_receipt_decode(
     const void *input, size_t input_len, cog_cli_control_receipt_t *receipt);
