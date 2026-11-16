@@ -1,0 +1,89 @@
+/** @file test_headless_native.c @brief Actual native child/provider/store join. */
+#define _POSIX_C_SOURCE 200809L
+#include "app_internal.h"
+#include "composition_internal.h"
+#include <curl/curl.h>
+#include <poll.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+#define CHECK(x) do { if (!(x)) { fprintf(stderr,"native line %d: %s\n",__LINE__,#x); primary=COG_ERROR_PROTOCOL;goto finish; } } while(0)
+static uint64_t clock_ms(void)
+{
+    struct timespec now;if(clock_gettime(CLOCK_MONOTONIC,&now)!=0)return 0U;
+    return (uint64_t)now.tv_sec*1000U+(uint64_t)now.tv_nsec/1000000U;
+}
+static cog_result_t advance(cog_cli_host_runtime_t *host,bool *done)
+{
+    cog_cli_host_runtime_step_t step={0};cog_result_t rc=cog_cli_host_runtime_step(host,&step);
+    *done=step.done;
+    if(rc==COG_ERROR_AGAIN)rc=COG_OK;
+    if(!step.done)(void)poll(NULL,0U,step.max_wait_ms>5U?5:(int)step.max_wait_ms);
+    return rc;
+}
+int main(int argc,char **argv)
+{
+    cog_cli_host_runtime_t *host=NULL;cog_result_t primary=COG_OK;bool curl_ready=false;
+    CHECK(argc==7); /* executable, CA, URL, workspace, store, socket prefix */
+    CHECK(curl_global_init(CURL_GLOBAL_DEFAULT)==CURLE_OK);curl_ready=true;
+    char ui[4096],workers[4096];
+    CHECK(snprintf(ui,sizeof(ui),"%s.ui",argv[6])>0);
+    CHECK(snprintf(workers,sizeof(workers),"%s.workers",argv[6])>0);
+    cog_cli_options_t options={.backend=COG_CLI_BACKEND_REAL,.model_id="fixture/model",
+        .credential_ref="env:COG_NATIVE_KEY",.base_url=argv[3],.workspace_root=argv[4],
+        .store_dir=argv[5],.store_mode=COG_CLI_STORE_DURABLE,.tool_policy=COG_CLI_TOOL_POLICY_ALLOW,
+        .max_context_bytes=65536U,.max_tool_output_bytes=4096U,.max_output_tokens=512U,
+        .max_tool_rounds=4U,.max_turn_ms=20000U,.max_tool_ms=15000U,.max_retries=0U,
+        .explicit_options=COG_CLI_OPT_BACKEND|COG_CLI_OPT_MODEL|COG_CLI_OPT_CREDENTIAL|COG_CLI_OPT_BASE_URL|
+            COG_CLI_OPT_WORKSPACE|COG_CLI_OPT_STORE_DIR|COG_CLI_OPT_STORE_MODE|COG_CLI_OPT_POLICY|
+            COG_CLI_OPT_CONTEXT|COG_CLI_OPT_TOOL_OUTPUT|COG_CLI_OPT_OUTPUT_TOKENS|COG_CLI_OPT_TOOL_ROUNDS|
+            COG_CLI_OPT_TURN_MS|COG_CLI_OPT_TOOL_MS|COG_CLI_OPT_RETRIES};
+    cog_net_config_t transport={.host_runtime_initialized=true,.dependency_memory=COG_NET_DEPENDENCY_MEMORY_DYNAMIC,
+        .max_request_bytes=1024U*1024U,.max_connections=2U,.ca_bundle=argv[2],.connect_timeout_ms=3000U,.stall_timeout_ms=5000U};
+    cog_cli_host_runtime_config_t config={.root_options=&options,.net_config=&transport,
+        .ui_socket=ui,.worker_socket=workers,.executable=argv[1],.workers=1U,.children=2U,.child_requests=32U,
+        .child_profile={.policy=COG_CLI_CHILD_POLICY_INHERIT,.tools=COG_CLI_CHILD_COMMAND,
+            .max_tool_rounds=1U,.max_retries=0U},.signal_fd=-1};
+    primary=cog_cli_host_runtime_new(&host,&config);CHECK(primary==COG_OK);
+    primary=cog_cli_host_runtime_begin(host);CHECK(primary==COG_OK);
+    uint64_t deadline=clock_ms()+10000U;bool done=false;
+    while(!host->workers[0].profile_ready && clock_ms()<deadline){primary=advance(host,&done);CHECK(primary==COG_OK&&!done);}
+    CHECK(host->workers[0].profile_ready && host->workers[0].native.peer_id!=0U);
+    bool native_seen=false;
+    for(unsigned int round=1U;round<=2U;++round){
+        char task[64],expected[64];
+        CHECK(snprintf(task,sizeof(task),"delegate round %u",round)>0);
+        CHECK(snprintf(expected,sizeof(expected),"PARENT_DONE_%u",round)>0);
+        cog_cli_app_t *app=host->executors[host->primary_slot].app;CHECK(app!=NULL);
+        CHECK(cog_cli_app_queue(app,task,strlen(task))==COG_OK);
+        deadline=clock_ms()+20000U;bool complete=false;
+        while(clock_ms()<deadline){
+            primary=advance(host,&done);CHECK(primary==COG_OK&&!done);
+            for(size_t i=2U;i<host->bounds.executors;++i)
+                if(host->executors[i].agent!=0U && host->executors[i].owner_peer!=0U)native_seen=true;
+            cog_session_node_t *leaf=cog_session_active(app->session);
+            if(leaf!=NULL){const cog_message_t *message=cog_node_data(leaf)->message;
+                if(!app->active && message->role==COG_MESSAGE_ROLE_ASSISTANT && message->status==COG_MESSAGE_COMPLETE &&
+                    message->content!=NULL && strcmp(message->content,expected)==0){complete=true;break;}}
+        }
+        CHECK(complete);
+        deadline=clock_ms()+5000U;bool free_groups=false;
+        while(clock_ms()<deadline){
+            free_groups=true;for(size_t i=0U;i<host->group_capacity;++i)if(host->groups[i].phase!=CLI_GROUP_FREE)free_groups=false;
+            if(free_groups)break;
+            primary=advance(host,&done);CHECK(primary==COG_OK&&!done);
+        }
+        CHECK(free_groups);
+    }
+    CHECK(native_seen);
+finish:
+    if(host!=NULL){
+        (void)cog_cli_host_runtime_request_shutdown(host);bool drained=host->done;uint64_t until=clock_ms()+10000U;
+        while(!drained&&clock_ms()<until){cog_result_t rc=advance(host,&drained);if(primary==COG_OK)primary=rc;}
+        if(!drained && primary==COG_OK)primary=COG_ERROR_TIMEOUT;
+        cog_result_t closed=cog_cli_host_runtime_close(&host,primary);if(primary==COG_OK)primary=closed;
+    }
+    if(curl_ready)curl_global_cleanup();
+    if(primary!=COG_OK){fprintf(stderr,"native outcome: %d\n",(int)primary);return 1;}
+    puts("actual native delegation/reuse: PASS");return 0;
+}

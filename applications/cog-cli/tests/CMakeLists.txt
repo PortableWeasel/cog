@@ -388,3 +388,13 @@ add_test(NAME cli-execution-tools COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/run_execution_tools.py
     $<TARGET_FILE:test_execution_tools> ${CMAKE_BINARY_DIR})
 set_tests_properties(cli-execution-tools PROPERTIES TIMEOUT 20)
+
+add_executable(test_headless_native test_headless_native.c)
+target_include_directories(test_headless_native PRIVATE ../src)
+target_link_libraries(test_headless_native PRIVATE cog::cli)
+target_enable_warnings(test_headless_native)
+add_dependencies(test_headless_native cog-cli)
+add_test(NAME cli-headless-native COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
+    $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR})
+set_tests_properties(cli-headless-native PROPERTIES TIMEOUT 70)
