@@ -1,6 +1,8 @@
 /** @file configuration.c @brief Owned effective configuration and secret lifetime. */
 #define _POSIX_C_SOURCE 200809L
 #include "configuration.h"
+#include "child_profile.h"
+#include <limits.h>
 #include "options_internal.h"
 #include <arpa/inet.h>
 #include <stdint.h>
@@ -11,6 +13,9 @@
 #define SECRET_BYTES 16384U
 #define STRING_BYTES 65536U
 #define LABEL_BYTES 128U
+typedef enum configuration_origin {
+    ORIGIN_STARTUP = 0, ORIGIN_RELOAD, ORIGIN_CHILD, ORIGIN_BOOTSTRAP
+} configuration_origin_t;
 struct cog_cli_configuration {
     cog_cli_options_t options;
     cog_endpoint_t endpoint;
@@ -18,7 +23,9 @@ struct cog_cli_configuration {
     cog_model_table_t models;
     cog_openrouter_config_t adapter;
     uint64_t generation;
-    bool bound, endpoint_present;
+    bool bound, endpoint_present, host_finished;
+    configuration_origin_t origin;
+    uint32_t tool_mask;
     size_t used;
     char strings[STRING_BYTES];
     char secret[SECRET_BYTES];
@@ -545,6 +552,8 @@ cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
     c->options.credential_read = NULL;
     c->options.credential_arg = NULL;
     clear(c->file, sizeof(c->file));
+    c->tool_mask = c->options.store_mode == COG_CLI_STORE_DURABLE &&
+        c->options.workspace_root != NULL ? COG_CLI_CHILD_ALL : 0U;
     cache_labels(c);
     *out = c;
     return COG_OK;
@@ -581,6 +590,8 @@ cog_result_t cog_cli_configuration_reload_new(
     c->options = current->options;
     c->generation = generation;
     c->endpoint_present = current->endpoint_present;
+    c->origin = ORIGIN_RELOAD;
+    c->tool_mask = current->tool_mask;
     c->options.credential_read = NULL;
     c->options.credential_arg = NULL;
     if (replacement->model_id != NULL)
@@ -727,5 +738,371 @@ cog_result_t cog_cli_configuration_describe(const cog_cli_configuration_t *c,
     if (capacity < *required)
         return COG_ERROR_OVERFLOW;
     memcpy(output, text, *required);
+    return COG_OK;
+}
+
+/* Pure lexical paths: directory identity is the host's independently checked
+ * precondition. Keep this separate from startup's permissive user path syntax. */
+static bool canonical_path(const char *s)
+{
+    const char *p, *start;
+    if (s == NULL || s[0] != '/' || !cog_cli_utf8_valid(s)) return false;
+    if (s[1] == '\0') return true;
+    start = s + 1;
+    for (p = start;; ++p) {
+        if (*p != '/' && *p != '\0') continue;
+        if (p == start || (p - start == 1 && start[0] == '.') ||
+            (p - start == 2 && start[0] == '.' && start[1] == '.')) return false;
+        if (*p == '\0') return true;
+        start = p + 1;
+    }
+}
+cog_result_t cog_cli_configuration_finish_host(cog_cli_configuration_t *c,
+    cog_net_ctx_t *net, const char *workspace, const char *store)
+{
+    size_t workspace_bytes, store_bytes;
+    if (c == NULL) return COG_ERROR_NULL_PTR;
+    if (c->origin != ORIGIN_STARTUP || c->bound || c->host_finished ||
+        c->options.net != NULL || metadata_action(c->options.session_action) ||
+        c->options.store_mode != COG_CLI_STORE_DURABLE) return COG_ERROR_INVALID_STATE;
+    if (store == NULL || (c->options.workspace_root != NULL && workspace == NULL))
+        return COG_ERROR_NULL_PTR;
+    if ((workspace != NULL) != (c->options.workspace_root != NULL) ||
+        (c->options.backend == COG_CLI_BACKEND_REAL ? net == NULL :
+         c->options.backend != COG_CLI_BACKEND_MOCK || net != NULL) ||
+        !canonical_path(store) || (workspace != NULL && !canonical_path(workspace)))
+        return COG_ERROR_INVALID_ARG;
+    store_bytes = strlen(store) + 1U;
+    workspace_bytes = workspace != NULL ? strlen(workspace) + 1U : 0U;
+    if (store_bytes > FIELD_BYTES || workspace_bytes > FIELD_BYTES ||
+        workspace_bytes > STRING_BYTES - c->used ||
+        store_bytes > STRING_BYTES - c->used - workspace_bytes) return COG_ERROR_LIMIT;
+    if (workspace != NULL) {
+        memcpy(c->strings + c->used, workspace, workspace_bytes);
+        c->options.workspace_root = c->strings + c->used;
+        c->used += workspace_bytes;
+    }
+    memcpy(c->strings + c->used, store, store_bytes);
+    c->options.store_dir = c->strings + c->used;
+    c->used += store_bytes;
+    c->options.net = net;
+    c->host_finished = true;
+    return COG_OK;
+}
+cog_result_t cog_cli_configuration_tool_mask(const cog_cli_configuration_t *c, uint32_t *mask)
+{
+    if (c == NULL || mask == NULL) return COG_ERROR_NULL_PTR;
+    *mask = c->tool_mask;
+    return COG_OK;
+}
+static void child_inputs(cog_cli_options_t *o)
+{
+    o->prompt = NULL; o->queue_text = NULL; o->socket_path = NULL;
+    o->session_id = NULL; o->source_session_id = NULL;
+    o->session_action = COG_CLI_SESSION_NEW; o->fork_node_id = 0U;
+    o->previous_processes_fenced = false; o->show_usage = false;
+    o->config_path = NULL; o->log_path = NULL; o->interactive = false;
+    o->credential_read = NULL; o->credential_arg = NULL;
+    o->chunks = NULL; o->script = NULL; o->mock_deltas = NULL; o->mock_delta_count = 0U;
+}
+static uint32_t min_u32(uint32_t a, uint32_t b) { return a < b ? a : b; }
+static size_t min_size(size_t a, size_t b) { return a < b ? a : b; }
+cog_result_t cog_cli_configuration_child_new(cog_cli_configuration_t **out,
+    const cog_cli_configuration_t *parent, const cog_cli_child_profile_t *profile,
+    uint64_t generation, uint64_t now_ms, uint64_t parent_deadline_ms,
+    cog_net_ctx_t *net, uint64_t *deadline_ms)
+{
+    cog_cli_configuration_t *c;
+    uint64_t remaining, deadline;
+    cog_result_t rc;
+    if (out == NULL) return COG_ERROR_NULL_PTR;
+    *out = NULL;
+    if (parent == NULL || profile == NULL || net == NULL || deadline_ms == NULL)
+        return COG_ERROR_NULL_PTR;
+    if (generation == 0U || generation != parent->generation ||
+        parent_deadline_ms == UINT64_MAX || profile->policy < COG_CLI_CHILD_POLICY_INHERIT ||
+        profile->policy > COG_CLI_CHILD_POLICY_ASK || (profile->tools & ~15U) != 0U ||
+        metadata_action(parent->options.session_action) ||
+        parent->options.store_mode != COG_CLI_STORE_DURABLE) return COG_ERROR_INVALID_ARG;
+    if (parent->options.backend != COG_CLI_BACKEND_REAL) return COG_ERROR_UNSUPPORTED;
+    if (parent_deadline_ms <= now_ms) return COG_ERROR_TIMEOUT;
+    remaining = parent_deadline_ms - now_ms;
+    if (profile->timeout_ms != 0U && remaining > profile->timeout_ms)
+        remaining = profile->timeout_ms;
+    if (remaining > parent->options.max_turn_ms) remaining = parent->options.max_turn_ms;
+    deadline = now_ms + remaining; /* bounded by the finite, checked parent deadline */
+    c = calloc(1U, sizeof(*c));
+    if (c == NULL) return COG_ERROR_NOMEM;
+    c->options = parent->options;
+    c->generation = generation; c->origin = ORIGIN_CHILD;
+    c->endpoint_present = parent->endpoint_present;
+    c->tool_mask = parent->tool_mask & profile->tools;
+    child_inputs(&c->options); c->options.net = net;
+    if (parent->options.tool_policy == COG_CLI_TOOL_POLICY_DENY ||
+        profile->policy == COG_CLI_CHILD_POLICY_DENY) c->options.tool_policy = COG_CLI_TOOL_POLICY_DENY;
+    else if (profile->policy == COG_CLI_CHILD_POLICY_ASK) c->options.tool_policy = COG_CLI_TOOL_POLICY_ASK;
+#define NARROW_U32(member) if (profile->member != 0U) c->options.member = min_u32(c->options.member, profile->member)
+    NARROW_U32(max_output_tokens);
+    NARROW_U32(max_tool_rounds);
+#undef NARROW_U32
+    c->options.max_retries = min_u32(c->options.max_retries, profile->max_retries);
+    if (profile->max_context_bytes != 0U)
+        c->options.max_context_bytes = min_size(c->options.max_context_bytes, profile->max_context_bytes);
+    if (profile->max_tool_output_bytes != 0U)
+        c->options.max_tool_output_bytes = min_size(c->options.max_tool_output_bytes, profile->max_tool_output_bytes);
+    c->options.max_turn_ms = (uint32_t)remaining;
+    c->options.max_tool_ms = min_u32(c->options.max_tool_ms, c->options.max_turn_ms);
+    c->options.max_retry_elapsed_ms = min_u32(c->options.max_retry_elapsed_ms, c->options.max_turn_ms);
+    rc = copy_option_strings(c);
+    if (rc != COG_OK) { cog_cli_configuration_free(c); return rc; }
+    memcpy(c->secret, parent->secret, sizeof(c->secret));
+    cache_labels(c); *deadline_ms = deadline; *out = c;
+    return COG_OK;
+}
+
+/* One borrowed view serves both wire directions. No decoder writes caller output
+ * until every later field, numeric predicate and capacity has been validated. */
+enum { B_MODEL, B_ENDPOINT, B_URL, B_SECRET, B_REFERENCE, B_WORKSPACE, B_STORE,
+       B_SESSION, B_CA, B_FIELDS };
+typedef struct bootstrap_view {
+    const unsigned char *field[B_FIELDS];
+    size_t length[B_FIELDS];
+    uint64_t generation;
+    uint32_t mask;
+    cog_cli_options_t options;
+    cog_cli_bootstrap_probe_t probe;
+    cog_net_config_t transport;
+} bootstrap_view_t;
+typedef struct bootstrap_reader { const unsigned char *p; size_t left; } bootstrap_reader_t;
+static bool read_number(bootstrap_reader_t *r, size_t bytes, uint64_t *value)
+{
+    uint64_t result = 0U;
+    if (r->left < bytes) return false;
+    for (size_t i = 0U; i < bytes; ++i) result = (result << 8U) | r->p[i];
+    r->p += bytes; r->left -= bytes; *value = result; return true;
+}
+static bool read_field(bootstrap_reader_t *r, bootstrap_view_t *v, size_t field)
+{
+    uint64_t len;
+    if (!read_number(r, 4U, &len) || len > r->left) return false;
+    v->field[field] = r->p; v->length[field] = (size_t)len;
+    r->p += (size_t)len; r->left -= (size_t)len; return true;
+}
+static cog_result_t bootstrap_valid(const bootstrap_view_t *v)
+{
+    char text[FIELD_BYTES];
+    size_t aggregate = 0U;
+    bool unsupported_endpoint = false;
+    const cog_cli_options_t *o = &v->options;
+    const cog_net_config_t *n = &v->transport;
+    if (v->generation == 0U || v->mask > 15U ||
+        (v->length[B_WORKSPACE] == 0U && v->mask != 0U) ||
+        o->tool_policy < COG_CLI_TOOL_POLICY_ASK || o->tool_policy > COG_CLI_TOOL_POLICY_ALLOW ||
+        o->max_output_tokens == 0U || o->max_tool_rounds == 0U || o->max_turn_ms == 0U ||
+        o->max_tool_ms == 0U || o->max_tool_output_bytes == 0U || o->max_context_bytes == 0U ||
+        o->max_retry_elapsed_ms == 0U || v->probe.owner.epoch == 0U ||
+        v->probe.owner.instance_id == 0U || v->probe.checkpoint.generation == 0U ||
+        n->max_connections == 0U || n->connect_timeout_ms == 0U || n->stall_timeout_ms == 0U ||
+        n->max_request_bytes == 0U || n->max_header_bytes == 0U || n->chunk_bytes == 0U ||
+        n->chunks_per_request == 0U || n->service_quantum == 0U) return COG_ERROR_PROTOCOL;
+    if (o->max_context_bytes > (SIZE_MAX - 65536U) / 32U ||
+        o->max_tool_output_bytes > SIZE_MAX - 512U ||
+        n->max_connections > (size_t)LONG_MAX || n->max_request_bytes == SIZE_MAX ||
+        n->max_header_bytes == SIZE_MAX || n->chunks_per_request == SIZE_MAX ||
+        n->chunks_per_request + 1U > SIZE_MAX / n->chunk_bytes ||
+        n->chunks_per_request + 1U > SIZE_MAX / (n->max_header_bytes + 1U)) return COG_ERROR_LIMIT;
+    for (size_t i = 0U; i < B_FIELDS; ++i) {
+        size_t len = v->length[i];
+        if (i == B_SECRET) {
+            if (len == 0U) return COG_ERROR_PROTOCOL;
+            if (len >= SECRET_BYTES) return COG_ERROR_LIMIT;
+            for (size_t j = 0U; j < len; ++j)
+                if (v->field[i][j] <= 32U || v->field[i][j] == 127U) return COG_ERROR_PROTOCOL;
+            continue;
+        }
+        if (len >= FIELD_BYTES || (i == B_SESSION && len > 127U)) return COG_ERROR_LIMIT;
+        if (len == 0U && i != B_WORKSPACE && i != B_CA) return COG_ERROR_PROTOCOL;
+        if (memchr(v->field[i], '\0', len) != NULL) return COG_ERROR_PROTOCOL;
+        aggregate += len + 1U;
+        if (aggregate > STRING_BYTES) return COG_ERROR_LIMIT;
+        memcpy(text, v->field[i], len); text[len] = '\0';
+        if (!cog_cli_utf8_valid(text)) return COG_ERROR_PROTOCOL;
+        if ((i == B_MODEL || i == B_ENDPOINT) && !token(text)) return COG_ERROR_PROTOCOL;
+        if (i == B_ENDPOINT && strcmp(text, "openrouter") != 0) unsupported_endpoint = true;
+        if (i == B_URL && !https_url(text)) return COG_ERROR_PROTOCOL;
+        if (i == B_REFERENCE && strncmp(text, "env:", 4U) == 0 &&
+            !environment_name_valid(text + 4)) return COG_ERROR_PROTOCOL;
+        if ((i == B_WORKSPACE && len != 0U) || i == B_STORE)
+            if (!canonical_path(text)) return COG_ERROR_PROTOCOL;
+        if (i == B_SESSION) {
+            cog_cli_options_t selector = {0};
+            selector.session_id = text;
+            if (cog_cli_session_options_validate(&selector) != COG_OK) return COG_ERROR_PROTOCOL;
+        }
+    }
+    return unsupported_endpoint ? COG_ERROR_UNSUPPORTED : COG_OK;
+}
+static cog_result_t bootstrap_read(const void *input, size_t length, bootstrap_view_t *v)
+{
+    bootstrap_reader_t r;
+    uint64_t number;
+    if (length < 4U) return COG_ERROR_PROTOCOL;
+    if (memcmp(input, "CGB1", 4U) != 0)
+        return memcmp(input, "CGB", 3U) == 0 ? COG_ERROR_UNSUPPORTED : COG_ERROR_PROTOCOL;
+    memset(v, 0, sizeof(*v)); r.p = (const unsigned char *)input + 4U; r.left = length - 4U;
+#define READ(bytes, target, type) do { if (!read_number(&r, bytes, &number)) return COG_ERROR_PROTOCOL; target = (type)number; } while (0)
+#define READ_SIZE(target) do { if (!read_number(&r, 8U, &number)) return COG_ERROR_PROTOCOL; if (number > SIZE_MAX) return COG_ERROR_LIMIT; target = (size_t)number; } while (0)
+    READ(8U, v->generation, uint64_t);
+    READ(1U, v->options.tool_policy, cog_cli_tool_policy_t);
+    READ(1U, v->mask, uint32_t);
+    READ(4U, v->options.max_output_tokens, uint32_t);
+    READ(4U, v->options.max_tool_rounds, uint32_t);
+    READ(4U, v->options.max_turn_ms, uint32_t);
+    READ(4U, v->options.max_tool_ms, uint32_t);
+    READ_SIZE(v->options.max_tool_output_bytes);
+    READ_SIZE(v->options.max_context_bytes);
+    READ(4U, v->options.max_retries, uint32_t);
+    READ(4U, v->options.max_retry_elapsed_ms, uint32_t);
+    for (size_t i = B_MODEL; i <= B_SESSION; ++i)
+        if (!read_field(&r, v, i)) return COG_ERROR_PROTOCOL;
+    READ(8U, v->probe.owner.epoch, uint64_t);
+    READ(8U, v->probe.owner.instance_id, uint64_t);
+    READ(8U, v->probe.checkpoint.generation, uint64_t);
+    READ(4U, v->transport.max_connections, size_t);
+    READ(4U, v->transport.connect_timeout_ms, uint32_t);
+    READ(4U, v->transport.stall_timeout_ms, uint32_t);
+    READ_SIZE(v->transport.max_request_bytes);
+    READ_SIZE(v->transport.max_header_bytes);
+    READ_SIZE(v->transport.chunk_bytes);
+    READ(4U, v->transport.chunks_per_request, size_t);
+    READ(4U, v->transport.service_quantum, uint32_t);
+#undef READ
+#undef READ_SIZE
+    if (!read_field(&r, v, B_CA) || r.left != 0U) return COG_ERROR_PROTOCOL;
+    return bootstrap_valid(v);
+}
+static void write_number(unsigned char **p, uint64_t number, size_t bytes)
+{
+    for (size_t i = bytes; i != 0U; --i) { (*p)[i - 1U] = (unsigned char)(number & 255U); number >>= 8U; }
+    *p += bytes;
+}
+static void write_field(unsigned char **p, const bootstrap_view_t *v, size_t field)
+{
+    write_number(p, v->length[field], 4U);
+    if (v->length[field] != 0U) memcpy(*p, v->field[field], v->length[field]);
+    *p += v->length[field];
+}
+cog_result_t cog_cli_configuration_bootstrap_encode(const cog_cli_configuration_t *c,
+    const cog_cli_bootstrap_probe_t *probe, const cog_net_config_t *transport,
+    void *output, size_t capacity, size_t *required)
+{
+    bootstrap_view_t v = {0};
+    const char *fields[B_FIELDS];
+    cog_result_t rc;
+    size_t bytes = 158U; /* fixed scalar bytes + all nine length prefixes */
+    unsigned char *p = output;
+    if (c == NULL || probe == NULL || transport == NULL || required == NULL ||
+        (output == NULL && capacity != 0U)) return COG_ERROR_NULL_PTR;
+    if (c->options.backend != COG_CLI_BACKEND_REAL ||
+        c->options.store_mode != COG_CLI_STORE_DURABLE || metadata_action(c->options.session_action))
+        return COG_ERROR_UNSUPPORTED;
+    if (!transport->host_runtime_initialized ||
+        transport->dependency_memory != COG_NET_DEPENDENCY_MEMORY_DYNAMIC ||
+        transport->dependency_memory_limit != 0U || transport->max_retries != 0U ||
+        transport->retry_backoff_ms != 0U) return COG_ERROR_UNSUPPORTED;
+    if (memchr(probe->session_id, '\0', sizeof(probe->session_id)) == NULL) return COG_ERROR_INVALID_ARG;
+    fields[B_MODEL] = c->options.model_id; fields[B_ENDPOINT] = c->options.endpoint_name;
+    fields[B_URL] = c->options.base_url; fields[B_SECRET] = c->secret;
+    fields[B_REFERENCE] = c->options.credential_ref; fields[B_WORKSPACE] = c->options.workspace_root;
+    fields[B_STORE] = c->options.store_dir; fields[B_SESSION] = probe->session_id;
+    fields[B_CA] = transport->ca_bundle;
+    v.generation = c->generation; v.mask = c->tool_mask; v.options = c->options;
+    v.probe = *probe; v.transport = *transport;
+#define DEFAULT(member, value) if (v.transport.member == 0U) v.transport.member = value
+    DEFAULT(max_connections, 4U); DEFAULT(connect_timeout_ms, 10000U); DEFAULT(stall_timeout_ms, 30000U);
+    DEFAULT(max_request_bytes, 1048576U); DEFAULT(max_header_bytes, 65536U); DEFAULT(chunk_bytes, 16384U);
+    DEFAULT(chunks_per_request, 8U); DEFAULT(service_quantum, 16U);
+#undef DEFAULT
+    if (v.transport.max_connections > UINT32_MAX || v.transport.chunks_per_request > UINT32_MAX)
+        return COG_ERROR_LIMIT;
+    for (size_t i = 0U; i < B_FIELDS; ++i) {
+        v.field[i] = (const unsigned char *)(fields[i] != NULL ? fields[i] : "");
+        v.length[i] = strlen((const char *)v.field[i]);
+        if (v.length[i] > STRING_BYTES) return COG_ERROR_LIMIT;
+        bytes += v.length[i];
+    }
+    rc = bootstrap_valid(&v);
+    if (rc != COG_OK) return rc == COG_ERROR_PROTOCOL ? COG_ERROR_INVALID_ARG : rc;
+    if (capacity < bytes) { *required = bytes; return COG_ERROR_OVERFLOW; }
+    memcpy(p, "CGB1", 4U); p += 4;
+#define WRITE(member, width) write_number(&p, (uint64_t)(member), width)
+    WRITE(v.generation, 8U); WRITE(v.options.tool_policy, 1U); WRITE(v.mask, 1U);
+    WRITE(v.options.max_output_tokens, 4U); WRITE(v.options.max_tool_rounds, 4U);
+    WRITE(v.options.max_turn_ms, 4U); WRITE(v.options.max_tool_ms, 4U);
+    WRITE(v.options.max_tool_output_bytes, 8U); WRITE(v.options.max_context_bytes, 8U);
+    WRITE(v.options.max_retries, 4U); WRITE(v.options.max_retry_elapsed_ms, 4U);
+    for (size_t i = B_MODEL; i <= B_SESSION; ++i) write_field(&p, &v, i);
+    WRITE(v.probe.owner.epoch, 8U); WRITE(v.probe.owner.instance_id, 8U); WRITE(v.probe.checkpoint.generation, 8U);
+    WRITE(v.transport.max_connections, 4U); WRITE(v.transport.connect_timeout_ms, 4U);
+    WRITE(v.transport.stall_timeout_ms, 4U); WRITE(v.transport.max_request_bytes, 8U);
+    WRITE(v.transport.max_header_bytes, 8U); WRITE(v.transport.chunk_bytes, 8U);
+    WRITE(v.transport.chunks_per_request, 4U); WRITE(v.transport.service_quantum, 4U);
+#undef WRITE
+    write_field(&p, &v, B_CA); *required = bytes;
+    return COG_OK;
+}
+cog_result_t cog_cli_bootstrap_transport_decode(const void *input, size_t input_len,
+    cog_net_config_t *transport, char *storage, size_t capacity, size_t *required)
+{
+    bootstrap_view_t v;
+    size_t bytes;
+    cog_result_t rc;
+    if (input == NULL || transport == NULL || required == NULL ||
+        (storage == NULL && capacity != 0U)) return COG_ERROR_NULL_PTR;
+    rc = bootstrap_read(input, input_len, &v);
+    if (rc != COG_OK) return rc;
+    bytes = v.length[B_CA] != 0U ? v.length[B_CA] + 1U : 0U;
+    if (capacity < bytes) { *required = bytes; return COG_ERROR_OVERFLOW; }
+    if (bytes != 0U) {
+        memcpy(storage, v.field[B_CA], bytes - 1U); storage[bytes - 1U] = '\0';
+        v.transport.ca_bundle = storage;
+    }
+    *transport = v.transport; *required = bytes;
+    return COG_OK;
+}
+cog_result_t cog_cli_configuration_bootstrap_new(cog_cli_configuration_t **out,
+    const void *input, size_t input_len, cog_net_ctx_t *net, cog_cli_bootstrap_probe_t *probe)
+{
+    bootstrap_view_t v;
+    cog_cli_configuration_t *c;
+    cog_result_t rc;
+    const char **destinations[7];
+    if (out == NULL) return COG_ERROR_NULL_PTR;
+    *out = NULL;
+    if (input == NULL || net == NULL || probe == NULL) return COG_ERROR_NULL_PTR;
+    rc = bootstrap_read(input, input_len, &v);
+    if (rc != COG_OK) return rc;
+    c = calloc(1U, sizeof(*c));
+    if (c == NULL) return COG_ERROR_NOMEM;
+    c->options = v.options; c->options.net = net;
+    c->options.backend = COG_CLI_BACKEND_REAL; c->options.store_mode = COG_CLI_STORE_DURABLE;
+    c->origin = ORIGIN_BOOTSTRAP; c->generation = v.generation;
+    c->tool_mask = v.mask; c->endpoint_present = true;
+    destinations[0] = &c->options.model_id; destinations[1] = &c->options.endpoint_name;
+    destinations[2] = &c->options.base_url; destinations[3] = NULL;
+    destinations[4] = &c->options.credential_ref; destinations[5] = &c->options.workspace_root;
+    destinations[6] = &c->options.store_dir;
+    for (size_t i = B_MODEL; i <= B_STORE; ++i) {
+        if (i == B_SECRET) {
+            memcpy(c->secret, v.field[i], v.length[i]);
+        } else if (v.length[i] != 0U) {
+            memcpy(c->strings + c->used, v.field[i], v.length[i]);
+            *destinations[i] = c->strings + c->used;
+            c->used += v.length[i] + 1U;
+        }
+    }
+    memcpy(v.probe.session_id, v.field[B_SESSION], v.length[B_SESSION]);
+    v.probe.session_id[v.length[B_SESSION]] = '\0';
+    cache_labels(c); *probe = v.probe; *out = c;
     return COG_OK;
 }
