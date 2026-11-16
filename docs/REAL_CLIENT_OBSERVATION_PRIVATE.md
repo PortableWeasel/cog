@@ -82,3 +82,18 @@ precede commit/alias retirement, while every consuming disconnect is drained
 before matching config storage clears. Final app_run result preserves work
 failure first, with observation failure returned only if work otherwise succeeds.
 No public declaration or net/core/provider implementation changes are needed.
+
+## Independent source cycle 1: retained IDs and final target borrow
+
+The first source review identified that net active_count excludes terminal
+retention and that a raw observer AGAIN can be misread by core service as normal
+no-progress. Reusable domain clear now checks request_status for every known key;
+terminal rows cannot be reused until release. Owners must still explicitly release
+all IDs, including unobserved IDs after feed loss, since the public API cannot
+enumerate all retained identities. Final target detachment is a distinct private
+operation: invalidate the feed explicitly, clear diagnostic borrows, NULL the
+target and retain numeric keys while host net remains alive. It neither claims a
+reusable context nor cancels unrelated requests, and allows app_free to consume
+its app/obs resources without dangling pointers or leaks. App drive normalizes
+AGAIN to IO while raw net/bridge error remains unchanged. Both corrections use
+existing public primitives; no public contract or interface is extended.

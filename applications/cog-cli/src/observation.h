@@ -44,7 +44,8 @@ cog_result_t cog_cli_observer_capture(void *user, const cog_net_ctx_t *net,
 /** Owner drain after EVERY provider/net operation, including cleanup, before
  * another operation/reload/retirement. Emits existing obs events/diagnostics with
  * callback timestamps and owned row labels. OPEN then admitted RETRY share time.
- * Terminal rows can be diag-cleared before reuse; active rows never evict.
+ * Terminal rows can be diag-cleared before reuse only after request_status says
+ * NOT_FOUND (release). Active and terminal-retained rows never evict.
  * Every borrowed diagnostic string is cleared before its owning row is reused.
  * Assigns nonzero never-reused connection IDs across context/request keys.
  * Clears prepared scope after draining. On failure latch first deferred error,
@@ -57,16 +58,33 @@ cog_result_t cog_cli_observer_drain(cog_cli_observer_t *observer);
  * @return NULL_PTR or first bridge error/OK. No callbacks or mutation. */
 cog_result_t cog_cli_observer_status(const cog_cli_observer_t *observer);
 /** Drain then clear all rows for a still-live net with no owned request IDs.
+ * @pre Owner released ALL IDs, including any unobserved after feed loss.
+ * The helper checks active_count and every known row's request_status; no public
+ * operation can enumerate unknown retained IDs, so this ownership precondition
+ * cannot be inferred from a zero active wire count.
  * Existing feed error stays latched, but rows/diagnostic borrows still clear.
  * Call before net destruction/memory reuse and before unbinding/freeing obs.
- * @return NULL_PTR for required pointers; OK/sticky error; INVALID_STATE if net
- * still owns requests. Even a lost feed cannot authorize clearing live IDs. */
+ * @return NULL_PTR for required pointers; OK/sticky error; INVALID_STATE if a
+ * known ID remains owned or a wire is active. Never clears those rows early. */
 cog_result_t cog_cli_observer_clear(cog_cli_observer_t *observer, const cog_net_ctx_t *net);
+/** Irreversibly end the obs-target borrow during final app destruction.
+ * If ordinary clear/unbind is refused, latch INVALID_STATE as an incomplete-feed
+ * error, discard pending values, clear all published diagnostic borrows while
+ * target is alive, then NULL target/scope. Retain numeric domain keys for later
+ * release/clear; do NOT claim reusable domain or cancel/release foreign IDs.
+ * Future callbacks return the sticky failure without touching the old target.
+ * Host bridge memory still outlives all borrowing net contexts. App/obs may now
+ * be consumed even if unrelated retained IDs remain. NOT_FOUND diagnostic rows
+ * already cleared by their owner need no retry. @return first sticky error/OK;
+ * NULL_PTR for observer. Owner thread only; never resumes the lost feed. */
+cog_result_t cog_cli_observer_end_target(cog_cli_observer_t *observer);
 
 /** One immutable allowlisted typed field vocabulary; match app obs constructor. */
 const cog_obs_field_table_t *cog_cli_observation_fields(void);
 /** Owner admission checkpoint: drain own bridge, inspect net callback status and
  * app deferred timing/sink error independently. Preserve a nonOK primary result.
+ * Normalize observation AGAIN to fatal IO at the app/core drive boundary while
+ * preserving raw bridge/net status; AGAIN must never become a no-progress retry.
  * NULL app returns NULL_PTR. During existing cancel/drain, latch secondary errors without interrupting
  * durable cleanup; app_run merges them only after work cleanup finishes. */
 cog_result_t cog_cli_observation_check(cog_cli_app_t *app, cog_result_t primary);
