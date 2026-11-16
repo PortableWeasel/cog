@@ -704,7 +704,7 @@ static cog_result_t native_receive(cog_cli_worker_host_t *worker,const void *byt
 }
 static cog_result_t dispose_execution(cli_executor_slot_t *slot)
 {
-    cog_result_t rc=cog_cli_execution_close(&slot->app,slot->primary);
+    cog_result_t rc=cog_cli_execution_close(&slot->app,COG_OK);
     if(slot->app!=NULL) return rc;
     slot->profile.source=NULL;
     cog_cli_configuration_free(slot->pending_profile);slot->pending_profile=NULL;
@@ -1432,7 +1432,9 @@ cog_result_t cli_worker_delegation_step(cog_cli_worker_host_t *worker,cli_delega
                (outcome!=COG_OK && reservation!=0U)) return COG_ERROR_PROTOCOL;
             if(outcome!=COG_OK) return outcome;
             h->reservation=reservation;h->deadline_ms=deadline;h->prepared=true;
-            h->pending.length=0U;h->reply.length=0U;h->codec.length=0U;return COG_OK;
+            h->pending.length=0U;h->reply.length=0U;h->codec.length=0U;
+            if(h->cancelled) return cli_worker_delegation_step(worker,h);
+            return COG_OK;
         }
         if((kind==COG_CLI_CONTROL_DELEGATE_START && m.kind!=COG_CLI_CONTROL_DELEGATE_RESULT) ||
            (kind==COG_CLI_CONTROL_CHILD_MESSAGE && m.kind!=COG_CLI_CONTROL_MESSAGE_RESULT) ||
