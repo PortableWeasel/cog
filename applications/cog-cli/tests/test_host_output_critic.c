@@ -121,7 +121,7 @@ int main(void)
     static void (*const cases[])(void) = {zero_and_unwind, regular_offset, partial, interrupted, socket_saturation};
     for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); i++) {
         pid_t pid = fork(); assert(pid >= 0);
-        if (pid == 0) { alarm(5U); cases[i](); _exit(0); }
+        if (pid == 0) { alarm(5U); cases[i](); exit(0); }
         int status; assert(waitpid(pid, &status, 0) == pid);
         assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
     }
