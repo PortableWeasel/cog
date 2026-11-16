@@ -811,6 +811,14 @@ static void host_forward_free(cli_forwarded_operation_t *op)
 {
     host_bytes_free(&op->original); host_bytes_free(&op->decoded_storage); host_bytes_free(&op->reply);
 }
+static size_t host_frame_capacity(const cli_host_reservations_t *bounds)
+{
+    size_t capacity = bounds->projection_bytes + 512U;
+    if (capacity < 90368U) capacity = 90368U;
+    for (size_t i = 0U; i < CLI_HOST_LANES; ++i)
+        if (capacity < bounds->lane_frame_bytes[i]) capacity = bounds->lane_frame_bytes[i];
+    return capacity;
+}
 static cog_result_t host_allocations(cog_cli_host_runtime_t *r, const cog_cli_options_t *options)
 {
     r->clients = calloc(r->bounds.clients, sizeof(*r->clients));
@@ -822,7 +830,7 @@ static cog_result_t host_allocations(cog_cli_host_runtime_t *r, const cog_cli_op
     if (r->clients == NULL || r->commands == NULL || r->workers == NULL ||
         r->executors == NULL || r->groups == NULL || r->lanes == NULL) return COG_ERROR_NOMEM;
     size_t command = r->bounds.lane_frame_bytes[COG_CLI_LANE_COMMAND - 1U];
-    size_t frame = r->bounds.projection_bytes + 512U;
+    size_t frame = host_frame_capacity(&r->bounds);
     cog_result_t rc;
 #define HOST_BUFFER(field, amount) do { rc = host_bytes_new(&(field), (amount)); if (rc != COG_OK) return rc; } while (0)
     HOST_BUFFER(r->ingress, frame); HOST_BUFFER(r->decode, frame);
@@ -1004,7 +1012,7 @@ static cog_result_t host_transport(cog_cli_host_runtime_t *r, cli_executor_slot_
     config.observer = cog_cli_observer_capture; config.observer_user = slot->observer;
     return cog_net_new(&slot->net, &config);
 }
-static const cog_state_t host_transitions[] = {0U, COG_TRANSITION_END};
+static const cog_state_t host_transitions[] = {0U, COG_TRANSITION_SELF, COG_TRANSITION_END};
 static const cog_dispatch_entry_t host_dispatch[] = {
     {0U, COG_EVENT_IPC_CONNECTED, cli_host_dispatch, host_transitions},
     {0U, COG_EVENT_IPC_MESSAGE, cli_host_dispatch, host_transitions},
@@ -1128,7 +1136,7 @@ cog_result_t cog_cli_host_runtime_new(cog_cli_host_runtime_t **out,
     cog_session_config_t session = {.max_nodes = 1U, .max_payload_bytes = 1024U,
         .max_tool_calls_per_message = 1U};
     rc = cog_session_new(&r->control_session, &session); if (rc != COG_OK) goto fail;
-    size_t frame = bounds.projection_bytes + 512U;
+    size_t frame = host_frame_capacity(&bounds);
     size_t agent_bytes = bounds.task_bytes + 128U;
     if (agent_bytes < bounds.result_bytes) agent_bytes = bounds.result_bytes;
     if (agent_bytes < bounds.status_bytes) agent_bytes = bounds.status_bytes;
