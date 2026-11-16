@@ -1216,7 +1216,9 @@ cog_result_t cog_cli_host_runtime_begin(cog_cli_host_runtime_t *r)
     cog_result_t rc = cog_core_drive_begin(r->control_core);
     if (rc != COG_OK) {
         r->control_drive_ended = true; r->primary = rc;
-        r->shutdown = true; r->admission_frozen = true;
+        /* No drive was acquired, but the constructed native owner still needs
+         * the same shutdown initialization as a failed spawn prefix. */
+        (void)cog_cli_host_runtime_request_shutdown(r);
         return rc;
     }
     /* Every published native reservation remains owned on prefix failure. The
