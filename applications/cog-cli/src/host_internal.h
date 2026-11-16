@@ -43,6 +43,11 @@ typedef struct cli_stream_key {
  * Final reply and original must survive until exact consume/successor proof.
  * After retirement old IDs uniformly stale-reject; no byte-conflict claim remains.
  */
+/** Retained request/reply sends may retry only after this finite interval once
+ * the exact native binding accepted a copied frame. One-way frames never retry
+ * after copied acceptance. This is transport eligibility, not semantic ACK or
+ * an extension of any operation/native deadline. */
+#define CLI_CONTROL_RETRY_MS 1000U
 typedef struct cli_control_lane {
     cli_stream_key_t key;
     bool bound, pending_valid, final_valid;
@@ -51,6 +56,16 @@ typedef struct cli_control_lane {
     uint64_t next_wire, reserved_cleanup_first, reserved_cleanup_count;
     cli_host_bytes_t pending, provisional_reply, final_original, final_reply;
     uint64_t deadline_ms; /**< Min only; duplicate never extends. */
+    uint64_t pending_reply_wire; /**< 0=no generic response awaiting copied send;
+       otherwise selects retained final_reply_wire or provisional_wire exactly.
+       Independent of semantic pending_valid. Copied send clears only this
+       delivery selector; cooldown/AGAIN retain it. See REAL_CLIENT_SEND_REPLY_RETENTION.md. */
+    uint64_t copied_wire, next_send_ms; /**< Transport-owned exact outer wire and
+       independent earliest retransmit time. New wire is immediately eligible;
+       AGAIN accepts nothing and changes neither value. No receipt/authority
+       advancement. HANDOFF uses the addressed slot outbound lane; delegation
+       handle pending frames use that executor outbound stream. See scheduling
+       and retirement rules in REAL_CLIENT_CONTROL_SEND_OWNERSHIP.md. */
 } cli_control_lane_t;
 /** Dedicated PROFILE lane. Re-encode exact pinned generation for duplicate
  * comparison using its ORIGINAL probe snapshot below, not a worker-global
@@ -58,6 +73,13 @@ typedef struct cli_control_lane {
  * cli_control_lane/command/events.
  * Only pending secret frame and scratch are reserved here; wipe ENTIRE capacity
  * on retirement/abandonment/free. IPC TX/RX fabric also has wipe_buffers=true.
+ * Failed purpose4 reload exception: detach candidate proof/source before the
+ * consuming reload call; publish a live exact-source proof only on success.
+ * On failure retire the request wire before returning ingress, retaining only
+ * correlation scalars and the nonsecret negative ACK in body. Covered retries
+ * are uniformly stale, never new reloads or binding failures; they may re-arm
+ * that identical retained ACK without claiming exact original-byte equality.
+ * See docs/REAL_CLIENT_RELOAD_FAILURE_RECEIPTS.md for bounded receipt lifetime.
  */
 typedef struct cli_secret_exchange {
     cli_stream_key_t key;
@@ -72,6 +94,9 @@ typedef struct cli_secret_exchange {
     size_t body_capacity, frame_capacity, scratch_capacity;
     size_t body_length, frame_length;
     uint64_t wire, replied_wire, retired_through, generation;
+    uint64_t copied_wire, next_send_ms; /**< Same copied-send eligibility as a
+       generic lane, but PROFILE bytes stay in their dedicated secret arenas.
+       Exact re-armed failure ACK preserves this schedule across stale retries. */
     uint32_t reload_attempts_used;
     uint8_t purpose;
     bool pending, acknowledged;

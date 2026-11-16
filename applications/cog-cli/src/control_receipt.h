@@ -95,6 +95,14 @@ typedef enum cog_cli_control_receipt_disposition {
  * original bytes remain to establish an exact-byte conflict or replay ACCEPTED.
  * These bounded reservations belong to the common envelope owner, not the codec.
  *
+ * After a terminal ACCEPTED/TERMINAL_FIXED has been validated/consumed and
+ * actual child resources cleaned, worker confirms consumption with the outer
+ * control.h UPDATE-lane empty COMMAND_ACK. Its reply_to names this receipt's
+ * OUTER envelope wire, not this payload's answered worker wire_id. Coordinator
+ * cannot reclaim the final original/receipt merely from durable parent TOOL
+ * save or worker send-OK. Exact confirmation is wire-lifetime evidence only;
+ * semantic apply/copy/local ack and parent TOOL persistence remain distinct.
+ *
  * These receipts never certify a durable parent TOOL save, release its guard,
  * prove descendants fenced, or claim factual child effects were rolled back.
  * The parent's accepted core terminal and the child's factual durable ledger

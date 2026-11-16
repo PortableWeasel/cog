@@ -350,3 +350,193 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang
         ${CMAKE_BINARY_DIR} $<TARGET_FILE:test_empty_session>)
     set_tests_properties(cli-installed-empty-session PROPERTIES TIMEOUT 30)
 endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(test_configuration_clone test_configuration_clone.c)
+    target_link_libraries(test_configuration_clone PRIVATE cog-cli-config)
+    target_link_options(test_configuration_clone PRIVATE -Wl,--wrap=calloc -Wl,--wrap=free)
+    target_enable_warnings(test_configuration_clone)
+    add_test(NAME cli-configuration-clone COMMAND test_configuration_clone)
+endif()
+
+add_executable(test_execution_headless test_execution_headless.c)
+target_include_directories(test_execution_headless PRIVATE ../src)
+target_link_libraries(test_execution_headless PRIVATE cog::cli)
+target_link_options(test_execution_headless PRIVATE -Wl,--wrap=cog_provider_disconnect)
+target_enable_warnings(test_execution_headless)
+add_test(NAME cli-execution-headless COMMAND test_execution_headless)
+
+add_executable(test_handoff_leaf test_handoff_leaf.c)
+target_include_directories(test_handoff_leaf PRIVATE ../src)
+target_link_libraries(test_handoff_leaf PRIVATE cog::cli)
+target_enable_warnings(test_handoff_leaf)
+add_test(NAME cli-handoff-leaf COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_handoff_leaf.py
+    $<TARGET_FILE:test_handoff_leaf> ${CMAKE_BINARY_DIR})
+set_tests_properties(cli-handoff-leaf PROPERTIES TIMEOUT 25)
+
+add_test(NAME cli-headless-local COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_local.py
+    $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR})
+set_tests_properties(cli-headless-local PROPERTIES TIMEOUT 30)
+
+add_executable(test_execution_tools test_execution_tools.c)
+target_include_directories(test_execution_tools PRIVATE ../src)
+target_link_libraries(test_execution_tools PRIVATE cog::cli)
+target_enable_warnings(test_execution_tools)
+add_test(NAME cli-execution-tools COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_execution_tools.py
+    $<TARGET_FILE:test_execution_tools> ${CMAKE_BINARY_DIR})
+set_tests_properties(cli-execution-tools PROPERTIES TIMEOUT 20)
+
+add_executable(test_headless_native test_headless_native.c)
+target_include_directories(test_headless_native PRIVATE ../src)
+target_link_libraries(test_headless_native PRIVATE cog::cli)
+target_enable_warnings(test_headless_native)
+add_dependencies(test_headless_native cog-cli)
+add_test(NAME cli-headless-native COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
+    $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR})
+set_tests_properties(cli-headless-native PROPERTIES TIMEOUT 70)
+
+add_test(NAME cli-headless-native-limit COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
+    $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} limit)
+set_tests_properties(cli-headless-native-limit PROPERTIES TIMEOUT 70)
+# Lane A owns shared CMake; append these real-source private branch fixtures.
+foreach(name IN ITEMS worker_receipt_owned delegation_callbacks worker_handoff_critic worker_reload_failure)
+    add_executable(test_${name} test_${name}.c)
+    target_link_libraries(test_${name} PRIVATE cog::cli)
+    target_include_directories(test_${name} PRIVATE ../src ../../../libraries/cog-ipc/private)
+    target_compile_options(test_${name} PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(test_${name} PRIVATE -Wl,--gc-sections)
+    target_enable_warnings(test_${name})
+endforeach()
+add_test(NAME cli-worker-receipt-owned COMMAND test_worker_receipt_owned
+    ${CMAKE_BINARY_DIR}/worker-receipt.sock)
+add_test(NAME cli-delegation-callbacks COMMAND test_delegation_callbacks)
+set_tests_properties(cli-worker-receipt-owned cli-delegation-callbacks PROPERTIES TIMEOUT 10)
+
+add_test(NAME cli-worker-handoff-critic COMMAND test_worker_handoff_critic)
+set_tests_properties(cli-worker-handoff-critic PROPERTIES TIMEOUT 10)
+# Additive registration for the shared CMake owner. This leaf includes the real
+# coordinator translation unit to exercise its private retained-receipt path;
+# section GC selects that path, and cog::cli supplies real linked dependencies.
+add_executable(test_cli_coordinator_receipt coordinator-leaf/test_receipt_pressure.c)
+target_link_libraries(test_cli_coordinator_receipt PRIVATE cog::cli)
+target_include_directories(test_cli_coordinator_receipt PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_options(test_cli_coordinator_receipt PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_cli_coordinator_receipt PRIVATE -Wl,--gc-sections)
+target_enable_warnings(test_cli_coordinator_receipt)
+add_test(NAME cli-coordinator-receipt COMMAND test_cli_coordinator_receipt)
+set_tests_properties(cli-coordinator-receipt PROPERTIES LABELS "unit;cli;headless")
+add_executable(test_cli_coordinator_identity coordinator-leaf/test_stream_identity_critic.c)
+target_link_libraries(test_cli_coordinator_identity PRIVATE cog::cli)
+target_include_directories(test_cli_coordinator_identity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_options(test_cli_coordinator_identity PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_cli_coordinator_identity PRIVATE -Wl,--gc-sections)
+target_enable_warnings(test_cli_coordinator_identity)
+add_test(NAME cli-coordinator-identity COMMAND test_cli_coordinator_identity)
+set_tests_properties(cli-coordinator-identity PROPERTIES LABELS "unit;cli;headless")
+
+add_test(NAME cli-worker-reload-failure COMMAND test_worker_reload_failure)
+set_tests_properties(cli-worker-reload-failure PROPERTIES TIMEOUT 10)
+
+add_test(NAME cli-headless-native-single COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
+    $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} single)
+set_tests_properties(cli-headless-native-single PROPERTIES TIMEOUT 70)
+
+add_test(NAME cli-headless-native-handoff COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
+    $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} handoff)
+set_tests_properties(cli-headless-native-handoff PROPERTIES TIMEOUT 145)
+
+add_test(NAME cli-headless-native-cancel COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
+    $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} cancel)
+set_tests_properties(cli-headless-native-cancel PROPERTIES TIMEOUT 70)
+
+add_test(NAME cli-headless-native-handoff-timeout COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
+    $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} handoff-timeout)
+set_tests_properties(cli-headless-native-handoff-timeout PROPERTIES TIMEOUT 145)
+# Includes the actual coordinator source. Link real orchestrator and Q implementations.
+add_executable(test_coordinator_send_schedule coordinator-leaf/test_send_schedule.c)
+target_link_libraries(test_coordinator_send_schedule PRIVATE cog-cli-lib)
+target_enable_warnings(test_coordinator_send_schedule)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(test_coordinator_send_schedule PRIVATE -ffunction-sections -fdata-sections)
+  target_link_options(test_coordinator_send_schedule PRIVATE -Wl,--gc-sections)
+endif()
+add_test(NAME unit-cli-coordinator-send-schedule
+  COMMAND test_coordinator_send_schedule coordinator-send.sock)
+
+foreach(name IN ITEMS app_close_guard_critic guard_backend_ownership)
+    add_executable(test_${name} test_${name}.c)
+    target_include_directories(test_${name} PRIVATE ../src)
+    target_link_libraries(test_${name} PRIVATE cog::cli)
+    target_enable_warnings(test_${name})
+    add_test(NAME cli-${name} COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/run_execution_tools.py
+        $<TARGET_FILE:test_${name}> ${CMAKE_BINARY_DIR})
+endforeach()
+target_link_options(test_app_close_guard_critic PRIVATE -Wl,--wrap=close -Wl,--wrap=cog_store_owner_release)
+target_link_options(test_guard_backend_ownership PRIVATE -Wl,--wrap=calloc)
+
+add_executable(test_guard_again_critic test_guard_again_critic.c)
+target_include_directories(test_guard_again_critic PRIVATE ../src)
+target_link_libraries(test_guard_again_critic PRIVATE cog::cli)
+target_enable_warnings(test_guard_again_critic)
+target_link_options(test_guard_again_critic PRIVATE -Wl,--wrap=close -Wl,--wrap=cog_store_owner_release)
+add_test(NAME cli-guard-again-critic COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_execution_tools.py
+    $<TARGET_FILE:test_guard_again_critic> ${CMAKE_BINARY_DIR})
+
+# Maintained O8 protocol/replay oracles now link the actual joined libraries.
+# Keep the deliberate fault wrappers local to their owning fixture.
+foreach(name IN ITEMS projection_owner client)
+    add_executable(test_view_${name} headless-view/test_${name}.c)
+    target_include_directories(test_view_${name} PRIVATE ../src)
+    target_link_libraries(test_view_${name} PRIVATE cog::cli)
+    target_enable_warnings(test_view_${name})
+endforeach()
+target_link_options(test_view_projection_owner PRIVATE -Wl,--wrap=cog_ipc_replay_append)
+target_link_options(test_view_client PRIVATE -Wl,--wrap=clock_gettime)
+add_test(NAME cli-view-projection COMMAND test_view_projection_owner)
+add_test(NAME cli-view-client COMMAND test_view_client view-client.sock)
+set_tests_properties(cli-view-projection cli-view-client PROPERTIES
+    TIMEOUT 30 LABELS "unit;cli;headless")
+
+add_executable(test_handoff_release_again_critic test_handoff_release_again_critic.c)
+target_include_directories(test_handoff_release_again_critic PRIVATE ../src)
+target_link_libraries(test_handoff_release_again_critic PRIVATE cog::cli)
+target_enable_warnings(test_handoff_release_again_critic)
+target_link_options(test_handoff_release_again_critic PRIVATE
+    -Wl,--wrap=close -Wl,--wrap=cog_store_owner_release)
+add_test(NAME cli-handoff-release-again-critic COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_execution_tools.py
+    $<TARGET_FILE:test_handoff_release_again_critic> ${CMAKE_BINARY_DIR})
+
+add_executable(test_coordinator_begin_failure_critic
+    test_coordinator_begin_failure_critic.c ../src/host_output.c)
+target_include_directories(test_coordinator_begin_failure_critic PRIVATE ../src)
+target_link_libraries(test_coordinator_begin_failure_critic PRIVATE cog::cli)
+target_enable_warnings(test_coordinator_begin_failure_critic)
+target_link_options(test_coordinator_begin_failure_critic PRIVATE
+    -Wl,--wrap=cog_orchestrator_spawn -Wl,--wrap=cog_cli_host_runtime_new
+    -Wl,--wrap=cog_cli_host_runtime_close)
+add_test(NAME cli-coordinator-begin-failure COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_coordinator_begin_failure.py
+    $<TARGET_FILE:test_coordinator_begin_failure_critic> ${CMAKE_BINARY_DIR})
+set_tests_properties(cli-coordinator-begin-failure PROPERTIES TIMEOUT 20)
+add_executable(test_coordinator_core_begin_failure_critic test_coordinator_core_begin_failure_critic.c)
+target_include_directories(test_coordinator_core_begin_failure_critic PRIVATE ../src)
+target_link_libraries(test_coordinator_core_begin_failure_critic PRIVATE cog::cli)
+target_enable_warnings(test_coordinator_core_begin_failure_critic)
+target_link_options(test_coordinator_core_begin_failure_critic PRIVATE -Wl,--wrap=cog_core_drive_begin)
+add_dependencies(test_coordinator_core_begin_failure_critic cog-cli)
+add_test(NAME cli-coordinator-core-begin-failure COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_coordinator_core_begin_failure.py
+    $<TARGET_FILE:test_coordinator_core_begin_failure_critic> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR})
+set_tests_properties(cli-coordinator-core-begin-failure PROPERTIES TIMEOUT 20)

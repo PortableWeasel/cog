@@ -270,7 +270,12 @@ cannot resurrect its cleared source/probe or receive a new latest probe. Constru
 unwind/abandonment clears metadata and wipes ENTIRE secret arenas; ordinary close
 retires exchange first, then releases its explicit generation pin. No raw secret
 original cache, extra logical generation/provider, store reread, runtime allocation
-or mutable global is introduced. Header-only strict checks below do not claim
+or mutable global is introduced. Failed purpose4 reload is the narrow exception:
+the consuming call leaves no live candidate for duplicate proof. Retire its
+request proof and keep only the separately retained nonsecret negative ACK under
+REAL_CLIENT_RELOAD_FAILURE_RECEIPTS.md; stale retries cannot reapply or poison
+the binding. This does not extend credential lifetime or weaken successful proof.
+Header-only strict checks below do not claim
 runtime duplicate conformance or permit O4 bodies ahead of their prerequisites.
 
 Amendment verification:18/18 full strict standalone/combined/reversed checks on
@@ -296,3 +301,48 @@ Closing ONLY layout860d5cc and amendment08d1b54 under root authorization. O4
 parent/body/review/integration/finalize and ALL missing primitive/runtime gates
 remain open; private layout approval never dispatches bodies by itself. Main
 remainsMdacbd199, no frozen profile/build_user/installation changes or paid calls.
+
+## Amendment 5ff5ec8 — explicit native timers and driver retirement
+
+Pass1: O4 body traces require four additional private scalar fields; no public
+API, wire shape, callback, allocation class or authority changes. Worker
+next_heartbeat_ms and startup_deadline_ms retain independent bounded monotonic
+native timers. Worker stepped distinguishes an owner whose first valid step began
+from a constructor-only owner for the existing checked-close contract.
+Coordinator control_drive_ended records the one-time end of its control core;
+whole-runtime begun/done and coordinator_failed cannot represent this fact while
+successful or failed core termination is followed by independent owned cleanup.
+Bodies consuming these fields remain gated on an independent header-only review.
+
+Pass2 traces: constructor starts stepped=false; first valid outer worker step
+sets it before driving. Native connection/bootstrap retains its original finite
+startup deadline through partial readiness, duplicates and queue pressure; no
+executor can start merely because handshake progresses. Native heartbeat retains
+its reserved immutable frame under AGAIN, independently of application lanes;
+only transport acceptance schedules its next bounded due time, never readiness
+polling. Parent disconnect/signal follows existing shutdown/drain and does not
+reset startup or extend a task deadline. Checked clock arithmetic and finite
+max_wait combine all relevant deadlines without interpreting zero as an overdue
+active timer when its phase has not started.
+
+Coordinator core done/fatal: call drive_end once, latch control_drive_ended even
+when drive_end returns the retained fatal status, preserve first error, and stop
+all later core steps/end/restart. Separate started executor/provider/native drain
+continues, then normal borrowed-session/guard/registry cleanup. Successful stop
+needs the same flag: coordinator_failed is not a substitute for driver retirement.
+
+Pass3 consistency: four constructor-owned scalar fields only. No pointer/arena
+ownership, count limit, secret/profile copy or wire identity changes. Invalid
+NULL/reentrant step calls leave stepped unchanged; valid first-step clock failure
+uses existing failure/done handling, not a fake never-stepped cleanup exemption.
+Close refuses stepped&&!done even when no executor slots are active. Construction
+unwind and never-stepped close release only explicit owned resources; borrowed
+signal fd and host template stay caller-owned. Neither timer grants native proof,
+bootstrap readiness or execution permission. Driver retirement remains distinct
+from executor cleanup and whole-runtime done. Other frozen helpers remain intact;
+no source/CMake body is included in this amendment.
+
+Amendment verification:12/12 strict GCC/Clang C11 and G++/Clang++ C++11
+standalone/combined/reversed+repeated include checks PASS. Exact commands/results
+are in impl-headless-app/build-layout-5ff5ec8/checks.log (TMPDIR local there).
+Independent final review remains required before any body consumes these fields.

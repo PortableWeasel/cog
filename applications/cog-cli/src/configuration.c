@@ -14,7 +14,7 @@
 #define STRING_BYTES 65536U
 #define LABEL_BYTES 128U
 typedef enum configuration_origin {
-    ORIGIN_STARTUP = 0, ORIGIN_RELOAD, ORIGIN_CHILD, ORIGIN_BOOTSTRAP
+    ORIGIN_STARTUP = 0, ORIGIN_RELOAD, ORIGIN_CHILD, ORIGIN_BOOTSTRAP, ORIGIN_CLONE
 } configuration_origin_t;
 struct cog_cli_configuration {
     cog_cli_options_t options;
@@ -560,6 +560,28 @@ cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
 fail:
     cog_cli_configuration_free(c);
     return rc;
+}
+cog_result_t cog_cli_configuration_clone_new(cog_cli_configuration_t **out,
+    const cog_cli_configuration_t *current, cog_net_ctx_t *net)
+{
+    if (out == NULL) return COG_ERROR_NULL_PTR;
+    *out = NULL;
+    if (current == NULL) return COG_ERROR_NULL_PTR;
+    if (net != NULL && (current->options.backend == COG_CLI_BACKEND_MOCK ||
+        metadata_action(current->options.session_action))) return COG_ERROR_INVALID_ARG;
+    cog_cli_configuration_t *c = calloc(1U, sizeof(*c));
+    if (c == NULL) return COG_ERROR_NOMEM;
+    c->options = current->options;
+    c->options.net = net;
+    c->options.credential_read = NULL; c->options.credential_arg = NULL;
+    c->generation = current->generation; c->tool_mask = current->tool_mask;
+    c->endpoint_present = current->endpoint_present; c->origin = ORIGIN_CLONE;
+    cog_result_t rc = copy_option_strings(c);
+    if (rc != COG_OK) { cog_cli_configuration_free(c); return rc; }
+    memcpy(c->secret, current->secret, sizeof(c->secret));
+    cache_labels(c);
+    *out = c;
+    return COG_OK;
 }
 cog_result_t cog_cli_configuration_reload_new(
     cog_cli_configuration_t **out, const cog_cli_configuration_t *current,

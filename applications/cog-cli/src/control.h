@@ -184,7 +184,25 @@ cog_result_t cog_cli_control_decode(const void *input, size_t input_len,
  * cannot consume required cancel/drain/terminal/receipt identities. Exhaustion
  * freezes admissions and uses already-reserved cleanup identities, never wraps.
  * UPDATE_RECEIPT body follows control_receipt.h's distinct apply/copy/localACK
- * and wire-consume rules; COMMAND_ACK only reclaims copied command receipts.
+ * and wire-consume rules. COMMAND_ACK normally reclaims copied command receipts;
+ * its sole UPDATE-lane form is an empty worker->coordinator final-receipt
+ * consumption confirmation: fresh worker wire, reply_to EXACT final terminal
+ * UPDATE_RECEIPT envelope wire, full authenticated attempt/session/peer binding.
+ * Only after worker consumed ACCEPTED with terminal metadata or TERMINAL_FIXED
+ * AND actual child cleanup. Not for RETRY, RUNNING ACCEPTED or CANCEL_CONSUMED.
+ * Coordinator matches retained final receipt+original before wire retirement;
+ * parent durable TOOL-save ACK remains independent. No response is generated,
+ * no semantic apply/ack_update or effect is performed by this confirmation.
+ * Worker retains exact confirmation bytes/correlation across send AGAIN; only
+ * successful endpoint copied-send transfers its delivery ownership. No new
+ * connection/rebind retry; failure before coordinator receives proof freezes
+ * retirement under existing native-loss policy. Confirmation is not acknowledged
+ * recursively. Separate CANCEL/PROFILE/COMMAND lanes never consume UPDATE proof.
+ * Reserve this final confirmation identity/storage before child admission; no
+ * wrap or fresh allocation during cleanup. Until copied-send succeeds, preserve
+ * the final receipt's exact outer correlation and the cleaned attempt's identity.
+ * Cleanup failure emits no confirmation; even consuming-close error cannot be
+ * relabelled as successful cleanup. Old unknown attempts remain uniformly stale.
  */
 
 #ifdef __cplusplus

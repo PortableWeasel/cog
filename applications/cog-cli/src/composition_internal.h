@@ -71,6 +71,9 @@ struct cog_cli_host_runtime {
     cli_host_reservations_t bounds;
     cog_result_t primary;
     bool begun, done, shutdown, in_step, admission_frozen, coordinator_failed;
+    bool control_drive_ended; /**< Set after the sole drive_end call on a done
+       core (including fatal return). Thereafter never step/end/restart that
+       core; executor/native cleanup continues independently until runtime done. */
     uint64_t now_ms, shutdown_deadline_ms, runtime_incarnation;
     uint64_t next_client_lease, next_group, next_reservation, next_nonce;
     uint64_t request_credit_used, request_credit_held;
@@ -112,8 +115,16 @@ struct cog_cli_worker_host {
     cog_ipc_endpoint_t *parent;
     cog_ipc_peer_info_t parent_proof;
     bool authenticated, startup_ready, in_step, shutdown, done;
+    bool stepped; /**< False at construction; set before first valid outer step.
+       Invalid/reentrant calls do not set it. Close permits !stepped or done,
+       never a connected-but-live owner merely because all executor slots idle. */
     cog_result_t primary;
     uint64_t runtime_incarnation, now_ms, shutdown_deadline_ms;
+    uint64_t next_heartbeat_ms, startup_deadline_ms;
+    /**< Checked monotonic native schedule, separate from shutdown/executor clocks.
+       Startup deadline fixed before first service, never extended by duplicates
+       or partial bootstrap. Heartbeat deadline advances only when its reserved
+       native frame is accepted for transport; backpressure preserves that frame. */
     cog_agent_id_t opened_agent_high_watermark;
     size_t round_robin, executor_capacity;
     cli_executor_slot_t *executors;
@@ -160,6 +171,13 @@ struct cli_delegation_handle {
     size_t task_lengths[CLI_HOST_MAX_CHILDREN];
     cli_host_bytes_t arguments, output, codec, pending, reply;
     uint64_t reservation, group, request_wire, deadline_ms;
+    uint64_t last_now_ms; /**< This handle's last validated start/poll/cancel
+       callback sample, initially0. Check required pointers and callback state,
+       then reject now<last_now_ms with INVALID_ARG before any output/state/IO
+       mutation. Equal timestamps are valid. After validation retain now even
+       if later drive reports a failure; never move the clock backward or use
+       another handle/app clock as this history. Original deadline_ms remains
+       independent and cannot be extended by poll/cancel/retry. */
     cog_agent_id_t destination;
     const char *message; /**< Borrow into this handle's copied argument arena. */
     size_t message_length;

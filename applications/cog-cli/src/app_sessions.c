@@ -1,6 +1,7 @@
 /** @file app_sessions.c @brief Guarded durable session selection and offline UX. */
 #define _POSIX_C_SOURCE 200809L
 #include "app_internal.h"
+#include "execution_internal.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -166,6 +167,72 @@ cog_result_t cog_cli_sessions_open(cog_cli_app_t *app)
     cog_session_node_t *active = cog_session_active(app->session);
     app->continuation_required = active != NULL && cog_node_data(active)->message->status != COG_MESSAGE_COMPLETE;
     return COG_OK;
+}
+cog_result_t cli_sessions_admit(cog_cli_app_t *app, const cog_cli_execution_admission_t *admission)
+{
+    if (app == NULL || admission == NULL || app->headless == NULL) return COG_ERROR_NULL_PTR;
+    cli_execution_state_t *h = app->headless;
+    if (admission->kind == COG_CLI_EXECUTION_ROOT) {
+        cog_result_t rc = cog_cli_sessions_open(app);
+        if (rc == COG_OK && app->store != NULL) {
+            cog_store_checkpoint_t token;
+            rc = cog_store_owner_read(app->store, cog_session_id(app->session), &h->expected_owner, &token);
+        }
+        return rc;
+    }
+    if (app->opts.store_mode == COG_CLI_STORE_DISABLED || app->opts.store_dir == NULL)
+        return COG_ERROR_INVALID_ARG;
+    cog_store_config_t config = {.base_dir = app->opts.store_dir, .require_owner = true,
+        .max_record_bytes = app->opts.max_context_bytes * 16U};
+    cog_result_t rc = cog_store_new(&app->store, &config);
+    if (rc != COG_OK) return rc;
+    const char *id = admission->kind == COG_CLI_EXECUTION_LOCAL_CHILD ?
+        cog_session_id(admission->local_session) : admission->session_id;
+    cog_store_owner_t owner = {0}; cog_store_checkpoint_t token = {0};
+    rc = cog_store_owner_read(app->store, id, &owner, &token);
+    if (rc != COG_OK) return rc;
+    if (admission->kind == COG_CLI_EXECUTION_STAGED) {
+        if (owner.epoch != admission->expected.epoch || owner.instance_id != admission->expected.instance_id ||
+            token.generation != admission->checkpoint.generation) return COG_ERROR_INVALID_STATE;
+        cog_session_t *loaded = NULL; cog_store_load_report_t report = {0};
+        rc = cog_store_checkpoint_load(app->store, id, admission->checkpoint, COG_STORE_LOAD_INSPECT, &loaded, &report);
+        if (rc == COG_OK) rc = restore_capacity(app, loaded);
+        cog_session_free(loaded);
+        if (rc != COG_OK) return rc;
+        cog_session_snapshot_t snapshot;
+        rc = cog_session_snapshot_view(app->session, &snapshot);
+        if (rc != COG_OK) return rc;
+        for (size_t i = 0U; i < snapshot.ledger_count; ++i)
+            if (snapshot.ledger[i].state == COG_TOOL_EXECUTION_STARTED ||
+                snapshot.ledger[i].state == COG_TOOL_EXECUTION_INDETERMINATE ||
+                snapshot.ledger[i].state == COG_TOOL_EXECUTION_PROPOSED) return COG_ERROR_INDETERMINATE;
+        cog_session_node_t *active = cog_session_active(app->session);
+        return active != NULL && cog_node_data(active)->message->status != COG_MESSAGE_COMPLETE ?
+            COG_ERROR_INVALID_STATE : COG_OK;
+    }
+    if (owner.epoch != 0U || owner.instance_id != 0U || token.generation != 0U)
+        return COG_ERROR_INVALID_STATE;
+    if (admission->kind == COG_CLI_EXECUTION_LOCAL_CHILD) {
+        if (cog_session_root(admission->local_session) != NULL ||
+            cog_session_parent_id(admission->local_session) == NULL ||
+            strcmp(cog_session_parent_id(admission->local_session), admission->parent_session_id) != 0)
+            return COG_ERROR_INVALID_STATE;
+        app->session = admission->local_session; /* ownership marker already set */
+    } else {
+        cog_session_config_t session = session_config(app, id);
+        rc = cog_session_new(&app->session, &session);
+        if (rc == COG_OK) rc = cog_session_set_parent(app->session, admission->parent_session_id);
+        if (rc != COG_OK) return rc;
+    }
+    rc = admit(app, owner, token, false);
+    if (rc != COG_OK) return rc;
+    rc = cog_store_owner_read(app->store, id, &h->expected_owner, &token);
+    if (rc != COG_OK) return rc;
+    cog_message_t context = {.role = COG_MESSAGE_ROLE_SYSTEM,
+        .content = h->provenance, .content_len = h->provenance_bytes};
+    rc = cog_session_append(app->session, &context, NULL);
+    if (rc == COG_OK) rc = save_empty(app);
+    return rc;
 }
 cog_result_t cog_cli_sessions_prepare(cog_cli_app_t *app)
 {

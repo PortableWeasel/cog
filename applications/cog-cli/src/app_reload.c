@@ -1,5 +1,6 @@
 /** @file app_reload.c @brief Bounded copied generations and idle publication. */
 #include "app_internal.h"
+#include "execution_internal.h"
 #include <cog/config.h>
 #include <inttypes.h>
 #include <string.h>
@@ -95,7 +96,7 @@ cog_result_t cog_cli_reload_free(cog_cli_app_t *app)
     return app->reload_cleanup_error;
 }
 static cog_result_t candidate_provider(cog_cli_app_t *app, cog_cli_configuration_t *configuration,
-    cog_provider_t **provider)
+    cog_provider_t **provider, uint64_t generation)
 {
     const cog_provider_limits_t limits = {
         .request_bytes = app->opts.max_context_bytes * 4U,
@@ -109,6 +110,8 @@ static cog_result_t candidate_provider(cog_cli_app_t *app, cog_cli_configuration
     cog_result_t rc = cog_cli_configuration_bind(configuration, &cog_openrouter_provider_vtable,
         &cog_mock_provider_vtable, &app->script, &limits);
     if (rc != COG_OK) return rc;
+    if (cog_cli_configuration_endpoint(configuration)->generation != generation)
+        return COG_ERROR_INVALID_ARG;
     if (app->opts.mock_deltas != NULL)
         rc = cog_mock_provider_new_deltas(app->opts.mock_deltas, app->opts.mock_delta_count, provider);
     else rc = cog_provider_connect(cog_cli_configuration_endpoint(configuration), provider);
@@ -136,7 +139,7 @@ static cog_result_t preflight(cog_cli_app_t *app, cog_cli_configuration_t *confi
     cog_provider_request_t request = {.model_id = options->model_id, .messages = app->history,
         .message_count = count, .stream = true, .max_tokens = options->max_output_tokens,
         .configuration_generation = generation};
-    if (app->workspace != NULL) { request.tools_json = app->tools_json; request.tools_json_len = app->tools_json_len; }
+    if (app->workspace != NULL || app->headless != NULL) { request.tools_json = app->tools_json; request.tools_json_len = app->tools_json_len; }
     rc = cog_provider_preflight(provider, &request, missing != 0U ?
         COG_PROVIDER_PREFLIGHT_PENDING_TOOLS : COG_PROVIDER_PREFLIGHT_COMPLETE);
     return cog_cli_observation_check(app, rc);
@@ -165,7 +168,7 @@ cog_result_t cog_cli_app_reload(cog_cli_app_t *app,
     cog_result_t rc = cog_config_begin(app->reload_tree, &txn);
     if (rc == COG_OK) rc = stage(txn, &app->opts, replacement);
     if (rc == COG_OK) rc = cog_cli_configuration_reload_new(&configuration, app->configuration, replacement, generation);
-    if (rc == COG_OK) rc = candidate_provider(app, configuration, &provider);
+    if (rc == COG_OK) rc = candidate_provider(app, configuration, &provider, generation);
     if (rc == COG_OK) rc = preflight(app, configuration, provider, generation);
     if (rc == COG_OK) rc = cog_config_commit(txn);
     cog_config_rollback(txn);
@@ -179,10 +182,107 @@ cog_result_t cog_cli_app_reload(cog_cli_app_t *app,
     app->reload_in_progress = false;
     return rc;
 }
+static bool same_text(const char *a, const char *b)
+{
+    return a == b || (a != NULL && b != NULL && strcmp(a, b) == 0);
+}
+static bool fixed_options_equal(const cog_cli_options_t *a, const cog_cli_options_t *b)
+{
+    return same_text(a->prompt, b->prompt) &&
+        same_text(a->session_id, b->session_id) &&
+        same_text(a->source_session_id, b->source_session_id) &&
+        same_text(a->store_dir, b->store_dir) &&
+        same_text(a->log_path, b->log_path) &&
+        same_text(a->socket_path, b->socket_path) &&
+        same_text(a->endpoint_name, b->endpoint_name) &&
+        same_text(a->chunks, b->chunks) &&
+        same_text(a->queue_text, b->queue_text) &&
+        same_text(a->config_path, b->config_path) &&
+        same_text(a->workspace_root, b->workspace_root) &&
+        a->session_action == b->session_action &&
+        a->fork_node_id == b->fork_node_id &&
+        a->previous_processes_fenced == b->previous_processes_fenced &&
+        a->show_usage == b->show_usage &&
+        a->store_mode == b->store_mode &&
+        a->mock_mode == b->mock_mode &&
+        a->script == b->script &&
+        a->mock_deltas == b->mock_deltas &&
+        a->mock_delta_count == b->mock_delta_count &&
+        a->interactive == b->interactive &&
+        a->verbose == b->verbose &&
+        a->backend == b->backend &&
+        a->tool_policy == b->tool_policy &&
+        a->net == b->net &&
+        a->max_output_tokens == b->max_output_tokens &&
+        a->max_tool_rounds == b->max_tool_rounds &&
+        a->max_turn_ms == b->max_turn_ms &&
+        a->max_tool_ms == b->max_tool_ms &&
+        a->max_tool_output_bytes == b->max_tool_output_bytes &&
+        a->max_context_bytes == b->max_context_bytes &&
+        a->max_retries == b->max_retries &&
+        a->max_retry_elapsed_ms == b->max_retry_elapsed_ms &&
+        a->explicit_options == b->explicit_options;
+}
+cog_result_t cog_cli_execution_reload_resolved(cog_cli_app_t *app,
+    cog_cli_configuration_t **candidate, uint32_t attempt, uint64_t *published)
+{
+    if (candidate == NULL) return COG_ERROR_NULL_PTR;
+    cog_cli_configuration_t *configuration = *candidate;
+    *candidate = NULL;
+    cog_provider_t *provider = NULL;
+    cog_result_t rc = COG_OK;
+    if (app == NULL || configuration == NULL || published == NULL) rc = COG_ERROR_NULL_PTR;
+    else if (app->headless == NULL || (app->headless->kind != COG_CLI_EXECUTION_ROOT &&
+        app->headless->kind != COG_CLI_EXECUTION_STAGED) ||
+        app->headless->authority != CLI_AUTH_NORMAL || app->headless->in_step ||
+        app->shutdown || app->cancelling || app->reload_in_progress ||
+        atomic_load_explicit(&app->stop_requested, memory_order_acquire)) rc = COG_ERROR_INVALID_STATE;
+    else if (attempt == 0U || attempt <= app->reload_attempts) rc = COG_ERROR_INVALID_ARG;
+    else if (attempt > CLI_RELOAD_ATTEMPTS) rc = COG_ERROR_LIMIT;
+    else if (app->recovery || app->assistant_pending || app->terminal_result_pending ||
+        app->reload_cleanup_error != COG_OK) rc = COG_ERROR_INDETERMINATE;
+    else if (app->future_configuration != NULL || app->retiring_configuration != NULL ||
+        app->reload_notice_pending || app->reload_notice_queued) rc = COG_ERROR_AGAIN;
+    if (rc != COG_OK) { cog_cli_configuration_free(configuration); return rc; }
+    app->reload_attempts = attempt;
+    const cog_cli_options_t *current = cog_cli_configuration_options(app->configuration);
+    const cog_cli_options_t *options = cog_cli_configuration_options(configuration);
+    uint32_t current_mask = 0U, candidate_mask = 0U;
+    rc = cog_cli_configuration_tool_mask(app->configuration, &current_mask);
+    if (rc == COG_OK) rc = cog_cli_configuration_tool_mask(configuration, &candidate_mask);
+    if (!fixed_options_equal(current, options) || options->credential_read != NULL ||
+        options->credential_arg != NULL || current_mask != candidate_mask) rc = COG_ERROR_INVALID_ARG;
+    if (rc == COG_OK && current->backend == COG_CLI_BACKEND_MOCK &&
+        (!same_text(current->base_url, options->base_url) ||
+         !same_text(current->credential_ref, options->credential_ref))) rc = COG_ERROR_UNSUPPORTED;
+    if (rc == COG_OK) rc = cog_cli_observation_check(app, COG_OK);
+    app->reload_in_progress = true;
+    const uint64_t generation = (uint64_t)attempt + 1U;
+    const cog_cli_reload_options_t replacement = {.model_id = options->model_id,
+        .base_url = options->base_url, .credential_ref = options->credential_ref};
+    cog_config_txn_t *txn = NULL;
+    if (rc == COG_OK) rc = cog_config_begin(app->reload_tree, &txn);
+    if (rc == COG_OK) rc = stage(txn, current, &replacement);
+    if (rc == COG_OK) rc = candidate_provider(app, configuration, &provider, generation);
+    if (rc == COG_OK) rc = preflight(app, configuration, provider, generation);
+    if (rc == COG_OK) rc = cog_config_commit(txn);
+    cog_config_rollback(txn);
+    if (rc == COG_OK) {
+        app->future_configuration = configuration; app->future_provider = provider;
+        app->future_configuration_generation = generation;
+        app->reload_notice_generation = generation;
+        app->reload_notice_pending = true; app->reload_notice_queued = false;
+        *published = generation;
+    } else dispose(app, &provider, &configuration);
+    app->reload_in_progress = false;
+    return rc;
+}
 cog_result_t cog_cli_reload_activate(cog_cli_app_t *app)
 {
     if (app == NULL) return COG_ERROR_NULL_PTR;
     if (app->future_configuration == NULL) return COG_OK;
+    if (app->headless != NULL && (app->headless->authority != CLI_AUTH_NORMAL ||
+        app->headless->publication_pending)) return COG_ERROR_AGAIN;
     cog_result_t observed = cog_cli_observation_check(app, COG_OK);
     if (observed != COG_OK) return observed;
     if (app->stdin_eof) {
@@ -201,6 +301,9 @@ cog_result_t cog_cli_reload_activate(cog_cli_app_t *app)
     app->configuration_generation = app->future_configuration_generation;
     app->future_configuration = NULL; app->future_provider = NULL; app->future_configuration_generation = 0U;
     app->opts = *cog_cli_configuration_options(app->configuration);
+    if (app->headless != NULL) {
+        app->opts.socket_path = NULL; app->opts.interactive = false; app->opts.show_usage = false;
+    }
     (void)cog_core_set_provider(app->core, app->provider); /* Valid core: pointer-only, infallible. */
     dispose(app, &app->retiring_provider, &app->retiring_configuration);
     return cog_cli_observation_check(app, app->reload_cleanup_error);

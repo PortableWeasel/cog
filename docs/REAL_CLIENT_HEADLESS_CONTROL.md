@@ -21,6 +21,9 @@ Each sender stream has nonzero monotonic outer wire IDs. Replies identify the
 exact answered wire separately from CGA semantic prefix, CGR cursor and G owner.
 One accepted UI command owns its copied original bytes, admission/result and
 receipt until COMMAND_ACK; retransmit exact bytes under the SAME identity only.
+Retained native application retransmission follows the explicit copied-send
+ownership and finite retry eligibility in REAL_CLIENT_CONTROL_SEND_OWNERSHIP.md;
+accepted transport copies do not authorize continuous enqueue on every slice.
 ACK reclaims into a retired watermark; covered old IDs are uniformly stale and
 cannot re-execute. Full command reservations reject new admission before copying
 effects; duplicates remain answerable. Accepting a command does not mean its
@@ -90,7 +93,7 @@ illegal zero/correlation or extra bytes fail PROTOCOL before any admission.
 |---|---|
 | UI_COMMAND | opcode u8, observed generation u64, observed sequence u64, opcode suffix below; controller→coordinator only |
 | COMMAND_RESULT | result signed i32(known Cog code),state u8(pending1/final2),related agent u64(0 absent),assigned client lease u64(nonzero HELLO success only); server→UI/executor,reply_to exact command/HELLO/ACK |
-| COMMAND_ACK | empty; UI→server, reply_to exact final result envelope; receipt record identifies original command |
+| COMMAND_ACK | empty; ordinary command lane UI/executor→server, reply_to exact final result envelope; additionally worker→coordinator UPDATE lane terminal-receipt consumption only under REAL_CLIENT_UPDATE_RETIREMENT, reply_to exact final UPDATE_RECEIPT envelope; no semantic ACK or recursive response |
 | REPLAY | exact CGR1; server→UI DATA/GAP, UI→server CURSOR only; DATA body is CGV1 full projection, no raw unanchored app chunks |
 | BOOTSTRAP | purpose u8(initial1/child2/handoff3/reload4),logical reload attempts-used u32(initial/child0,handoff0..64,reload1..64),then exact CGB1 resolved profile; coordinator→authenticated worker only; child purpose requires exact admitted agent/attempt, others agent/attempt0 |
 | BOOTSTRAP_ACK | result i32, configuration generation u64, state u8(copied1/published2); worker→coordinator, reply_to exact bootstrap; copied is not task/guard execution, published is R12 publication not activation |
@@ -271,6 +274,12 @@ secret scratch, compare exact immutable bytes/identity, wipe scratch immediately
 then resend ACK. After retirement uniformly stale-reject the old wire. Parent
 re-encodes only the same pinned generation while bootstrap ACK is pending; it
 never calls resolver again. No ACK means no CHILD_START/effect admission.
+For a failed purpose4 reload, the consumed candidate cannot support duplicate
+proof. Retire that request proof while retaining its nonsecret correlated negative
+ACK independently, as specified in REAL_CLIENT_RELOAD_FAILURE_RECEIPTS.md.
+Authenticated covered retries are nonfatal stale requests, may re-arm only that
+retained failure receipt, and never decode/reapply the candidate or assert erased
+original-byte equality. Successful live-generation replay remains unchanged.
 
 Each child admitted under a later pinned generation receives its OWN child-purpose
 profile before CHILD_START; a worker's old startup configuration is not silently

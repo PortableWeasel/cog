@@ -51,6 +51,43 @@ cog_result_t cog_cli_handoff_request(cog_cli_handoff_t *handoff,
  * INDETERMINATE stays frozen for explicit L
  * recovery, no owner_read guess or lost-ACK automatic task reconstruction.
  */
+/** Application-private CGH1 role/phase mapping (see
+ * docs/REAL_CLIENT_HANDOFF_PHASES.md): coordinator QUIESCE to source receives
+ * CHECKPOINTED. After dedicated purpose3 profile ACK, CHECKPOINTED to target
+ * performs exact staged construction and receives PREPARED. Coordinator then
+ * forwards PREPARED to the frozen source; source releases its exact guard and
+ * echoes PREPARED only after successful actual release. Those two PREPARED
+ * replies are distinguished by exact request wire, managed peer and phase.
+ * Only then coordinator CASes; COMMIT goes ONLY to target for guard acquisition,
+ * receives READY, then exact route publication precedes ACTIVATE/ACTIVATE echo.
+ * Every remote reply is HANDOFF lane with outer reply_to naming its request;
+ * exact native binding/session/source/target/expected/next/checkpoint and current
+ * retained phase must match. Send-OK never substitutes for an operation ACK.
+ * Local endpoints use actual direct operation returns, never fabricated replies.
+ * Duplicate retained phases replay their immutable reply without save/release/
+ * CAS/acquire/activation repetition. Unknown retired phases cannot resurrect work.
+ * No failure, timeout or ABORT restores source admission or old owner authority.
+ * After successful target ACTIVATE/echo, request disposal of the frozen old
+ * source with a fresh HANDOFF-lane ABORT carrying the SAME transaction tuple
+ * and checkpoint. This is resource retirement, never rollback or target abort.
+ * ABORT reply echoes reply_to only AFTER actual executor/handle/guard/provider/
+ * configuration/net/observer cleanup succeeded; request_shutdown/send-OK/reap
+ * alone cannot produce this receipt. Retain exact request/final reply in the
+ * existing slot HANDOFF cache OUTSIDE the disposed app until consumption.
+ * Coordinator cannot reuse the old physical executor slot before matching
+ * successful final ABORT receipt (local source requires actual checked close).
+ * Physical resource reuse is NOT receipt retirement: preserve HANDOFF key,
+ * counters/original/reply through reuse. Subsequent PROFILE/bootstrap may use
+ * disposed resources but NEVER consumes/overwrites that distinct lane proof;
+ * only a higher valid SAME HANDOFF stream request after final consumption or
+ * native lifetime retirement can retire it. No unrelated-key slot rebind while
+ * the proof is retained; pressure refuses new work rather than erasing proof.
+ * Cleanup error emits correlated FAILED, preserves first error/frozen failure
+ * and never grants reuse from partial teardown. ABORT-before-success uses the
+ * same factual cleanup receipt for addressed resources only, never permission
+ * to advance CAS/READY/ACTIVATE. Whole move remains pending until old source
+ * disposal proof is received; retain one transaction and original deadline.
+ */
 cog_result_t cog_cli_handoff_step(cog_cli_handoff_t *handoff, bool *done,
     uint64_t *deadline_ms);
 /** @brief Freeze/cancel one phase without rolling back committed authority.
