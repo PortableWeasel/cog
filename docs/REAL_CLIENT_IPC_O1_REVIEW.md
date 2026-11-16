@@ -100,3 +100,28 @@ active listener. No stronger endpoint-allocation-wide uniqueness is claimed.
 No concrete source defect or missing O1 contract operation found. Independent
 fixture/evidence additions are test-only; keep them alongside the writer history.
 This does not approve O2/O3/app composition, the whole O gate or a main merge.
+
+## Approved O-only integration
+
+Root-authorized sole merge lock integrated approved writer branch with no-ff
+`94fe6df`, then retained ONLY critic test/evidence commit via cherry-pick
+`4147c6d` (original2795e3c). Isolated unit CMake registration `96c47bc` links the
+independent fixture to actual cog::ipc with the reviewed wrappers/builtin controls;
+no O5/shared-app CMake or source changes. The final integration source checkpoint
+is `96c47bc7e105a87912ebabd919e023526f5713e2` before this evidence-only update.
+
+Fresh postmerge strict GCC/Clang Release/O3 and Clang Release/O3 ASan+UBSan+LSan
+passed **7/7 each**: preceding six IPC suites plus unit-ipc-o1-review. Separate
+GCC Debug TSan passed **5/5** (ipc, ipc-critic, ipc-nonblocking, authenticated,
+o1-review). Registered independent executable's deliberate CHECK(false) also
+exited1 under each profile. Main remains dacbd199; no dependency installation,
+profile byte changes, build_user mutation, paid calls or O/P gate closure.
+O2 still must prove capture before further service under ACTUAL saturated core
+event/ingress queues and preserve by-value proof through teardown/handler leases.
+
+| Postmerge log | SHA256 |
+|---|---|
+| /tmp/cog-o1-postmerge-gcc.log | ce73e2ae296bc76ae39c2b86218dd619be92d441643508d7ff9cd25fd256a122 |
+| /tmp/cog-o1-postmerge-clang.log | ef14ff87eed714fc6849226ee0f4b2fb892bc322681d8c0798ece6efb37bf0d5 |
+| /tmp/cog-o1-postmerge-asan.log | 309d376369aeab69ef30f6f822acb922fe669acce28423c4487ae85249d4261b |
+| /tmp/cog-o1-postmerge-tsan.log | cbab6beb8ea134bc1caec5c3726fd400a1d0010a820981bd27210842476eb03b |
