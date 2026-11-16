@@ -104,3 +104,67 @@ resource/unwind edges before freezing this layout.
 The coordinated CONTROL comment/doc exception and O4 HELLO metadata are necessary
 implementation joins, not new public APIs/lanes/opcodes. Fixed root trust, leases,
 exact ordinary command retirement and all existing expiry/admission checks remain.
+
+## Pass3 — bounds, static dispatch and final cleanup consistency
+
+The ring has one private appender. Local sequence+1 is checked before preparing
+inactive state; existing replay_append's monotonic contract guarantees the same
+assigned value on success. Assert that invariant rather than adding a fallible
+post-append decode/copy or claiming rollback after a successful append. Every
+other fallible encode/validation/capacity step occurs before append. Ring memory
+is separate from both banks and source input. Commit and render never call app,
+provider, tools, config, store or a mutable registry. CGV1 codec remains O5-owned.
+
+Client proof capture uses O1's private single-unit service boundary: after
+handshake readiness, get_peer_id+peer_info and cache SAME-effective-UID proof
+before any additional IO/EOF. Aggregate endpoint_service is not the initial proof
+barrier. Already accepted complete frames remain tied to that connection's cached
+proof across EOF. Reconnect closes/reuses the explicit endpoint only after copied
+request/view state is retained. No numeric peer/PID/name alone grants authority.
+
+Per-step owner guard rejects recursion; one finite receive/input/render/retained
+send offer at a time, actual copied backlog reports immediate eligibility and
+idle returns a finite max_wait (not an infinite sleep or permanently writable
+spin). Checked monotonic clock and a min-only reconnect/detach deadline bound
+failure paths. Poll0/one bounded read never changes inherited fd flags. Output
+uses the explicitly borrowed checked host stream; JSON escapes all untrusted
+control bytes, then one checked complete write+flush. Embedding FILE preconditions
+are caller-owned; installed main already supplies bounded host adapters. No new
+FILE, output thread or hidden output queue is introduced.
+
+The finite client text grammar maps existing typed opcodes only: ordinary text
+is SUBMIT; `/continue NODE TEXT`, `/fork NODE`, `/allow NONCE`, `/deny NONCE`,
+`/cancel [AGENT]`, `/reload model|base-url|credential-ref VALUE`, `/handoff local`
+or `/handoff INCARNATION NUMBER`, `/shutdown`, `/resync`. Nonce resolution uses
+only the fully rendered PRIMARY prompt; session/node/ordinal are copied from that
+exact row, never an implicit persistent grant. Observed anchor remains the one
+captured when its input bytes were read. `/history` and `/tools` render the
+current committed view locally, `/quit`/`/exit` detach, unknown slash syntax is a
+sanitized checked local refusal, never a model prompt. Watch permits only local
+view/resync/detach; disallowed mutation is refused. No offline recovery/session
+query, credential resolver or worker selector is invented. New ordinary input
+while its single command slot is busy is explicitly refused; CANCEL remains
+independent. No silently dropped/truncated line or unlimited client input queue.
+
+One monotonic input serial correlates final input result across independent
+COMMAND/CANCEL replies; late earlier result cannot overwrite the final line's
+known outcome. EOF waits exact results+ACK-of-ACK under its original finite bound;
+a known nonOK final command is reported as that result, missing receipt cleanup
+as IO, unknown outcome as INDETERMINATE. Interactive nonOK command results are
+checked output metadata, not fresh effects or mutation of server state. No client
+result is confused with later model/task completion. Read-only retained duplicate
+lookup uses original bytes and never renews a role. Other server runtime/root
+always ends the old client (pending outcome uncertain), requiring a fresh client
+and explicit new input rather than an undeclared reattachment protocol.
+
+Constructor unwind frees only new owned endpoint/arrays/arenas; caller FILE/fds
+are never closed or mutated. Close consumes even failed/unbegun client; no effect
+owner exists to leak/drain. Projection_free similarly consumes both banks/ring.
+Per-client HELLO cache in O4 is bounded by actual client count<=16 (metadata and
+three512-byte slices per client); helper planning must count these actual bytes.
+Retire only matching HELLO proof on exact cleanup/successor, never COMMAND/CANCEL.
+No unbounded tombstones, reused IDs or automatic request re-identification.
+
+No public header/ABI, CGL/CGR/CGV layout, library transport behavior or execution
+capability changes. Three targeted passes complete; exact strict header checks
+and independent final review are the remaining gate before either O8 body.

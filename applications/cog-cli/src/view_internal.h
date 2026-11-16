@@ -68,7 +68,7 @@ typedef struct cli_client_request {
     size_t frame_capacity, frame_length;
     unsigned char ack[CLI_CLIENT_SMALL_FRAME];
     size_t ack_length;
-    uint64_t wire, result_wire, ack_wire, related_agent, assigned_lease;
+    uint64_t wire, result_wire, ack_wire, related_agent, assigned_lease, input_serial;
     cog_result_t result;
     bool sent, ack_sent;
 } cli_client_request_t;
@@ -80,7 +80,8 @@ struct cog_cli_host_client {
     bool authenticated, discovered, have_view, awaiting_resync, in_step, eof;
     bool stopping, cursor_pending;
     cli_client_phase_t phase;
-    cog_result_t primary;
+    cog_result_t primary, final_input_result;
+    uint64_t next_input_serial, last_input_serial;
     uint64_t nonce, lease, runtime, replay_generation, rendered_sequence, gap_last;
     char session[128]; /**< Discovered once; reconnect refuses another root. */
     uint64_t now_ms, deadline_ms, next_wire[10]; /**< Deadline=min only until phase resolves. */
@@ -106,7 +107,9 @@ struct cog_cli_host_client {
 /* Source ownership/algorithm notes (declarations above, bodies only after gate):
  * projection commit validates/encodes/decodes inactive bank under exact next
  * sequence before replay_append ONCE. Failed append leaves current bank/ring/
- * sequence untouched; success verifies assigned sequence then pointer swap only.
+ * sequence untouched. The private ring has no other appender, so existing
+ * replay_append guarantees the exact next sequence; assert that invariant, then
+ * pointer swap only. No fallible post-append operation/rollback API is invented.
  * Client full candidate decode+render+checked flush precedes bank/cursor commit.
  * Failed/partial output freezes input and reports IO, never render ACK. Cursor
  * and resync ACK sends retain exact bytes under backpressure. No FILE buffering
