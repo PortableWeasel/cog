@@ -36,11 +36,18 @@ cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
  * @param[out] out Empty output slot for owned unbound copy, NULL on failure;
  * configuration_free matches. Must not overwrite the caller's current owner slot.
  * @param[in] current Resolved immutable owner, bound or unbound, unchanged.
- * @return OK; NULL_PTR; NOMEM; LIMIT existing constructor storage bounds.
- * Preserve generation, effective options, tool mask, selected backend and ROOT
+ * @param[in] net Explicit replacement borrowed transport, NULL permitted for an
+ * unbound mirror. MOCK and metadata copies require NULL. REAL provider binding
+ * still requires a nonNULL actual host transport; clone never creates one.
+ * @return OK; NULL_PTR; INVALID_ARG nonNULL net for MOCK/metadata;
+ * NOMEM; LIMIT existing constructor storage bounds.
+ * Preserve generation, effective options EXCEPT this explicit net attachment,
+ * tool mask, selected backend and ROOT
  * prompt/queue/session selectors, including MOCK script/delta selection. Copy
  * all owned strings and resolved secret into independent constructor storage;
- * retain only declared net/script/delta borrows with their original lifetimes.
+ * retain declared script/delta borrows with their original lifetimes. Source
+ * net/adapter borrows are never copied implicitly. The supplied net must outlive
+ * this copy and its borrowing providers; NULL mirror has no transport borrow.
  * Never reread argv/environment/config/credential sources or invoke a resolver;
  * no provider/store/tool/transport effects. No diagnostics expose credentials.
  * Cached safe labels are recomputed against the copied secret/reference using
@@ -49,12 +56,15 @@ cog_result_t cog_cli_configuration_new(cog_cli_configuration_t **out,
  * is unbound and must use configuration_bind before provider construction.
  * Clone does not grant startup finish_host authority, even if current is an
  * unfinished startup owner: finish the original before cloning host mirrors.
- * Preserve exact net pointer, including NULL; never create/free/rebind net.
+ * Source remains unchanged, including its net/bound state. A transportless
+ * mirror can survive source-slot provider/config/net destruction and may later
+ * be cloned with a new slot's actual net; never bind the NULL-net REAL mirror.
+ * No existing provider is rebound and no transport is created/freed here.
  * No resolver callback/argument authority is retained. Allocation/secret copy
  * is explicit here and all partial storage is cleared/freed on failure.
  */
 cog_result_t cog_cli_configuration_clone_new(cog_cli_configuration_t **out,
-    const cog_cli_configuration_t *current);
+    const cog_cli_configuration_t *current, cog_net_ctx_t *net);
 /**
  * @brief Construct an explicit reload generation from resolved immutable state.
  * @param[out] out Owned candidate, NULL on failure; match configuration_free.
