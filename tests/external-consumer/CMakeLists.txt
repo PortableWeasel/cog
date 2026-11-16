@@ -4,6 +4,9 @@ if(BUILD_TESTING AND COG_BUILD_CLI AND COG_NET_CURL_BUILD_DIR AND COG_NET_CURL_L
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     add_test(NAME unit-installed-path-audit
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_path_audit.py)
+    add_test(NAME unit-installed-process-owner
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_process_owner.py ${PROJECT_BINARY_DIR})
+    set_tests_properties(unit-installed-process-owner PROPERTIES TIMEOUT 30)
     add_test(NAME integration-installed-embedder
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/run.py
             --build ${PROJECT_BINARY_DIR}

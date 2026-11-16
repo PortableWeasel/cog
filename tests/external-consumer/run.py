@@ -13,6 +13,8 @@ import shutil
 import subprocess
 import tempfile
 
+from installed_runtime import public_proofs
+
 
 def run(command, env, cwd=None):
     result = subprocess.run([str(x) for x in command], env=env, cwd=cwd,
@@ -145,7 +147,7 @@ def main():
         if digest(actual_curl) != digest(args.curl_library):
             raise RuntimeError("normal installed curl bytes differ from admitted final artifact")
         runtime = {}
-        for binary in (final / bindir / "installed_embedder", final / bindir / "cog-cli", actual_curl):
+        for binary in (final / bindir / "installed_embedder", final / bindir / "installed_cli_only", final / bindir / "cog-cli", actual_curl):
             runtime[binary.name] = loader(binary, final, env, [*forbidden, relocated])
         expected_cares = next(path for path in (final / libdir).glob("libcares.so.*") if path.is_file())
         cares_prefix = pathlib.Path(cache(args.cares_build)["CMAKE_INSTALL_PREFIX"])
@@ -153,7 +155,7 @@ def main():
         if digest(expected_cares) != digest(admitted_cares):
             raise RuntimeError("normal installed c-ares bytes differ from the declared dependency profile")
         loader(expected_cares, final, env, [*forbidden, relocated])
-        for program in ("installed_embedder", "cog-cli"):
+        for program in ("installed_embedder", "installed_cli_only", "cog-cli"):
             paths = runtime[program]
             if not any(path.startswith(str(final / libdir)) and "/libcurl.so" in path for path in paths):
                 raise RuntimeError("host did not load the relocated admitted curl")
@@ -161,6 +163,7 @@ def main():
                 raise RuntimeError("host did not load relocated c-ares")
         report["embedder_output"] = run([final / bindir / "installed_embedder", config], env, work)
         run([final / bindir / "cog-cli", "--mock", "--no-store", "--config", config, "--prompt", "embedding"], env, work)
+        report["public_headless_proof"] = public_proofs(final, bindir, work, env)
         report.update(curl_sha256=digest(actual_curl), cares_sha256=digest(expected_cares),
                       compiler=str(args.compiler), sanitizer=args.asan == "1", tsan=tsan,
                       runtime={key: [p.replace(str(final), "<relocated-prefix>") for p in values]
