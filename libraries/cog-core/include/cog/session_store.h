@@ -201,6 +201,16 @@ typedef struct cog_store_vtable {
                                            cog_store_checkpoint_t checkpoint);
     cog_result_t (*owner_acquire)(void *store, const char *id,
                                   cog_store_owner_t expected, void **out_guard);
+    /** Release an admitted backend guard; exact public owner_release lifetime.
+     * With valid original context/handle, INVALID_STATE is the ONLY
+     * nonconsuming refusal: keep handle and all remaining resources intact.
+     * OK or any cleanup error (including IO) consumes the backend handle once;
+     * perform best-effort resource teardown, never retain a retryable handle.
+     * No asynchronous AGAIN ownership: a non-INVALID_STATE error is consuming.
+     * Public wrapper consumes its own guard on the same result classification.
+     * Consuming failure is not proof that ownership transfer/release succeeded.
+     * Custom fenced backends must implement this rule; no layout/version change
+     * can adapt an older retain-on-error callback automatically. */
     cog_result_t (*owner_release)(void *store, void *guard);
     /** Restricted recovery guard; same explicit ownership/locking as acquire.
      * Required with the fenced profile; never authorizes execution borrows. */
@@ -617,10 +627,22 @@ bool cog_store_requires_owner(const cog_store_t *store);
 /**
  * @brief Release/free one execution guard after quiescing every borrower.
  * @param[in,out] guard NULL is OK; live guard owned by caller.
- * @return OK; INVALID_STATE if still borrowed by active owned work.
- * @pre No provider/tool/child execution remains; source stays application-frozen
+ * @return OK consumes the live guard; INVALID_STATE is a nonconsuming refusal
+ * while still borrowed or backend cannot accept release; IO or another backend
+ * cleanup error consumes the guard while preserving the actual error.
+ * @pre NonNULL guard is a live owned handle from the matching constructor.
+ * No provider/tool/child execution remains; source stays application-frozen
  * after release until a new durable epoch and guard are acquired.
- * @note Owner thread; no implicit handoff, rollback, task retry or peer wait.
+ * @post NULL is an OK no-op. For a valid nonNULL guard, every return except
+ * INVALID_STATE ends BOTH public wrapper and backend-handle lifetimes. Caller
+ * must clear its alias and never retry/borrow/return/free that consumed handle.
+ * INVALID_STATE leaves the guard usable only under its existing authority and
+ * lifetime: return outstanding borrows before another release attempt. No
+ * cleanup resource is consumed on this refusal. Store outlives its live guards.
+ * A consuming error is not successful lock-release or handoff evidence. Keep
+ * the error and application frozen; do not advance CAS, thaw or replay work.
+ * @note Owner thread; no allocation, implicit handoff, rollback, task retry or
+ * peer wait. File and custom fenced backends obey the same ownership rule.
  */
 cog_result_t cog_store_owner_release(cog_store_owner_guard_t *guard);
 

@@ -161,9 +161,13 @@ cog_result_t cog_cli_execution_quiesce(cog_cli_app_t *app,
 
 /** @brief Release only the quiesced source's exact guard after target PREPARED.
  * @param[in,out] app Frozen source. @param[in] checkpoint Retained exact token.
- * @return OK; NULL_PTR; INVALID_STATE correlation/guard still borrowed. OK
- * consumes and detaches the guard; a refusal retains it. Source stays frozen
- * either way. A later CAS error cannot resurrect the released epoch. */
+ * @return OK; NULL_PTR; INVALID_STATE correlation/guard still borrowed; IO or
+ * other consuming guard cleanup error. OK detaches the guard and records
+ * successful release. INVALID_STATE retains a live guard. Consuming error also
+ * detaches it, retains failure and leaves the source frozen, WITHOUT recording
+ * successful release or granting CAS. Never retry a consumed handle or turn a
+ * repeated call into OK after failed release. A later error cannot resurrect
+ * the released epoch; checked close must still consume remaining resources. */
 cog_result_t cog_cli_execution_release_source(cog_cli_app_t *app,
     cog_store_checkpoint_t checkpoint);
 
