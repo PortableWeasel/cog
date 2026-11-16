@@ -492,3 +492,18 @@ target_link_options(test_guard_again_critic PRIVATE -Wl,--wrap=close -Wl,--wrap=
 add_test(NAME cli-guard-again-critic COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/run_execution_tools.py
     $<TARGET_FILE:test_guard_again_critic> ${CMAKE_BINARY_DIR})
+
+# Maintained O8 protocol/replay oracles now link the actual joined libraries.
+# Keep the deliberate fault wrappers local to their owning fixture.
+foreach(name IN ITEMS projection_owner client)
+    add_executable(test_view_${name} headless-view/test_${name}.c)
+    target_include_directories(test_view_${name} PRIVATE ../src)
+    target_link_libraries(test_view_${name} PRIVATE cog::cli)
+    target_enable_warnings(test_view_${name})
+endforeach()
+target_link_options(test_view_projection_owner PRIVATE -Wl,--wrap=cog_ipc_replay_append)
+target_link_options(test_view_client PRIVATE -Wl,--wrap=clock_gettime)
+add_test(NAME cli-view-projection COMMAND test_view_projection_owner)
+add_test(NAME cli-view-client COMMAND test_view_client view-client.sock)
+set_tests_properties(cli-view-projection cli-view-client PROPERTIES
+    TIMEOUT 30 LABELS "unit;cli;headless")

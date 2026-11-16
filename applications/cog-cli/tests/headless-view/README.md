@@ -49,7 +49,13 @@ policies=[session,node,ordinal,nonce,configuration,deadline,tool]. /tools render
 only policies, /history the complete current view. Command result records contain
 input serial and Cog result; they do not claim model/task completion.
 
-Additive O4 registration, when the owning shared build lane is ready:
+The O4 shared build now registers `cli-view-projection` and `cli-view-client`
+against the actual joined libraries, with the owning replay/clock fault wrapper
+on each fixture. They inherit the configured compiler and sanitizer profile.
+The standalone runner remains available for isolated O8 checks and deliberate
+assertion negative controls.
+
+Required production registration:
 
 ```
 target_sources(cog-cli-lib PRIVATE src/projection.c src/host_client.c)
@@ -57,9 +63,7 @@ target_include_directories(cog-cli-lib PRIVATE
     ${PROJECT_SOURCE_DIR}/libraries/cog-ipc/private)
 ```
 
-Use the actual existing library target name if the shared lane changes it. The
-private IPC include supplies O1's single-unit proof boundary/readiness queries;
-no endpoint layout or public API changes are required. Register the Python
-runner as a scoped test with a build* directory inside the checkout, or port its
-source list and linker fault wrapper into an owned fixture target. Full O4
-runtime/client installation and scenario gates remain outstanding.
+The private IPC include supplies O1's single-unit proof boundary/readiness
+queries; no endpoint layout or public API changes are required. These scoped
+protocol fixtures do not replace the full O4 runtime/client installation and
+scenario gates.
