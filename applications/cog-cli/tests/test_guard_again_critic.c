@@ -42,6 +42,17 @@ static cog_cli_app_t *make_app(char **argv)
 int main(int argc,char **argv)
 {
     assert(argc==3);
+    for(unsigned mode=0U;mode<4U;++mode){
+        cog_cli_app_t *closing=make_app(argv);
+        const cog_result_t primary=mode%2U==0U?COG_OK:COG_ERROR_PROTOCOL;
+        const size_t releases=release_calls;triggered=false;inject=true;
+        const cog_result_t result=mode<2U?cog_cli_execution_close(&closing,primary):
+            cli_app_dispose(&closing,primary);
+        assert(triggered && closing==NULL && release_calls==releases+1U);
+        assert(result==(primary==COG_OK?COG_ERROR_AGAIN:primary));
+        assert(cog_cli_execution_close(&closing,COG_OK)==COG_OK);
+        assert(release_calls==releases+1U);
+    }
     cog_cli_app_t *app=make_app(argv);assert(cog_cli_execution_begin(app)==COG_OK);
     cog_cli_display_snapshot_t view;uint64_t serial;
     assert(cog_cli_execution_copy_view(app,&serial,&view)==COG_OK);
