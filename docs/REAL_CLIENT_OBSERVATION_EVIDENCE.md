@@ -78,6 +78,10 @@ checks errors outside callbacks.
 The normal fixture injects only obs consumers through constructor interposition
 and owner-thread cancellation through the existing service hook. Provider, TLS,
 tools, guarded durable store and reload bodies are production implementations.
+The runner sets HOME/XDG config/state roots to its disposable directory and clears
+COG_* variables before supplying synthetic fixture inputs, so host configuration
+discovery cannot supply credentials. This final isolation correction `ec90830`
+passes all ten affected CTests again under each of the three profiles (**30/30**).
 The independent critic fixture `f129d31`, retained as `57050e7`, supplies eight
 separate lifetime/error cases. No raw event is manually invented by the normal
 composition fixture; older synthetic component tests remain separate coverage.
