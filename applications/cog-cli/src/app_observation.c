@@ -205,8 +205,13 @@ static cog_result_t consume(cog_cli_observer_t *observer, const observation_entr
     if (value->kind == COG_NET_OBSERVATION_OPEN) {
         if (row != NULL || value->sequence != 1U || value->bytes_in_total != 0U || value->bytes_out_total != 0U)
             return COG_ERROR_PROTOCOL;
-        for (size_t i = 0U; i < observer->capacity; i++) if (!observer->rows[i].used || observer->rows[i].terminal) {
-            row = &observer->rows[i]; break;
+        for (size_t i = 0U; i < observer->capacity; i++)
+            if (!observer->rows[i].used) { row = &observer->rows[i]; break; }
+        if (row == NULL) for (size_t i = 0U; i < observer->capacity; i++) if (observer->rows[i].terminal) {
+            bool active = false;
+            cog_result_t status = cog_net_request_status(observer->rows[i].net, observer->rows[i].request, &active);
+            if (status == COG_ERROR_NOT_FOUND) { row = &observer->rows[i]; break; }
+            if (status != COG_OK) return status;
         }
         if (row == NULL) return COG_ERROR_OVERFLOW;
         if (observer->next_id == UINT64_MAX) return COG_ERROR_LIMIT;
@@ -259,7 +264,8 @@ cog_result_t cog_cli_observer_drain(cog_cli_observer_t *observer)
 
 static void app_error(cog_cli_app_t *app, cog_result_t result)
 {
-    if (app->observation_error == COG_OK && result != COG_OK) app->observation_error = result;
+    if (app->observation_error == COG_OK && result != COG_OK)
+        app->observation_error = result == COG_ERROR_AGAIN ? COG_ERROR_IO : result;
     if (app->observer != NULL && app->observation_error != COG_OK)
         (void)observer_error(app->observer, app->observation_error);
 }
@@ -399,7 +405,11 @@ cog_result_t cog_cli_observation_detach(cog_cli_app_t *app, cog_result_t primary
     if (app->observer != NULL) {
         if (app->opts.backend == COG_CLI_BACKEND_REAL && app->opts.net != NULL)
             app_error(app, cog_cli_observer_clear(app->observer, app->opts.net));
-        app_error(app, cog_cli_observer_bind(app->observer, NULL));
+        cog_result_t unbound = cog_cli_observer_bind(app->observer, NULL);
+        if (unbound != COG_OK) {
+            app_error(app, unbound);
+            app_error(app, cog_cli_observer_end_target(app->observer));
+        }
         app->observer = NULL;
     }
     return cog_cli_observation_check(app, primary);
@@ -409,8 +419,31 @@ cog_result_t cog_cli_observer_clear(cog_cli_observer_t *observer, const cog_net_
     if (observer == NULL || net == NULL) return COG_ERROR_NULL_PTR;
     (void)cog_cli_observer_drain(observer);
     if (cog_net_active_count(net) != 0U) return COG_ERROR_INVALID_STATE;
+    for (size_t i = 0U; i < observer->capacity; i++) if (observer->rows[i].used && observer->rows[i].net == net) {
+        bool active = false;
+        cog_result_t status = cog_net_request_status(net, observer->rows[i].request, &active);
+        if (status == COG_OK) return COG_ERROR_INVALID_STATE;
+        if (status != COG_ERROR_NOT_FOUND) return observer_error(observer, status);
+    }
     for (size_t i = 0U; i < observer->capacity; i++)
         if (observer->rows[i].used && observer->rows[i].net == net)
             (void)observer_error(observer, clear_row(observer, &observer->rows[i]));
+    return observer->error;
+}
+cog_result_t cog_cli_observer_end_target(cog_cli_observer_t *observer)
+{
+    if (observer == NULL) return COG_ERROR_NULL_PTR;
+    bool incomplete = observer->queued != 0U || observer->prepared;
+    for (size_t i = 0U; i < observer->capacity; i++) if (observer->rows[i].used) {
+        incomplete = true;
+        if (observer->rows[i].published && observer->target != NULL) {
+            cog_result_t result = cog_obs_diag_clear(observer->target, observer->rows[i].snapshot.conn_id);
+            if (result != COG_ERROR_NOT_FOUND) (void)observer_error(observer, result);
+            observer->rows[i].published = false;
+        }
+    }
+    if (incomplete) (void)observer_error(observer, COG_ERROR_INVALID_STATE);
+    observer->queued = 0U; observer->prepared = false; observer->prepared_net = NULL;
+    observer->target = NULL;
     return observer->error;
 }
