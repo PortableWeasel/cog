@@ -28,3 +28,15 @@ borrow lifetimes; the runtime must keep net/fixture objects through BOTH copies.
 Trace amendment: clone is never eligible for finish_host. An unfinished original
 must first complete host attachment before cloning a ready runtime mirror; clone
 retains exact existing net including NULL and cannot install new transport.
+
+Pass 3 consistency: same generation is intentional and does not allocate an ID;
+only current/future logical generations remain live. clone/free is paired, output
+is NULL on any failure, and source bytes/options/binding remain unchanged. Borrowed
+fixture pointers remain exact; owned pointer values may differ but bytes and
+nullable semantics are exact. Safe labels use existing secret screening. Clone
+must not memcpy bound aliases or expose the source secret. No new runtime callback,
+mutable global, dispatch table, public API, wire field or source resolver appears.
+Construction supports REAL and MOCK as well as metadata without starting work.
+Error ordering is required output/current pointers first, then bounded allocation
+and copying; failures publish no partial owner. Body implementation and fault tests
+are deferred until independent header approval.
