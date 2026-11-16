@@ -68,6 +68,16 @@ static void fx_ack(cog_orchestrator_t *o)
         FX_CHECK(rc==COG_ERROR_AGAIN);
     }
 }
+static cog_result_t fx_release(cog_orchestrator_t *o,cog_worker_id_t id)
+{
+    cog_result_t rc;uint64_t end=fx_now()+2000;
+    do {
+        fx_ack(o);rc=cog_orchestrator_release_worker(o,id);
+        if(rc!=COG_ERROR_INVALID_STATE) return rc;
+        (void)fx_service(o);fx_pause();
+    } while(fx_now()<end);
+    return rc;
+}
 static void fx_command(cog_orchestrator_t *o,cog_worker_id_t id,unsigned char mode,unsigned char active)
 {
     unsigned char bytes[6]={'F','X','M','1',mode,active};
@@ -123,12 +133,7 @@ static void fx_close_at(cog_orchestrator_t *o,char *path,cog_result_t expected,c
         FX_CHECK(infos[i].reaped&&!infos[i].ownership_lost);
         /* Native done is not logical endpoint/event retirement. Continue the
            actual owner service and ACK copied events before bounded release. */
-        cog_result_t released;uint64_t retire_end=fx_now()+2000;
-        do {
-            fx_ack(o);released=cog_orchestrator_release_worker(o,infos[i].worker_id);
-            if(released!=COG_ERROR_INVALID_STATE) break;
-            (void)fx_service(o);fx_pause();
-        } while(fx_now()<retire_end);
+        cog_result_t released=fx_release(o,infos[i].worker_id);
         if(released!=COG_OK) (void)fprintf(stderr,"%s release worker %llu: actual %d reaped %d lost %d\n",test,(unsigned long long)infos[i].worker_id.number,(int)released,(int)infos[i].reaped,(int)infos[i].ownership_lost);
         FX_CHECK(released==COG_OK);
     }
@@ -140,7 +145,7 @@ static cog_worker_id_t fx_replacement(cog_orchestrator_t *o,cog_worker_id_t old)
 {
     uint64_t end=fx_now()+4000;
     do {
-        (void)fx_service(o);cog_core_info_t infos[16];size_t count=0;
+        fx_ack(o);(void)fx_service(o);cog_core_info_t infos[16];size_t count=0;
         FX_CHECK(cog_orchestrator_list(o,infos,16,&count)==COG_OK);
         if(count==1&&!fx_same(infos[0].worker_id,old)&&infos[0].health==COG_HEALTH_HEALTHY) return infos[0].worker_id;
         fx_pause();
@@ -172,7 +177,7 @@ static void test_crash_recovery(void)
     FX_CHECK(cog_orchestrator_release_worker(o,id)==COG_ERROR_INVALID_STATE);
     fx_ack(o);FX_CHECK(cog_orchestrator_release_worker(o,id)==COG_ERROR_INVALID_STATE);
     FX_CHECK(cog_orchestrator_unregister_session(o,peer,"crash-sess")==COG_OK);
-    FX_CHECK(cog_orchestrator_release_worker(o,id)==COG_OK);
+    FX_CHECK(fx_release(o,id)==COG_OK);
     FX_CHECK(cog_orchestrator_kill(o,id)==COG_ERROR_NOT_FOUND);
     fx_close(o,path,COG_OK);
 }
