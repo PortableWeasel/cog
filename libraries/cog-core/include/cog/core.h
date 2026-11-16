@@ -257,7 +257,8 @@ typedef struct cog_core_config {
  * @return COG_ERROR_INVALID_ARG if @p config->session is NULL, if
  *         @p config->dispatch_table is NULL, or if
  *         @p config->dispatch_table_size is zero, or legacy wait_fn is combined
- *         with service_fn/idle_fn (unbounded legacy waiting is incompatible).
+ *         with service_fn/idle_fn (unbounded legacy waiting is incompatible),
+ *         or nonzero step_event_limit exceeds1024.
  * @return COG_ERROR_NOMEM if allocation fails.
  *
  * @post On success, @p *out is a valid core and the caller owns it.  If
@@ -336,6 +337,8 @@ typedef struct cog_core_step_info {
     size_t dispatched; /**< Completed dispatch count, at most step_event_limit. */
     bool done; /**< Stop/fatal result latched; drive_end is required. */
     uint64_t next_deadline_ms; /**< Absolute CLOCK_MONOTONIC ms or UINT64_MAX. */
+    uint32_t max_wait_ms; /**< Finite idle ceiling, never above max_idle_wait_ms.
+       Zero if dispatch/pending injection/service/IPC work can advance now. */
 } cog_core_step_info_t;
 /**
  * @brief Begin explicit cooperative driving without dispatching/waiting.
@@ -360,8 +363,15 @@ cog_result_t cog_core_drive_begin(cog_core_t *core);
  * dispatches. Service interval, IPC/local rotation and deadlines persist across
  * slices. Service precedes first dispatch and existing fairness/deadline points,
  * including continuously queued work. No wait_fn, idle_fn, nanosleep, positive
- * poll or nested run. Host waits once outside all cores at the minimum returned
- * deadline, then rotates cores; hooks/handlers must obey bounded-work contracts.
+ * poll or nested run. Budget/fairness yield with queued immediate work reports
+ * max_wait_ms=0 and next_deadline_ms<=the sampled current time. Never suggest
+ * sleeping while known dispatch/pending-injection/due service/ready IPC remains.
+ * Host waits once outside all cores at the MINIMUM returned finite max_wait_ms
+ * and absolute deadline, reduced by its own readiness/stop sources, then rotates
+ * cores. UINT64_MAX never permits unbounded sleep: latent external readiness
+ * receives the configured finite idle poll interval. Hooks retaining immediately
+ * actionable work return a due deadline even when enqueue is temporarily full.
+ * Hooks/handlers must obey bounded-work contracts.
  * Popped IPC/agent/event leases release after handler on EVERY path; budget yield
  * never acknowledges/drops unprocessed work. No allocation. Stop is still the
  * sole cross-thread/signal-safe operation and is checked between units.

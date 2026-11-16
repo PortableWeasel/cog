@@ -167,3 +167,14 @@ retains its explicit drained-work/no-borrow precondition; no destructor leak
 workaround or unbounded join is introduced.
 
 This subset is for incremental critique, not completion of pass1 or the N gate.
+
+Incremental critique requires immediate-work readiness, not just timer deadlines.
+The step result includes a finite max_wait_ms, zero for actionable queued work,
+and a due deadline on a budget/fairness yield. The host takes the minimum across
+all contexts/its own readiness; UINT64_MAX is never an unbounded sleep authority.
+Opaque service hooks retain their existing duty to report due work. A connection's
+cached immutable authentication/role proof must also outlive already-owned queued
+frame event leases: a final accepted frame can dispatch after Q observes EOF and
+closes the socket. A fresh credential query at every message handler is not a
+valid replacement for that retained ingress proof. New unadmitted connections
+may still be refused fail-closed; no old peer ID binds a replacement connection.
