@@ -40,3 +40,21 @@ No clock sampling, new allocation or other shared mutable state is introduced.
   A's sample or a later app clock. B rejects its own159 after160.
 - timeout, final output copy, durable-result notification and destroy never
   repurpose the sample as a new deadline or permit a new effect.
+
+## Pass 3: consistency and gate
+
+The only storage addition is one uint64_t in the private explicit tool handle;
+its constructor allocation already uses sizeof(handle), with no runtime growth.
+No context/global time, wire layout, public tool schema, parent reservation,
+credential borrow or result lifetime changes. start remains one-shot; poll and
+cancel remain bounded and nonblocking; duplicate receipts and saved-result
+notifications remain clock-free operations. Required-null/state failures do not
+publish a new clock sample. Backwards input cannot release a grant, dequeue a
+mailbox, retire an immutable wire or modify a returned done/deadline output.
+
+Twelve standalone checks passed: composition_internal.h, delegation.h and
+worker_host.h under GCC/Clang C11 and G++/Clang++ C++17 with Wall/Wextra/Wpedantic/
+Wconversion/Werror. Evidence is build-delegation-clock/strict-headers.log in the
+impl-headless-worker checkout; all temporary files and logs remain local there.
+No dependent timestamp body or runtime acceptance is included. A different
+independent header review must pass before the field is used by implementation.
