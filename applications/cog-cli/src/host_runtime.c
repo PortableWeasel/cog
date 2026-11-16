@@ -1891,6 +1891,74 @@ static cog_result_t host_client_slice(cog_cli_host_runtime_t *r, cli_client_reco
     } else client->queued_sequence = record.sequence;
     return COG_OK;
 }
+static cog_result_t host_forward_command(cog_cli_host_runtime_t *r, cli_executor_slot_t *slot,
+    cli_command_record_t *record, const cog_cli_command_t *command)
+{
+    cog_cli_control_lane_t id = command->kind == COG_CLI_COMMAND_CANCEL ? COG_CLI_LANE_CANCEL : COG_CLI_LANE_COMMAND;
+    cli_forwarded_operation_t *op = id == COG_CLI_LANE_CANCEL ? &slot->cancel : &slot->command;
+    cli_control_lane_t *lane = &slot->outbound[(size_t)id - 1U];
+    if (op->used && (op->lease != record->lease || op->request_wire != record->request_wire)) return COG_ERROR_AGAIN;
+    if (!op->used) {
+        if (lane->pending_valid || record->original.length > op->original.capacity ||
+            r->projection_scratch.capacity < 40U) return COG_ERROR_AGAIN;
+        uint64_t serial = 0U;
+        cog_cli_projection_view_t view;
+        cog_result_t rc = cog_cli_projection_snapshot(r->projection, &view); if (rc != COG_OK) return rc;
+        if (command->kind == COG_CLI_COMMAND_POLICY) {
+            if (view.policy_count != 1U || view.policies[0].nonce != command->nonce ||
+                view.policies[0].assistant_node != command->node_id ||
+                view.policies[0].call_ordinal != command->call_ordinal ||
+                strcmp(view.policies[0].session_id, command->target_session_id) != 0)
+                return COG_ERROR_INVALID_STATE;
+            serial = slot->inbound[COG_CLI_LANE_POLICY - 1U].provisional_prefix;
+        } else if (command->kind == COG_CLI_COMMAND_CONTINUE || command->kind == COG_CLI_COMMAND_FORK)
+            serial = slot->inbound[COG_CLI_LANE_VIEW - 1U].provisional_prefix;
+        size_t length;
+        rc = cog_cli_command_encode(command, r->projection_scratch.data + 40U,
+            r->projection_scratch.capacity - 40U, &length); if (rc != COG_OK) return rc;
+        cli_wire_writer_t writer = {r->projection_scratch.data, 0U, true};
+        cli_wire_put(&writer, record->lease, 8U); cli_wire_put(&writer, record->request_wire, 8U);
+        cli_wire_put(&writer, record->owner.epoch, 8U); cli_wire_put(&writer, record->owner.instance_id, 8U);
+        cli_wire_put(&writer, serial, 8U);
+        rc = host_remote_frame(r, slot, COG_CLI_CONTROL_EXECUTOR_COMMAND, id, 0U,
+            writer.bytes, length + 40U, &lane->pending, &lane->pending_wire); if (rc != COG_OK) return rc;
+        if (command->kind == COG_CLI_COMMAND_POLICY) {
+            view.policies = NULL; view.policy_count = 0U;
+            uint64_t sequence;
+            rc = cog_cli_projection_commit(r->projection, &view, &sequence); if (rc != COG_OK) return rc;
+        }
+        memcpy(op->original.data, record->original.data, record->original.length);
+        op->original.length = record->original.length; op->used = true; op->forward_committed = false;
+        op->final = false; op->lease = record->lease; op->request_wire = record->request_wire;
+        op->owner = record->owner; op->executor_serial = serial; op->executor_wire = lane->pending_wire;
+        op->reply.length = 0U; lane->pending_valid = true;
+    }
+    cog_result_t rc = host_worker_send(r, slot->worker, &lane->pending);
+    if (rc == COG_OK) { op->forward_committed = true; record->phase = CLI_COMMAND_FORWARDED; }
+    return rc == COG_OK ? COG_ERROR_AGAIN : rc;
+}
+static cog_result_t host_forwarded_slice(cog_cli_host_runtime_t *r, cli_executor_slot_t *slot)
+{
+    cli_forwarded_operation_t *operations[] = {&slot->command, &slot->cancel};
+    const cog_cli_control_lane_t ids[] = {COG_CLI_LANE_COMMAND, COG_CLI_LANE_CANCEL};
+    for (size_t i = 0U; i < 2U; ++i) {
+        cli_forwarded_operation_t *op = operations[i];
+        cli_control_lane_t *lane = &slot->outbound[(size_t)ids[i] - 1U];
+        if (!op->used) continue;
+        if (op->forward_committed && lane->pending_valid) {
+            cog_result_t rc = host_worker_send(r, slot->worker, &lane->pending);
+            if (rc != COG_OK && rc != COG_ERROR_AGAIN) return rc;
+        }
+        if (!op->final || lane->pending_valid) continue;
+        bool referenced = false;
+        for (size_t n = 0U; n < r->bounds.command_records; ++n)
+            if (r->commands[n].phase == CLI_COMMAND_FORWARDED && r->commands[n].lease == op->lease &&
+                r->commands[n].request_wire == op->request_wire) referenced = true;
+        if (!referenced) { op->used = false; op->original.length = 0U; op->reply.length = 0U; }
+    }
+    return COG_OK;
+}
+
 static cog_result_t host_command_slice(cog_cli_host_runtime_t *r, cli_command_record_t *record)
 {
     if (record->phase == CLI_COMMAND_FREE) return COG_ERROR_AGAIN;
@@ -1920,11 +1988,15 @@ static cog_result_t host_command_slice(cog_cli_host_runtime_t *r, cli_command_re
         cog_cli_projection_view_t view;
         rc = cog_cli_projection_snapshot(r->projection, &view); if (rc != COG_OK) return rc;
         bool authorized = client != NULL && client->connected && client->controller;
+        cli_forwarded_operation_t *held = command.kind == COG_CLI_COMMAND_CANCEL ? &root->cancel : &root->command;
+        bool own_policy_retirement = command.kind == COG_CLI_COMMAND_POLICY && held->used &&
+            held->lease == record->lease && held->request_wire == record->request_wire &&
+            held->executor_serial == root->inbound[COG_CLI_LANE_POLICY - 1U].provisional_prefix;
         if (command.kind != COG_CLI_COMMAND_RESYNC && !authorized) outcome = COG_ERROR_DENIED;
         else if (command.kind != COG_CLI_COMMAND_RESYNC &&
             (r->admission_frozen || r->shutdown || !host_owner_equal(record->owner, r->primary_owner) ||
              command.observed_generation != view.display.generation ||
-             command.observed_sequence != view.display.through_sequence)) outcome = COG_ERROR_INVALID_STATE;
+             (!own_policy_retirement && command.observed_sequence != view.display.through_sequence))) outcome = COG_ERROR_INVALID_STATE;
         else if (command.kind == COG_CLI_COMMAND_RESYNC) {
             if (client == NULL || !client->awaiting_resync || command.observed_generation != view.display.generation ||
                 command.observed_sequence != client->queued_sequence || command.observed_sequence < client->gap_last)
@@ -1957,8 +2029,13 @@ static cog_result_t host_command_slice(cog_cli_host_runtime_t *r, cli_command_re
             } else if (command.kind == COG_CLI_COMMAND_CONTINUE || command.kind == COG_CLI_COMMAND_FORK)
                 executor_serial = root->app->headless->committed_serial;
             if (outcome == COG_OK) outcome = cog_cli_execution_apply_command(root->app, &command, record->owner, executor_serial);
-        } else return COG_ERROR_AGAIN; /* owning remote relay retains this copied command */
+        } else outcome = host_forward_command(r, root, record, &command);
         if (outcome == COG_ERROR_AGAIN || outcome == COG_ERROR_OVERFLOW) return COG_ERROR_AGAIN;
+        if (held->used && !held->forward_committed && held->lease == record->lease &&
+            held->request_wire == record->request_wire) {
+            held->used = false;
+            root->outbound[(size_t)envelope.lane - 1U].pending_valid = false;
+        }
         record->result = outcome;
     }
     rc = host_ui_result(r, envelope.lane, record->request_wire, 0U, record->result,
@@ -2145,6 +2222,39 @@ static cog_result_t host_remote_mailbox(cog_cli_host_runtime_t *r, cli_executor_
         mailbox->text_used = offset;
     }
     return rc;
+}
+
+static cog_result_t host_remote_command_result(cog_cli_host_runtime_t *r, cli_executor_slot_t *slot,
+    const cog_cli_control_message_t *m, const cog_orchestrator_event_t *event)
+{
+    if (m->lane != COG_CLI_LANE_COMMAND && m->lane != COG_CLI_LANE_CANCEL) return COG_ERROR_PROTOCOL;
+    cli_forwarded_operation_t *op = m->lane == COG_CLI_LANE_CANCEL ? &slot->cancel : &slot->command;
+    cli_control_lane_t *lane = &slot->outbound[(size_t)m->lane - 1U];
+    if (!op->used || !op->forward_committed) return COG_ERROR_INVALID_STATE;
+    cli_wire_reader_t reader = {m->payload, m->payload_len, 0U, true};
+    cog_result_t outcome = cli_wire_signed(cli_wire_get(&reader, 4U));
+    uint64_t state = cli_wire_get(&reader, 1U);
+    if (!reader.valid || !cli_wire_result(outcome) || (state != 1U && state != 2U)) return COG_ERROR_PROTOCOL;
+    if (m->kind == COG_CLI_CONTROL_COMMAND_RESULT) {
+        if (!op->final || m->payload_len != 21U || m->reply_to != lane->pending_wire ||
+            outcome != COG_OK || state != 2U || cli_wire_get(&reader, 8U) != 0U ||
+            cli_wire_get(&reader, 8U) != 0U) return COG_ERROR_INVALID_STATE;
+        lane->retired_through = lane->pending_wire; lane->pending_valid = false;
+        return COG_OK;
+    }
+    if (m->payload_len != 5U || m->reply_to != op->executor_wire) return COG_ERROR_PROTOCOL;
+    if (state == 1U) return COG_ERROR_AGAIN;
+    if (op->final) {
+        if (!host_bytes_equal(&op->reply, event->data, event->data_len)) return COG_ERROR_PROTOCOL;
+        return lane->pending_valid ? host_worker_send(r, slot->worker, &lane->pending) : COG_OK;
+    }
+    if (event->data_len > op->reply.capacity) return COG_ERROR_LIMIT;
+    cog_result_t rc = host_remote_frame(r, slot, COG_CLI_CONTROL_COMMAND_ACK, m->lane, m->wire_id,
+        NULL, 0U, &lane->pending, &lane->pending_wire);
+    if (rc != COG_OK) return rc;
+    memcpy(op->reply.data, event->data, event->data_len); op->reply.length = event->data_len;
+    op->result = outcome; op->final = true; lane->pending_valid = true;
+    return host_worker_send(r, slot->worker, &lane->pending);
 }
 
 static cog_result_t host_remote_publication(cog_cli_host_runtime_t *r, cli_executor_slot_t *slot,
@@ -2351,6 +2461,9 @@ static cog_result_t host_worker_message(cog_cli_host_runtime_t *r, const cog_orc
     if (slot == NULL || slot->attempt != m.execution_epoch || slot->owner_peer != event->peer_id ||
         !host_worker_equal(slot->worker, worker->id) || strcmp(slot->session, m.session_id) != 0)
         return COG_ERROR_INVALID_STATE;
+    if (m.kind == COG_CLI_CONTROL_EXECUTOR_COMMAND_RESULT ||
+        (m.kind == COG_CLI_CONTROL_COMMAND_RESULT && (m.lane == COG_CLI_LANE_COMMAND || m.lane == COG_CLI_LANE_CANCEL)))
+        return host_remote_command_result(r, slot, &m, event);
     if (m.kind == COG_CLI_CONTROL_EXECUTOR_VIEW || m.kind == COG_CLI_CONTROL_POLICY_STATE)
         return host_remote_publication(r, slot, &m, event);
     if (m.kind == COG_CLI_CONTROL_DELEGATE_RESERVE || m.kind == COG_CLI_CONTROL_DELEGATE_START ||
@@ -2585,7 +2698,10 @@ cog_result_t cog_cli_host_runtime_step(cog_cli_host_runtime_t *r,
         rc = host_group_slice(r, &r->groups[i]);
         if (rc != COG_ERROR_ABORTED && rc != COG_ERROR_TIMEOUT) host_fail(r, rc);
     }
-    if (r->executors[r->primary_slot].app == NULL) host_fail(r, host_project_remote_rows(r));
+    if (r->executors[r->primary_slot].app == NULL) {
+        host_fail(r, host_project_remote_rows(r));
+        host_fail(r, host_forwarded_slice(r, &r->executors[r->primary_slot]));
+    }
     if (!r->control_drive_ended) {
         for (size_t i = 0U; i < r->bounds.command_records; ++i) host_fail(r, host_command_slice(r, &r->commands[i]));
         for (size_t i = 0U; i < r->bounds.clients; ++i) host_fail(r, host_client_slice(r, &r->clients[i]));
