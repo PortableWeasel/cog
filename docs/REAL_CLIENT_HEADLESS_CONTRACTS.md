@@ -178,3 +178,9 @@ frame event leases: a final accepted frame can dispatch after Q observes EOF and
 closes the socket. A fresh credential query at every message handler is not a
 valid replacement for that retained ingress proof. New unadmitted connections
 may still be refused fail-closed; no old peer ID binds a replacement connection.
+Core require_peer_credentials now captures a by-value identity in each protected
+IPC event before the endpoint can disappear. Generic core_enqueue rejects a
+claimed proof; otherwise a public producer could forge OS provenance. Generic
+non-authenticated IPC remains available with proof=false. The headless handler
+requires protected ingress plus its own retained authenticated role/attempt
+binding, and validates the event's semantic kind before its payload.

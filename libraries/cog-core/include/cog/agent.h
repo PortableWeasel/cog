@@ -155,6 +155,9 @@ cog_result_t cog_agent_copy_config(const cog_core_t *core, cog_agent_id_t agent_
  * all execution borrows returned after work drains, as it already requires
  * local/remote work fenced/drained. No native pointer is transferred remotely;
  * remote execution uses copied identity and its own guarded store context.
+ * Borrow is a storage-lifetime lease, NOT a new execution/admission grant.
+ * Returning it cannot authorize restarting the same accepted task; application
+ * attempt/receipt state retains one-shot execution and terminal ownership.
  */
 cog_result_t cog_agent_session_borrow(cog_core_t *core, cog_agent_id_t agent_id,
                                        cog_session_t **session);

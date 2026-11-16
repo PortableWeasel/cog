@@ -245,6 +245,12 @@ typedef struct cog_core_config {
     size_t pending_message_bytes; /**< Bytes/entry including NUL; default 65536. */
     size_t step_event_limit; /**< Cooperative step dispatch ceiling; zero=16,
        valid1..1024. Service/IPC retain their constructor quantum limits. */
+    bool require_peer_credentials; /**< Capture kernel-origin immutable peer
+       identity before IPC_CONNECTED/MESSAGE admission; reserve per-peer metadata
+       at construction. Unsupported/query failure refuses that peer. Default
+       false preserves generic IPC without trusted identity; headless sets true.
+       Every emitted IPC event copies proof through its handler lease even after
+       EOF/endpoint removal. It is not application role/worker authorization. */
 } cog_core_config_t;
 
 /**
@@ -420,6 +426,10 @@ void cog_core_stop(cog_core_t *core);
  * @return COG_ERROR_INVALID_ARG for SUBAGENT_SPAWN/CANCEL kinds, which only
  * agent_spawn/cancel may originate through atomic leased admission. This does
  * not reserve their numeric dispatch IDs for unrelated application events.
+ * Also INVALID_ARG for malformed IPC_* payload descriptors or any external
+ * IPC_* descriptor claiming peer_info_valid=true; only protected core ingress
+ * can originate kernel proof. Untrusted generic IPC descriptors remain usable
+ * by other applications with peer_info_valid=false, never as headless authority.
  *
  * @post The event is copied into the core's queue.
  *

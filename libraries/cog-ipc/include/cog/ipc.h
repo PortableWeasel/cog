@@ -85,12 +85,14 @@ typedef struct cog_ipc_endpoint cog_ipc_endpoint_t;
 
 /** @brief Kernel-origin identity of one established Unix connection.
  * peer_id identifies the link within its listener, not these native credentials.
- * Linux SO_PEERCRED values come from the actual socket, never HELLO/user PID. */
+ * Linux SO_PEERCRED values are the kernel connection-establishment snapshot
+ * (socketpair creation for socketpairs), never HELLO/user PID or a refreshed
+ * effective-credential/process-liveness query. */
 typedef struct cog_ipc_peer_info {
     cog_peer_id_t peer_id;
     uint64_t process_id; /**< Nonzero native peer PID, diagnostic/auth input only. */
-    uint64_t user_id; /**< Native effective UID; zero is a valid UID. */
-    uint64_t group_id; /**< Native effective GID. */
+    uint64_t user_id; /**< Native UID at establishment; zero is a valid UID. */
+    uint64_t group_id; /**< Native GID at establishment. */
 } cog_ipc_peer_info_t;
 
 /**

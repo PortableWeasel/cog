@@ -132,12 +132,22 @@ typedef struct cog_event_agent_intent {
  * reservations fail. The standalone event queue copies only this descriptor,
  * never allocates/copies msg_payload; external producers retain their payload
  * owner until the consuming handler returns.
+ * With core require_peer_credentials, ingress copies the immutable kernel peer
+ * info into every event before endpoint ownership may end. It survives EOF and
+ * deferred handler dispatch. A new handler must not depend on a live socket
+ * query to authenticate an already admitted final frame. Proof remains scoped
+ * by the owning core/fabric and does not itself grant a UI/worker role.
+ * Only core ingress can originate peer_info_valid=true: public core_enqueue
+ * rejects a claimed proof. External standalone queue descriptors are not
+ * authenticated input to a headless handler merely because fields are set.
  */
 typedef struct cog_event_ipc {
     cog_peer_id_t peer;       /**< Source or destination peer. */
     uint16_t msg_type;        /**< Application message type tag. */
     const void *msg_payload;  /**< Message payload (borrowed). */
     size_t msg_payload_len;   /**< Payload length in bytes. */
+    bool peer_info_valid; /**< True only for protected kernel-origin core ingress. */
+    cog_ipc_peer_info_t peer_info; /**< Copied establishment identity for this peer. */
 } cog_event_ipc_t;
 
 /**
