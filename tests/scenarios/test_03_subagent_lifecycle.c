@@ -92,7 +92,7 @@ int main(int argc,char **argv)
             cog_session_node_t *leaf=cog_session_active(parent->session);
             if(leaf!=NULL) {
                 const cog_message_t *m=cog_node_data(leaf)->message;
-                if(!parent->active && m->role==COG_MESSAGE_ROLE_ASSISTANT && m->status==COG_MESSAGE_COMPLETE &&
+                if(m!=NULL && !parent->active && m->role==COG_MESSAGE_ROLE_ASSISTANT && m->status==COG_MESSAGE_COMPLETE &&
                     m->content!=NULL && strcmp(m->content,expected)==0) {complete=true;break;}
             }
         }
