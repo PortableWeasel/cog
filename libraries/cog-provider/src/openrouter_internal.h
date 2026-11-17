@@ -5,8 +5,8 @@
  */
 #ifndef COG_OPENROUTER_INTERNAL_H
 #define COG_OPENROUTER_INTERNAL_H
-#include "vendor/namespace.h"
-#include "vendor/yyjson.h"
+#include "provider_prefix.h"
+#include <yyjson.h>
 #include <cog/openrouter.h>
 #include <cog/provider.h>
 typedef struct or_tool

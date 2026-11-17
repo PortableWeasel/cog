@@ -7,12 +7,13 @@
 # provider.c and endpoint.c into an archive while preserving the public
 # include path, the C11 compile feature, the cog::provider alias, and the
 # strict-warning settings that downstream INTERFACE consumers rely on.
+cog_vendor_yyjson(cog-provider-yyjson provider)
 add_library(cog-provider STATIC
     src/provider.c
     src/endpoint.c
     src/openrouter.c
     src/openrouter_codec.c
-    src/vendor/yyjson.c
+    $<TARGET_OBJECTS:cog-provider-yyjson>
 )
 add_library(cog::provider ALIAS cog-provider)
 
@@ -33,8 +34,9 @@ target_link_libraries(cog-provider PUBLIC cog::core cog::net)
 # Apply the project-wide strict-warning policy (and ASan/UBSan when enabled)
 # to the production sources.
 target_enable_warnings(cog-provider)
-set_source_files_properties(src/vendor/yyjson.c PROPERTIES COMPILE_OPTIONS "-w")
-target_include_directories(cog-provider SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/vendor)
+target_include_directories(cog-provider SYSTEM PRIVATE
+    "${PROJECT_SOURCE_DIR}/vendor/yyjson"
+    "${PROJECT_SOURCE_DIR}/vendor/yyjson/upstream/src")
 
 # -----------------------------------------------------------------------
 # Unit test — contract test for provider.h / endpoint.h (see
@@ -135,7 +137,7 @@ configure_package_config_file(cmake/cog-provider-config.cmake.in
     INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cog-provider)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/cog-provider-config.cmake"
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cog-provider)
-install(FILES src/vendor/LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/cog-provider RENAME yyjson-LICENSE)
+install(FILES "${PROJECT_SOURCE_DIR}/vendor/yyjson/upstream/LICENSE" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/cog-provider RENAME yyjson-LICENSE)
 if(BUILD_TESTING)
     target_compile_options(test_openrouter PRIVATE -UNDEBUG)
 endif()

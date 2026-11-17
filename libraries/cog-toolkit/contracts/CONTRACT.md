@@ -29,8 +29,8 @@ slots. Worker joins finish before returning. This compatibility path refuses
 
 The private unmodified yyjson 0.12.0 dependency has an explicit constructor pool,
 with no default allocator fallback. Every external symbol, including unsafe
-helpers, uses the `cog_toolkit_` prefix. Vendored source checksums and MIT license
-are in `vendor/yyjson/`. Source and public dependency exports do not link `pocs/`.
+helpers, uses the `cog_toolkit_` prefix. The pinned upstream submodule, private namespace maps and MIT license
+are in the project-root `vendor/yyjson/` tree. Source and public dependency exports do not link `pocs/`.
 
 An async constructor requires a complete strict JSON object. It rejects duplicate
 keys at every level, invalid UTF-8, unpaired surrogates, malformed numbers, trailing

@@ -1,5 +1,10 @@
 # Curl dependency profile
 
+Default Cog builds use the [pinned vendor wrappers](../../../vendor/README.md)
+for curl, c-ares and OpenSSL. The external recipes below apply when configuring
+Cog with `-DCOG_USE_VENDORED_LIBS=OFF`. Runtime admission is the same in both
+modes.
+
 Cog requires an authenticated, security-maintained curl build with the c-ares
 resolver selected and the threaded resolver disabled. Select a patched version
 appropriate for the deployment; the experimental 8.14.1 archive in the DNS
@@ -9,8 +14,38 @@ and descriptor/thread tests in `pocs/https-lifecycle/dns/README.md` on the exact
 artifacts shipped. The profile alone is configuration, not proof that the
 runtime-loaded library is the one that was configured.
 
-A reproducible local configuration (paths must be absolute, outside the source
-tree) is:
+## Workspace defaults
+
+In external mode, Cog automatically uses `build-deps/curl` at the checkout root when that directory
+contains a configured curl build. Build dependencies on disk in this gitignored
+folder, using authenticated sources and the profile below. For example, with
+`CURL_SOURCE` and `CARES_PREFIX` pointing to prepared inputs:
+
+```sh
+cmake -S "$CURL_SOURCE" -B "$PWD/build-deps/curl" \
+  -C "$PWD/libraries/cog-net/cmake/curl-cares-profile.cmake" \
+  -DCARES_INCLUDE_DIR="$CARES_PREFIX/include" \
+  -DCARES_LIBRARY="$CARES_PREFIX/lib/libcares.so"
+cmake --build build-deps/curl --parallel 2
+cmake -S . -B build -DCOG_ENABLE_WERROR=ON -DCOG_USE_VENDORED_LIBS=OFF
+cmake --build build --parallel 2
+```
+
+The default library is `<curl-build>/lib/libcurl.so`; matching headers come from
+`CURL_SOURCE_DIR` in its cache. For another layout, set
+`COG_NET_CURL_BUILD_DIR`, `COG_NET_CURL_LIBRARY`, and optionally
+`COG_NET_CURL_INCLUDE_DIR`. The selected artifact controls both FindCURL linking
+and runtime admission, including when reconfiguring a build that previously
+selected system curl. Nonempty explicit Cog settings take precedence; empty
+build/library settings request automatic defaults. Explicit paths are cached for subsequent builds; automatic defaults are
+recomputed so changing the selected curl build also selects its matching headers.
+
+Without a local dependency or explicit selection, configuration reports that
+live transport is disabled; mock/offline builds remain available. Resolver flags,
+artifact containment and the loaded-library digest are still checked. This
+selection neither downloads dependencies nor authenticates source on your behalf.
+
+A reproducible external configuration (paths must be absolute) is:
 
 ```sh
 cmake -S "$CURL_SOURCE" -B "$CURL_BUILD" \
@@ -47,9 +82,10 @@ the observed signing fingerprint was
 1.34.9 Debian security package authenticated as described in that recipe.
 These digests do not replace signature and package-repository verification.
 
-To enable the backend, configure Cog with `CURL_INCLUDE_DIR`, `CURL_LIBRARY`,
-`COG_NET_CURL_BUILD_DIR`, and `COG_NET_CURL_LIBRARY` pointing to the audited
-build cache and its shared curl artifact. Cog checks the cache resolver flags,
+To enable the backend with an external build, configure Cog with
+`COG_NET_CURL_BUILD_DIR` and `COG_NET_CURL_LIBRARY` pointing to the audited
+build cache and its shared curl artifact. Matching FindCURL settings are selected
+automatically; `COG_NET_CURL_INCLUDE_DIR` can select installed headers. Cog checks the cache resolver flags,
 hashes that artifact at configure time and compares the actually loaded curl
 object to the recorded digest at context construction. A missing profile,
 mismatch, or unverifiable loaded object fails closed. Deployments must protect

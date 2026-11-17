@@ -16,6 +16,7 @@ endif()
 # -----------------------------------------------------------------------
 # Options
 # -----------------------------------------------------------------------
+option(COG_USE_VENDORED_LIBS "Build pinned curl, c-ares and OpenSSL dependencies" ON)
 option(COG_BUILD_CLI "Build the CLI application" ON)
 option(COG_ENABLE_ASAN "Enable AddressSanitizer + UBSan" OFF)
 option(COG_ENABLE_TSAN "Enable ThreadSanitizer (mutually exclusive with ASan)" OFF)
@@ -38,6 +39,12 @@ if(BUILD_TESTING)
     include(test_assertions)
     add_subdirectory(cmake/tests/optin)
 endif()
+
+include(GNUInstallDirs)
+if(COG_USE_VENDORED_LIBS)
+    include(cog_vendor)
+endif()
+add_subdirectory(vendor/yyjson)
 
 # -----------------------------------------------------------------------
 # Libraries

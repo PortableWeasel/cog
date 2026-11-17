@@ -53,3 +53,24 @@ Original01 mock executable and pocs/provider-wire semantic fixtures cover baseli
 **Required future executable evidence:** F/G/H/K/Q: captured HTTPS bytes, retained-delta resize, sustained-queue progress, single-message save and restart fixtures.
 
 **Amendment references:** D02,D03,D10 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+
+## Workspace build selection
+
+Before the existing HTTPS turn trace, CMake selects the configured local
+`build-deps/curl` profile (or explicit Cog dependency paths), finds matching
+headers, and links the same artifact recorded for runtime digest admission.
+Reconfiguring a former system-curl workspace must replace cached release/debug
+link choices. The public net/provider/app calls in the trace are unchanged.
+Missing profiles preserve offline compilation and fail closed at real net
+construction; invalid resolver profiles still fail configuration.
+
+## Vendored build precondition
+
+The default configure first builds the pinned curl/c-ares/OpenSSL submodules
+inside the active build, selects the final installed curl bytes under that
+real curl build, and then performs the existing provenance/hash checks. Normal
+installation carries the same shared libraries and license notices. Runtime
+calls and the public coverage table remain unchanged. Missing submodules fail
+configuration with an initialization command; external profile selection remains
+available with `COG_USE_VENDORED_LIBS=OFF`. Build and installed relocation tests
+cover the source-to-runtime boundary before the live turn trace.

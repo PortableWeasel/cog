@@ -1,5 +1,20 @@
 # Cog — System Design Blueprint
 
+> Dependency ownership: pinned pristine upstream submodules now live under
+> `vendor/{curl,c-ares,openssl,yyjson}/upstream`, with Cog build wrappers beside
+> them. Default builds prepare the shared networking dependency closure inside
+> the active build before recording curl's digest. JSON retains two private
+> namespaces from one upstream revision. Public contracts are unchanged; see
+> [vendor design and workflow](../vendor/README.md).
+
+
+> External-mode dependency selection: a configured checkout-local `build-deps/curl`
+> supplies the default audited curl build and shared artifact. CMake binds both
+> FindCURL and runtime admission to that selection; explicit Cog dependency paths
+> override the defaults. Missing dependencies retain offline builds with a clear
+> configure status. Resolver and digest admission remain unchanged. See the
+> [workspace recipe](../libraries/cog-net/cmake/README.md#workspace-defaults).
+
 > Current delivery snapshot: accepted main `c052b172`. A–L/Q, live reload
 > and real observation are integrated; M is accepted at its recorded
 > single-process scope and N's contract gate passed. O4/O9 and the installed

@@ -21,6 +21,7 @@ Run commands from the checkout root. Keep compiler scratch and builds on disk:
 ```bash
 mkdir -p build/tmp
 export TMPDIR="$PWD/build/tmp"
+git submodule update --init --recursive
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCOG_ENABLE_WERROR=ON
 cmake --build build --parallel 2
 ./build/applications/cog-cli/cog-cli --backend mock --no-store --prompt hello
@@ -111,6 +112,14 @@ leak reports. Dated scopes stay in their evidence records; current full-suite
 acceptance carries none of the six former M exclusions.
 
 ## Use a real model
+
+The default build uses the pinned curl, c-ares, OpenSSL and yyjson sources in
+[`vendor/`](../vendor/README.md). Initialize the submodules before configuring;
+the first configure builds the networking dependencies locally. The same shared
+libraries are included by the ordinary install command. Builds do not download
+source. Integrators can use `-DCOG_USE_VENDORED_LIBS=OFF` with the
+[external dependency recipe](../libraries/cog-net/cmake/README.md).
+
 
 Load `OPENROUTER_API_KEY` through your own secret manager and set `COG_MODEL` to
 an exact available model ID with the intended tool support. The CLI does not

@@ -1,5 +1,6 @@
 # cog-net links a host-initialized curl runtime; the dependency must be audited.
-find_package(CURL REQUIRED)
+include("${PROJECT_SOURCE_DIR}/cmake/cog_curl.cmake")
+find_package(CURL MODULE REQUIRED)
 find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 
 add_library(cog-net STATIC src/net.c)
@@ -16,8 +17,6 @@ target_enable_warnings(cog-net)
 # The caller must identify the actual configured build and its shared library.
 # Without this proof the runtime remains unavailable rather than accepting an
 # unknown or hybrid resolver. No build directory appears in installed exports.
-set(COG_NET_CURL_BUILD_DIR "" CACHE PATH "Audited c-ares-only curl build directory")
-set(COG_NET_CURL_LIBRARY "" CACHE FILEPATH "Shared curl library produced by audited build")
 if(COG_NET_CURL_BUILD_DIR OR COG_NET_CURL_LIBRARY)
     if(NOT EXISTS "${COG_NET_CURL_BUILD_DIR}/CMakeCache.txt" OR NOT EXISTS "${COG_NET_CURL_LIBRARY}")
         message(FATAL_ERROR "Cog curl provenance requires a build cache and its shared library")

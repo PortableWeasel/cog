@@ -2,7 +2,7 @@
 #ifndef COG_TOOLKIT_JSON_H
 #define COG_TOOLKIT_JSON_H
 #include <cog/tool.h>
-#include "../vendor/yyjson/prefix.h"
+#include "toolkit_prefix.h"
 #include <yyjson.h>
 typedef struct cog_toolkit_json {
     void *pool;

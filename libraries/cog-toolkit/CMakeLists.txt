@@ -5,17 +5,7 @@
 # Pinned private codec object is absorbed into the installed archive. All
 # exports are namespaced; consumers have no yyjson link/include dependency.
 # Upstream sources remain unmodified and separate from Cog warning policy.
-add_library(cog-toolkit-yyjson OBJECT vendor/yyjson/yyjson.c)
-target_compile_features(cog-toolkit-yyjson PRIVATE c_std_11)
-target_compile_options(cog-toolkit-yyjson PRIVATE
-    -include ${CMAKE_CURRENT_SOURCE_DIR}/vendor/yyjson/prefix.h)
-
-if(COG_ENABLE_ASAN)
-    target_compile_options(cog-toolkit-yyjson PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
-endif()
-if(COG_ENABLE_TSAN)
-    target_compile_options(cog-toolkit-yyjson PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
-endif()
+cog_vendor_yyjson(cog-toolkit-yyjson toolkit)
 
 add_library(cog-toolkit STATIC
     src/toolkit_call.c
@@ -39,7 +29,9 @@ target_include_directories(cog-toolkit
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 target_compile_features(cog-toolkit PUBLIC c_std_11)
-target_include_directories(cog-toolkit SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendor/yyjson)
+target_include_directories(cog-toolkit SYSTEM PRIVATE
+    "${PROJECT_SOURCE_DIR}/vendor/yyjson"
+    "${PROJECT_SOURCE_DIR}/vendor/yyjson/upstream/src")
 find_package(Threads REQUIRED)
 target_link_libraries(cog-toolkit PUBLIC cog::core Threads::Threads)
 
@@ -104,7 +96,7 @@ install(EXPORT cog-toolkit-targets
     FILE cog-toolkit-targets.cmake
     NAMESPACE cog::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cog)
-install(FILES vendor/yyjson/YYJSON-LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/cog-toolkit RENAME yyjson-LICENSE)
+install(FILES "${PROJECT_SOURCE_DIR}/vendor/yyjson/upstream/LICENSE" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/cog-toolkit RENAME yyjson-LICENSE)
 
 add_executable(test_toolkit_async ${PROJECT_SOURCE_DIR}/tests/unit/test_toolkit_async.c)
 target_link_libraries(test_toolkit_async PRIVATE cog::toolkit)

@@ -20,3 +20,9 @@ add_test(NAME build-test-wrapped-classification
         -DPROBE_C_COMPILER=${CMAKE_C_COMPILER} -DPROBE_CONFIG=$<CONFIG>
         -P ${CMAKE_CURRENT_SOURCE_DIR}/wrapped_registration_failure.cmake)
 set_tests_properties(build-test-wrapped-classification PROPERTIES LABELS "build-policy")
+
+add_test(NAME build-curl-selection
+    COMMAND ${CMAKE_COMMAND} -DCOG_SOURCE_ROOT=${PROJECT_SOURCE_DIR}
+        "-DPROBE_ROOT=${CMAKE_CURRENT_BINARY_DIR}/curl selection/$<CONFIG>"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/curl_selection.cmake)
+set_tests_properties(build-curl-selection PROPERTIES LABELS "build-policy")

@@ -1,0 +1,12 @@
+[submodule "vendor/curl/upstream"]
+	path = vendor/curl/upstream
+	url = https://github.com/curl/curl.git
+[submodule "vendor/c-ares/upstream"]
+	path = vendor/c-ares/upstream
+	url = https://github.com/c-ares/c-ares.git
+[submodule "vendor/openssl/upstream"]
+	path = vendor/openssl/upstream
+	url = https://github.com/openssl/openssl.git
+[submodule "vendor/yyjson/upstream"]
+	path = vendor/yyjson/upstream
+	url = https://github.com/ibireme/yyjson.git
