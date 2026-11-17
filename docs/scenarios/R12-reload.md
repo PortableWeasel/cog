@@ -48,7 +48,7 @@ Original08 exercises config transactions only; no real-generation ownership proo
 
 **Required future executable evidence:** J/H/K: two live-in-memory generations, failed publication rollback, old send request_generation mismatch and cleanup ordering tests.
 
-**Amendment references:** D01,D02 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+**Amendment references:** D01,D02 in pass-2 register (`tix show 345a536`).
 
 ## Pass-3 opaque preservation retrace (E04)
 
@@ -74,7 +74,7 @@ must test exact pool/identity limits and retain the old generation on each failu
 
 ## Delivery J writer evidence
 
-[J evidence](../REAL_CLIENT_J_EVIDENCE.md) records executable aggregate capacity,
+J evidence (`tix show 32db464`) records executable aggregate capacity,
 rejected-reset LIMIT, stale-handle and snapshot-pointer tests. The private CLI
 generation test constructs two independent in-memory endpoint/secret owners,
 changes caller strings, rejects a third credential resolution, frees the newer
@@ -92,5 +92,5 @@ infallible future publication, whole-old-turn pinning and next-idle activation.
 `cog_core_set_provider` replaces the observable borrowed reference before old
 disconnect/secret clearing; no private core write. Both normal request and restored
 PROPOSED preflight use pinned configuration identity, not display incarnation.
-The [header-first reload contract](../REAL_CLIENT_RELOAD_CONTRACTS.md) gates delivery
+The [header-first reload contract](../DESIGN.md#configuration-and-reload) gates delivery
 `af6956a`; no new executable pass follows from these declarations.

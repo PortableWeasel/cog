@@ -4,7 +4,7 @@ O9 executable update: the canonical CTest runs actual sibling mailbox tools and
 bounded-pressure retry; historical endpoint assertions remain in
 `component-subagent_messaging`, with live foreign-group refusal separately in
 `component-coordinator-admission`. See the
-[joined evidence and exact limits](../REAL_CLIENT_O9_SCENARIO_EVIDENCE.md).
+joined evidence and exact limits (`tix show f63652b`).
 The contract/design-pass history below is retained as such.
 
 Stage 14.D pass-2 retrace from public-contract baseline `29b41e8`.

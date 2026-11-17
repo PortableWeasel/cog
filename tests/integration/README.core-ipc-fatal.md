@@ -4,9 +4,9 @@ Ticket 3c8aa99 corrects the obsolete malformed-frame disconnect expectation at
 5e24284. No production code changes.
 
 `core.h` cog_core_step returns/latches the first fatal IPC error with done=true.
-`docs/REAL_CLIENT_CORE_O2_LAYOUT.md` lines100–106 distinguish retained ordinary
-EOF event ordering from fatal Q PROTOCOL/LIMIT. Independently accepted O2 commit
-35c7049 and `REAL_CLIENT_CORE_O2_EVIDENCE.md` lines65–70 retire the exact endpoint
+The archived O2 private-layout record on `tix show 99c42ec` distinguishes retained
+ordinary EOF event ordering from fatal Q PROTOCOL/LIMIT. Independently accepted
+O2 commit 35c7049 and its evidence on the same ticket retire the exact endpoint
 before further queue admission/dispatch, while preserving already-copied event
 owners. The IPC_DISCONNECTED enum names an event; it does not promise a newly
 synthesized notification after fatal retirement.

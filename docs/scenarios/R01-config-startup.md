@@ -47,7 +47,7 @@ Existing applications/cog-cli/tests/test_cli_options.c and test_cli_regression.c
 
 **Required future executable evidence:** J: deterministic precedence cross-product, credential redaction and every constructor failure; no live provider required. F: c-ares admission tests.
 
-**Amendment references:** D01,D08,D09 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+**Amendment references:** D01,D08,D09 in pass-2 register (`tix show 345a536`).
 
 ## Pass-3 bounded configuration retrace (E07)
 
@@ -81,7 +81,7 @@ crash before STARTED save and cancel-after-proposal boundaries with zero effects
 
 ## Delivery J writer evidence
 
-[J evidence](../REAL_CLIENT_J_EVIDENCE.md) records strict GCC/Clang and separate
+J evidence (`tix show 32db464`) records strict GCC/Clang and separate
 ASan/UBSan passes for the bounded tree, option parser, private effective-config
 constructor and allocation/clearing audits. Synthetic tests verify precedence,
 explicit zero/ASK/no-store, exact environment fields, missing credentials/model,

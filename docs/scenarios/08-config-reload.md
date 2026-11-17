@@ -85,7 +85,7 @@ must test exact pool/identity limits and retain the old generation on each failu
 
 ## Explicit bounded application reload amendment
 
-The [R12 live application design](../REAL_CLIENT_RELOAD_CONTRACTS.md) supplies an
+The [R12 live application design](../DESIGN.md#configuration-and-reload) supplies an
 explicit owner-thread app API and terminal reload command; no watcher is needed.
 Candidate generation/provider construction and known-prefix preflight precede
 actual config commit, followed only by infallible future publication. One old

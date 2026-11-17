@@ -49,4 +49,4 @@ Original12 mock retry test is historical; https-lifecycle synthetic fairness is 
 
 **Required future executable evidence:** Q/K: continuous-queue, explicit zero retry, 429/exhaustion and cancel-at-deadline tests with exact send counts.
 
-**Amendment references:** D02,D09,D10 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+**Amendment references:** D02,D09,D10 in pass-2 register (`tix show 345a536`).

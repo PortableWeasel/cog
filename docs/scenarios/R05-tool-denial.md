@@ -51,7 +51,7 @@ Existing original15 covers baseline tool result only; new denial/schema/policy c
 
 **Required future executable evidence:** I/K: denied/invalid/UNDECIDED/ASK/no-store matrix with side-effect counter exactly zero.
 
-**Amendment references:** D01,D06 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+**Amendment references:** D01,D06 in pass-2 register (`tix show 345a536`).
 
 ## Pass-3 parser/process bounds retrace (E03)
 
@@ -91,6 +91,6 @@ The toolkit implementation now has dedicated real-library tests for this trace:
 `test_workspace`. They cover policy/guard validation, retained at-most-once
 output, constructor limits/OOM, disposable workspace refusal/effects and supported
 process-tree cancellation/reaping. Strict and ASan/UBSan writer suites pass;
-[delivery evidence](../REAL_CLIENT_I_EVIDENCE.md) records exact scope and limits.
+delivery evidence (`tix show 03f60d7`) records exact scope and limits.
 Independent review and library integration passed after one correction cycle.
 Application durable-loop integration remains with K.

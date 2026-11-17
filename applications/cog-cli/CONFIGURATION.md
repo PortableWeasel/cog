@@ -104,7 +104,7 @@ claim source resolution and generation ownership, not a completed real conversat
 
 ## Session actions (delivery L1)
 
-The approved [L contract](../../docs/REAL_CLIENT_L_CONTRACTS.md) adds direct CLI/host
+The approved [L contract](../../docs/DESIGN.md#sessions-persistence-and-recovery) adds direct CLI/host
 selectors outside J's precedence table. `session_action` defaults to NEW.
 `--sessions`, `--resume ID`, `--fork ID` and `--recover ID` are mutually exclusive,
 including repeated action flags. `--session ID` remains NEW-only. `--from-node N`

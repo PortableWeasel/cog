@@ -49,7 +49,7 @@ Protocol research has malformed/Unicode/depth/pool OOM tests; transport PoC has 
 
 **Required future executable evidence:** F/H: malformed/duplicate/oversized fixture suite and every allocation-failure point with sequence/payload canaries.
 
-**Amendment references:** D02,D03,D05 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+**Amendment references:** D02,D03,D05 in pass-2 register (`tix show 345a536`).
 
 ## Pass-3 parser/process bounds retrace (E03)
 

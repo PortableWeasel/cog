@@ -127,5 +127,5 @@ alone do not establish a shipped runtime closure: their RUNPATH/pkg-config paths
 and install-time ELF changes motivated this separate delivery. The new recipe
 sets deliberate `$ORIGIN` paths at link time, packages adjacent c-ares and source
 notices, audits every normal-installed byte after relocation, and records host TLS/
-OS requirements. [Writer evidence](../../../docs/REAL_CLIENT_DEPENDENCY_PROFILE_EVIDENCE.md)
+OS requirements. Writer evidence (`tix show ba50799`)
 separates those results from independent acceptance and the remaining P/R18 gates.

@@ -47,7 +47,7 @@ pocs/provider-wire tests already establish strict JSON/SSE, Unicode/OOM/depth an
 
 **Required future executable evidence:** H: split-identity fixture, typed expansion cursor, malformed/duplicate-key/depth/OOM and opaque stream reconstruction tests.
 
-**Amendment references:** D02,D03,D04,D05 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+**Amendment references:** D02,D03,D04,D05 in pass-2 register (`tix show 345a536`).
 
 ## Pass-3 opaque preservation retrace (E04)
 

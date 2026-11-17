@@ -1,9 +1,11 @@
 # cog-core module contracts
 
-Per `docs/IMPLEMENTATION_STRATEGY.md`, every public header module gets a
+Every public header module gets a
 `CONTRACT.md` that lists its public types, constants/functions, error
 codes, threading model, ownership rules, and invariants, together with
-the test that verifies each claim.
+the test that verifies each claim. The original implementation strategy and WBS
+are archived on `tix show 96d36f6`; current development guidance is in
+[the system design](../../../docs/DESIGN.md#development-and-verification).
 
 Layout: one directory per module, named after its public header.
 

@@ -2,7 +2,7 @@
 
 Stage 14.K composes the integrated core, provider, toolkit, store and J
 [effective configuration](CONFIGURATION.md). Its independent review and exact
-verification scope are recorded in [K evidence](../../docs/REAL_CLIENT_K_EVIDENCE.md).
+verification scope are recorded in K evidence (`tix show 78760e5`).
 This is the single-process conversation/tool client. L adds session selection,
 terminal history/usage and explicit offline recovery, with its own header gate
 and independent review. Remote IPC, replay and subagent application wiring remain
@@ -255,7 +255,7 @@ truncation. Publication does not authorize incomplete-turn continuation. Known
 EOF with no eligible input leaves a future generation pending for teardown;
 already-admitted/final unterminated input retains ordinary execution semantics.
 Provider getters expose the current borrowed instance and must be reacquired
-after mutating/drive calls. [R12 evidence](../../docs/REAL_CLIENT_RELOAD_EVIDENCE.md)
+after mutating/drive calls. R12 evidence (`tix show af6956a`)
 records the scoped checks and remaining review/release gates.
 
 Application observability now uses the approved numeric net observer and existing

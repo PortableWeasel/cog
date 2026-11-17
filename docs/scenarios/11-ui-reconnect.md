@@ -3,7 +3,7 @@
 O9 executable update: the canonical CTest uses the actual host/client sockets,
 real GAP/replacement, retained ASK and lost-final command retry without repeated
 effects. Historical buffer/queue assertions remain in `component-ui_buffer`.
-See the [joined evidence and exact limits](../REAL_CLIENT_O9_SCENARIO_EVIDENCE.md).
+See the joined evidence and exact limits (`tix show f63652b`).
 The contract/design-pass history below is retained as such.
 
 Stage 14.D pass-2 retrace from public-contract baseline `29b41e8`.

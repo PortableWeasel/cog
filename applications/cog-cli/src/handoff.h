@@ -52,7 +52,7 @@ cog_result_t cog_cli_handoff_request(cog_cli_handoff_t *handoff,
  * recovery, no owner_read guess or lost-ACK automatic task reconstruction.
  */
 /** Application-private CGH1 role/phase mapping (see
- * docs/REAL_CLIENT_HANDOFF_PHASES.md): coordinator QUIESCE to source receives
+ * tix show 5b90444): coordinator QUIESCE to source receives
  * CHECKPOINTED. After dedicated purpose3 profile ACK, CHECKPOINTED to target
  * performs exact staged construction and receives PREPARED. Coordinator then
  * forwards PREPARED to the frozen source; source releases its exact guard and

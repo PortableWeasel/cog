@@ -59,7 +59,7 @@ uses a full normal install, public target imports and two prefix relocations.
 It covers a bounded text-only nine-callback external provider/preflight, two
 independent custom store contexts, explicit host dependency lifetime and reverse
 two-net cleanup and exported module closure. The accepted
-[installed public extension](../REAL_CLIENT_INSTALLED_PROOF_INTEGRATION.md) adds
+installed public extension (`tix show f016189`) adds
 a CLI-only link target/transitive orchestrator export check, actual relocated
 native READY/shutdown/reap, public CGW1/CGH1/routes, custom fenced
 normal/recovery OOM and consuming-release checks, a distinct two-request REAL
@@ -68,13 +68,13 @@ roles. It uses the reviewed installable profile `ba50799`; no manual staging or
 loader override makes the old foreign-RUNPATH development artifact acceptable.
 
 Private `src/host_runtime.h` remains private. Remote-worker REAL HTTP and actual
-composed same-host handoff are [in-tree O9 evidence](../REAL_CLIENT_O9_SCENARIO_EVIDENCE.md),
+composed same-host handoff are in-tree O9 evidence (`tix show f63652b`),
 not claims of the external installed host. The
-[current release assertion map](../REAL_CLIENT_RELEASE_COVERAGE.md) combines the
+[current release assertion map](../RELEASE.md#assertion-map) combines the
 dated M and accepted O/installed results. Final supported-profile execution and
 whole-O/P approval remain separate; a scoped consumer does not close P.
 
-**Amendment references:** D02,D10 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+**Amendment references:** D02,D10 in pass-2 register (`tix show 345a536`).
 
 ## Pass-3 custom store construction retrace (E06)
 

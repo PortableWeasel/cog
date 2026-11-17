@@ -29,7 +29,7 @@ capacity failure, untrusted certificates and absence of replay. `test_net_oom`
 injects failures into curl allocator callbacks during setup and request creation.
 The independent DNS probe covers cancel/timeout and thread/descriptor cleanup for
 the actual audited dependency build. Independent revision review and integrated
-validation are recorded in [delivery F evidence](../../../docs/REAL_CLIENT_F_EVIDENCE.md).
+validation are recorded in delivery F evidence (`tix show 8f55808`).
 Full project installation and shipped dependency closure remain gate P work.
 
 The audited curl 8.23.0 source has separate automatic replay paths for a dead
@@ -52,4 +52,4 @@ emits nothing. Callback/accounting errors latch only observer_status and disable
 the feed without altering real outcomes or replaying work. Checked numeric
 limits, owner-thread/no-reentry preconditions and host-owned callback lifetimes
 follow net.h. Test mapping and scoped validation are recorded in
-[network observation evidence](../../../docs/REAL_CLIENT_NET_OBSERVATION_EVIDENCE.md).
+network observation evidence (`tix show 1a2b9c8`).

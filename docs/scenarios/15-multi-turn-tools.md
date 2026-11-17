@@ -124,7 +124,7 @@ crash before STARTED save and cancel-after-proposal boundaries with zero effects
 
 ### H typed mock fixture retrace
 
-The [H mock amendment](../REAL_CLIENT_H_MOCK_AMENDMENT.md) declares the typed
+The H mock amendment (`tix show 055211c`) declares the typed
 script constructor before implementation, pins bounded request ownership and
 retained overflow/cancel behavior, and supplies deterministic identified tool
 and opaque events through generic provider callbacks. K retains responsibility

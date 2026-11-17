@@ -58,7 +58,7 @@ Original03/07/09/10 use private baseline hooks; they are not evidence of new pub
 
 **Required future executable evidence:** N/O/Q: public-only two-core lifecycle, forged/stale peer, duplicate sequence, enqueue saturation, cancel-after-success race and fenced crash tests.
 
-**Amendment references:** D06,D10,D11,D13,D14 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+**Amendment references:** D06,D10,D11,D13,D14 in pass-2 register (`tix show 345a536`).
 
 ## Pass-3 recovery retrace (E01)
 

@@ -4,7 +4,7 @@ O9 executable update: the canonical CTest performs four real local/native moves,
 new target turns, exact checkpoint/guard/route checks and post-release timeout
 fencing. Historical file-store transfer assertions remain in
 `component-store_transfer`. See the
-[joined evidence and exact limits](../REAL_CLIENT_O9_SCENARIO_EVIDENCE.md).
+joined evidence and exact limits (`tix show f63652b`).
 The contract/design-pass history below is retained as such.
 
 Stage 14.D pass-2 retrace from `29b41e8`, amended here. This replaces the

@@ -68,7 +68,7 @@ independent final review; no passing runtime result is inferred from these table
 
 Design `d32fafd` starts from main8c68b4a after K/L. Generic obs APIs are
 implemented but the scenario tests still manually emit observations. The
-[dedicated runtime contract](../REAL_CLIENT_OBSERVABILITY_CONTRACTS.md) defines
+[dedicated runtime contract](../DESIGN.md#observability) defines
 the minimal production bridge; net.h supplies a numeric constructor-borrowed
 observer and checked latched status, with no payload/URL/secret pointers.
 Implementation and actual-path oracles are delivery `b64ee7c`, serialized after

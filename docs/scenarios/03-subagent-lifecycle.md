@@ -3,7 +3,7 @@
 O9 executable update: the canonical CTest now runs actual local/native REAL
 child work, durable parent results and cancellation. Historical registry-only
 assertions remain in `component-agent_lifecycle`. See the
-[joined evidence and exact limits](../REAL_CLIENT_O9_SCENARIO_EVIDENCE.md).
+joined evidence and exact limits (`tix show f63652b`).
 The contract/design-pass history below is retained as such.
 
 Stage 14.D pass-2 retrace from public-contract baseline `29b41e8`.

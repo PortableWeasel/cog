@@ -52,7 +52,7 @@ Original05/05b baseline tests prove old shutdown cancellation only.
 
 **Required future executable evidence:** F/I/K/Q: signal during every DNS/tool/backoff phase, continuous queue stop, PID/fd cleanup and failed final save tests.
 
-**Amendment references:** D02,D03,D10 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+**Amendment references:** D02,D03,D10 in pass-2 register (`tix show 345a536`).
 
 ## Pass-3 recovery retrace (E01)
 

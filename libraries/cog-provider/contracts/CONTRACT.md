@@ -51,7 +51,7 @@ peer text, credentials and request bodies never become diagnostics.
 
 Legacy receive refuses structured pending items without consuming them. The
 mock's narrow typed script contract is documented in
-`docs/REAL_CLIENT_H_MOCK_AMENDMENT.md`; it uses the same generic vtable surface.
+`tix show 055211c`; it uses the same generic vtable surface.
 
 Verification: unit-provider, unit-provider-critic, unit-openrouter,
 unit-mock-provider, integration-core-provider; integration-openrouter-https when
@@ -77,4 +77,4 @@ is string, and index is a finite number. Optional fields remain optional and
 unknown members remain lossless, including payload-like names on other kinds.
 Null signature is outside the pinned profile (UNSUPPORTED); other malformed
 recognized kinds are PROTOCOL. No base64, index-range or format-value policy is
-introduced; see the approved REAL_CLIENT_OPAQUE_FIELD_PROFILE.md.
+introduced; the approved profile clarification is archived on `tix show a81767d`.

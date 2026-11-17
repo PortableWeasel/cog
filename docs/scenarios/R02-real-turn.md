@@ -52,7 +52,7 @@ Original01 mock executable and pocs/provider-wire semantic fixtures cover baseli
 
 **Required future executable evidence:** F/G/H/K/Q: captured HTTPS bytes, retained-delta resize, sustained-queue progress, single-message save and restart fixtures.
 
-**Amendment references:** D02,D03,D10 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+**Amendment references:** D02,D03,D10 in pass-2 register (`tix show 345a536`).
 
 ## Workspace build selection
 

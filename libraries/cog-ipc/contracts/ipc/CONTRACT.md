@@ -62,4 +62,4 @@ Validation: migrated `test_ipc` and `test_ipc_critic` retain their functional an
 threaded fixtures using explicit test-only drivers. `test_ipc_nonblocking` directly
 asserts asynchronous admission, partial prefixes/payloads, overflow retry, copied
 ownership, slow-peer partial writes, timeout, invalid clocks, checked arithmetic
-and transactional broadcast. See `docs/REAL_CLIENT_Q_EVIDENCE.md` for commands.
+and transactional broadcast. See `tix show bcd9c0a` for commands.

@@ -53,7 +53,7 @@ Original13/17 baseline tests and current session_store.c use v1; they do not pro
 
 **Required future executable evidence:** G/L: byte-exact opaque fixture save/load/fork; generation crash fault injection; malicious association and committed-prefix truncation tests.
 
-**Amendment references:** D07,D08 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+**Amendment references:** D07,D08 in pass-2 register (`tix show 345a536`).
 
 ## Pass-3 recovery retrace (E01)
 
@@ -150,7 +150,7 @@ RECOVER requires the operator's fencing assertion and a recovery guard, without
 credentials/net/core. `cog_cli_app_reconcile` closes exactly one selected node/call
 with explicit evidence/outcome and saves atomically; it never grants ordinary
 execution. Later explicit RESUME advances to another normal epoch. See
-[three-pass amendment](../REAL_CLIENT_L_CONTRACTS.md). Executable evidence remains L work.
+[three-pass amendment](../DESIGN.md#sessions-persistence-and-recovery). Executable evidence remains L work.
 
 L independent-review clarification: unowned v1/v2 adoption requires the explicit
 operator quiescence/fencing assertion. Text-only v1 migration uses a temporary
@@ -172,4 +172,4 @@ limits while preserving all provider state. The last assistant may have unique
 already-recorded matching results; older groups must be complete. Store/ledger/
 guard/policy checks still determine effect admission. After results are durable,
 normal send requires COMPLETE history and revalidates future bytes. Header-only
-[three-pass gate](../REAL_CLIENT_PREFLIGHT_CONTRACTS.md); no runtime pass claimed.
+[three-pass gate](../DESIGN.md#providers-messages-and-prompts); no runtime pass claimed.

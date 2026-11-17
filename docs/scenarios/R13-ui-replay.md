@@ -54,7 +54,7 @@ Original11 baseline drop-oldest buffer test cannot prove generation-aware GAP or
 
 **Required future executable evidence:** N/O/Q: detach during active stream/tool round, ring eviction/restart-before-first-record, cross-session stale snapshot, tiny buffers and slow prefix/output peer tests.
 
-**Amendment references:** D11,D12,D13 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+**Amendment references:** D11,D12,D13 in pass-2 register (`tix show 345a536`).
 
 ## Pass-3 IPC ownership retrace (E02)
 

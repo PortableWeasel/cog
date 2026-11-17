@@ -4,7 +4,7 @@ O9 executable update: the canonical CTest runs one local and two distinct
 authenticated native children, ordered fan-in, repeated reuse, cancellation and
 admission refusal. Historical placement/registry assertions remain in
 `component-fan_out_fan_in`. See the
-[joined evidence and exact limits](../REAL_CLIENT_O9_SCENARIO_EVIDENCE.md).
+joined evidence and exact limits (`tix show f63652b`).
 The contract/design-pass history below is retained as such.
 
 Stage 14.D pass-2 retrace from public-contract baseline `29b41e8`.

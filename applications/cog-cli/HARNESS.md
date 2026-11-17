@@ -123,7 +123,7 @@ drive terminal reload; app-memory tests exhaust explicit candidate constructors
 and reject all allocations during later activation/service/send.
 
 The exact R12 selection and supported curl recipe are in
-[R12 evidence](../../docs/REAL_CLIENT_RELOAD_EVIDENCE.md). Use separate Release
+R12 evidence (`tix show af6956a`). Use separate Release
 GCC/Clang/ASan and Debug TSan directories. The selected executable count is not
 a claim that all release scenarios or full installed transport closure passed.
 
@@ -151,7 +151,7 @@ NULL rollback plus overflow/zero bounds, using the established optimized allocat
 positive control. Its existing allocation-free mock run and reload activation
 checks continue to execute the new app timing paths. Exact selected commands and
 supported dependency identities are in
-[observation evidence](../../docs/REAL_CLIENT_OBSERVATION_EVIDENCE.md).
+observation evidence (`tix show b64ee7c`).
 
 `cli-empty-session` verifies successful empty checkpoint publication before app
 construction returns, exact guarded repair of an interrupted owner-only reservation
@@ -171,4 +171,4 @@ old owner-only reservation; the installed host repairs it. Public snapshot/owner
 inspection checks zero nodes/ledger/identity high-water, exact epoch advance and
 unchanged committed empty checkpoint on ordinary restart. This runtime-component
 test is separate from R18's full dependency-install/relocation closure. See
-[empty session evidence](../../docs/REAL_CLIENT_EMPTY_SESSION.md).
+empty session evidence (`tix show cd3d092`).

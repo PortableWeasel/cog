@@ -54,7 +54,7 @@ Original06/15 and protocol live tool/result fixture cover baseline correlation o
 
 **Required future executable evidence:** G/H/I/K: injected counter/file-edit result resize, crash at all four save boundaries, result persistence failure and no-store admission tests.
 
-**Amendment references:** D01,D06,D08 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+**Amendment references:** D01,D06,D08 in pass-2 register (`tix show 345a536`).
 
 ## Pass-3 recovery retrace (E01)
 
@@ -139,13 +139,13 @@ The toolkit implementation now has dedicated real-library tests for this trace:
 `test_workspace`. They cover policy/guard validation, retained at-most-once
 output, constructor limits/OOM, disposable workspace refusal/effects and supported
 process-tree cancellation/reaping. Strict and ASan/UBSan writer suites pass;
-[delivery evidence](../REAL_CLIENT_I_EVIDENCE.md) records exact scope and limits.
+delivery evidence (`tix show 03f60d7`) records exact scope and limits.
 Independent review and library integration passed after one correction cycle.
 Application durable-loop integration remains with K.
 
 ## H deterministic provider fixture amendment
 
-The narrow [H mock contract](../REAL_CLIENT_H_MOCK_AMENDMENT.md) adds
+The narrow H mock contract (`tix show 055211c`) adds
 `cog_mock_provider_new_deltas` in `cog_cli/mock_provider.h`. It supplies retained
 TOOL_BEGIN/ARGUMENTS/END/OPAQUE/FINISH fixtures through the same generic callbacks
 as the real adapter. K can exercise its tool admission loop without wire calls;
@@ -174,4 +174,4 @@ limits while preserving all provider state. The last assistant may have unique
 already-recorded matching results; older groups must be complete. Store/ledger/
 guard/policy checks still determine effect admission. After results are durable,
 normal send requires COMPLETE history and revalidates future bytes. Header-only
-[three-pass gate](../REAL_CLIENT_PREFLIGHT_CONTRACTS.md); no runtime pass claimed.
+[three-pass gate](../DESIGN.md#providers-messages-and-prompts); no runtime pass claimed.

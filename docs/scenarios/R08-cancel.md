@@ -49,7 +49,7 @@ https-lifecycle DNS controlled tests prove empirical c-ares cleanup only; origin
 
 **Required future executable evidence:** F/Q/K/L: shipped dependency DNS cancel suite plus saturated queue/ring and terminal-queued race tests.
 
-**Amendment references:** D02,D03,D10 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+**Amendment references:** D02,D03,D10 in pass-2 register (`tix show 345a536`).
 
 ## Pass-3 explicit continuation and queued text (E05)
 

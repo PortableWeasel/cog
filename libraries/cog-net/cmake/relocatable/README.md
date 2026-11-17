@@ -152,6 +152,6 @@ loader and trust-store maintenance remain deployment requirements. Installed
 notices cover the bundled source projects; host packages retain their own notices.
 
 [Recorded receipt](recorded-profile.json), [relocation/admission/DNS audit](recorded-audit.json)
-and [delivery evidence](../../../../docs/REAL_CLIENT_DEPENDENCY_PROFILE_EVIDENCE.md)
+and delivery evidence (`tix show ba50799`)
 identify the exact tested bytes. Independent review and the broader packaging gate
 remain required before release acceptance.

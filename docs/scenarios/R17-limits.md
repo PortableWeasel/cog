@@ -46,7 +46,7 @@ No existing production executable proves all real-client finite-budget interacti
 
 **Required future executable evidence:** G/H/K: exact-boundary budgets and overflow arithmetic, tool round count, retry+tool elapsed composition and unknown usage fixtures.
 
-**Amendment references:** D03,D09 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+**Amendment references:** D03,D09 in pass-2 register (`tix show 345a536`).
 
 ## Pass-3 parser/process bounds retrace (E03)
 

@@ -1,4 +1,100 @@
-# Current release assertion map
+# Release validation and assertion map
+
+Whole O is independently accepted and merged on main. Supported-profile release
+validation passed; this manifest records the evidence and `77adfec` tracks acceptance.
+This is a documentation-only record: no new runtime/model request was made.
+
+## Exact identities
+
+| Record | Identity / evidence |
+|---|---|
+| Independently tested whole-O code | `5df406946c4ba5bc5203183e4af147b867f9cc5b` |
+| Independent package verdict | `5cd1d25` PASS; complete profile record (`tix show 5cd1d25`) at `87e852fc0dba380344c711705eeb67057621cafd` |
+| Approved integration merge | `b9140b68b689c0f70cedb5318347d5513f8bef79` |
+| Accepted main merge | `c052b1722e42d9a8f42fc79bf35f29e4114e32a7` |
+| Identical accepted integration/main tree | `e5ca810b2eaf8d86abd1dfc36a94deac459637d4` |
+| Independent whole-O machine receipt | `whole-o-review-receipt.json`, SHA-256 `2bbe288476b4cd79f90a89c847a0ff09b6dc6fea3d0faee41ee3c70bb5cd1c36`; retained path and per-profile cache/log/inventory/install hashes are in the profile record (`tix show 5cd1d25`) |
+| Coverage | [39 concrete assertion rows](RELEASE.md#assertion-map): original 20,05b and R01–R18, unchanged by this status refresh |
+| Runnable guide review | `bf299a9` PASS for `299e661`; command validation (`tix show 71bcd03`) retains mock-only execution and source-audit boundaries |
+| Installed public proof | `7eb47a1` PASS for `e77947c`, integrated by `f016189`; installed receipt (`tix show f016189`) |
+
+These identities describe the accepted release snapshot, not a claim that every
+subsequent checkout has been retested. Documentation consolidation adds no new
+runtime evidence. Full historical receipts are preserved in the cited tickets.
+Machine-readable receipts retain their original bytes and historical document
+paths; `tix show bcc629b` resolves those paths to the archived source records.
+
+## Independent supported-profile results
+
+All producer builds use Release, strict C11 warnings/Werror and at most two
+build jobs. The full three profiles have no exclusions, disabled tests, skips
+or failures. Exact commands, log hashes and actual conditional-registration
+inventory are retained in the independent receipt above.
+
+| Profile | Actual result | Seconds |
+|---|---:|---:|
+| GCC14.2.0 Release | 185/185 | 95.54 |
+| Clang19.1.7 Release | 185/185 | 94.51 |
+| Clang19.1.7 Release ASan/UBSan/LSan | 185/185 | 99.85 |
+| Separate GCC14.2.0 Release TSan | 36/36 selected | 150.08 |
+| Public headers: GCC/Clang C11 and G++/Clang++ C++17 | 28 headers ×4 compilers = 112 checks | — |
+
+The TSan selection covers stop/cooperative core ownership, registry/config,
+toolkit, IPC/orchestrator, child cancel/crash/mailboxes/fanout, reconnect,
+migration/fencing, process-owner controls and the installed consumer. It is not
+185 TSan tests. All 58 production compilation units are instrumented in the
+corresponding sanitizer build. External curl/c-ares/system libraries are not;
+deliberately killed processes cannot supply an exit-time leak report.
+
+Normal full installs and two relocations pass in each profile. Both public
+C11 consumers, CLI-only transitive orchestrator closure, custom fenced
+release/preallocation negatives, actual relocated native READY/PID/UID/inode,
+reap/retirement, two-request REAL app/tool/durable result and separate installed
+MOCK headless/attach/watch roles are exercised. Positive process proof reports
+cleanup true with zero infrastructure child kills. No private host-runtime
+header or trust bypass is part of installed embedding.
+
+## Admitted dependency and live evidence
+
+| Artifact | SHA-256 |
+|---|---|
+| curl | `ae1a9e77488254d744c9064972b025d8eb7210e73ea900cd5f3632995bb29d18` |
+| c-ares | `b4d2377241c646dc2054e864e403f162d4b5969823bdd86ec5ff49ecf7e79f53` |
+| [Sanitized M live receipt](REAL_CLIENT_M_LIVE_RECEIPT.json) | `187516695653a1efaacfaa12aa76c93a41def0c7eb6b0bd410f2f5b0ce1e8d12` |
+
+The accepted profile is Linux/POSIX with c-ares as primary resolver,
+`ENABLE_ARES=ON`, `ENABLE_THREADED_RESOLVER=OFF`, fresh HTTP/1.1, no connection
+pooling/HTTP2 and application-only retry ownership. Installed metadata and
+actual loader paths use the relocated admitted objects without manual staging
+or loader overrides. OpenSSL/libc/zlib/zstd/CA trust remain host dependencies.
+Third-party dynamic memory is declared; no total dependency-memory cap exists.
+These tested artifacts/profile results are not a universal platform guarantee.
+
+M's dated live application record (`tix show 80e782e`) remains
+exactly three generations: two initial read/edit/build requests and one
+fresh-process resume. It uses the installed public app, not a literal CLI
+hard-cap proof or a remote-child paid/live run. No additional paid call was made
+for whole-O review or this manifest; local REAL TLS scripts remain offline
+protocol/effect evidence.
+
+## Finite behavior boundaries
+
+The [assertion map](RELEASE.md#assertion-map) distinguishes canonical
+same-group/retired sibling IDs from component live foreign-group refusal.
+Test-only constructor admission staging keeps original frames/deadlines and
+still requires all three actual children active together; an allowed
+pre-STARTED AGAIN is not a production retry promise. Admitted worker failure
+retains INDETERMINATE and does not authorize automatic replay/replacement or
+external-effect rollback. Migration is same-host exact-checkpoint transfer,
+not cross-host/live-handle migration. Installed native lifecycle and separate
+public REAL app do not claim installed remote-worker REAL HTTP or composed
+handoff; those are actual O9 in-tree joins. Standalone C++ header conformance
+does not turn the C11 installed runtime hosts into a C++ runtime proof.
+
+All current builds/logs/TLS scratch stay in checkout-local `build*` directories.
+Dated M/F/H/O evidence, including older counts/paths/failures, remains intact.
+
+## Assertion map
 
 This map joins the twenty original scenarios, shutdown regression 05b and
 R01–R18: 39 assertion rows, not 39 independently named CTests. It describes the
@@ -6,18 +102,18 @@ accepted main `c052b172`, with whole-O code `5df4069` independently approved by
 `5cd1d25`. Supported-profile release validation passed; `77adfec` tracks
 acceptance. A target name or design
 trace alone is not runtime evidence. See the
-[current release manifest](REAL_CLIENT_RELEASE_MANIFEST.md) for exact identities.
+[current release manifest](RELEASE.md) for exact identities.
 
 ## Evidence and profile boundaries
 
 | Record | Established scope |
 |---|---|
-| [M offline](REAL_CLIENT_M_OFFLINE_EVIDENCE.md) and [manifest](REAL_CLIENT_M_TEST_MANIFEST.json) | Dated single-process GCC/Clang Release and ASan/UBSan/LSan 129 applicable cases, separate 13-case TSan, maintained headers and installed consumer. Its six O exceptions remain visible in that historical record. |
-| [M bounded live app](REAL_CLIENT_M_LIVE_EVIDENCE.md) | Exactly three real generation requests: installed public app read/edit/build, then fresh-process resume. It is not a literal CLI paid-request-cap proof or a remote-child live-model run. |
-| [Focused M joins](REAL_CLIENT_ACCEPTANCE_EVIDENCE.md) | Actual ASK/output faults, shared retry/tool budgets, real transport cancellation phases, completed-effect/opaque fork and terminal/signal ownership assertions. |
-| [O9 case map](REAL_CLIENT_O9_SCENARIO_EVIDENCE.md) and [accepted integration](REAL_CLIENT_O9_INTEGRATION_EVIDENCE.md) | Actual REAL loopback/native replacements for 03/07/09/10/11/17, five extra modes and preserved components. Postmerge strict GCC Release 184/184; exact separate compiler/sanitizer/repetition scopes remain in those receipts. |
-| [Installed public integration](REAL_CLIENT_INSTALLED_PROOF_INTEGRATION.md) | Accepted integrated GCC Release 185/185 with no disabled/skipped/excluded cases. Actual normal installs/two relocations, public-only CLI closure, owned native lifecycle, custom fenced backend, separate REAL TLS app and installed MOCK UI roles. |
-| [Whole-O independent review](REAL_CLIENT_WHOLE_O_PACKAGE_REVIEW.md) | Exact code `5df4069`: full GCC 185/185, Clang 185/185 and ASan/UBSan/LSan 185/185; separate meaningful TSan 36/36; all 28 public headers in 112 strict C11/C++17 combinations. Final installed proof independently passes in each profile. |
+| M offline (`tix show d8bddea`) and [manifest](REAL_CLIENT_M_TEST_MANIFEST.json) | Dated single-process GCC/Clang Release and ASan/UBSan/LSan 129 applicable cases, separate 13-case TSan, maintained headers and installed consumer. Its six O exceptions remain visible in that historical record. |
+| M bounded live app (`tix show 80e782e`) | Exactly three real generation requests: installed public app read/edit/build, then fresh-process resume. It is not a literal CLI paid-request-cap proof or a remote-child live-model run. |
+| Focused M joins (`tix show 83b30aa`) | Actual ASK/output faults, shared retry/tool budgets, real transport cancellation phases, completed-effect/opaque fork and terminal/signal ownership assertions. |
+| O9 case map (`tix show f63652b`) and accepted integration (`tix show 8537bc9`) | Actual REAL loopback/native replacements for 03/07/09/10/11/17, five extra modes and preserved components. Postmerge strict GCC Release 184/184; exact separate compiler/sanitizer/repetition scopes remain in those receipts. |
+| Installed public integration (`tix show f016189`) | Accepted integrated GCC Release 185/185 with no disabled/skipped/excluded cases. Actual normal installs/two relocations, public-only CLI closure, owned native lifecycle, custom fenced backend, separate REAL TLS app and installed MOCK UI roles. |
+| Whole-O independent review (`tix show 5cd1d25`) | Exact code `5df4069`: full GCC 185/185, Clang 185/185 and ASan/UBSan/LSan 185/185; separate meaningful TSan 36/36; all 28 public headers in 112 strict C11/C++17 combinations. Final installed proof independently passes in each profile. |
 
 The 185 count is conditional on the admitted curl/c-ares, CLI/Linux and installed
 fixture configuration. Real HTTPS/OOM/net cases require
@@ -63,7 +159,7 @@ The six replaced originals retain their old assertions in
 `component-agent_lifecycle`, `component-aux_crash`,
 `component-subagent_messaging`, `component-fan_out_fan_in`,
 `component-ui_buffer` and `component-store_transfer`. See the
-[source mapping](REAL_CLIENT_O9_SCENARIO_EVIDENCE.md#retained-component-mapping).
+source mapping (`tix show f63652b`).
 These components do not substitute for the canonical REAL joins.
 
 Where a positive/cancellation fixture stages constructor admission, it delays
@@ -112,6 +208,6 @@ It verified C11/C++ headers, assertion/allocator controls, normal installed
 closure and these unchanged 39 assertion rows. Main `c052b172` preserves the
 approved integration tree. Supported-profile release validation passed;
 `77adfec` tracks acceptance.
-The [release manifest](REAL_CLIENT_RELEASE_MANIFEST.md) indexes exact hashes and
+The [release manifest](RELEASE.md) indexes exact hashes and
 limits. Runnable commands are in [README.md](README.md); dated M/F/H/O receipts
 and old paths/counts remain historical evidence rather than being edited.

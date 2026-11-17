@@ -77,6 +77,6 @@ behavior remain unchanged. Constructor failure releases only new core storage.
 Free releases owned endpoints, accepted clients, reservations and child sessions.
 An active run cannot be reentered even after stop clears its public running flag.
 
-Validation is recorded in `docs/REAL_CLIENT_Q_EVIDENCE.md`; Q passed independent
+Validation is recorded in `tix show bcd9c0a`; Q passed independent
 revision review and scoped main integration. Real-library integration with
 separately migrated persistence remains check `b8a6fc1` before release gate P.

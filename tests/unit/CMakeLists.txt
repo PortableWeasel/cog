@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------
-# Unit tests — per-module contract tests (see IMPLEMENTATION_STRATEGY.md)
+# Unit tests — per-module contract tests (see libraries/*/contracts and tix show 96d36f6)
 #
 # Each test executable links the cog-core library (cog::core) for its
 # public include path, C11 compile feature, and the compiled Phase 1

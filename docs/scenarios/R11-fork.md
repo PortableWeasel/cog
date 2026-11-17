@@ -45,7 +45,7 @@ Original14 baseline tree/fork executable covers old identity only.
 
 **Required future executable evidence:** G/L: divergent branches with reused call labels, exact opaque/base64 and no ancestor-effect replay counters.
 
-**Amendment references:** D05,D07 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+**Amendment references:** D05,D07 in pass-2 register (`tix show 345a536`).
 
 ## Pass-3 opaque preservation retrace (E04)
 
@@ -109,4 +109,4 @@ There is no session-ID rebinding or cross-session copy. A nonleaf selection is
 remembered as the explicit parent of the next fresh user message; old branches
 and exact call/result/opaque identity remain present. Active work/queued input
 refuses selection; an unresolved/unsafe prefix cannot be forked. See
-[three-pass amendment](../REAL_CLIENT_L_CONTRACTS.md). Executable evidence remains L work.
+[three-pass amendment](../DESIGN.md#sessions-persistence-and-recovery). Executable evidence remains L work.

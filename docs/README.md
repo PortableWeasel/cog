@@ -5,14 +5,29 @@ support streaming/tool turns, durable sessions, explicit recovery, bounded
 headless clients and local/native children. **REAL OpenRouter is the default.**
 Select `--backend mock` for a credential-free offline demonstration.
 
-Whole O is independently accepted and merged at main `c052b172`.
-The supported Release profiles pass all 185 tests under GCC, Clang and
-ASan/UBSan/LSan; separate TSan passes 36 selected cases, and all 28 public
-headers pass 112 strict C11/C++17 combinations. These are exact admitted-profile
-results, not universal platform guarantees. Supported-profile release validation
-passed; ticket `77adfec` tracks acceptance. See the
-[release manifest](REAL_CLIENT_RELEASE_MANIFEST.md),
-[assertion map](REAL_CLIENT_RELEASE_COVERAGE.md) and [roadmap](REAL_CLIENT_WBS.md).
+Start with [system design](DESIGN.md) for architecture and ownership,
+[release validation](RELEASE.md) for the accepted profile and all 39 assertion
+rows, [CLI configuration](../applications/cog-cli/CONFIGURATION.md) for options,
+and the [application contract](../applications/cog-cli/CONTRACT.md) and
+[harness guide](../applications/cog-cli/HARNESS.md) for embedding and tests.
+The supported-profile acceptance record is historical evidence for its exact
+code and dependencies; it does not imply a fresh test of the current checkout.
+
+Implementation planning and dated reviews/evidence live in git `tix`:
+
+```bash
+tix ls                              # active work
+tix wbs 96d36f6                      # completed engine/mock implementation
+tix wbs 2b9d0ea                      # completed real-client implementation
+tix show bcc629b                     # old document path → owning ticket index
+tix show e321ec3                     # prompt/tool-instruction/template investigation
+```
+
+The migration index points to verbatim records with original paths, revisions
+and content hashes. Completed tickets retain their status and dependency trees.
+Keep new work plans and progress reports in tickets; update the current design
+and module contracts when decisions change. Required traces remain in
+[`scenarios/`](scenarios/); accepted research remains in [`research/`](research/).
 
 ## Build and run an offline demonstration
 
@@ -255,7 +270,7 @@ private `src/host_runtime.h` is not installed. Installed native lifecycle,
 public REAL TLS app and MOCK UI roles are distinct proofs; remote-worker REAL
 TLS is actual in-tree O9 composition. See the
 [external project](../tests/external-consumer/README.md) and
-[accepted receipt](REAL_CLIENT_INSTALLED_PROOF_INTEGRATION.md).
+accepted receipt (`tix show f016189`).
 
 Custom stores supply a static `cog_store_vtable_t` and caller-owned
 `backend_context`, alive through all guards and `cog_store_free`. Generic free

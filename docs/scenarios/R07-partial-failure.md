@@ -49,7 +49,7 @@ Protocol PoC tests preserve partial text on remote error; baseline original16/20
 
 **Required future executable evidence:** F/H/K/L: loss at every fragment boundary and destination overflow/cancel races with exact sequence assertions.
 
-**Amendment references:** D02,D03 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
+**Amendment references:** D02,D03 in pass-2 register (`tix show 345a536`).
 
 ## Pass-3 explicit continuation and queued text (E05)
 

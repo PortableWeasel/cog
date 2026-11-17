@@ -1,8 +1,8 @@
 # cog-orchestrator implemented contract
 
 The authoritative interface is [orchestrator.h](../include/cog/orchestrator.h).
-The approved [N contract](../../../docs/REAL_CLIENT_HEADLESS_CONTRACTS.md) and
-[O3 layout](../../../docs/REAL_CLIENT_ORCHESTRATOR_LAYOUT.md) replace the
+The approved [N contract](../../../docs/DESIGN.md#headless-control-children-and-handoff) and
+O3 layout (`tix show 21a4a04`) replace the
 historical synchronous text HELLO/PID and self-connected worker profile.
 
 - `new` reserves all worker/link/event/route/ingress/path storage and a fresh
@@ -34,6 +34,6 @@ Single owner thread; no global state, constructors or dynamic dispatch registry.
 Named accepted endpoints retain their explicit bounded constructor/destructor
 profile. Frame/event/payload/path storage does not grow in the hot path.
 
-[Writer evidence](../../../docs/REAL_CLIENT_ORCHESTRATOR_O3_EVIDENCE.md) records
+Writer evidence (`tix show d5280b7`) records
 real process/failure/resource tests and separates component checks from final
 independent review and O/P integration acceptance.

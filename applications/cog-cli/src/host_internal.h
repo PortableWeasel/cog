@@ -59,13 +59,13 @@ typedef struct cli_control_lane {
     uint64_t pending_reply_wire; /**< 0=no generic response awaiting copied send;
        otherwise selects retained final_reply_wire or provisional_wire exactly.
        Independent of semantic pending_valid. Copied send clears only this
-       delivery selector; cooldown/AGAIN retain it. See REAL_CLIENT_SEND_REPLY_RETENTION.md. */
+       delivery selector; cooldown/AGAIN retain it. See tix show 81431a3. */
     uint64_t copied_wire, next_send_ms; /**< Transport-owned exact outer wire and
        independent earliest retransmit time. New wire is immediately eligible;
        AGAIN accepts nothing and changes neither value. No receipt/authority
        advancement. HANDOFF uses the addressed slot outbound lane; delegation
        handle pending frames use that executor outbound stream. See scheduling
-       and retirement rules in REAL_CLIENT_CONTROL_SEND_OWNERSHIP.md. */
+       and retirement rules archived under tix show 92a7d46. */
 } cli_control_lane_t;
 /** Dedicated PROFILE lane. Re-encode exact pinned generation for duplicate
  * comparison using its ORIGINAL probe snapshot below, not a worker-global
@@ -79,7 +79,7 @@ typedef struct cli_control_lane {
  * correlation scalars and the nonsecret negative ACK in body. Covered retries
  * are uniformly stale, never new reloads or binding failures; they may re-arm
  * that identical retained ACK without claiming exact original-byte equality.
- * See docs/REAL_CLIENT_RELOAD_FAILURE_RECEIPTS.md for bounded receipt lifetime.
+ * See tix show 4a38e9f for the bounded receipt lifetime design.
  */
 typedef struct cli_secret_exchange {
     cli_stream_key_t key;
