@@ -12,6 +12,9 @@ import re
 import shutil
 import subprocess
 import tempfile
+import sys
+
+sys.dont_write_bytecode = True
 
 from installed_runtime import public_proofs
 

@@ -111,7 +111,40 @@ composition remains O9's in-tree evidence. No trust bypass, private-header copy,
 new public embedding surface or paid call is used.
 
 The JSON receipt adds `public_headless_proof` (two requests, once-only effect,
-owned-process disposal and installed role results). Current writer validation is
-static/lightweight only until the admitted profile build runs; this text does
+owned-process disposal and installed role results). Writer validation below records the admitted GCC profile; this text does
 not assert a whole-O or P pass. All producer, external compiler and process
 scratch lives under the producer build tree.
+
+
+Writer validation uses the accepted O4 production tree `e8c155f` plus only this
+external-proof extension. Full strict GCC Release/Werror all-target build passes
+in `impl-installed-proof/build-installed` with two jobs, using the existing
+admitted dependency arguments from
+`integrate-headless/build-dependencies/cmake-args.txt`; dependencies are not
+rebuilt or copied to another development prefix. `TMPDIR` is the producer's
+`build-installed/tmp`. Compiler, configuration and build logs remain there.
+
+```sh
+mkdir -p build-installed/tmp
+export TMPDIR="$PWD/build-installed/tmp"
+mapfile -t dependency_args < ../integrate-headless/build-dependencies/cmake-args.txt
+cmake -S . -B build-installed -DCMAKE_BUILD_TYPE=Release \
+  -DCOG_ENABLE_WERROR=ON -DCMAKE_C_COMPILER=gcc "${dependency_args[@]}"
+cmake --build build-installed --parallel 2
+ctest --test-dir build-installed \
+  -R '^unit-installed-(path-audit|process-owner)$' --output-on-failure -j2
+ctest --test-dir build-installed \
+  -R '^integration-installed-embedder$' --output-on-failure
+```
+
+Both registered negative/control tests and the actual installed fixture pass.
+`installed-embedder-report.json` records exactly two REAL loopback requests,
+once-only effect, all installed role checks, native supervisor status0 with
+cleanup true and **zero infrastructure kills**, plus actual relocated loader
+paths. The admitted curl SHA-256 remains
+`ae1a9e77488254d744c9064972b025d8eb7210e73ea900cd5f3632995bb29d18`;
+c-ares remains
+`b4d2377241c646dc2054e864e403f162d4b5969823bdd86ec5ff49ecf7e79f53`.
+GCC/Clang strict standalone source syntax checks and Python syntax also pass.
+Independent compiler/sanitizer review remains ticket `7eb47a1`; this writer
+execution neither accepts whole O nor closes P.
