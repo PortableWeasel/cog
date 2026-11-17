@@ -3,27 +3,32 @@
 > [Stage 14.E final review](REAL_CLIENT_PASS3.md) passed after the additional
 > independent review of `8563f81`. The three header passes and final review are
 > complete. A–L/Q, reload and real observation are integrated. M is accepted at
-> its single-process scope and N passed. O's deliveries are integrated; whole-O
-> review and P remain open. See the [current roadmap](REAL_CLIENT_WBS.md).
+> its single-process scope and N passed. Whole O passed independent package
+> review and is merged at main `c052b172`. P awaits final documentation review
+> and merge. See the [release manifest](REAL_CLIENT_RELEASE_MANIFEST.md) and
+> [current roadmap](REAL_CLIENT_WBS.md).
 
 > [Stage 14.F transport delivery](REAL_CLIENT_F_EVIDENCE.md) is independently
 > reviewed and integrated. The initial no-replay profile uses fresh HTTP/1.1
 > connections with pooling/HTTP2 disabled. Normal full install, relocation and
 > public closure have [accepted evidence](REAL_CLIENT_INSTALLED_PROOF_INTEGRATION.md);
-> P must still revalidate its final supported release profiles.
+> Whole-O review revalidated the final supported profiles; P awaits final
+> documentation review/merge.
 
 > [Stage 14.Q scheduler delivery](REAL_CLIENT_Q_EVIDENCE.md) is independently
 > reviewed and integrated. Combined real-library Q/G check `b8a6fc1` is complete
 > ([acceptance evidence](../libraries/cog-core/contracts/session_store/CONTRACT.md#independent-acceptance-and-combined-gq-integration)).
 > N contracts and O protocol deliveries are integrated; package approval is separate.
 
-Status snapshot: accepted integration `2723c36`, before whole-O review `5cd1d25`
-and release gate P. Parent ticket: `2b9d0ea`. M's
+Status snapshot: accepted main `c052b172`, with whole-O code `5df4069` approved
+by `5cd1d25` and its [full profile receipt](REAL_CLIENT_WHOLE_O_PACKAGE_REVIEW.md).
+P's final documentation review/merge is pending. Parent ticket: `2b9d0ea`. M's
 [offline](REAL_CLIENT_M_OFFLINE_EVIDENCE.md) and
 [three-request live](REAL_CLIENT_M_LIVE_EVIDENCE.md) evidence remain dated;
-O9 and the installed public proof close their specific delivery obligations.
+O9, the installed public proof and whole-O package review are accepted.
 The [current assertion map](REAL_CLIENT_RELEASE_COVERAGE.md) combines those
-receipts without relabeling old profile results as a new all-profile pass.
+receipts; the fresh full supported-profile results remain explicitly separate
+from historical M selections.
 The user authorized autonomous design decisions and testing. This supersedes
 Stage 14's earlier scope-confirmation requirement. Header and implementation
 gates remain technical requirements, not repeated user approval requests.
@@ -152,8 +157,8 @@ initial contracts. E accepted the explicit dynamic dependency allocation profile
 
 The rows below preserve the original planning gap list. Stage D now maps each
 to an individual sequence/call/type/event trace and re-traces original01–20.
-The linked pass-2 register records contract coverage and future executable tests
-separately; runtime conformance remains gated.
+The linked pass-2 register records the planning contract coverage separately.
+Current executable conformance is recorded in the accepted release manifest.
 
 | ID | Flow | Existing contract anchor | Required amendment / assertion |
 |---|---|---|---|

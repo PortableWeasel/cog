@@ -5,12 +5,13 @@ support streaming/tool turns, durable sessions, explicit recovery, bounded
 headless clients and local/native children. **REAL OpenRouter is the default.**
 Select `--backend mock` for a credential-free offline demonstration.
 
-Accepted integration `2723c36` includes O9's actual scenario joins and the
-installed public proof. Its admitted GCC Release configuration passes 185 tests.
-That is a dated configuration result, not a universal count or whole-O/P release
-approval. See the [current assertion map](REAL_CLIENT_RELEASE_COVERAGE.md),
-[roadmap](REAL_CLIENT_WBS.md) and
-[installed integration receipt](REAL_CLIENT_INSTALLED_PROOF_INTEGRATION.md).
+Whole O is independently accepted and merged at main `c052b172`.
+The supported Release profiles pass all 185 tests under GCC, Clang and
+ASan/UBSan/LSan; separate TSan passes 36 selected cases, and all 28 public
+headers pass 112 strict C11/C++17 combinations. These are exact admitted-profile
+results, not universal platform guarantees. P awaits final documentation review
+and merge. See the [release manifest](REAL_CLIENT_RELEASE_MANIFEST.md),
+[assertion map](REAL_CLIENT_RELEASE_COVERAGE.md) and [roadmap](REAL_CLIENT_WBS.md).
 
 ## Build and run an offline demonstration
 
