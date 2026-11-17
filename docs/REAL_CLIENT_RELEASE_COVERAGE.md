@@ -1,7 +1,7 @@
 # Current release assertion map
 
-This map joins the twenty original scenarios, shutdown regression05b and
-R01–R18:39 assertion rows, not39 independently named CTests. It describes the
+This map joins the twenty original scenarios, shutdown regression 05b and
+R01–R18: 39 assertion rows, not 39 independently named CTests. It describes the
 accepted integration `2723c36`, before whole-O review `5cd1d25` and release gate
 P. A target name or design trace alone is not runtime evidence.
 
@@ -9,13 +9,13 @@ P. A target name or design trace alone is not runtime evidence.
 
 | Record | Established scope |
 |---|---|
-| [M offline](REAL_CLIENT_M_OFFLINE_EVIDENCE.md) and [manifest](REAL_CLIENT_M_TEST_MANIFEST.json) | Dated single-process GCC/Clang Release and ASan/UBSan/LSan129 applicable cases, separate13-case TSan, maintained headers and installed consumer. Its six O exceptions remain visible in that historical record. |
+| [M offline](REAL_CLIENT_M_OFFLINE_EVIDENCE.md) and [manifest](REAL_CLIENT_M_TEST_MANIFEST.json) | Dated single-process GCC/Clang Release and ASan/UBSan/LSan 129 applicable cases, separate 13-case TSan, maintained headers and installed consumer. Its six O exceptions remain visible in that historical record. |
 | [M bounded live app](REAL_CLIENT_M_LIVE_EVIDENCE.md) | Exactly three real generation requests: installed public app read/edit/build, then fresh-process resume. It is not a literal CLI paid-request-cap proof or a remote-child live-model run. |
 | [Focused M joins](REAL_CLIENT_ACCEPTANCE_EVIDENCE.md) | Actual ASK/output faults, shared retry/tool budgets, real transport cancellation phases, completed-effect/opaque fork and terminal/signal ownership assertions. |
-| [O9 case map](REAL_CLIENT_O9_SCENARIO_EVIDENCE.md) and [accepted integration](REAL_CLIENT_O9_INTEGRATION_EVIDENCE.md) | Actual REAL loopback/native replacements for03/07/09/10/11/17, five extra modes and preserved components. Postmerge strict GCC Release184/184; exact separate compiler/sanitizer/repetition scopes remain in those receipts. |
-| [Installed public integration](REAL_CLIENT_INSTALLED_PROOF_INTEGRATION.md) | Accepted integrated GCC Release185/185 with no disabled/skipped/excluded cases. Actual normal installs/two relocations, public-only CLI closure, owned native lifecycle, custom fenced backend, separate REAL TLS app and installed MOCK UI roles. |
+| [O9 case map](REAL_CLIENT_O9_SCENARIO_EVIDENCE.md) and [accepted integration](REAL_CLIENT_O9_INTEGRATION_EVIDENCE.md) | Actual REAL loopback/native replacements for 03/07/09/10/11/17, five extra modes and preserved components. Postmerge strict GCC Release 184/184; exact separate compiler/sanitizer/repetition scopes remain in those receipts. |
+| [Installed public integration](REAL_CLIENT_INSTALLED_PROOF_INTEGRATION.md) | Accepted integrated GCC Release 185/185 with no disabled/skipped/excluded cases. Actual normal installs/two relocations, public-only CLI closure, owned native lifecycle, custom fenced backend, separate REAL TLS app and installed MOCK UI roles. |
 
-The185 count is conditional on the admitted curl/c-ares, CLI/Linux and installed
+The 185 count is conditional on the admitted curl/c-ares, CLI/Linux and installed
 fixture configuration. Real HTTPS/OOM/net cases require
 `COG_NET_CURL_BUILD_DIR` and `COG_NET_CURL_LIBRARY`; installed proof additionally
 requires `COG_TEST_CARES_BUILD_DIR`. An unsupported-profile `unit-net` refusal
@@ -23,7 +23,7 @@ does not substitute for these tests. The current full suite does not retain M's
 six exceptions. Independent whole-O supported-profile validation and P remain
 open; older scopes are not silently promoted to a new full Clang/sanitizer pass.
 
-## Original01–20 and05b
+## Original 01–20 and 05b
 
 Canonical stems below have the CTest prefix `scenario-`. Source01–10/05b live in
 `tests/scenarios`;11–20 live in `applications/cog-cli/tests`. Supplementary names
@@ -78,7 +78,7 @@ admission refusal; fixture scheduling is not a production retry guarantee.
 | R05 | `cli-client-acceptance`, `cli-client-ask-output-initial`, `cli-client-ask-output-repeat`, `cli-app-limits`, `unit-workspace` | Interactive/noninteractive ASK, ALLOW/DENY/no-store, arbitrary input not authorization, failed prompt no effect, schema/path/traversal/symlink refusal. |
 | R06 | `cli-client-acceptance`, `cli-client-wire-budget`, `cli-app-stop` | Exact elapsed0/5 equality refusal and one-inside admission, min retry/turn deadline, real429/tool continuation shares original start, backoff stop. |
 | R07 | `cli-app-loop`, `cli-session-ux`, `unit-openrouter`, `unit-net-error-cancel-regression` | One incomplete aggregate/no replay, unsafe restored branch/queued input not fresh authorization, accepted-output transport safety and explicit continuation. |
-| R08 | `cli-client-wire-cancel-dns`, `-connect`, `-tls`, `-stream`, `-retained`, `-finish`; [wire cancellation driver](../applications/cog-cli/tests/run_client_wire_acceptance.py) | Actual DNS packet/SYN_SENT/TLS ClientHello/text/one-slot retained delta/retained successful FINISH before cancellation. Provider inactive, net slots zero, thread/FD baseline restored and guard reacquired. |
+| R08 | `cli-client-wire-cancel-dns`, `cli-client-wire-cancel-connect`, `cli-client-wire-cancel-tls`, `cli-client-wire-cancel-stream`, `cli-client-wire-cancel-retained`, `cli-client-wire-cancel-finish`; [wire cancellation driver](../applications/cog-cli/tests/run_client_wire_acceptance.py) | Actual DNS packet/SYN_SENT/TLS ClientHello/text/one-slot retained delta/retained successful FINISH before cancellation. Provider inactive, net slots zero, thread/FD baseline restored and guard reacquired. |
 | R09 | `unit-workspace`, `unit-toolkit-async`, `unit-toolkit-resources`, `unit-toolkit-fencing`, `unit-toolkit-review-faults`, `cli-app-limits` | Owned command/group readiness, TERM/KILL deadlines, bounded retained/truncated output, descendant reap and no command credential inheritance. |
 | R10 | `cli-session-ux`, `cli-session-recovery-faults`, `cli-installed-session-ux`, `cli-empty-session`, `cli-installed-empty-session`, `unit-store-legacy-admission` | Explicit restart/list/resume/recover selectors, failed reconciliation save freezes, fresh/interrupted initial checkpoint, exact v1 migration, six-name ambiguous legacy refusal and committed-v2 precedence. |
 | R11 | `cli-client-wire-fork`, `unit-session` | Completed-effect/opaque ancestor exact outgoing bytes and identified result, preserved old leaf/effect, independent new assistant ledger scope, immutable shared prefix. |
@@ -104,7 +104,7 @@ Freeze the final source and admitted dependency provenance, record the actual
 enabled CTest inventory, run full strict supported GCC/Clang and separate
 sanitizer profiles with no old M exceptions, and retain exact meaningful TSan/
 process-stress scopes. Include public C11/C++ promised header checks, assertion
-policy/allocator controls, normal installed closure and these39 assertion rows.
+policy/allocator controls, normal installed closure and these 39 assertion rows.
 Whole-O/P approval and any main merge require their own independent decisions.
 Current runnable commands are in [README.md](README.md); dated M/F/H/O receipts
 and their old paths/counts remain historical evidence rather than being edited.

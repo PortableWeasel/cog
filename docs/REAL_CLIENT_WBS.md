@@ -61,7 +61,7 @@ P full-profile validation as open. Orchestrator migration `d5280b7` is complete;
 the accepted O3/O4/O9 deliveries replace its old synchronous-fixture assumptions.
 R12 reload and [real observation](REAL_CLIENT_OBSERVATION_INTEGRATION_EVIDENCE.md)
 are integrated. The [release assertion map](REAL_CLIENT_RELEASE_COVERAGE.md)
-connects every original20/05b and R01–R18 requirement to actual oracles and scope.
+connects every original 20/05b and R01–R18 requirement to actual oracles and scope.
 
 ## Scheduling and completion rules
 
@@ -129,8 +129,8 @@ M is single-process acceptance, not full release. It requires strict GCC/Clang
 **full target builds**, exact recorded runtime selections, relevant separate
 sanitizer/concurrency runs, a disposable read/edit/build/resume task and bounded
 real application smoke. [M's dated report](REAL_CLIENT_M_OFFLINE_EVIDENCE.md)
-preserves its six actual O-dependent exceptions and129 applicable-case result.
-The [O9 integration](REAL_CLIENT_O9_INTEGRATION_EVIDENCE.md) later passed184/184;
+preserves its six actual O-dependent exceptions and 129 applicable-case result.
+The [O9 integration](REAL_CLIENT_O9_INTEGRATION_EVIDENCE.md) later passed 184/184;
 the [installed extension](REAL_CLIENT_INSTALLED_PROOF_INTEGRATION.md) passed
 185/185 in the admitted GCC Release profile, with no exclusions or disabled
 cases. Those results establish their exact profile, not fresh full Clang/ASan/

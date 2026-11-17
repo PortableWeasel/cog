@@ -6,7 +6,7 @@ headless clients and local/native children. **REAL OpenRouter is the default.**
 Select `--backend mock` for a credential-free offline demonstration.
 
 Accepted integration `2723c36` includes O9's actual scenario joins and the
-installed public proof. Its admitted GCC Release configuration passes185 tests.
+installed public proof. Its admitted GCC Release configuration passes 185 tests.
 That is a dated configuration result, not a universal count or whole-O/P release
 approval. See the [current assertion map](REAL_CLIENT_RELEASE_COVERAGE.md),
 [roadmap](REAL_CLIENT_WBS.md) and
@@ -67,7 +67,7 @@ Third-party dynamic memory is declared; no total dependency-memory cap exists.
 
 Real HTTPS/OOM/installed cases are conditional on this configuration. Check the
 actual inventory; an unsupported-profile selection is not the full gate.
-Original01–20 and05b use the `scenario` label. O9 adds five fault/cancellation
+Original 01–20 and 05b use the `scenario` label. O9 adds five fault/cancellation
 modes and preserves six old substitutes under `component` labels. R01–R18 map
 to concrete assertions rather than requiring R-named CTests. Native trees share
 a CTest resource lock. Test assertions remain active in Release.
@@ -106,7 +106,7 @@ Record the actual executed selection/profile. A focused sanitizer/stress pass
 does not become a full-suite result. External dependencies remain uninstrumented
 unless separately rebuilt/reviewed, and killed processes cannot supply exit-time
 leak reports. Dated scopes stay in their evidence records; current full-suite
-acceptance carries no six-M exclusion.
+acceptance carries none of the six former M exclusions.
 
 ## Use a real model
 
@@ -133,7 +133,7 @@ mkdir -p build/demo-workspace build/demo-store
   --max-turn-ms 30000 --max-tool-ms 10000
 ```
 
-At a tool prompt, type `allow` or `deny`. Noninteractive ASK denies. Explicit
+At a tool prompt, type `allow` or `deny`. Standalone noninteractive ASK denies. Explicit
 `--tool-policy allow` permits autonomous tools while retaining schema/path/budget
 checks; commands are not an OS sandbox. `--no-store` is text-only. `/cancel`
 cancels the active turn; `/quit` exits. SIGINT/SIGTERM drain owned work and
@@ -161,7 +161,8 @@ in the **same durable session ID**; fresh input creates the divergent child.
 It does not replay an ancestor tool. Active/unresolved work cannot be forked.
 
 Ordinary RESUME refuses unresolved STARTED/INDETERMINATE tools. After the
-operator actually fences prior writers/processes, offline recovery is:
+operator actually fences prior writers/processes, set `SESSION` to the unresolved
+ID and enter offline recovery:
 
 ```bash
 ./build/applications/cog-cli/cog-cli --store "$PWD/build/demo-store" \
