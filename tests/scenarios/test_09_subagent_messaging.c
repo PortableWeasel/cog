@@ -57,7 +57,12 @@ int main(int argc,char **argv)
             if(local!=NULL && native!=NULL) {
                 CHECK(ids[0]!=ids[1] && local->group!=0U && local->group==native->group);
                 CHECK(strcmp(local->parent_session,native->parent_session)==0);
-                CHECK(headless_fixture_registry(h,metadata)==COG_OK);
+                /* Registry RUNNING may arrive before the independent native
+                 * START acknowledgement. Mailbox tools require both actual
+                 * executor slots STARTED; publish IDs only after that fact. */
+                if(local->started && native->started && local->phase==CLI_SLOT_STARTED &&
+                    native->phase==CLI_SLOT_STARTED)
+                    CHECK(headless_fixture_registry(h,metadata)==COG_OK);
                 if(!pressure && native->mailbox.count==native->mailbox.entry_capacity &&
                     local->app!=NULL && local->app->headless->delegation!=NULL) {
                     cli_delegation_handle_t *pending=local->app->headless->delegation->prepared;
