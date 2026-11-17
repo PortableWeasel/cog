@@ -35,6 +35,17 @@ executing delegated groups. The canonical07 before-effect control remains
 uncertain after actual admission; absence of a file does not authorize replay.
 It makes no automatic replacement, failover or external-effect rollback claim.
 
+The cancellation controls synchronize actual admission, without extending an
+operation deadline or retrying a refused constructor. The03 provider-entered
+marker is combined with the coordinator's current RUNNING/started facts. The10
+cancellation-only transport wrapper holds an unaccepted child PROFILE until its
+predecessor is actually started/RUNNING in a held provider request. It checks the
+same frame pointer, length, wire ID and deadline throughout the hold, observes
+both exercised gates and actual accepted copies, then requires all three current
+attempts active on the distinct placements before the original simultaneous
+cancel requests and unchanged terminal/effect/retirement assertions. Natural
+positive fan-out retains its ordinary startup path.
+
 Migration is same-host checkpoint transfer. Cross-host/live-handle migration and
 every possible filesystem/network failure boundary remain outside these cases.
 The UI fixture's local IO/disconnect outcome alone is not an authority result;
@@ -89,6 +100,49 @@ do the canonical/component executables under the project test assertion policy.
 
 ## Writer validation
 
-The final assembled compiler/sanitizer matrix and independent review references
-are recorded here after their actual runs. Passing leaf checkpoints establish
-their own cases only; they do not replace final assembled-package validation.
+Passing leaf checkpoints establish their own cases only; they do not replace
+assembled-package validation. Writer results in `impl-o9-fixture` are:
+
+| Profile | Build / tests | Result | Retained logs |
+|---|---|---|---|
+| GCC14.2, default, Werror | All default targets; full CTest with `-j4` and native resource lock | 184/184 PASS,113.18s | `build/build-final-gcc.log`, `build/test-final-gcc.log` |
+| Clang19.1.7, default, Werror | Fresh all default targets; full CTest with `-j4` | 184/184 PASS,100.98s | `build-clang/build-final.log`, `build-clang/test-final.log` |
+| Clang19.1.7, Release, ASan+UBSan+LSan, Werror | Fresh all default targets, then affected-target rebuild after cancellation corrections; serial scoped27 | 27/27 PASS,95.50s | `build-asan/build-final.log`, `build-asan/build-cancel-admission.log`, `build-asan/test-scoped-final.log` |
+
+The two full compiler suites precede the cancellation-only test corrections
+`af6048b`/`ae199d4`; the final sanitizer result includes them. No production code
+changed. Independent review must run its own fresh final-head package checks;
+these earlier184 results are not represented as final-head full-suite results.
+The final scoped27 comprise all11 O9 modes, six unchanged O4 native modes, three
+shared support controls and seven mapped component targets.
+
+All builds use `-DCOG_ENABLE_WERROR=ON` and `--parallel 2`; the separate sanitizer
+directory additionally uses `-DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Release
+-DCOG_ENABLE_ASAN=ON`. Test environment is
+`ASAN_OPTIONS=detect_leaks=1:halt_on_error=1` and
+`UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`. The real native executable's
+flags include `-fsanitize=address,undefined`. `build-asan/native-ldd.log` records
+the admitted external curl/c-ares paths; external dependencies are uninstrumented.
+Deliberately SIGKILLed workers cannot supply an exit-time leak report. No leak
+claim is made for those killed processes or third-party code.
+
+The dependency arguments are the accepted checkout-local
+`integrate-headless/build-dependencies/cmake-args.txt` profile. Shared fixture
+Release flags independently show `-UNDEBUG` after `-DNDEBUG`. Original six
+component bodies and both original O4 native fixture files remain preserved;
+the entire production-library/application-source/header diff from `e8c155f`
+is empty. Independent support correction review in ticket `4b5a102` also passed
+an additional actual SIGTERM-to-supervisor descendant-cleanup control.
+
+The initial scoped sanitizer run passed25/27 and exposed two test assumptions:
+03 treated provider entry as if the coordinator had already observed RUNNING;
+10 expected CANCELLED even though a native child had already factually refused
+admission with FAILED/AGAIN before cancellation was requested. A syscall-only
+diagnostic proved contention on the actual store `.cog-domain.lock` between the
+two native processes. This is the existing documented nonblocking constructor
+refusal, not permission to retry a consumed admission. The retained diagnostic
+used ptrace and triggered its known LSan incompatibility; it supplies lock-origin
+evidence only and is excluded from sanitizer acceptance. The test-only startup
+synchronization above preserves that production behavior. Both corrected
+cancellation controls then passed with their exact five TLS requests under
+ASan/UBSan/LSan before the full scoped rerun.
