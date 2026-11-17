@@ -9,6 +9,7 @@ The assembled source snapshots are native `a32b0c8`, sessions `956fa26`, shared
 support `fc97ce4`, and the sole-owner registration amendments. Source history in
 the assembled branch preserves each test-only checkpoint; no passing result is
 inferred from its name, a scripted model reply, or a manually completed agent.
+Later test-only admission barriers are frozen in `eba41b9`/`3680560`.
 
 ## Actual canonical cases
 
@@ -34,10 +35,14 @@ against bounded test records. That component does not claim two simultaneously
 executing delegated groups. The canonical07 before-effect control remains
 uncertain after actual admission; absence of a file does not authorize replay.
 It makes no automatic replacement, failover or external-effect rollback claim.
+Canonical09 publishes sibling IDs only after both actual executor slots are
+started and in STARTED phase; its Python consumer additionally waits for current
+registry RUNNING facts. These are independent acknowledgements.
 
 The cancellation controls synchronize actual admission, without extending an
 operation deadline or retrying a refused constructor. The03 provider-entered
-marker is combined with the coordinator's current RUNNING/started facts. The10
+marker is combined with current registry RUNNING, first-admission-sent and
+started facts, all in the wait predicate. The10
 cancellation-only transport wrapper holds an unaccepted child PROFILE until its
 predecessor is actually started/RUNNING in a held provider request. It checks the
 same frame pointer, length, wire ID and deadline throughout the hold, observes
@@ -108,10 +113,13 @@ assembled-package validation. Writer results in `impl-o9-fixture` are:
 | GCC14.2, default, Werror | All default targets; full CTest with `-j4` and native resource lock | 184/184 PASS,113.18s | `build/build-final-gcc.log`, `build/test-final-gcc.log` |
 | Clang19.1.7, default, Werror | Fresh all default targets; full CTest with `-j4` | 184/184 PASS,100.98s | `build-clang/build-final.log`, `build-clang/test-final.log` |
 | Clang19.1.7, Release, ASan+UBSan+LSan, Werror | Fresh all default targets, then affected-target rebuild after cancellation corrections; serial scoped27 | 27/27 PASS,95.50s | `build-asan/build-final.log`, `build-asan/build-cancel-admission.log`, `build-asan/test-scoped-final.log` |
+| Same sanitizer profile, final03/09 admission barriers | Rebuild affected targets;03cancel and09messaging repeated five times each | All10 executions PASS,35.16s | `build-asan/build-admission-barriers.log`, `build-asan/test-admission-barriers-repeat.log` |
 
 The two full compiler suites precede the cancellation-only test corrections
-`af6048b`/`ae199d4`; the final sanitizer result includes them. No production code
-changed. Independent review must run its own fresh final-head package checks;
+`af6048b`/`ae199d4`; the27-case sanitizer result includes them and precedes the
+final03/09 acknowledgement barriers. Their final affected repetitions are
+reported separately above. No production code changed.
+Independent review must run its own fresh final-head package checks;
 these earlier184 results are not represented as final-head full-suite results.
 The final scoped27 comprise all11 O9 modes, six unchanged O4 native modes, three
 shared support controls and seven mapped component targets.
@@ -146,3 +154,13 @@ evidence only and is excluded from sanitizer acceptance. The test-only startup
 synchronization above preserves that production behavior. Both corrected
 cancellation controls then passed with their exact five TLS requests under
 ASan/UBSan/LSan before the full scoped rerun.
+
+Independent final-head Release review then exposed two further ordering
+assumptions (182/184 at `a76326a`).03 registry RUNNING could precede the separate
+slot START acknowledgement; all required facts now gate cancellation rather
+than being asserted after a partial barrier.09 send1 returned factual
+INVALID_STATE while sends2..9 succeeded because IDs were published before the
+receiver slot was STARTED. Publication now waits for both actual slots, with
+every whole-message/pressure/empty-poll/authorization assertion retained. No
+operation budget was increased. The final affected sanitizer repetitions passed;
+independent optimized repetitions and fresh package review remain pending.
