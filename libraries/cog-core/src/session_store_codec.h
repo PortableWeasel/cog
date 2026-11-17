@@ -15,9 +15,9 @@ typedef struct cog_store_codec_workspace {
     size_t used;
 } cog_store_codec_workspace_t;
 
-/** Explicit little-endian v2 snapshot records (no native structs/pointers).
+/** Explicit little-endian v2/v3 snapshot records (no native structs/pointers).
  * Output is raw binary, to be wrapped by the transaction writer in a checksummed
- * immutable generation. All scalars/strings/opaque/ledger/audits are preserved.
+ * immutable generation. All scalars/strings/opaque/ledger/audits and immutable contexts/bindings are preserved.
  * Encode never changes session/snapshot; LIMIT may leave destination partial.
  * out_size set only on success. Caller validates session via snapshot_view.
  */

@@ -69,7 +69,9 @@ typedef struct cog_instruction_source_limits {
     size_t max_items;
     size_t max_depth; /**< Maximum path components below an opened root. */
     size_t work_quantum; /**< Max path/directory/file/sort-comparison units per poll. */
-    size_t byte_quantum; /**< Max bytes read/hashed per poll. */
+    size_t byte_quantum; /**< Max file-content bytes read/hashed per poll.
+       Directory metadata uses a fixed constructor-reserved 4096-byte getdents64
+       buffer; each metadata syscall/entry consumes directory work units. */
 } cog_instruction_source_limits_t;
 
 /** @brief Reader constructor input; arrays and strings borrowed only by new. */

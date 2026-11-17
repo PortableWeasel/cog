@@ -23,6 +23,7 @@
 #include <cog/session.h>
 #include <cog/session_store.h>
 #include <cog/provider.h>
+#include <cog/net.h>
 #include <cog/provider_prompt.h>
 #include <cog/instructions.h>
 #include <cog/tool.h>
@@ -78,7 +79,11 @@ typedef struct cog_runtime_provider_config {
 } cog_runtime_provider_config_t;
 /** @brief Original static table/user borrows through close; bindings copied.
  * Prompt and execution use identical descriptor pointers; duplicate names or
- * descriptor mismatch fail construction. Async descriptors required. */
+ * descriptor mismatch fail construction. Async descriptors required. Bindings
+ * reference members of table or the exact cog_runtime_activate_skill_tool and
+ * cog_runtime_read_skill_resource_tool objects. Those two builtin controls use
+ * internal singleton static tables; including them never grants a policy
+ * implicitly. Copies of their descriptors do not preserve their identity. */
 typedef struct cog_runtime_tool_config {
     const cog_tool_table_t *table;
     void *user;
@@ -106,6 +111,9 @@ typedef struct cog_runtime_scope_binding {
 typedef struct cog_runtime_workers {
     const char *executable; /**< Trusted absolute worker-capable executable. */
     const char *socket_path; /**< Dedicated worker fabric, never UI listener. */
+    const cog_net_config_t *net_config; /**< Explicit immutable transport template
+       borrowed through close; initialized host dependencies and fixed memory
+       profile, observer/user NULL. Each executor constructs its own transport. */
     size_t frame_bytes; /**< Trusted full CGL frame capacity. */
     size_t instruction_bytes; /**< Complete CGIM capacity per executor; zero only
        in DISABLED mode. Constructor proves CGB2 plus CGL fits frame_bytes and
@@ -117,14 +125,20 @@ typedef struct cog_runtime_workers {
     uint32_t shutdown_ms; /**< Finite; timeout is not proof effects undone. */
 } cog_runtime_workers_t;
 /** @brief Explicit constructor inputs. Offline modes need no provider/tools,
- * sources/workers/dependency runtime. No frontend-derived defaults. */
+ * sources/workers/dependency runtime. No frontend-derived defaults.
+ * V1 max_queued_inputs is1..8 and max_input_bytes<=max_context_bytes; larger
+ * unsupported reservations fail LIMIT before effects. store.backend explicitly
+ * set to cog_store_null_backend selects nondurable DISABLED mode; NULL means
+ * the default file backend, never implicit no-store. */
 typedef struct cog_runtime_config {
     cog_runtime_mode_t mode;
     cog_runtime_instruction_mode_t instruction_mode;
     const char *session_id; /**< Copied 1..127 bytes, existing store ID grammar. */
     bool previous_processes_fenced; /**< Required for recovery/legacy adoption;
        operator assertion only, does not stop or independently verify writers. */
-    cog_session_config_t session;
+    cog_session_config_t session; /**< V1 execution reservation maxima: nodes1024,
+       calls per message16; zero selects these runtime maxima. Larger values fail
+       LIMIT. Smaller explicit reservations and payload/context arenas are honored. */
     cog_store_config_t store; /**< Runtime creates/frees store; custom context
        borrowed through close. PINNED/ADOPT require owned context-aware checkpoints;
        DISABLED preserves legacy null-store/no-tools and explicit fixture behavior. */

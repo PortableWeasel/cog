@@ -13,6 +13,8 @@ add_library(cog-provider STATIC
     src/endpoint.c
     src/openrouter.c
     src/openrouter_codec.c
+    src/provider_prompt.c
+    src/openrouter_prompt.c
     $<TARGET_OBJECTS:cog-provider-yyjson>
 )
 add_library(cog::provider ALIAS cog-provider)
@@ -148,4 +150,13 @@ if(BUILD_TESTING)
     target_link_libraries(test_provider_preflight_critic PRIVATE cog::provider)
     target_enable_warnings(test_provider_preflight_critic)
     add_test(NAME unit-provider-preflight-critic COMMAND test_provider_preflight_critic)
+endif()
+
+if(BUILD_TESTING)
+    add_executable(test_provider_prompt ${PROJECT_SOURCE_DIR}/tests/unit/test_provider_prompt.c)
+    target_link_libraries(test_provider_prompt PRIVATE cog::provider)
+    target_link_options(test_provider_prompt PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc)
+    target_compile_options(test_provider_prompt PRIVATE -UNDEBUG -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc)
+    target_enable_warnings(test_provider_prompt)
+    add_test(NAME unit-provider-prompt COMMAND test_provider_prompt)
 endif()

@@ -312,6 +312,13 @@ static cog_result_t insert(cog_session_t *s, cog_session_node_t *parent,
     copy_message(&p, m, &n->message);
     n->payload = payload;
     n->data.node_id = s->next_node_id++;
+    n->data.context_binding_id = parent == s->active ? s->selected_context_binding_id :
+        (parent == NULL ? 0U : parent->data.context_binding_id);
+    if (associated != NULL) {
+        const cog_session_node_t *assistant = find_node(s, associated->assistant_node_id);
+        n->data.context_binding_id = assistant->data.context_binding_id;
+    }
+    s->selected_context_binding_id = n->data.context_binding_id;
     n->data.role = m->role == COG_MESSAGE_ROLE_TOOL ? COG_NODE_TOOL_RESULT : (cog_node_role_t)m->role;
     n->data.content = n->message.content;
     n->data.content_len = n->message.content_len;
@@ -337,6 +344,95 @@ static cog_result_t insert(cog_session_t *s, cog_session_node_t *parent,
     return COG_OK;
 }
 
+/* Generic context storage is separate from reusable message payload blocks.
+ * It is append-only until free, so borrowed immutable context bytes never move. */
+static size_t context_namespace_length(const char *name)
+{
+    if (name == NULL) return 0U;
+    size_t n = 0U;
+    for (; n <= 127U && name[n] != '\0'; ++n) {
+        const unsigned char c = (unsigned char)name[n];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-')) return 0U;
+    }
+    return n <= 127U ? n : 0U;
+}
+static const cog_session_context_binding_t *context_binding_find(
+    const cog_session_context_binding_t *bindings, size_t count_, uint64_t id)
+{
+    for (size_t i = 0U; i < count_; ++i) if (bindings[i].binding_id == id) return &bindings[i];
+    return NULL;
+}
+static bool context_chain_at(const cog_session_context_binding_t *bindings,
+    size_t count_, uint64_t selected, uint64_t base, uint64_t anchor)
+{
+    for (size_t steps = 0U; steps <= count_; ++steps) {
+        if (selected == base) return true;
+        const cog_session_context_binding_t *b = context_binding_find(bindings, count_, selected);
+        if (b == NULL || b->anchor_node_id != anchor || b->previous_binding_id >= b->binding_id) return false;
+        selected = b->previous_binding_id;
+    }
+    return false;
+}
+cog_result_t cog_session_context_add(cog_session_t *s, const cog_session_context_t *c)
+{
+    if (s == NULL || c == NULL) return COG_ERROR_NULL_PTR;
+    if (s->inspection_only || unresolved(s)) return COG_ERROR_INVALID_STATE;
+    const size_t name = context_namespace_length(c->namespace_id);
+    if (name == 0U || c->format == 0U || (c->data == NULL) != (c->data_bytes == 0U)) return COG_ERROR_INVALID_ARG;
+    if (s->context_high_water == UINT64_MAX) return COG_ERROR_LIMIT;
+    if (c->context_id == 0U || c->context_id <= s->context_high_water) return COG_ERROR_INVALID_ARG;
+    if (s->context_count == s->max_contexts || c->data_bytes > SIZE_MAX - name - 1U ||
+        name + 1U + c->data_bytes > s->max_context_bytes - s->context_bytes) return COG_ERROR_LIMIT;
+    cog_session_context_t copy = *c;
+    unsigned char *destination = s->context_data + s->context_bytes;
+    (void)memcpy(destination, c->namespace_id, name + 1U);
+    copy.namespace_id = (const char *)destination;
+    destination += name + 1U;
+    if (c->data_bytes != 0U) (void)memcpy(destination, c->data, c->data_bytes);
+    copy.data = c->data_bytes == 0U ? NULL : destination;
+    s->context_bytes += name + 1U + c->data_bytes;
+    s->contexts[s->context_count++] = copy;
+    s->context_high_water = c->context_id;
+    return COG_OK;
+}
+cog_result_t cog_session_context_view(const cog_session_t *s, uint64_t id, cog_session_context_t *out)
+{
+    if (s == NULL || out == NULL) return COG_ERROR_NULL_PTR;
+    for (size_t i = 0U; i < s->context_count; ++i)
+        if (s->contexts[i].context_id == id) { *out = s->contexts[i]; return COG_OK; }
+    return COG_ERROR_NOT_FOUND;
+}
+cog_result_t cog_session_context_publish(cog_session_t *s, const cog_session_context_binding_t *b)
+{
+    if (s == NULL || b == NULL) return COG_ERROR_NULL_PTR;
+    if (s->inspection_only || unresolved(s) || !path_complete(s, s->active, false)) return COG_ERROR_INVALID_STATE;
+    if (s->context_binding_high_water == UINT64_MAX) return COG_ERROR_LIMIT;
+    if (b->binding_id == 0U || b->binding_id <= s->context_binding_high_water ||
+        b->previous_binding_id != s->selected_context_binding_id ||
+        b->anchor_node_id != (s->active == NULL ? 0U : s->active->data.node_id)) return COG_ERROR_INVALID_ARG;
+    cog_session_context_t context;
+    if (cog_session_context_view(s, b->context_id, &context) != COG_OK) return COG_ERROR_NOT_FOUND;
+    if (s->context_binding_count == s->max_context_bindings) return COG_ERROR_LIMIT;
+    s->context_bindings[s->context_binding_count++] = *b;
+    s->context_binding_high_water = b->binding_id;
+    s->selected_context_binding_id = b->binding_id;
+    return COG_OK;
+}
+cog_result_t cog_session_context_select(cog_session_t *s, cog_session_node_t *leaf, uint64_t id)
+{
+    if (s == NULL) return COG_ERROR_NULL_PTR;
+    if ((leaf == NULL && s->node_count != 0U) ||
+        (leaf != NULL && (!contains(s, leaf) || leaf->child_count != 0U))) return COG_ERROR_INVALID_ARG;
+    if (s->inspection_only || unresolved(s) || !path_complete(s, leaf, false)) return COG_ERROR_INVALID_STATE;
+    if (id != 0U && context_binding_find(s->context_bindings, s->context_binding_count, id) == NULL)
+        return COG_ERROR_NOT_FOUND;
+    if (!context_chain_at(s->context_bindings, s->context_binding_count, id,
+        leaf == NULL ? 0U : leaf->data.context_binding_id, leaf == NULL ? 0U : leaf->data.node_id))
+        return COG_ERROR_INVALID_ARG;
+    s->active = leaf; s->selected_context_binding_id = id;
+    return COG_OK;
+}
+
 cog_result_t cog_session_new(cog_session_t **out, const cog_session_config_t *config)
 {
     cog_session_t *s;
@@ -345,6 +441,16 @@ cog_result_t cog_session_new(cog_session_t **out, const cog_session_config_t *co
     if (out == NULL) return COG_ERROR_NULL_PTR;
     *out = NULL;
     if (config != NULL && config->id != NULL && config->id[0] == '\0') return COG_ERROR_INVALID_ARG;
+    if (config != NULL && ((config->max_contexts == 0U) != (config->max_context_bindings == 0U) ||
+        (config->max_contexts == 0U) != (config->max_context_bytes == 0U))) return COG_ERROR_INVALID_ARG;
+    if (config != NULL && (config->max_contexts > SIZE_MAX / sizeof(cog_session_context_t) ||
+        config->max_context_bindings > SIZE_MAX / sizeof(cog_session_context_binding_t))) return COG_ERROR_LIMIT;
+    if (config != NULL) {
+        const size_t records = config->max_contexts * sizeof(cog_session_context_t);
+        const size_t bindings = config->max_context_bindings * sizeof(cog_session_context_binding_t);
+        if (bindings > SIZE_MAX - records || config->max_context_bytes > SIZE_MAX - records - bindings)
+            return COG_ERROR_LIMIT;
+    }
     s = calloc(1U, sizeof(*s));
     if (s == NULL) return COG_ERROR_NOMEM;
     s->max_nodes = config != NULL && config->max_nodes != 0U ? config->max_nodes : DEFAULT_NODES;
@@ -378,6 +484,17 @@ cog_result_t cog_session_new(cog_session_t **out, const cog_session_config_t *co
         s->id = strdup(id);
     }
     if (s->id == NULL) { cog_session_free(s); return COG_ERROR_NOMEM; }
+    if (config != NULL && config->max_contexts != 0U) {
+        s->max_contexts = config->max_contexts;
+        s->max_context_bindings = config->max_context_bindings;
+        s->max_context_bytes = config->max_context_bytes;
+        s->contexts = calloc(s->max_contexts, sizeof(*s->contexts));
+        s->context_bindings = calloc(s->max_context_bindings, sizeof(*s->context_bindings));
+        s->context_data = malloc(s->max_context_bytes);
+        if (s->contexts == NULL || s->context_bindings == NULL || s->context_data == NULL) {
+            cog_session_free(s); return COG_ERROR_NOMEM;
+        }
+    }
     s->next_node_id = 1U;
     s->history_capacity = s->max_nodes;
     *out = s;
@@ -388,6 +505,7 @@ void cog_session_free(cog_session_t *s)
 {
     if (s == NULL) return;
     free(s->nodes); free(s->arena); free(s->history); free(s->snapshot_nodes);
+    free(s->contexts); free(s->context_bindings); free(s->context_data);
     free(s->ledger); free(s->audits); free(s->id); free(s);
 }
 const char *cog_session_id(const cog_session_t *s) { return s == NULL ? NULL : s->id; }
@@ -482,7 +600,9 @@ cog_result_t cog_session_fork(cog_session_t *s, cog_session_node_t *n, cog_sessi
      * Never copy an assistant call to a fresh identity and authorize its effect. */
     for (cog_session_node_t *a = n; a != NULL; a = a->parent) a->shared = true;
     s->forked = true;
-    if (n->child_count == 0U) s->active = n;
+    if (n->child_count == 0U) {
+        s->active = n; s->selected_context_binding_id = n->data.context_binding_id;
+    }
     if (out != NULL) *out = n;
     return COG_OK;
 }
@@ -563,6 +683,8 @@ cog_result_t cog_session_discard_node(cog_session_t *s, cog_session_node_t *n)
     if (n->child_count != 0U || n->shared || n->committed || n->data.message == NULL ||
         n->message.tool_call_count != 0U || n->message.role == COG_MESSAGE_ROLE_TOOL)
         return COG_ERROR_INVALID_STATE;
+    for (size_t i = 0U; i < s->context_binding_count; ++i)
+        if (s->context_bindings[i].anchor_node_id == n->data.node_id) return COG_ERROR_INVALID_STATE;
     cog_session_node_t *p = n->parent;
     if (s->active == n && p != NULL && p->child_count > 1U) return COG_ERROR_INVALID_STATE;
     if (p == NULL) s->root = NULL;
@@ -573,7 +695,9 @@ cog_result_t cog_session_discard_node(cog_session_t *s, cog_session_node_t *n)
     }
     if (n->prev_sibling != NULL) n->prev_sibling->next_sibling = n->next_sibling;
     if (n->next_sibling != NULL) n->next_sibling->prev_sibling = n->prev_sibling;
-    if (s->active == n) s->active = p;
+    if (s->active == n) {
+        s->active = p; s->selected_context_binding_id = p == NULL ? 0U : p->data.context_binding_id;
+    }
     arena_free(s, n->payload);
     (void)memset(n, 0, sizeof(*n));
     --s->node_count;
@@ -583,7 +707,7 @@ cog_result_t cog_session_discard_node(cog_session_t *s, cog_session_node_t *n)
 cog_result_t cog_session_reset(cog_session_t *s)
 {
     if (s == NULL) return COG_ERROR_NULL_PTR;
-    if (s->attached || s->forked || s->ledger_count != 0U || s->inspection_only) return COG_ERROR_INVALID_STATE;
+    if (s->context_count != 0U || s->context_binding_count != 0U || s->attached || s->forked || s->ledger_count != 0U || s->inspection_only) return COG_ERROR_INVALID_STATE;
     for (size_t i = 0U; i < s->max_nodes; ++i) {
         cog_session_node_t *n = &s->nodes[i];
         if (n->used && (n->committed || n->shared || n->data.message == NULL || n->message.role == COG_MESSAGE_ROLE_TOOL))
@@ -663,9 +787,17 @@ cog_result_t cog_session_snapshot_view(const cog_session_t *s, cog_session_snaps
             if (n != NULL) n = n->next_sibling;
         }
     }
-    cog_session_snapshot_t snapshot = {s->id, s->parent_id,
-        s->active == NULL ? 0U : s->active->data.node_id, s->next_node_id - 1U,
-        s->audit_high_water, s->snapshot_nodes, count, s->ledger, s->ledger_count, s->inspection_only};
+    cog_session_snapshot_t snapshot = {
+        .session_id = s->id, .parent_session_id = s->parent_id,
+        .active_node_id = s->active == NULL ? 0U : s->active->data.node_id,
+        .node_id_high_water = s->next_node_id - 1U, .audit_high_water = s->audit_high_water,
+        .nodes = s->snapshot_nodes, .node_count = count, .ledger = s->ledger,
+        .ledger_count = s->ledger_count, .inspection_only = s->inspection_only,
+        .contexts = s->contexts, .context_count = s->context_count,
+        .context_bindings = s->context_bindings, .context_binding_count = s->context_binding_count,
+        .context_high_water = s->context_high_water,
+        .context_binding_high_water = s->context_binding_high_water,
+        .selected_context_binding_id = s->selected_context_binding_id};
     *out = snapshot;
     return COG_OK;
 }
@@ -847,6 +979,21 @@ cog_result_t cog_session_restore(cog_session_t **out, const cog_session_config_t
     rc = cog_session_new(&s, &cfg);
     if (rc != COG_OK) return rc;
     if (snapshot->node_count > s->max_nodes) { rc = COG_ERROR_LIMIT; goto fail; }
+    if (snapshot->context_count > s->max_contexts || snapshot->context_binding_count > s->max_context_bindings ||
+        ((snapshot->context_high_water != 0U || snapshot->context_binding_high_water != 0U) && s->max_contexts == 0U)) {
+        rc = COG_ERROR_LIMIT; goto fail;
+    }
+    for (size_t i = 0U; i < snapshot->context_count; ++i) {
+        rc = cog_session_context_add(s, &snapshot->contexts[i]);
+        if (rc != COG_OK) goto fail;
+    }
+    if (snapshot->context_binding_count != 0U)
+        (void)memcpy(s->context_bindings, snapshot->context_bindings,
+            snapshot->context_binding_count * sizeof(*s->context_bindings));
+    s->context_binding_count = snapshot->context_binding_count;
+    s->context_high_water = snapshot->context_high_water;
+    s->context_binding_high_water = snapshot->context_binding_high_water;
+    s->selected_context_binding_id = snapshot->selected_context_binding_id;
     s->inspection_only = snapshot->inspection_only;
     s->next_node_id = snapshot->node_id_high_water + 1U;
     rc = cog_session_set_parent(s, snapshot->parent_session_id);
@@ -931,6 +1078,65 @@ static size_t snapshot_path_results(const cog_session_snapshot_t *s, uint64_t le
         leaf = n->parent_id;
     }
     return count_;
+}
+
+static cog_result_t snapshot_contexts(const cog_session_snapshot_t *s)
+{
+    if ((s->context_count != 0U && s->contexts == NULL) ||
+        (s->context_binding_count != 0U && s->context_bindings == NULL)) return COG_ERROR_PROTOCOL;
+    uint64_t previous = 0U;
+    for (size_t i = 0U; i < s->context_count; ++i) {
+        const cog_session_context_t *c = &s->contexts[i];
+        if (c->context_id <= previous || c->context_id > s->context_high_water ||
+            context_namespace_length(c->namespace_id) == 0U || c->format == 0U ||
+            (c->data == NULL) != (c->data_bytes == 0U)) return COG_ERROR_PROTOCOL;
+        previous = c->context_id;
+    }
+    previous = 0U;
+    for (size_t i = 0U; i < s->context_binding_count; ++i) {
+        const cog_session_context_binding_t *b = &s->context_bindings[i];
+        if (b->binding_id <= previous || b->binding_id > s->context_binding_high_water ||
+            b->previous_binding_id >= b->binding_id) return COG_ERROR_PROTOCOL;
+        bool context = false;
+        for (size_t k = 0U; k < s->context_count; ++k)
+            if (s->contexts[k].context_id == b->context_id) context = true;
+        if (!context || (b->anchor_node_id != 0U && snapshot_node(s, b->anchor_node_id) == NULL)) return COG_ERROR_PROTOCOL;
+        if (b->previous_binding_id != 0U) {
+            const cog_session_context_binding_t *prior = context_binding_find(s->context_bindings, i, b->previous_binding_id);
+            if (prior == NULL || (prior->anchor_node_id != 0U &&
+                !snapshot_path(s, b->anchor_node_id, prior->anchor_node_id))) return COG_ERROR_PROTOCOL;
+        }
+        /* A revision may only advance the context originally recorded at its
+         * anchor, through earlier idle revisions at that SAME anchor. */
+        const cog_node_data_t *anchor = snapshot_node(s, b->anchor_node_id);
+        if (!context_chain_at(s->context_bindings, i, b->previous_binding_id,
+            anchor == NULL ? 0U : anchor->context_binding_id, b->anchor_node_id)) return COG_ERROR_PROTOCOL;
+        previous = b->binding_id;
+    }
+    for (size_t i = 0U; i < s->node_count; ++i) {
+        const cog_node_data_t *n = &s->nodes[i];
+        const cog_node_data_t *parent = snapshot_node(s, n->parent_id);
+        if (n->context_binding_id != 0U &&
+            context_binding_find(s->context_bindings, s->context_binding_count, n->context_binding_id) == NULL)
+            return COG_ERROR_PROTOCOL;
+        if (!context_chain_at(s->context_bindings, s->context_binding_count, n->context_binding_id,
+            parent == NULL ? 0U : parent->context_binding_id, n->parent_id)) return COG_ERROR_PROTOCOL;
+        if (n->message != NULL && n->message->role == COG_MESSAGE_ROLE_TOOL) {
+            const cog_node_data_t *a = snapshot_assistant(s, n->parent_id);
+            if (a == NULL || n->context_binding_id != a->context_binding_id) return COG_ERROR_PROTOCOL;
+        }
+    }
+    const cog_node_data_t *active_node = snapshot_node(s, s->active_node_id);
+    if (!context_chain_at(s->context_bindings, s->context_binding_count, s->selected_context_binding_id,
+        active_node == NULL ? 0U : active_node->context_binding_id, s->active_node_id)) return COG_ERROR_PROTOCOL;
+    for (size_t i = 0U; i < s->ledger_count; ++i) {
+        const cog_tool_ledger_record_t *l = &s->ledger[i];
+        if (!final_state(l->state) || snapshot_results(s, l) != 1U) {
+            const cog_node_data_t *a = snapshot_node(s, l->assistant_node_id);
+            if (a == NULL || s->selected_context_binding_id != a->context_binding_id) return COG_ERROR_PROTOCOL;
+        }
+    }
+    return COG_OK;
 }
 
 cog_result_t cog_session_snapshot_validate(const cog_session_snapshot_t *s)
@@ -1041,7 +1247,7 @@ cog_result_t cog_session_snapshot_validate(const cog_session_snapshot_t *s)
         if (a == NULL || n->message->status != COG_MESSAGE_COMPLETE ||
             snapshot_call(s, a->node_id, n->message->tool_call_id) == NULL) return COG_ERROR_PROTOCOL;
     }
-    return COG_OK;
+    return snapshot_contexts(s);
 }
 
 void cog_session_mark_committed(const cog_session_t *session)

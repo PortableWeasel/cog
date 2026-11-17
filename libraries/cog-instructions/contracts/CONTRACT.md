@@ -1,8 +1,9 @@
 # Instruction contracts
 
 Public headers are authoritative. This inventory defines implementation and
-verification obligations for `tix show 7eb6cf9`; it does not claim implementation
-or a passed joined header gate.
+verification obligations for `tix show 7eb6cf9`. The joined header gate is
+accepted (`04800f5`). The implementation has four executable contract suites
+under `tests/`; runtime/native integration remains a separate gate.
 
 ## Ownership and dependencies
 

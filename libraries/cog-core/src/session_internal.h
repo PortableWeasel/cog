@@ -87,6 +87,12 @@ struct cog_session {
     uint64_t audit_high_water;
     bool inspection_only;
     bool forked;
+    cog_session_context_t *contexts;
+    cog_session_context_binding_t *context_bindings;
+    unsigned char *context_data;
+    size_t context_count, context_binding_count;
+    size_t max_contexts, max_context_bindings, max_context_bytes, context_bytes;
+    uint64_t context_high_water, context_binding_high_water, selected_context_binding_id;
 
 };
 

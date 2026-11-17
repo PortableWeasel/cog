@@ -321,3 +321,19 @@ target_enable_warnings(test_orchestrator_wire)
 target_link_options(test_orchestrator_wire PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
 add_test(NAME unit-orchestrator-wire COMMAND test_orchestrator_wire)
 set_tests_properties(unit-orchestrator-wire PROPERTIES LABELS "unit;orchestrator" TIMEOUT 20)
+
+# Generic context ownership, v3 codec and durable compatibility contracts.
+add_executable(test_session_context test_session_context.c)
+target_link_libraries(test_session_context PRIVATE cog::core)
+target_include_directories(test_session_context PRIVATE
+    ${PROJECT_SOURCE_DIR}/libraries/cog-core/src)
+target_enable_warnings(test_session_context)
+target_link_options(test_session_context PRIVATE
+    -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=strdup)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_session_context PRIVATE
+        -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-strdup)
+endif()
+add_test(NAME unit-session-context COMMAND test_session_context
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+set_tests_properties(unit-session-context PROPERTIES LABELS "unit;core;store" TIMEOUT 30)

@@ -79,12 +79,12 @@ Null signature is outside the pinned profile (UNSUPPORTED); other malformed
 recognized kinds are PROTOCOL. No base64, index-range or format-value policy is
 introduced; the approved profile clarification is archived on `tix show a81767d`.
 
-## Draft prompt compiler extension
+## Prompt compiler extension
 
 `provider_prompt.h` and the static `cog_openrouter_prompt_template` add pure,
 bounded preparation. They do not change the existing provider request/vtable
-layout or authorize network/effect work. The joined instruction gate remains a
-prerequisite to implementation (`tix show 04800f5`).
+layout or authorize network/effect work. The joined instruction gate is accepted
+(`tix show 04800f5`); `unit-provider-prompt` checks the implemented compiler.
 
 The constructor reserves scratch and two aligned output lanes. Compile validates
 identity, counts, strict input and model/token ceilings, renders into the inactive

@@ -329,6 +329,7 @@ static bool bytes_eq(const void *a, size_t an, const void *b, size_t bn)
  * padding, pointer identity and accidentally omitted structured fields. */
 static bool node_equal(cog_store_t *s, const cog_node_data_t *a, const cog_node_data_t *b)
 {
+    if (a->context_binding_id != b->context_binding_id) return false;
     cog_node_data_t av = *a, bv = *b;
     cog_message_t am = {0}, bm = {0};
     if (av.message == NULL && av.role <= COG_NODE_ASSISTANT) {
@@ -376,12 +377,59 @@ static bool recovery_result(const cog_session_snapshot_t *old, const cog_session
         l->state == COG_TOOL_EXECUTION_STARTED || l->state == COG_TOOL_EXECUTION_INDETERMINATE);
 }
 static bool indeterminate(const cog_session_snapshot_t *v);
+static bool context_history(const cog_session_snapshot_t *v)
+{
+    if (v->context_count != 0U || v->context_binding_count != 0U || v->context_high_water != 0U ||
+        v->context_binding_high_water != 0U || v->selected_context_binding_id != 0U) return true;
+    for (size_t i = 0U; i < v->node_count; ++i) if (v->nodes[i].context_binding_id != 0U) return true;
+    return false;
+}
+static cog_result_t context_monotonic(const cog_session_snapshot_t *old,
+    const cog_session_snapshot_t *now, bool recovery)
+{
+    if (now->context_count < old->context_count || now->context_binding_count < old->context_binding_count ||
+        now->context_high_water < old->context_high_water ||
+        now->context_binding_high_water < old->context_binding_high_water) return COG_ERROR_INVALID_STATE;
+    for (size_t i = 0U; i < old->context_count; ++i) {
+        const cog_session_context_t *a = &old->contexts[i], *b = &now->contexts[i];
+        if (a->context_id != b->context_id || !str_eq(a->namespace_id, b->namespace_id) ||
+            a->format != b->format || !bytes_eq(a->data, a->data_bytes, b->data, b->data_bytes)) return COG_ERROR_INVALID_STATE;
+    }
+    for (size_t i = old->context_count; i < now->context_count; ++i)
+        if (now->contexts[i].context_id <= old->context_high_water) return COG_ERROR_INVALID_STATE;
+    for (size_t i = 0U; i < old->context_binding_count; ++i) {
+        const cog_session_context_binding_t *a = &old->context_bindings[i], *b = &now->context_bindings[i];
+        if (a->binding_id != b->binding_id || a->previous_binding_id != b->previous_binding_id ||
+            a->anchor_node_id != b->anchor_node_id || a->context_id != b->context_id) return COG_ERROR_INVALID_STATE;
+    }
+    for (size_t i = old->context_binding_count; i < now->context_binding_count; ++i)
+        if (now->context_bindings[i].binding_id <= old->context_binding_high_water) return COG_ERROR_INVALID_STATE;
+    if (recovery && (now->context_count != old->context_count ||
+        now->context_high_water != old->context_high_water ||
+        now->context_binding_high_water != old->context_binding_high_water)) return COG_ERROR_INVALID_STATE;
+    bool old_unresolved_remains = false;
+    for (size_t i = 0U; i < old->ledger_count; ++i) {
+        const cog_tool_ledger_record_t *l = &old->ledger[i];
+        if (l->state != COG_TOOL_EXECUTION_PROPOSED && l->state != COG_TOOL_EXECUTION_STARTED &&
+            l->state != COG_TOOL_EXECUTION_INDETERMINATE) continue;
+        const cog_tool_ledger_record_t *next = ledger_find(now, l->assistant_node_id, l->call_id);
+        if (next != NULL && (next->state == COG_TOOL_EXECUTION_PROPOSED || next->state == COG_TOOL_EXECUTION_STARTED ||
+            next->state == COG_TOOL_EXECUTION_INDETERMINATE)) old_unresolved_remains = true;
+    }
+    if ((recovery || old_unresolved_remains) &&
+        (now->context_binding_count != old->context_binding_count ||
+         now->selected_context_binding_id != old->selected_context_binding_id)) return COG_ERROR_INVALID_STATE;
+    return COG_OK;
+}
+
 static cog_result_t monotonic(cog_store_t *s, const cog_session_snapshot_t *old,
     const cog_session_snapshot_t *now, bool recovery)
 {
     if (!str_eq(old->session_id, now->session_id) || !str_eq(old->parent_session_id, now->parent_session_id) ||
         old->inspection_only != now->inspection_only || now->node_id_high_water < old->node_id_high_water ||
         now->audit_high_water < old->audit_high_water) return COG_ERROR_INVALID_STATE;
+    cog_result_t context_rc = context_monotonic(old, now, recovery);
+    if (context_rc != COG_OK) return context_rc;
     size_t cursor = 0U;
     for (size_t i = 0U; i < old->node_count; ++i) {
         while (cursor < now->node_count && now->nodes[cursor].node_id != old->nodes[i].node_id) ++cursor;
@@ -680,7 +728,8 @@ static cog_result_t file_load_common(cog_store_t *s, const char *id, uint64_t ex
     if (rc == COG_OK && (exact != 0U || m.generation != 0U)) {
         uint64_t g = exact != 0U ? exact : m.generation;
         rc = generation_read(s, dir, g, g == m.generation ? &m : NULL, &v);
-        r.source_version = 2U; r.checkpoint_generation = g;
+        r.source_version = rc == COG_OK && s->read_buffer[GEN_SIZE + 7U] == '3' ? 3U : 2U;
+        r.checkpoint_generation = g;
     } else if (rc == COG_OK) rc = legacy_read(s, dir, id, mode, &v, &r);
     (void)close(dir);
     if (rc != COG_OK) return rc;
@@ -691,6 +740,20 @@ static cog_result_t file_load_common(cog_store_t *s, const char *id, uint64_t ex
     for (size_t i = 0U; i < v.node_count; ++i)
         if (v.nodes[i].message != NULL && v.nodes[i].message->tool_call_count > cfg.max_tool_calls_per_message)
             cfg.max_tool_calls_per_message = v.nodes[i].message->tool_call_count;
+    r.source_audit_high_water = v.audit_high_water;
+    r.contexts_present = context_history(&v);
+    if (r.contexts_present) {
+        cfg.max_contexts = v.context_count == 0U ? 1U : v.context_count;
+        cfg.max_context_bindings = v.context_binding_count == 0U ? 1U : v.context_binding_count;
+        for (size_t i = 0U; i < v.context_count; ++i) {
+            if (v.contexts[i].namespace_id == NULL) return COG_ERROR_PROTOCOL;
+            const size_t name = strlen(v.contexts[i].namespace_id);
+            if (name == SIZE_MAX || v.contexts[i].data_bytes > SIZE_MAX - name - 1U ||
+                name + 1U + v.contexts[i].data_bytes > s->capacity - cfg.max_context_bytes) return COG_ERROR_LIMIT;
+            cfg.max_context_bytes += name + 1U + v.contexts[i].data_bytes;
+        }
+        if (cfg.max_context_bytes == 0U) cfg.max_context_bytes = 1U;
+    }
     rc = cog_session_restore(out, &cfg, &v);
     if (rc != COG_OK) return rc;
     r.replay_safe = !v.inspection_only;
@@ -939,7 +1002,8 @@ const cog_store_vtable_t cog_store_file_backend = {
     .delete_ = file_delete, .list = file_list, .exists = file_exists, .load_ex = file_load_ex,
     .checkpoint_save = file_checkpoint_save, .checkpoint_load = file_checkpoint_load,
     .owner_read = file_owner_read, .owner_compare_exchange = file_owner_cas,
-    .owner_acquire = file_acquire, .owner_release = file_release, .owner_acquire_recovery = file_acquire_recovery
+    .owner_acquire = file_acquire, .owner_release = file_release, .owner_acquire_recovery = file_acquire_recovery,
+    .capabilities = COG_STORE_CAP_CONTEXT_V3
 };
 const cog_store_vtable_t cog_store_null_backend = {
     .name = "null", .save = null_save, .load = null_load, .append = null_append,
@@ -958,6 +1022,8 @@ cog_result_t cog_store_new(cog_store_t **out, const cog_store_config_t *config)
     *out = NULL;
     cog_store_config_t c = config == NULL ? (cog_store_config_t){0} : *config;
     const cog_store_vtable_t *v = c.backend == NULL ? &cog_store_file_backend : c.backend;
+    if ((v->capabilities & ~COG_STORE_CAP_CONTEXT_V3) != 0U ||
+        (c.required_capabilities & ~v->capabilities) != 0U) return COG_ERROR_UNSUPPORTED;
     if (v->save == NULL || v->load == NULL || v->append == NULL || v->delete_ == NULL ||
         v->list == NULL || v->exists == NULL) return COG_ERROR_INVALID_ARG;
     bool any_fenced = v->checkpoint_save != NULL || v->checkpoint_load != NULL || v->owner_read != NULL ||
@@ -990,6 +1056,14 @@ void cog_store_free(cog_store_t *s)
     if (s->guards != NULL) return;
     free(s->compare_buffer); free(s->scratch); free(s->read_buffer); free(s->write_buffer); free(s->base); free(s);
 }
+static cog_result_t context_capability(const cog_store_t *s, const cog_session_t *session)
+{
+    if ((s->backend->capabilities & COG_STORE_CAP_CONTEXT_V3) != 0U) return COG_OK;
+    cog_session_snapshot_t snapshot;
+    cog_result_t rc = cog_session_snapshot_view(session, &snapshot);
+    if (rc != COG_OK) return rc;
+    return context_history(&snapshot) ? COG_ERROR_UNSUPPORTED : COG_OK;
+}
 /** @brief Dispatch a monotonic durable save. */
 cog_result_t cog_store_save(cog_store_t *s, const cog_session_t *session)
 {
@@ -997,6 +1071,8 @@ cog_result_t cog_store_save(cog_store_t *s, const cog_session_t *session)
     cog_result_t rc = valid_id(cog_session_id(session));
     if (rc != COG_OK) return rc;
     if (s->require_owner && find_guard(s, cog_session_id(session)) == NULL) return COG_ERROR_INVALID_STATE;
+    rc = context_capability(s, session);
+    if (rc != COG_OK) return rc;
     rc = s->backend->save(s->context, session);
     if (rc == COG_OK || (rc == COG_ERROR_IO && s->backend != &cog_store_file_backend))
         cog_session_mark_committed(session);
@@ -1024,6 +1100,8 @@ cog_result_t cog_store_append(cog_store_t *s, const cog_session_t *session, cons
     if (rc != COG_OK) return rc;
     cog_store_owner_guard_t *g = find_guard(s, cog_session_id(session));
     if (s->require_owner && (g == NULL || g->recovery)) return COG_ERROR_INVALID_STATE;
+    rc = context_capability(s, session);
+    if (rc != COG_OK) return rc;
     rc = s->backend->append(s->context, session, node);
     if (rc == COG_OK || (rc == COG_ERROR_IO && s->backend != &cog_store_file_backend))
         cog_session_mark_committed(session);
@@ -1056,7 +1134,9 @@ cog_result_t cog_store_checkpoint_save(cog_store_t *s, const cog_session_t *sess
     if (s == NULL || session == NULL || g == NULL || cp == NULL) return COG_ERROR_NULL_PTR;
     if (!s->require_owner || g->store != s || g->recovery || g->borrowers != 0U ||
         find_guard(s, cog_session_id(session)) != g) return COG_ERROR_INVALID_STATE;
-    cog_result_t rc = s->backend->checkpoint_save(s->context, session,
+    cog_result_t rc = context_capability(s, session);
+    if (rc != COG_OK) return rc;
+    rc = s->backend->checkpoint_save(s->context, session,
         s->backend == &cog_store_file_backend ? (const void *)g : g->backend_guard, cp);
     if (rc == COG_OK || (rc == COG_ERROR_IO && s->backend != &cog_store_file_backend))
         cog_session_mark_committed(session);

@@ -506,10 +506,12 @@ defines module obligations without duplicating progress in this docs folder.
 
 The complete draft surface is traced in the consolidated
 [instruction scenarios](scenarios/P01-instruction-support.md), including all 20
-baseline extensions. These declarations do not by themselves authorize or claim
-implementation: `04800f5` records the three full passes, corrections and additional
-final review. Runtime implementation follows the dependency plan only after that
-gate accepts the joined contracts.
+baseline extensions. Ticket `04800f5` records acceptance after three full passes
+and an additional final review. Module implementation proceeds under `7eb6cf9`;
+core contexts/store v3, instruction loading/composition/CGIM, and the provider
+prompt compiler have implementations and focused contract tests. Runtime and
+native worker integration remain in progress. Module test success does not
+replace the joined publication, effect-admission and scenario gates.
 
 ## Tools and effect admission
 

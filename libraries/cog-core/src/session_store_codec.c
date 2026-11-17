@@ -230,10 +230,20 @@ static void ledger(wire_t *w, cog_tool_ledger_record_t *l)
 static void snapshot(wire_t *w, cog_session_snapshot_t *s)
 {
     unsigned char magic[8] = {'C','O','G','S','N','A','P','2'};
-    const unsigned char expected[8] = {'C','O','G','S','N','A','P','2'};
+    if (w->input == NULL) {
+        bool context = s->context_count != 0U || s->context_binding_count != 0U ||
+            s->context_high_water != 0U || s->context_binding_high_water != 0U ||
+            s->selected_context_binding_id != 0U;
+        for (size_t i = 0U; s->nodes != NULL && i < s->node_count && !context; ++i)
+            context = s->nodes[i].context_binding_id != 0U;
+        if (context) magic[7] = '3';
+    }
     bytes(w, magic, sizeof(magic));
     if (w->error != COG_OK) return;
-    if (memcmp(magic, expected, sizeof(magic)) != 0) { w->error = COG_ERROR_UNSUPPORTED; return; }
+    if (memcmp(magic, "COGSNAP", 7U) != 0 || (magic[7] != '2' && magic[7] != '3')) {
+        w->error = COG_ERROR_UNSUPPORTED; return;
+    }
+    const bool v3 = magic[7] == '3';
     string(w, &s->session_id); string(w, &s->parent_session_id);
     u64(w, &s->active_node_id); u64(w, &s->node_id_high_water); u64(w, &s->audit_high_water);
     boolean(w, &s->inspection_only); count(w, &s->node_count);
@@ -253,6 +263,45 @@ static void snapshot(wire_t *w, cog_session_snapshot_t *s)
     for (size_t k = 0U; k < s->ledger_count && w->error == COG_OK; ++k) {
         cog_tool_ledger_record_t l = w->input == NULL ? s->ledger[k] : (cog_tool_ledger_record_t){0};
         ledger(w, &l); if (w->input != NULL) records[k] = l;
+    }
+    if (!v3 || w->error != COG_OK) return;
+    u64(w, &s->context_high_water); u64(w, &s->context_binding_high_water);
+    u64(w, &s->selected_context_binding_id); count(w, &s->context_count);
+    cog_session_context_t *contexts = w->input == NULL ? NULL : array(w, s->context_count, sizeof(*contexts));
+    if (w->input != NULL) s->contexts = contexts;
+    if (w->error != COG_OK) return;
+    if (s->context_count != 0U && s->contexts == NULL) { w->error = COG_ERROR_PROTOCOL; return; }
+    for (size_t k = 0U; k < s->context_count && w->error == COG_OK; ++k) {
+        cog_session_context_t c = w->input == NULL ? s->contexts[k] : (cog_session_context_t){0};
+        uint64_t format = c.format;
+        u64(w, &c.context_id); string(w, &c.namespace_id); u64(w, &format);
+        blob(w, &c.data, &c.data_bytes);
+        if (format == 0U || format > UINT32_MAX || c.namespace_id == NULL || c.namespace_id[0] == '\0' ||
+            ((c.data == NULL) != (c.data_bytes == 0U))) { w->error = COG_ERROR_PROTOCOL; return; }
+        c.format = (uint32_t)format;
+        if (w->input != NULL) contexts[k] = c;
+    }
+    count(w, &s->context_binding_count);
+    cog_session_context_binding_t *bindings = w->input == NULL ? NULL :
+        array(w, s->context_binding_count, sizeof(*bindings));
+    if (w->input != NULL) s->context_bindings = bindings;
+    if (w->error != COG_OK) return;
+    if (s->context_binding_count != 0U && s->context_bindings == NULL) { w->error = COG_ERROR_PROTOCOL; return; }
+    for (size_t k = 0U; k < s->context_binding_count && w->error == COG_OK; ++k) {
+        cog_session_context_binding_t b = w->input == NULL ? s->context_bindings[k] : (cog_session_context_binding_t){0};
+        u64(w, &b.binding_id); u64(w, &b.previous_binding_id);
+        u64(w, &b.anchor_node_id); u64(w, &b.context_id);
+        if (w->input != NULL) bindings[k] = b;
+    }
+    size_t node_bindings = s->node_count;
+    count(w, &node_bindings);
+    if (w->error != COG_OK) return;
+    if (node_bindings != s->node_count) { w->error = COG_ERROR_PROTOCOL; return; }
+    for (size_t k = 0U; k < node_bindings && w->error == COG_OK; ++k) {
+        uint64_t node_id = s->nodes[k].node_id, binding_id = s->nodes[k].context_binding_id;
+        u64(w, &node_id); u64(w, &binding_id);
+        if (node_id != s->nodes[k].node_id) { w->error = COG_ERROR_PROTOCOL; return; }
+        if (w->input != NULL) nodes[k].context_binding_id = binding_id;
     }
 }
 
