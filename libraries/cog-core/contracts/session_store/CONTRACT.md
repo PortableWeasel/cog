@@ -282,3 +282,28 @@ constructor-reserved buffers/16 default slots; release ticket `b569276` tracks
 that migration. H/K must finish the real provider/tool conversation loop and
 remaining application scenarios. I/J/L/N/O and full installed packaging/release
 gate P remain separate; no live or paid model calls were used here.
+
+## Draft v3 instruction context extension
+
+The new `session.h` context/binding APIs and `session_store.h` v3 suffix are
+header-first contracts, not implemented by the v2 baseline above. Context IDs,
+revision IDs and node associations are immutable. A branch explicitly selects
+its recorded or same-leaf pending revision; it cannot inherit a sibling's latest
+activation. Reset/discard cannot erase context history or binding anchors.
+
+`COG_STORE_CAP_CONTEXT_V3` is required before instruction-aware load and is
+independently checked before any context-bearing save/append/checkpoint callback.
+Unknown/unsupported required capabilities fail before callbacks. Custom backend
+source must be recompiled for the appended vtable field; binary compatibility
+with an old shorter table is not claimed. The whole checkpoint atomically stores
+messages, ledger/audit, opaque context bytes, binding revisions and node bindings.
+Recovery guards cannot publish contexts or change selection; reconciliation
+results retain their originating assistant context.
+
+Tests must cover sparse IDs/high-water, repeated idle publication, sibling and
+nonleaf forks, explicit pending-binding selection, inactive leaf discard, blocked
+anchor discard/reset, capacity-failure atomicity, malformed/cross-branch restore,
+source-free v3 load, v1/v2 legacy zero initialization, unsupported custom callbacks
+not invoked, recovery-only refusal, committed-data immutability, and failed-save
+freeze. File loads derive context constructor reservations from validated bounded
+snapshot records. Existing transaction/fencing tests must remain intact.

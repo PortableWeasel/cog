@@ -10,6 +10,7 @@
 #ifndef COG_CLI_EXECUTION_H
 #define COG_CLI_EXECUTION_H
 #include "configuration.h"
+#include "instruction_transfer.h"
 #include "observation.h"
 #include "control.h"
 #include "projection.h"
@@ -58,6 +59,11 @@ typedef struct cog_cli_execution_admission {
     cog_store_owner_t expected, next; /**< STAGED only: exact CGH1 tuples. */
     cog_store_checkpoint_t checkpoint; /**< STAGED exact nonzero generation. */
     cog_cli_observer_t *observer; /**< Borrowed bridge through app_free/net_free. */
+    cog_cli_instruction_capsule_t instructions; /**< Borrowed only during new;
+       constructor validates/restores into owned snapshot before returning. Empty
+       tuple means explicit instruction-free mode. Child snapshot already reflects
+       policy/limit intersection. STAGED matches exact checkpoint CGIM attachment,
+       including complete bytes/identity, not latest context or source rereads. */
 } cog_cli_execution_admission_t;
 
 /**
@@ -67,6 +73,11 @@ typedef struct cog_cli_execution_admission {
  * every return; all other inputs borrowed only through call unless noted.
  * @return OK; NULL_PTR; INVALID_ARG mode/identity; LIMIT; NOMEM; IO;
  * INDETERMINATE; UNSUPPORTED; existing J/G/preflight admission failures.
+ * Instruction-aware construction restores CGIM against actual descriptors and
+ * template without source reads. Initial child checkpoint includes context before
+ * task/model/tool. STAGED compares exact attachment before PREPARED; mismatch
+ * fails, never repairs/adopts latest. Every failed construction frees partial
+ * snapshot ownership; caller capsule remains borrowed and unconsumed.
  * ROOT uses normal initial checkpoint/explicit RESUME logic once. LOCAL_CHILD
  * uses the exact supplied session and creates its guarded initial checkpoint;
  * remote child creates/guards its copied identity and exact parent link, refusing

@@ -95,7 +95,9 @@ typedef struct cog_instruction_snapshot cog_instruction_snapshot_t;
 
 /** @brief Explicit effective host settings; no file may increase these bounds. */
 typedef struct cog_instruction_selection {
-    uint64_t snapshot_id; /**< Host-supplied nonzero, never reused in its catalog. */
+    uint64_t snapshot_id; /**< Host-supplied nonzero; published identities are never
+       reused within owning session + catalog_generation. Separate child sessions
+       have separate domains; native workers receive coordinator-assigned IDs. */
     const char *workspace_root_id;
     const char *scope; /**< Target directory relative to the configured workspace. */
     const char *agent_name; /**< NULL for default role. */
@@ -175,7 +177,8 @@ typedef enum cog_instruction_restore_mode {
  * @param[out] error Optional diagnostic borrowing caller input IDs/path on
  * failure; consume it before freeing the source inputs. No source text escapes.
  * @return OK; NULL_PTR; INVALID_ARG kinds/identity/limits/duplicate source;
- * PROTOCOL malformed UTF-8/frontmatter/duplicate fields/name/path agreement;
+ * PROTOCOL malformed UTF-8/frontmatter/duplicate fields/name/path agreement
+ * or same-kind/name/equal-precedence catalog collision;
  * UNSUPPORTED metadata grammar/version/field; LIMIT bounds/arithmetic; NOMEM.
  * @note Profile cog-agent:1 and skill frontmatter support bounded string scalars
  * (plain, single/double quoted, literal/folded blocks) plus a single metadata
@@ -228,7 +231,7 @@ cog_result_t cog_instruction_catalog_view(const cog_instruction_catalog_t *catal
  * cannot infer absent filesystem rules from missing caller bytes. Tool names,
  * descriptions and schemas derive from the same selected static descriptors;
  * denied bindings are omitted, ASK is never converted to ALLOW. Tool names
- * must be nonempty UTF-8 without whitespace or ASCII controls, so exact-name
+ * must be nonempty UTF-8 without ASCII whitespace or controls, so exact-name
  * lists and generated guidance cannot acquire extra records from a name. Snapshot owns
  * all manifest text and no longer borrows catalog/additions/selection strings.
  * It still borrows code-bearing static descriptors until snapshot_free.

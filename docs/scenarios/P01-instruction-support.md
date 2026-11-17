@@ -1,15 +1,15 @@
 # P01–P17: Instruction support contract traces
 
-Header authoring under `e321ec3` / `57e749b`. These are design traces, not runtime
-test passes. The draft B1–B6 APIs exist as declarations; B7 app/store/worker
-joins remain open under `1ddb6d2`. Loading belongs to `cog-instructions`; a
-headless runtime consumes its neutral bundles. CLI is a minimal proof frontend.
-No imagined runtime publication API is counted as
-header coverage. Source classification, static-template selection and policy
-decisions shown as Host work are explicit caller responsibilities.
+Header/scenario review under `e321ec3` / `04800f5`. These are design traces,
+not runtime test passes. Loading belongs to `cog-instructions`; `cog-runtime`
+consumes neutral bundles and owns publication. CLI remains the proof frontend.
+The APIs below are declared; implementation is gated on the full review.
 
 Header key used by every coverage table:
 
+- **R:** [runtime.h](../../libraries/cog-runtime/include/cog/runtime.h)
+- **X:** [runtime_instructions.h](../../libraries/cog-runtime/include/cog/runtime_instructions.h)
+- **W:** [instruction_transfer.h](../../applications/cog-cli/src/instruction_transfer.h), [execution.h](../../applications/cog-cli/src/execution.h), [control.h](../../applications/cog-cli/src/control.h)
 - **S:** [instruction_source.h](../../libraries/cog-instructions/include/cog/instruction_source.h)
 - **I:** [instructions.h](../../libraries/cog-instructions/include/cog/instructions.h)
 - **M:** [instruction_codec.h](../../libraries/cog-instructions/include/cog/instruction_codec.h)
@@ -45,10 +45,9 @@ sequenceDiagram
 | Explicit reads | `cog_instruction_source_config_t`, `cog_instruction_source_reader_new`, `cog_instruction_source_begin`, `cog_instruction_source_poll`, `cog_instruction_source_view` | S |
 | Classification/composition | `cog_instruction_source_t`, `cog_instruction_catalog_new`, `cog_instruction_snapshot_new`, `cog_instruction_prompt_view` | I |
 | Pure preparation/send | `cog_provider_prompt_compile`, `cog_openrouter_prompt_template`, `cog_provider_preflight`, `cog_provider_send` | P,O,V |
+| Joined coverage | `cog_runtime_new`, `cog_session_context_add`, `cog_session_context_publish`, `cog_store_checkpoint_save`, `cog_runtime_begin/step/view/ack` | R,C,D |
 
-**Gap:** generic app integration and durable context publication before the first
-request are not yet declared. Construction failures publish no partial owner.
-Caller blobs bypass Source and take the same catalog/composition path.
+**Contract review:** Initial context checkpoint precedes input/send. Source-free caller blobs follow the same composition path. DISABLED is explicit legacy behavior; PINNED never falls back to it.
 
 ## P02 — Nested AGENTS.md discovered before an effect
 
@@ -60,7 +59,7 @@ sequenceDiagram
     Host->>Host: compare exact applicable sources to proposal snapshot
     Host->>Host: deny stale unstarted proposals without STARTED/effects
     Host->>Snapshot: cog_instruction_snapshot_new(new scope)
-    Note over Host: B7 must atomically save final denials and replacement context
+    Host->>Store: guarded checkpoint(final denials + replacement binding)
     Host->>Compiler: compile next bounded model continuation
 ```
 
@@ -69,11 +68,9 @@ sequenceDiagram
 | Root-to-target probe | `COG_INSTRUCTION_SOURCE_SCOPE`, `cog_instruction_source_request_t`, `cog_instruction_source_begin`, `cog_instruction_source_poll`, `cog_instruction_source_view` | S |
 | Changed immutable view | `cog_instruction_snapshot_new`, `cog_instruction_manifest_t` | I |
 | No effect | `cog_toolkit_execution_start` is **not called** for stale proposals | T |
+| Joined coverage | `cog_runtime_scope_binding_t`, static scope admission, `cog_session_context_publish`, guarded checkpoint; native CGIR SCOPE | R,X,C,D,W |
 
-**Gap:** B7 needs the effect-admission scope check and atomic result/context
-checkpoint. Missing caller source bytes cannot prove absence of filesystem
-rules. Commands can access paths beyond their declared cwd; no confinement is
-inferred. Denying a stale call never authorizes replay of that identity.
+**Contract review:** Changed scope closes unstarted proposals before replacement. An exact unchanged probe does not deny/replay the original call. V1 multiple target directories must be identical or fail UNSUPPORTED before effects; no sibling-chain merge or arbitrary-command confinement is claimed.
 
 ## P03 — Absent, unreadable, escaping or oversized source
 
@@ -95,10 +92,9 @@ sequenceDiagram
 | Optional/required outcome | `cog_instruction_source_request_t.optional`, `cog_instruction_source_item_t.present`, `cog_instruction_source_item_t.content_loaded`, `cog_instruction_source_poll`, `cog_instruction_source_view` | S |
 | Bound/destructor | `cog_instruction_source_limits_t`, `cog_instruction_source_reader_free` | S |
 | Failure location | `cog_instruction_diagnostic_t`, `cog_instruction_source_error` | S |
+| Joined coverage | reader errors and consuming cleanup | S |
 
-**Gap:** no new API gap for the independent reader. Runtime fault/descriptor
-tests are still required. A detected concurrent file change fails IO; exact
-observed bytes do not claim an atomic snapshot of an external writer.
+**Contract review:** Independent reader boundary has no remaining API gap; runtime faults/descriptor and capacity tests are implementation obligations. Exact observed bytes are not an atomic external-filesystem snapshot.
 
 ## P04 — Duplicate catalog names and malformed frontmatter
 
@@ -117,11 +113,9 @@ sequenceDiagram
 |---|---|---|
 | Metadata/collision | `cog_instruction_source_t.precedence`, `COG_INSTRUCTION_METADATA_V1`, `cog_instruction_catalog_new`, `cog_instruction_catalog_view` | I |
 | Diagnostic owner | Optional `cog_instruction_diagnostic_t` borrows still-live source inputs; no failed constructor allocation escapes | S,I |
+| Joined coverage | `cog_instruction_catalog_new` collision and grammar errors | I |
 
-**Gap:** the initial grammar is intentionally a bounded subset. No general YAML,
-Unicode-name normalization or cross-client leniency is promised. Parser fixtures
-must distinguish duplicate metadata keys, equal-precedence names and legitimate
-project-over-user shadowing. No parse-time script or include is executed.
+**Contract review:** Equal-precedence names are PROTOCOL. Unknown grammar is UNSUPPORTED. No include/script execution, general YAML or Unicode-name normalization is promised.
 
 ## P05 — Named agent role and capability reduction
 
@@ -138,10 +132,9 @@ sequenceDiagram
 |---|---|---|
 | Profile selection | `cog_instruction_entry_t`, `cog_instruction_selection_t.agent_name`, `cog_instruction_selection_t.model_id`, `cog_instruction_selection_t.bindings`, `cog_instruction_snapshot_new` | I |
 | Current child admission | `cog_agent_config_t`, `cog_agent_spawn` | A |
+| Joined coverage | `cog_runtime_child_select`, `cog_runtime_workers_t`, static delegate role/skill fields | R,X |
 
-**Gap:** binding the selected profile/snapshot to an actual child attempt is B7.
-A file cannot introduce a new descriptor, model route, credential resolver or
-recursive delegate. A model constraint mismatch is explicit UNSUPPORTED.
+**Contract review:** Selection is copied and intersected before admission; role/active-skill requirements cannot be silently dropped. A different model hint cannot introduce an unregistered route.
 
 ## P06 — Local/native child context equivalence
 
@@ -149,7 +142,7 @@ recursive delegate. A model constraint mismatch is explicit UNSUPPORTED.
 sequenceDiagram
     Parent->>Snapshot: cog_instruction_snapshot_view
     Parent->>Parent: intersect child permissions, role and remaining budgets
-    Note over Parent,Worker: B7 must encode authenticated bounded catalog/context capsule
+    Parent->>Worker: CGB2 profile with exact child-specific CGIM
     Worker->>Snapshot: cog_instruction_snapshot_restore(EXECUTE,static bindings)
     Worker->>Compiler: compile copied context without reading parent paths
 ```
@@ -158,11 +151,9 @@ sequenceDiagram
 |---|---|---|
 | Resolved bytes/restore | `cog_instruction_manifest_t`, `cog_instruction_snapshot_view`, `cog_instruction_snapshot_restore` | I |
 | Existing execution identity | `cog_agent_config_t.execution_epoch`, `cog_agent_config_t.owner_peer`, `cog_agent_copy_config`, `cog_agent_session_borrow`, `cog_agent_session_return` | A |
+| Joined coverage | `cog_instruction_manifest_encode`, `cog_instruction_snapshot_decode`, CGB2/CGS2, `cog_cli_execution_admission_t.instructions` | M,W |
 
-**Gap:** no instruction capsule, frame version, resource forwarding or receipt
-lifetime is declared yet. Native pointer serialization and a worker's implicit
-reread of parent host paths are forbidden. Failure keeps existing uncertainty,
-drain/reap and no-replay rules; no child-parity runtime claim is made.
+**Contract review:** Local/native children use the same child-specific reduced snapshot, not parent restore under weaker tools. PROFILE ACK and CHILD_START identity matching precede initial child context checkpoint/task admission.
 
 ## P07 — Skill discovery, activation and deduplication
 
@@ -179,11 +170,9 @@ sequenceDiagram
 |---|---|---|
 | Catalog/body distinction | `cog_instruction_catalog_new`, `cog_instruction_selection_t.skill_names`, `cog_instruction_manifest_t.available_skills`, `cog_instruction_manifest_t.active_skills` | I |
 | Immutable activation | `cog_instruction_snapshot_new`, `cog_instruction_prompt_view` | I |
+| Joined coverage | `cog_runtime_activate_skill_tool`, `cog_runtime_instruction_prepare/publish`, CGIR ACTIVATE | X,R,W |
 
-**Gap:** B7 needs static activation-tool/event admission and causal publication
-after the current call group closes. Duplicate explicit names fail before
-publication. A cached unselected body consumes bounded host memory, not model
-context; no file reread occurs merely because a skill is activated.
+**Contract review:** The exact requesting control closes its result/ledger under the old binding with the new binding in one checkpoint; unrelated admitted effects drain. Already-active activation still gets ordinary terminal result durability without a new binding.
 
 ## P08 — Referenced skill resource without execution
 
@@ -200,10 +189,9 @@ sequenceDiagram
 |---|---|---|
 | Contained resource read | `COG_INSTRUCTION_SOURCE_READ`, `cog_instruction_source_begin`, `cog_instruction_source_poll`, `cog_instruction_source_view` | S |
 | Explicit ownership | `COG_INSTRUCTION_RESOURCE`, `cog_instruction_source_t.owner_skill`, `cog_instruction_snapshot_new` | I |
+| Joined coverage | `cog_runtime_read_skill_resource_tool`, CGIR LOAD, candidate/COMMIT/READY/CONSUMED | X,W |
 
-**Gap:** native resource routing is B7. Binary assets are not UTF-8 prompt
-resources in this profile. Script execution uses the existing ordinary tools,
-policy/guard/ledger/budgets; a Markdown reference cannot perform it implicitly.
+**Contract review:** Coordinator alone resolves package-relative paths beneath the pinned SKILL.md parent. Full replacement CGIM carries resource bytes; duplicates reuse retained candidate bytes. Unchanged resources still complete ordinary tool ledger/result. No source body enters diagnostics or UI replay.
 
 ## P09 — Tool descriptions, schemas, ASK and DENY
 
@@ -221,11 +209,9 @@ sequenceDiagram
 | Single binding authority | `cog_prompt_tool_binding_t`, `cog_prompt_tool_policy_t`, `cog_instruction_selection_t.bindings` | N,I |
 | Strict serialization | `cog_provider_prompt_compile`, `cog_openrouter_prompt_template` | P,O |
 | Actual effect gate | `cog_toolkit_execution_start` remains separate | T |
+| Joined coverage | `cog_runtime_tool_config_t`, `cog_runtime_answer`, static original descriptors | R,X |
 
-**Gap:** app binding/publication is B7. Runtime fixtures must prove quotes,
-newlines and Unicode descriptions cannot corrupt tool JSON, duplicate names
-fail even if denied, unsolicited omitted names remain denied, and a restored
-proposal cannot bypass preflight or policy. Skill metadata never grants ALLOW.
+**Contract review:** Composer supplies tool guidance; provider rendering preserves it. Direct neutral-bundle callers supply their own guidance. ASK delivery acknowledgement never grants ALLOW; exact policy identity includes catalog generation and snapshot.
 
 ## P10 — Provider/template mismatch before wire effects
 
@@ -246,10 +232,9 @@ sequenceDiagram
 | Template identity/purity | `cog_provider_prompt_template_t`, `cog_provider_prompt_render_fn`, `cog_provider_prompt_compiler_new`, `cog_provider_prompt_compile` | P |
 | Initial concrete format | `COG_OPENROUTER_PROMPT_TEMPLATE_ID`, `COG_OPENROUTER_PROMPT_TEMPLATE_REVISION`, `cog_openrouter_prompt_template` | O |
 | Eligibility | `cog_provider_preflight_stage_t`, `cog_provider_preflight`, `cog_provider_send` | V |
+| Joined coverage | paired `cog_runtime_reload` and initial/runtime preflight | R,P,V |
 
-**Gap:** initial adapter renderer has declarations only; no second provider or
-developer role is delivered. All preflight paths need the same app integration.
-The compiler may render pending-tool input but cannot authorize sending it.
+**Contract review:** Selected provider and exact template/model are checked before wire work. Model/template changes require a matching snapshot in the same future candidate; no mismatched preflight pair.
 
 ## P11 — Capacity failure retains the previous request
 
@@ -266,11 +251,9 @@ sequenceDiagram
 |---|---|---|
 | Explicit capacities/lanes | `cog_provider_prompt_limits_t`, `cog_provider_prompt_compile`, `cog_provider_prompt_compiler_free` | P |
 | Source/snapshot limits | `cog_instruction_source_limits_t`, `cog_instruction_limits_t` | S,I |
+| Joined coverage | two-lane compiler and bounded runtime candidate reservations | P,R |
 
-**Gap:** no new independent API gap. Runtime OOM/arithmetic/alias/range tests
-remain required. The context sum includes generated text and tool JSON;
-max_request_bytes separately bounds copied arrays, padding and terminators.
-Neither ceiling is a tokenizer claim, and no history truncation is permitted.
+**Contract review:** Overflow preserves old request/candidate state. Explicit constructor phases may allocate finite owners; reader/tool polling cannot. No tokenizer or history truncation claim.
 
 ## P12 — Retry keeps the exact context
 
@@ -288,17 +271,16 @@ sequenceDiagram
 |---|---|---|
 | Retained compile view | `cog_provider_prompt_compile` lifetime | P |
 | Retry facts/send | `cog_provider_get_error`, `cog_provider_send` | V |
+| Joined coverage | whole-turn runtime pinning and guarded context associations | R,C,D |
 
-**Gap:** B7 app generation borrowing/publication. The existing app remains the
-sole retry owner. Partial output/effects do not become replay-safe because a
-context is immutable; new file contents cannot silently change a retry.
+**Contract review:** Retries reuse the same immutable context, identities and original deadlines. No file refresh, context publication or new policy authority is inferred from retry eligibility.
 
 ## P13 — Restart/fork after source deletion or change
 
 ```mermaid
 sequenceDiagram
     Host->>Store: load exact guarded checkpoint
-    Note over Host,Store: B7 must decode versioned context records and branch bindings
+    Store-->>Host: COGSNAP3 context records and selected branch binding
     Host->>Snapshot: snapshot_restore(retained manifest, current static bindings)
     Snapshot-->>Host: exact bytes or explicit incompatibility
     Host->>Session: cog_session_fork(safe selected node) for fresh divergent input
@@ -308,11 +290,9 @@ sequenceDiagram
 |---|---|---|
 | Pure restored context | `cog_instruction_snapshot_restore`, `cog_instruction_restore_mode_t` | I |
 | Existing branch/checkpoint | `cog_session_fork`, `cog_store_checkpoint_load` | C,D |
+| Joined coverage | `cog_session_context_select/view`, snapshot bindings, `COG_STORE_CAP_CONTEXT_V3`, COGSNAP3, PINNED/ADOPT_LEGACY | C,D,R,M |
 
-**Gap:** context-to-node binding, store format and old-backend capability are not
-yet public. INSPECT cannot produce prompt inputs. A more restrictive host does
-not silently rewrite the old proposal's tool set. Legacy context adoption needs
-an explicit policy; hashes alone do not reconstruct missing source bytes.
+**Contract review:** Use selected binding cursor, not highest context or active-node shortcut. Unknown format refuses execution. Explicit safe legacy adoption checkpoints context before fresh input and never rebases unresolved calls.
 
 ## P14 — Reload pins old context through an active turn
 
@@ -321,7 +301,7 @@ sequenceDiagram
     Host->>Catalog: catalog_new(replacement generation)
     Host->>Snapshot: snapshot_new(candidate)
     Host->>Compiler: compile candidate and preflight without publishing
-    Note over Host: B7 must publish only at safe admission boundary
+    Host->>Runtime: cog_runtime_instruction_prepare/publish at safe boundary
     Host->>Snapshot: free old snapshot only after its app/compiler borrowers end
 ```
 
@@ -329,18 +309,16 @@ sequenceDiagram
 |---|---|---|
 | Explicit replacement owners | `cog_instruction_catalog_new`, `cog_instruction_catalog_free`, `cog_instruction_snapshot_new`, `cog_instruction_snapshot_free` | I |
 | Candidate preparation | `cog_provider_prompt_compile`, `cog_provider_preflight` | P,V |
+| Joined coverage | `cog_runtime_reload(provider,instructions)`, `cog_runtime_instruction_prepare/publish` | R |
 
-**Gap:** B7 app reload/context publication hooks. Explicit constructors are
-visible allocation boundaries, not hidden runtime growth. Failed preparation
-retains old context and provider state; queued input cannot approve uncertain
-work or extend the original deadline.
+**Contract review:** A provider and matching context are one future candidate. Safe idle saves a replacement binding before switching references; failed/uncertain save freezes admission. Old-turn borrows survive through drain.
 
 ## P15 — Staged handoff preserves exact context and authority
 
 ```mermaid
 sequenceDiagram
     Source->>Store: quiesce and save exact guarded checkpoint
-    Note over Source,Target: B7 must bind same manifest to versioned staged capsule
+    Source->>Target: CGB2 exact checkpoint capsule; verify before PREPARED
     Target->>Snapshot: snapshot_restore(exact retained context)
     Target->>Compiler: compile and no-wire preflight
     Note over Source,Target: Existing PREPARED/release/CAS/READY/route/ACTIVATE order remains
@@ -350,10 +328,9 @@ sequenceDiagram
 |---|---|---|
 | Context restoration/preflight | `cog_instruction_snapshot_restore`, `cog_provider_prompt_compile`, `cog_provider_preflight` | I,P,V |
 | Existing durable authority | `cog_store_checkpoint_save`, `cog_store_owner_compare_exchange` | D |
+| Joined coverage | CGB2 exact checkpoint capsule, staged execution admission and handoff correlation | W,D,M |
 
-**Gap:** B7 literal capsule and context-checkpoint correlation. A source-free,
-guard failure, lost ACK or changed epoch cannot authorize task replay or old
-source thaw. No cross-host/live-handle transfer is added.
+**Contract review:** PREPARED requires exact attachment identity and bytes from the immutable checkpoint. All context transaction receipts retire before quiescence; existing release/CAS/READY/route/ACTIVATE order remains authoritative.
 
 ## P16 — Cancellation and consuming cleanup
 
@@ -372,11 +349,9 @@ sequenceDiagram
 | Source cleanup | `cog_instruction_source_cancel`, `cog_instruction_source_reader_free` | S |
 | Immutable-owner cleanup | `cog_provider_prompt_compiler_free`, `cog_instruction_snapshot_free`, `cog_instruction_catalog_free` | P,I |
 | Existing active work | `cog_provider_cancel` | V |
+| Joined coverage | `cog_runtime_shutdown/step/close`, candidate free and native receipt teardown | R,W |
 
-**Gap:** B7 borrowed app/worker lifetime joins. Reader free consumes on cleanup
-error; callers clear aliases and preserve the first error. A completed source
-result wins later cancellation. No destructor waits for remote peers or runs a
-script. Raw source text and absolute host paths are not diagnostic payloads.
+**Contract review:** Shutdown drains borrowers before consuming owners. No destructor waits for remote peers. Nonconsuming guard refusal retains cleanup-only ownership; consumed aliases are cleared on every error path.
 
 ## P17 — Portable capsule round trip and malformed input
 
@@ -401,41 +376,38 @@ sequenceDiagram
 | Stable canonical identity | `cog_instruction_snapshot_fingerprint` | M |
 | Bounded owned decode | `cog_instruction_snapshot_decode`, `cog_instruction_limits_t`, `cog_instruction_restore_mode_t` | M,I |
 | Semantic verification | `cog_instruction_snapshot_restore` rederives metadata and fragments and compares exact retained bytes | I |
+| Joined coverage | CGIM codec plus v3 store/CGB2 transport | M,C,D,W |
 
-**Gap:** the codec's independent public boundary is covered. Session attachment
-and native capsule transport still require the B7 joins below; a valid digest
-never authorizes an effect. Tests must cover every-byte truncation, unknown
-versions, oversized count arithmetic, source/fragment inconsistency and identical
-canonical bytes after a successful round trip. No native struct is serialized.
+**Contract review:** Canonical bytes, hashes and semantic rederivation are checked before use. Unknown versions, truncation, capacity exhaustion and inconsistent sources/fragments fail closed. Digest equality is not execution authority.
 
 ## Original 01–20 retrace
 
 This cross-check covers every original trace without changing its accepted
-baseline evidence. It identifies extension work; it does not assert that the
-new feature has executable tests or that the joined header gate has passed.
+baseline evidence. It maps the complete declared extension surface; executable tests and final
+joined acceptance remain separate gates.
 
-| Original | Instruction extension | Draft coverage / remaining gap |
+| Original | Instruction extension | Declared coverage |
 |---|---|---|
-| 01 prompt/stream/UI | Compose exact context before request; display separate | I,P,V; B7 app publication remains. |
-| 02 stall/recovery | Retry same snapshot and deadline | P,V; B7 borrow spans retry. |
-| 03 child lifecycle | Bind profile/context to actual local/native attempt | I,A; native capsule and admission hook missing. |
-| 04 cold start | Explicit read/catalog constructors unwind before first send | S,I,P; durable initial context binding missing. |
-| 05 shutdown | End provider/tool borrows before compiler/snapshot free | S,I,P,V; B7 drain/worker joins missing. |
-| 06 parallel tools | Pin descriptor/context set across all launched effects | P,T; no late profile mutation; runtime hook missing. |
-| 07 worker crash | Retain original snapshot plus factual uncertainty | I,A; versioned durable/native binding missing. |
-| 08 config reload | Prepare copied replacement, publish at safe boundary | I,P,V; B7 publication/capacities missing. |
-| 09 sibling messaging | Instruction sources do not grant mailbox identity | I,A; existing authenticated routing remains; native snapshot hook missing. |
-| 10 fan-out/fan-in | Same effective subset/context for each admitted child | I,A; bounded capsule/group reservation join missing. |
-| 11 UI reconnect | No source reread or effect to reconstruct projection | I; new source text is not UI replay data; app projection join missing. |
-| 12 rate limit | Original budget owns any next attempt | P,V; B7 snapshot borrow cannot extend timer. |
-| 13 persistence | Save exact source cache/fragments with result/ledger | I,D; generic session context and store format missing. |
-| 14 fork | Selected immutable branch retains its original context | I,C; explicit node/context binding missing. |
-| 15 tool turns | Skill/scope transition closes old group before publication | I,T; atomic result/context checkpoint missing. |
-| 16 provider errors | Failed compilation/preflight preserves prior request and effects | P,V; B7 app cleanup hook missing. |
-| 17 migration | Exact snapshot/checkpoint/epoch copied, no live handle move | I,D; staged capsule correlation missing. |
-| 18 observability | Stable safe IDs/counts, no raw instruction text in logs | S,I; app diagnostic labels/failure path integration missing. |
-| 19 connection events | Pure source/compiler operations create no net events | S,P,V; existing numeric transport observation unchanged. |
-| 20 interrupt/queue | Queued input never changes admitted context or grants policy | I,P,V; B7 activation/input arbitration missing. |
+| 01 prompt/stream/UI | Compose before send; acknowledge retained view | R new/begin/step/view/ack; I,P,V |
+| 02 stall/recovery | Pin exact context through bounded retry | R whole-turn pinning; P,V |
+| 03 child lifecycle | Named local/native reduced snapshot | R child_select; W CGB2/CGS2; A |
+| 04 cold start | Initial durable context before first input | R new; C context_add/publish; D v3 |
+| 05 shutdown | Drain borrowers before checked close | R shutdown/step/close; W receipt teardown |
+| 06 parallel tools | All effects retain originating proposal binding | C node binding; X group closure; T |
+| 07 worker crash | Freeze uncertain publication/effects | W COMMIT/READY/native loss; C,D |
+| 08 config reload | Pair future provider/context, safe-idle checkpoint | R reload; C,D; P preflight |
+| 09 sibling messaging | Context never grants mailbox identity | A unchanged authenticated routing; W pinned attempt |
+| 10 fan-out/fan-in | Per-child intersection and bounded capsule reservations | R child_select/workers; W; A |
+| 11 UI reconnect | Rebuild views without source rereads/effects | R view/ack; existing replay; no source bodies |
+| 12 rate limit | Same snapshot/deadline and request credits | R pinning; V error/retry facts |
+| 13 persistence | Atomic messages/ledger/context checkpoint | C snapshot/restore; D v3 capability; M |
+| 14 fork | Historical vs pending cursor explicitly selected | C context_select/fork; R fork |
+| 15 tool turns | Close group then publish next context | X static controls; R prepare/publish; W |
+| 16 provider errors | Retain old compile view; freeze failed checkpoint | P transactional lanes; R cleanup; D |
+| 17 migration | Exact checkpoint context and phased authority transfer | W CGB2/staged admission/handoff; D |
+| 18 observability | Only safe identities/counts in diagnostics | S diagnostic; R view; W private capsule arenas |
+| 19 connection events | Pure compiler/source work creates no transport events | S,P; existing V/net observation |
+| 20 interrupt/queue | No stale input/approval/context authority | R submit/cancel/answer; W cancellation; X |
 
 R01/R02/R04–R18 need the same context composition/admission/restoration joins;
 R03 retains existing SSE decoding and adds only bounded outgoing encoding checks.

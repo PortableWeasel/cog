@@ -93,6 +93,12 @@ typedef struct cog_session_config {
     size_t max_tool_calls_per_message; /**< Zero selects 16; fixed ledger slots.
        Constructor also reserves ledger/snapshot descriptors and four audit
        records per call slot with checked arithmetic; evidence uses payload arena. */
+    /** Draft context reservations: zero disables contexts; all three must be
+     * zero or positive together. No growth during insertion/publication. */
+    size_t max_contexts;
+    size_t max_context_bindings;
+    size_t max_context_bytes; /**< Sum of copied namespace bytes including NUL
+       and data bytes; context/binding descriptor arrays are reserved separately. */
 } cog_session_config_t;
 
 /* ------------------------------------------------------------------ */
@@ -272,6 +278,9 @@ typedef struct cog_node_data_view {
      * All nested storage is session-owned until reset/free or explicit discard.
      * One assistant node per turn; no durable node for each display delta. */
     const cog_message_t *message;
+    /** Immutable binding that produced this node; zero means legacy/no context.
+     * TOOL results retain the identified assistant binding, including recovery. */
+    uint64_t context_binding_id;
 } cog_node_data_t;
 
 /** @brief One immutable audit transition; evidence is borrowed UTF-8 text. */
@@ -291,6 +300,36 @@ typedef struct cog_tool_ledger_record {
     const cog_tool_audit_record_t *audit; /**< Ordered immutable transition history. */
     size_t audit_count;
 } cog_tool_ledger_record_t;
+/** @brief Immutable generic context; core never interprets its payload.
+ * IDs are nonzero, session-local and never reused. namespace_id is nonempty
+ * ASCII [a-z0-9.-], at most 127 bytes; format is nonzero. data is NULL iff
+ * data_bytes=0. Insertion copies all bytes into constructor reservations.
+ * Unknown namespaces/formats survive inspection; their owner must validate
+ * support before execution. Pointers/native structs are not a wire format.
+ */
+typedef struct cog_session_context {
+    uint64_t context_id;
+    const char *namespace_id;
+    uint32_t format;
+    const unsigned char *data;
+    size_t data_bytes;
+} cog_session_context_t;
+
+/** @brief Immutable context revision anchored to a branch's idle leaf.
+ * previous_binding_id is the selected cursor before publication, zero initially.
+ * anchor_node_id is the then-active leaf, zero only for an empty session.
+ * context_id references an existing record. IDs increase; predecessors have
+ * smaller IDs. Repeated idle publications at one leaf form a linear chain.
+ * Along a chain, each nonzero anchor is equal to or below the prior nonzero
+ * anchor. Anchors remain in the tree until free; revisions never replace nodes.
+ */
+typedef struct cog_session_context_binding {
+    uint64_t binding_id;
+    uint64_t previous_binding_id;
+    uint64_t anchor_node_id;
+    uint64_t context_id;
+} cog_session_context_binding_t;
+
 /**
  * @brief Version-neutral bounded session snapshot, never a native wire format.
  *
@@ -307,6 +346,22 @@ typedef struct cog_tool_ledger_record {
  * Each pointer/count pair permits NULL only for a zero count; strings are
  * NUL-terminated except explicit byte-length evidence/content. No use of these
  * in-memory pointer structs as a serialized representation.
+ *
+ * Context arrays have increasing, not necessarily contiguous IDs. Every binding
+ * references an existing context and prior binding or zero. Node bindings exist
+ * or are zero for legacy nodes. A child inherits its parent binding, or a
+ * descendant binding whose intervening revisions are ALL anchored at that
+ * parent. Roots use zero or a chain anchored at zero. TOOL result bindings
+ * equal their identified assistant binding, including recovery results.
+ * Selected binding equals the active node binding or a descendant through
+ * revisions ALL anchored at that active leaf; empty-tree anchors are zero.
+ * Zero selected binding requires zero active-node binding. High-water covers
+ * issued IDs and never decreases. Restore rejects missing/cyclic/cross-branch
+ * associations and invalid selected cursors with PROTOCOL. While any call or
+ * result is unresolved, selected binding MUST equal the originating assistant
+ * group binding; every result in that group retains that same binding. A forged
+ * later idle revision cannot change restored pending-tool context. Nonzero context
+ * reservations are required to restore context history. Payloads remain opaque.
  */
 typedef struct cog_session_snapshot {
     const char *session_id;
@@ -319,6 +374,13 @@ typedef struct cog_session_snapshot {
     const cog_tool_ledger_record_t *ledger;
     size_t ledger_count;
     bool inspection_only;
+    const cog_session_context_t *contexts;
+    size_t context_count;
+    const cog_session_context_binding_t *context_bindings;
+    size_t context_binding_count;
+    uint64_t context_high_water;
+    uint64_t context_binding_high_water;
+    uint64_t selected_context_binding_id;
 } cog_session_snapshot_t;
 
 /* ------------------------------------------------------------------ */
@@ -382,6 +444,64 @@ cog_result_t cog_session_snapshot_view(const cog_session_t *session,
                                        cog_session_snapshot_t *snapshot);
 
 /**
+ * @brief Copy an immutable context into reserved session storage (draft).
+ * @param[in,out] session Owner; single thread, outside callbacks.
+ * @param[in] context Record with context_id strictly above high-water.
+ * @return OK; NULL_PTR; INVALID_ARG namespace/format/ID; INVALID_STATE inspection
+ * or unresolved calls/results; LIMIT capacity/arithmetic/identity exhaustion.
+ * @post Failure changes nothing; success copies bytes and advances high-water.
+ * Reusing an ID, even for equal bytes, fails. No allocation, I/O, selection or
+ * execution grant. Contexts cannot be removed; free ends their lifetime.
+ */
+cog_result_t cog_session_context_add(cog_session_t *session,
+    const cog_session_context_t *context);
+
+/**
+ * @brief Publish an immutable branch binding in memory, pending durable save.
+ * @param[in,out] session Owner; single thread, outside callbacks.
+ * @param[in] binding ID above high-water, previous equals selected cursor,
+ * anchor equals active leaf ID (zero iff empty), existing context_id.
+ * @return OK; NULL_PTR; INVALID_ARG ID/anchor/previous; NOT_FOUND context;
+ * INVALID_STATE inspection, unresolved calls/results or incomplete active path;
+ * LIMIT reserved binding/identity capacity. Failure changes nothing.
+ * @post Copies record and advances high-water/selected cursor atomically; no
+ * node is rebound. No allocation, disk write or execution grant. Runtime must
+ * preflight then publish then save before using the new cursor. Failed/uncertain
+ * save freezes admission. Close old proposed groups with no-effect results,
+ * then publish and save once to checkpoint results/ledger/context atomically.
+ * An admitted STARTED effect never changes its original context.
+ */
+cog_result_t cog_session_context_publish(cog_session_t *session,
+    const cog_session_context_binding_t *binding);
+
+/**
+ * @brief Explicitly select a safe leaf and its exact pending context revision.
+ * @param[in,out] session Owner; single thread, outside callbacks.
+ * @param[in] leaf Existing leaf, NULL only for an empty tree.
+ * @param[in] binding_id Leaf's recorded binding or its descendant through
+ * revisions ALL anchored at that exact leaf. Empty-tree anchors are zero.
+ * Zero requires zero recorded binding; no latest-ID heuristic is used.
+ * @return OK; NULL_PTR session; NOT_FOUND binding; INVALID_ARG foreign/nonleaf
+ * node or cross-branch/older cursor; INVALID_STATE inspection, ANY unresolved
+ * call/result or incomplete selected path. Failure changes nothing.
+ * @post Selects leaf/cursor without node rebinding/allocation/disk effects.
+ * To rebase to older context bytes, publish a NEW revision referencing that
+ * context; selecting an ancestor of the leaf's recorded binding is refused.
+ */
+cog_result_t cog_session_context_select(cog_session_t *session,
+    cog_session_node_t *leaf, uint64_t binding_id);
+
+/**
+ * @brief Borrow context by identity without allocation or interpretation.
+ * @param[in] session Owner including inspection; single thread.
+ * @param[in] context_id Nonzero identity.
+ * @param[out] context Borrowed until mutation/reset/free; unchanged on failure.
+ * @return OK; NULL_PTR; NOT_FOUND. No source parsing or effects.
+ */
+cog_result_t cog_session_context_view(const cog_session_t *session,
+    uint64_t context_id, cog_session_context_t *context);
+
+/**
  * @brief Destroy a session and all its nodes.
  *
  * @param[in,out] session Session to destroy; may be NULL (no-op).
@@ -419,6 +539,8 @@ const char *cog_session_id(const cog_session_t *session);
  * @return COG_ERROR_INVALID_STATE if active in a running core, non-draft,
  * identified/effect-bearing, or fork-shared; failure changes nothing.
  *
+ * Context-bearing sessions refuse reset INVALID_STATE while any context or
+ * binding is retained, even uncommitted. No context high-water rollback.
  * Threading: not thread-safe.
  */
 cog_result_t cog_session_reset(cog_session_t *session);
@@ -533,6 +655,11 @@ const cog_node_data_t *cog_node_data(const cog_session_node_t *node);
  * Once all calls/results are final, ordinary safe branching is available.
  * Returns INVALID_ARG for invalid association/duplicate result, LIMIT if
  * reserved node/payload/ledger capacity is exhausted; failure is atomic.
+ * Binding assignment is atomic with insertion. Extending the active leaf uses
+ * selected_context_binding_id. Explicit insertion under another parent uses
+ * that parent's recorded binding, never the old active sibling's pending
+ * cursor. Empty root uses selected zero-anchor chain. TOOL results use their
+ * assistant's binding. Success selects the new node and its assigned binding.
  * Creates a new node and appends it to the parent's children. If @p parent
  * is NULL, the message is added as a child of the root (or becomes the root
  * if the session is empty).
@@ -636,6 +763,10 @@ cog_result_t cog_session_add_tool_result(cog_session_t *session,
  * child. append() continues the current active leaf, so callers branching from
  * a nonleaf must use add_message with the returned fork point. Snapshot views
  * immediately after either fork operation always retain an existing active leaf.
+ * Leaf fork selects its recorded binding (historical context), not an inferred
+ * pending revision. Restore a pending revision explicitly with context_select.
+ * Nonleaf fork leaves active leaf/cursor unchanged; divergent insertion inherits
+ * the fork-point binding. All context history remains in snapshot_view.
  *
  * @param[in,out] session Session to modify.
  * @param[in]     node    Node to fork from.
@@ -891,6 +1022,10 @@ cog_result_t cog_session_set_parent(cog_session_t *session,
  *
  * @post On success, the draft is removed and its reserved storage reclaimed;
  * the node-ID high-water is never decreased or reused. Failure changes nothing.
+ * Binding anchors cannot be discarded (INVALID_STATE), even if uncommitted.
+ * If the discarded node was active, select its parent's recorded binding (zero
+ * when empty), never an inferred pending revision. Discarding a nonactive leaf
+ * preserves active leaf and selected cursor. Context records/high-water remain.
  * @post The active node is updated to the discarded node's parent if the
  *       discarded node was active.
  *

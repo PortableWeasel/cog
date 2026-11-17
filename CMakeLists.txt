@@ -58,6 +58,7 @@ add_subdirectory(libraries/cog-obs)
 add_subdirectory(libraries/cog-config)
 add_subdirectory(libraries/cog-net)
 add_subdirectory(libraries/cog-orchestrator)
+add_subdirectory(libraries/cog-runtime)
 
 # -----------------------------------------------------------------------
 # Applications

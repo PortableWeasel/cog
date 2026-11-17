@@ -59,7 +59,9 @@ typedef struct cog_provider_prompt_limits {
  * @note Preserve every history role, call/result ID, opaque byte, usage field
  * and request setting. Only prepend rendered instruction messages and produce
  * tools_json from effective descriptors. DENY bindings are omitted; ASK stays
- * advertised with decision-required guidance. Escape all generated JSON via a
+ * advertised. The composer/runtime supplies decision-required guidance as
+ * fragments; this renderer preserves that guidance but does not synthesize it
+ * for a caller-supplied bundle. Policy remains structurally enforced by runtime. Escape all generated JSON via a
  * strict bounded encoder; never interpolate raw descriptor strings into JSON.
  * Duplicate tool names fail INVALID_ARG, even when one is denied.
  */

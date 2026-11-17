@@ -9,6 +9,7 @@
 #ifndef COG_CLI_CHILD_PROFILE_H
 #define COG_CLI_CHILD_PROFILE_H
 #include "configuration.h"
+#include "instruction_transfer.h"
 #include <cog/agent.h>
 
 #ifdef __cplusplus
@@ -105,6 +106,14 @@ cog_result_t cog_cli_configuration_child_new(cog_cli_configuration_t **out,
     const cog_cli_configuration_t *parent, const cog_cli_child_profile_t *profile,
     uint64_t generation, uint64_t now_ms, uint64_t parent_deadline_ms,
     cog_net_ctx_t *net, uint64_t *deadline_ms);
+
+/** Instruction-aware bootstrap wraps this CGB1 codec in CGB2 from
+ * instruction_transfer.h. Intersect child policy/limits FIRST, construct a
+ * child-specific snapshot with original effective descriptors, then encode CGIM.
+ * Restoring the parent snapshot against weaker bindings is not intersection.
+ * Local/native children consume identical child capsule bytes and identities;
+ * neither rereads sources. CGB1 alone means explicit instruction-free mode.
+ */
 
 /** @brief Encode resolved fixed bootstrap, including secret, into caller arena.
  * @param[in] configuration Resolved child/primary target profile, REAL only.

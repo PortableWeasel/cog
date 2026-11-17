@@ -1,7 +1,7 @@
 digraph instruction_support {
   graph [fontname="DejaVu Sans", fontsize=20, rankdir=TB, bgcolor="white",
          pad=0.30, nodesep=0.32, ranksep=0.55, compound=true, splines=polyline,
-         label="Cog instruction support — seven approved blocks\nIteration 5 · frontend-neutral loading + planned headless runtime; CLI stays a proof host", labelloc=t];
+         label="Cog instruction support — seven approved blocks\nIteration 6 · joined runtime / context / worker contracts; implementation gate under review", labelloc=t];
   node [fontname="DejaVu Sans", fontsize=11, shape=box, style="rounded,filled", margin="0.15,0.11", color="#65758a", fillcolor="#fff2bf"];
   edge [fontname="DejaVu Sans", fontsize=9, color="#53677d", arrowsize=0.7];
 
@@ -46,14 +46,14 @@ digraph instruction_support {
       ipcorch [label="cog::ipc + cog::orchestrator\nAuthenticated native lifecycle / routing", fillcolor="#d9efdb", color="#41834a"];
       { rank=same; core; toolkit; configobs; ipcorch; }
     }
-    durablegap [label="OPEN JOINED CONTRACT\nVersioned session context attachments\nAtomic result + context checkpoint / backend capability", fillcolor="#ffe0dc", color="#bd4b40"];
+    durablegap [label="JOINED DRAFT CONTRACT\nCOGSNAP3 immutable context / branch revisions\nAtomic result + context checkpoint / backend capability", fillcolor="#fff2bf", color="#65758a"];
   }
 
   subgraph cluster_aux {
     label="Owned auxiliary process"; fontname="DejaVu Sans"; fontsize=15;
     color="#8b62b3"; style=dashed; penwidth=2;
     worker [label="Existing worker executor\nSame effective permissions / deadlines\nNo parent path or resolver authority", fillcolor="#eadff5", color="#8b62b3"];
-    workergap [label="OPEN CONTRACT GAP\nVersioned instruction capsule + pinned catalog\nOn-demand resource ownership / ACK / wipe bounds", fillcolor="#ffe0dc", color="#bd4b40"];
+    workergap [label="JOINED DRAFT CONTRACT\nCGB2 exact CGIM + pinned catalog\nScope / activation / resource · COMMIT / READY", fillcolor="#fff2bf", color="#65758a"];
   }
 
   store [label="Existing guarded checkpoint store\nImmutable generation + owner CAS", fillcolor="#d9efdb", color="#41834a"];
@@ -86,12 +86,12 @@ digraph instruction_support {
     <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="6" COLOR="#91a0b0" BGCOLOR="white">
       <TR><TD COLSPAN="3" BGCOLOR="#edf2f7"><B>Library / header ownership</B></TD></TR>
       <TR><TD ALIGN="LEFT"><B>Owner</B></TD><TD ALIGN="LEFT"><B>Headers</B></TD><TD ALIGN="LEFT"><B>Key contracts / types</B></TD></TR>
-      <TR><TD ALIGN="LEFT">cog::instructions · draft</TD><TD ALIGN="LEFT">cog/instruction_source.h<BR/>cog/instructions.h</TD><TD ALIGN="LEFT">reader · catalog · snapshot · manifest; no UI/provider dependency</TD></TR>
-      <TR><TD ALIGN="LEFT">cog::runtime · planned extraction</TD><TD ALIGN="LEFT">Public runtime header still to author</TD><TD ALIGN="LEFT">control / progress / execution ownership; CLI consumes views</TD></TR>
+      <TR><TD ALIGN="LEFT">cog::instructions · draft</TD><TD ALIGN="LEFT">cog/instruction_source.h<BR/>cog/instructions.h · instruction_codec.h</TD><TD ALIGN="LEFT">reader · catalog · snapshot · manifest; no UI/provider dependency</TD></TR>
+      <TR><TD ALIGN="LEFT">cog::runtime · planned extraction</TD><TD ALIGN="LEFT">cog/runtime.h · runtime_instructions.h</TD><TD ALIGN="LEFT">control / progress / execution ownership; CLI consumes views</TD></TR>
       <TR><TD ALIGN="LEFT">cog::provider · draft + existing</TD><TD ALIGN="LEFT">cog/provider_prompt.h<BR/>provider_vtable.h · provider_request.h</TD><TD ALIGN="LEFT">static template · compiler · request / deltas</TD></TR>
-      <TR><TD ALIGN="LEFT">cog::core · existing / neutral draft</TD><TD ALIGN="LEFT">prompt.h · session.h · session_store.h · agent.h</TD><TD ALIGN="LEFT">neutral bundle + session / checkpoint / agent; context binding open</TD></TR>
+      <TR><TD ALIGN="LEFT">cog::core · existing / neutral draft</TD><TD ALIGN="LEFT">prompt.h · session.h · session_store.h · agent.h</TD><TD ALIGN="LEFT">neutral bundle + session / checkpoint / agent; immutable context bindings</TD></TR>
       <TR><TD ALIGN="LEFT">cog::toolkit + core descriptors</TD><TD ALIGN="LEFT">tool.h · toolkit_exec.h · workspace.h</TD><TD ALIGN="LEFT">original descriptors · guarded async effects</TD></TR>
-      <TR><TD ALIGN="LEFT">cog::ipc / cog::orchestrator</TD><TD ALIGN="LEFT">ipc.h · orchestrator.h</TD><TD ALIGN="LEFT">peer / worker identity; instruction capsule still open</TD></TR>
+      <TR><TD ALIGN="LEFT">cog::ipc / cog::orchestrator</TD><TD ALIGN="LEFT">ipc.h · orchestrator.h</TD><TD ALIGN="LEFT">peer / worker identity; CGB2 / CGIR context transaction</TD></TR>
       <TR><TD ALIGN="LEFT">cog::config / cog::net / cog::obs</TD><TD ALIGN="LEFT">config.h · net.h · obs.h</TD><TD ALIGN="LEFT">generations · bounded transport · sanitized observation</TD></TR>
       <TR><TD COLSPAN="3" ALIGN="LEFT">Green: delivered baseline · Yellow: header design · Red: open joined contract · Blue/Purple: process boundaries</TD></TR>
     </TABLE>

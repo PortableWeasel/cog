@@ -46,7 +46,12 @@ typedef enum cog_cli_control_kind {
     COG_CLI_CONTROL_DELEGATE_RESERVE,
     COG_CLI_CONTROL_DELEGATE_RESERVATION,
     COG_CLI_CONTROL_DELEGATE_RESERVATION_RELEASE,
-    COG_CLI_CONTROL_CHILD_START_ACK
+    COG_CLI_CONTROL_CHILD_START_ACK,
+    COG_CLI_CONTROL_RESOURCE_REQUEST,
+    COG_CLI_CONTROL_RESOURCE_RESULT,
+    COG_CLI_CONTROL_RESOURCE_CONSUMED,
+    COG_CLI_CONTROL_RESOURCE_COMMIT,
+    COG_CLI_CONTROL_RESOURCE_READY
 } cog_cli_control_kind_t;
 
 /** Independent stop/wait lanes; IDs/cache/watermark are scoped by full identity
@@ -55,7 +60,7 @@ typedef enum cog_cli_control_lane {
     COG_CLI_LANE_COMMAND = 1, COG_CLI_LANE_UPDATE, COG_CLI_LANE_VIEW,
     COG_CLI_LANE_POLICY, COG_CLI_LANE_DELEGATE, COG_CLI_LANE_MAILBOX,
     COG_CLI_LANE_PROFILE, COG_CLI_LANE_HANDOFF, COG_CLI_LANE_REPLAY,
-    COG_CLI_LANE_CANCEL
+    COG_CLI_LANE_CANCEL, COG_CLI_LANE_RESOURCE
 } cog_cli_control_lane_t;
 
 /** Every field is copied/validated before ingress can acquire a role. Bind this
@@ -137,7 +142,8 @@ cog_result_t cog_cli_command_decode(const void *input, size_t input_len,
  * Literal layout: magic CGL1(4), kind u8,lane u8, runtime/sender/wire/reply u64, worker
  * incarnation/number u64, owner_peer/agent/attempt u64, session-length u8 then
  * session UTF-8 bytes, payload-length u32 then payload; all integers big-endian.
- * Kind values1..29/lane1..10 above are pinned. No padding/trailing/native pointers.
+ * Kind values1..34/lane1..11 above are pinned. Resource kinds30..34 use
+ * only RESOURCE lane11 with instruction_transfer.h bodies. No padding/trailing/native pointers.
  * Discovery exception: UI_HELLO alone permits runtime0/session empty(length0),
  * worker/owner/agent/attempt0. Client knows only socket; server's authenticated
  * response supplies actual root session/runtime before any bound command.
@@ -168,6 +174,18 @@ cog_result_t cog_cli_control_encode(const cog_cli_control_message_t *message,
 cog_result_t cog_cli_control_decode(const void *input, size_t input_len,
     cog_cli_control_message_t *message, void *storage, size_t capacity,
     size_t *required);
+
+/** Draft instruction-aware CHILD_START body: CGS2(4),catalog:u64,snapshot:u64,
+ * capsule_sha256:32,legacy_length:u32,then EXACT former CHILD_START body:
+ * parent string,node:u64,ordinal:u16,call string,task string,generation:u64,
+ * deadline:u64,group:u64,status_bytes:u32,result_bytes:u32,member_count:u16,
+ * members:u64[]. Strings retain u32 byte counts; all integers big-endian.
+ * No trailing data. Identity matches acknowledged CGB2 and restored snapshot.
+ * Context all-zero allowed only for explicit instruction-free profile. Require
+ * profile ACK AND context match before executor construction/save. Legacy bare
+ * CHILD_START is permitted only with instruction-free CGB1, otherwise UNSUPPORTED.
+ * Task receipt cannot authorize profile reselection, source reread or an effect.
+ */
 
 /** Retired watermark is (runtime,sender,managed worker,session,agent,attempt,LANE)
  * scoped, NOT a CGA semantic prefix. One

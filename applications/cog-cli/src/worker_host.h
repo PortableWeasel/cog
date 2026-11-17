@@ -21,6 +21,10 @@ typedef struct cog_cli_worker_startup {
        no observer, each executor has its own app-wide bridge/net lifetime. */
     size_t executor_slots; /**< Trusted finite startup reservation≤18. */
     size_t frame_bytes; /**< Trusted finite maximum, same parent bound. */
+    size_t instruction_bytes; /**< Per-executor capsule reservation;0 disables
+       instruction-aware admission. CGB2+CGL must fit frame_bytes. Constructor
+       accounts every retained/candidate/codec copy across all slots, with checked
+       arithmetic. Explicit reservation replaces fixed96KiB profile assumptions. */
 } cog_cli_worker_startup_t;
 
 /** @brief Reserve bounded worker/socket/config/executor state, connect no wait.
@@ -37,6 +41,17 @@ cog_result_t cog_cli_worker_host_new(cog_cli_worker_host_t **out,
  * @param[in,out] worker Published owner. @param[out] info Same finite drive info.
  * @return OK; AGAIN; NULL_PTR; INVALID_STATE reentry; first driver failure.
  * Authentication + fixed bootstrap + exact child/stage admission precede effects.
+ * Workers publish replacements only through the CGIR V2 coordinator transaction;
+ * saved candidate remains admission-frozen until exact READY. No local identity
+ * allocation, independent skill activation or instruction-root reads.
+ * CGB2 PROFILE ACK requires full CGIM restore under static descriptor/template
+ * bindings, identity comparison and existing exact store probe. Partial frames
+ * publish nothing. Retain immutable original capsule through PROFILE duplicate
+ * proof; reconstructing it from mutable current context is forbidden. Cancel
+ * wipes uncommitted candidate after borrows end, retains terminal disposition,
+ * and never restarts deadline. Resource requests use dedicated RESOURCE lane,
+ * never local skill roots/UI. Source/capsule/codec arenas wipe on retirement,
+ * failure/free and never enter generic UI/replay/command caches or diagnostics.
  * Parent disconnect/signal freezes all ordinary work and cancels/drains local
  * executions; retains factual durable ledgers. No fresh connection/restart of
  * attempt. Copies current CGA item until final receipt, cancellation consumed

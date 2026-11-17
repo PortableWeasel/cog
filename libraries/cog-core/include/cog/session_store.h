@@ -34,6 +34,47 @@ extern "C" {
 
 /** @brief Current structured store version; v1 remains a legacy read format. */
 #define COG_STORE_FORMAT_V2 2u
+/** @brief Draft context-bearing snapshot format; v1/v2 remain readable. */
+#define COG_STORE_FORMAT_V3 3u
+/** @brief Static promise: exact context preservation and atomic v3 saves. */
+#define COG_STORE_CAP_CONTEXT_V3 UINT64_C(1)
+
+/**
+ * @brief Literal portable v3 snapshot suffix (draft before implementation).
+ *
+ * Magic is eight bytes COGSNAP3. Following bytes through end of ledger use the
+ * exact COGSNAP2 sequence; node records here do NOT include the new binding.
+ * Append this suffix in order; u64 is unsigned little-endian, eight bytes:
+ * - u64 context_high_water, u64 context_binding_high_water,
+ *   u64 selected_context_binding_id, u64 context_count;
+ * - each context in increasing ID order: u64 context_id, string namespace_id,
+ *   u64 format (1..UINT32_MAX), blob data;
+ * - u64 context_binding_count, each binding in increasing ID order:
+ *   u64 binding_id, u64 previous_binding_id, u64 anchor_node_id, u64 context_id;
+ * - u64 node_binding_count (equals node_count), then in original node order:
+ *   u64 node_id, u64 context_binding_id.
+ * string/blob use existing primitives: presence byte 0 or 1; absent has no
+ * following bytes; present has u64 byte length, exact bytes, one zero byte.
+ * Strings have no interior NUL. Empty context data MUST use absent encoding;
+ * namespace string MUST be present/nonempty. No padding/native structs/pointers,
+ * trailing bytes or guessed missing fields. Checked lengths/counts fit size_t,
+ * reserved storage and input. Truncation/malformed input PROTOCOL; unknown
+ * version UNSUPPORTED; reserved-space exhaustion LIMIT. Validate associations.
+ *
+ * Generation framing stays COGGEN2 followed by NUL (8 bytes), u64 generation,
+ * u64 payload size, u64 payload checksum, u64 header checksum. This existing
+ * 40-byte envelope is version-neutral framing; checksum covers the full v3
+ * payload. Owner/manifest/checkpoint transaction stays unchanged. Saves with
+ * any context history/high-water use v3; context-free saves may remain v2.
+ * File load derives explicit context record/binding/byte reservations from the
+ * validated bounded snapshot before calling session_restore; default zero
+ * context capacity is not used for a v3 context-bearing load. Load remains an
+ * explicit constructor operation within max_record_bytes.
+ * v1/v2 decode initializes all new fields/node bindings to zero. Load never
+ * adopts, scans sources, adds prompts or rewrites disk. Generic core preserves
+ * opaque namespace data; instruction runtime requires a supported format or
+ * explicit safe legacy adoption, never implicit pending-call rebase.
+ */
 /** @brief File load policy: unsafe legacy records require explicit inspection. */
 typedef enum cog_store_load_mode {
     COG_STORE_LOAD_REPLAY = 0,
@@ -42,12 +83,18 @@ typedef enum cog_store_load_mode {
 /** @brief Facts returned by version-aware load; never stored credentials. */
 typedef struct cog_store_load_report {
     uint32_t source_version;
-    uint64_t checkpoint_generation; /**< Exact v2 immutable generation; 0 for v1. */
+    uint64_t checkpoint_generation; /**< Exact v2/v3 immutable generation; 0 for v1. */
     bool migrated_in_memory;
     bool recovered_truncated_tail;
     size_t discarded_tail_bytes;
     bool replay_safe;
     size_t indeterminate_tools;
+    bool contexts_present; /**< Exact context history was loaded. */
+    uint64_t source_audit_high_water; /**< Exact encoded high-water BEFORE restore
+       appends conservative STARTED->INDETERMINATE recovery transitions. A typed
+       inspection verifier may distinguish that synthetic tail by sequence above
+       this watermark and exact previous/next states; it never grants execution.
+       Context-capable custom backends must report this factual source value. */
 } cog_store_load_report_t;
 
 /** @brief Immutable checkpoint identity scoped by store+session; 0 is absent. */
@@ -225,6 +272,12 @@ typedef struct cog_store_vtable {
                                            cog_store_owner_t expected,
                                            void **out_guard);
 
+    /** Static bits: zero is legacy v2; CONTEXT_V3 promises exact data/bindings/
+     * node associations/high-water on ALL load/save/checkpoint paths, atomic
+     * with messages/ledger. Unknown bits are rejected at construction. This
+     * layout extension requires custom backend recompilation; no binary ABI
+     * compatibility with a shorter pre-extension table is promised. */
+    uint64_t capabilities;
 } cog_store_vtable_t;
 
 /* ------------------------------------------------------------------ */
@@ -284,6 +337,11 @@ typedef struct cog_store_config {
        unguarded APIs cannot bypass ownership. A recovery-only guard permits
        only explicit reconciliation writes, never ordinary append/execution. File backend supports it; null or
        incapable custom backend returns UNSUPPORTED at construction. */
+    /** Required static bits checked before backend callbacks. Unknown or
+     * unsupported bits return UNSUPPORTED at construction. Instruction runtime
+     * requires CONTEXT_V3 before load/adoption, preventing legacy callbacks
+     * from silently stripping context before validation. */
+    uint64_t required_capabilities;
 } cog_store_config_t;
 
 /* ------------------------------------------------------------------ */
@@ -348,6 +406,20 @@ void cog_store_free(cog_store_t *store);
  * rollback. This is authoritative even for a newly constructed replacement
  * session using the same ID, or after local discard/reset. New node IDs must be
  * beyond the committed high-water; unchanged existing identities remain bound.
+ * Context records/bindings and node binding identities are also immutable:
+ * no removal, byte replacement, association rewrite, ID reuse or high-water
+ * rollback. New IDs exceed committed high-water. Recovery guards cannot add
+ * contexts/bindings or change the selected cursor; reconciliation results
+ * inherit their identified assistant binding. Ordinary publication may select
+ * a safe historical branch or append a valid idle revision after all proposed
+ * groups close. When a previously committed unresolved group remains unresolved,
+ * no new binding or selected-cursor change is permitted. Publishing before a
+ * new group is proposed, or after the old group fully closes, remains valid
+ * when all snapshot associations validate. Save the whole snapshot in one generation, never a sidecar.
+ * Public save/append/checkpoint reject UNSUPPORTED BEFORE backend callbacks if
+ * any context records/bindings/high-water/cursor/node bindings exist but backend
+ * lacks CONTEXT_V3, regardless of configured required_capabilities. Failed or
+ * uncertain save grants no use of the new context.
  * Only documented monotonic ledger transitions are allowed: PROPOSED->STARTED/
  * DENIED and STARTED->SUCCEEDED/FAILED/CANCELLED/INDETERMINATE, with valid
  * associated results; final outcomes/results are immutable. Only a recovery

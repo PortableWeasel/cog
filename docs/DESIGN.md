@@ -424,29 +424,30 @@ compiled context for ordinary send, restored-tool preflight,
 reload preflight and staged-execution preflight. No developer-role expansion
 or additional provider is promised by the initial template interface.
 
-### Remaining joined contracts and header gate
+### Joined contracts and header gate
 
 The in-memory manifest retains the complete bounded catalog plus applicable
 scope/resources and exact resolved fragments. This allows restoration without
 reading changed source files, but it is not a native memory wire/disk format.
 Instruction data must not be placed in provider opaque continuation, and hashes
-alone cannot reconstruct it. The following remain explicit open contract work
-under `1ddb6d2` before the full header gate `04800f5` can pass:
+alone cannot reconstruct it. The joined draft now declares the following boundaries under `1ddb6d2`:
 
-- Define a versioned generic session context attachment, immutable per-branch
-  bindings and bounded public snapshot/restore capacities. Core stores opaque
-  namespace/format/data, without parsing Markdown or importing application types.
-- Define a new store format and explicit custom-backend capability refusal, so
-  exact result/ledger/context publication is one checkpoint transaction. Older
-  backends must fail instead of dropping new context fields. Inspection remains
-  offline and does not scan sources; legacy adoption must be explicit.
-- Define an authenticated, capacity-bounded worker instruction/catalog capsule
-  and resource request/receipt lifetime, including ordering with bootstrap,
-  staged handoff, partial delivery, cancellation and slot reuse. Local/native
-  children must use the same resolved bytes and permission intersection.
-- Define publication hooks for scope changes and skill activation after closing
-  proposed call groups, without changing an already admitted effect's context.
-  Ordinary input/retry deadlines and request/tool budgets remain unchanged.
+- Generic immutable session contexts/revisions and exact node associations in
+  `session.h`, including branch cursor selection and unresolved-group pinning.
+- COGSNAP3 and explicit context-preserving backend capabilities in
+  `session_store.h`; recovery-only guards cannot publish replacement contexts.
+- CGB2/CGS2 and one bounded CGIR context-transaction lane in the private
+  `instruction_transfer.h`/control/execution headers. Coordinator preparation
+  handles activation, resources and scope queries. Worker COMMIT plus exact
+  checkpoint verification precedes READY; only then may new admission resume.
+  Identical scope probes have a no-change path, so normal tools do not enter
+  an endless denial/retry loop. No-change model controls still save their
+  ordinary terminal result and ledger before continuation.
+- `cog/runtime.h` defines cooperative driving, acknowledged views, exact ASK
+  identities, paired provider/context reload, named child selection and explicit
+  instruction replacement. `runtime_instructions.h` declares static activation
+  and resource controls and the scope-before-effects rule. V1 calls spanning
+  distinct directory scopes fail UNSUPPORTED rather than merge sibling rules.
 
 The continuation adds [instruction_codec.h](../libraries/cog-instructions/include/cog/instruction_codec.h)
 with the canonical CGIM v1 format shared by persistence and native bootstrap.
@@ -456,6 +457,41 @@ semantic validation as restoration; neither source hashes alone nor supplied
 fragments are sufficient proof of a consistent snapshot. Constructors may copy
 bounded bytes; ordinary queries and encoding do not allocate. Instruction data
 is private session content, excluded from UI replay and diagnostic logs.
+
+Context records are opaque to core. `cog_session_context_add` copies namespace,
+format and payload; `cog_session_context_publish` appends an immutable revision
+anchored to the idle active leaf. Nodes retain the revision that produced them;
+tool results retain their originating assistant's revision. An idle replacement
+can differ from the leaf's historical context, so runtime resolves the selected
+cursor through `snapshot_view.context_bindings` and then `context_view`, never
+by guessing from the active node or highest ID. `context_select` explicitly
+restores a pending same-leaf revision. Nonleaf forks inherit the fork-point
+context on divergent insertion and preserve sibling activation history.
+Unresolved groups pin their original binding in live state and restored snapshots.
+
+Store v3 adds an explicit `COGSNAP3` suffix under the existing checksummed
+`COGGEN2` generation envelope. Required `COG_STORE_CAP_CONTEXT_V3` support is
+checked before instruction-aware load and again before any context-bearing save,
+including custom callbacks. Result, ledger, contexts and bindings publish in one
+guarded checkpoint. Failed or uncertain saves freeze admission; they never turn
+candidate context into an executable replacement. Legacy loads do not scan sources.
+
+Snapshot identity belongs to the owning session and catalog generation. The
+coordinator allocates from the maximum across all durable context history, not
+just the selected branch; live candidates burn increasing IDs. Published IDs
+are never reused. Independent child sessions own separate identity domains,
+carried by the existing authenticated session/attempt envelope. Uncertain native
+publication freezes the transaction until recovery rather than reissuing an ID.
+
+Child/replacement construction partitions the pinned manifest sources into
+HOST/AGENT/SKILL for `catalog_new` at the same catalog generation, retaining
+applicable AGENTS/RESOURCE additions. `snapshot_new` uses a fresh identity and
+intersected settings. Children preserve the selected role and active skills;
+unavailable required capabilities fail DENIED unless the host explicitly chose
+an alternative role before admission. No silent dropping or parent source reread.
+A resource's package-relative request path is joined to the pinned SKILL.md
+parent within the same logical root before becoming a RESOURCE source. Execution
+settings must match the resulting reduced snapshot, not merely its advertised text.
 
 The next runtime boundary promotes the existing cooperative executor rather
 than adding another event loop. Terminal parsing/output currently embedded in
@@ -468,11 +504,12 @@ The implementation dependency plan is tracked by `tix show 7eb6cf9`; the
 [instruction contract inventory](../libraries/cog-instructions/contracts/CONTRACT.md)
 defines module obligations without duplicating progress in this docs folder.
 
-The independent B1–B6 draft surface can be compiled and traced while these joins
-are designed. It does not authorize implementation, claim all scenarios covered,
-or bypass the three full header/scenario passes plus additional final review.
-The consolidated [instruction traces](scenarios/P01-instruction-support.md)
-record exact drafted calls and the remaining gaps rather than inventing app APIs.
+The complete draft surface is traced in the consolidated
+[instruction scenarios](scenarios/P01-instruction-support.md), including all 20
+baseline extensions. These declarations do not by themselves authorize or claim
+implementation: `04800f5` records the three full passes, corrections and additional
+final review. Runtime implementation follows the dependency plan only after that
+gate accepts the joined contracts.
 
 ## Tools and effect admission
 

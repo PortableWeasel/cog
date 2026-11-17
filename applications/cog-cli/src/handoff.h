@@ -63,6 +63,12 @@ cog_result_t cog_cli_handoff_request(cog_cli_handoff_t *handoff,
  * Every remote reply is HANDOFF lane with outer reply_to naming its request;
  * exact native binding/session/source/target/expected/next/checkpoint and current
  * retained phase must match. Send-OK never substitutes for an operation ACK.
+ * Instruction-aware purpose3 uses CGB2. Target restores exact checkpoint
+ * cog.instructions/format1 CGIM attachment and compares identity/digest/full
+ * bytes before PREPARED. Unknown store capability/template fails before source
+ * release/CAS. All RESOURCE requests/results/consumption proofs must retire
+ * before QUIESCE. Context/catalog/resources stay pinned through target activation
+ * and source disposal; profile ACK alone never authorizes execution.
  * Local endpoints use actual direct operation returns, never fabricated replies.
  * Duplicate retained phases replay their immutable reply without save/release/
  * CAS/acquire/activation repetition. Unknown retired phases cannot resurrect work.
