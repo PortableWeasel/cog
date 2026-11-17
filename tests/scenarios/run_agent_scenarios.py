@@ -158,6 +158,14 @@ def main():
         if messages[-1]["role"] == "tool":
             assert "status=ok;" in messages[-1]["content"]
             assert (f.workspace / ("effect-" + token)).read_text() == "once"
+            if mode == "fanout":
+                # This is an actual post-tool model request, with its effect
+                # and durable result already observed above. Admit the next
+                # constructor while this one holds no store mutation, then
+                # require all three current STARTED/RUNNING attempts before
+                # releasing any terminal response in the original reverse order.
+                (f.workspace / f"entered-{token}").write_text("actual held final provider request")
+                assert wait_for(f, lambda: (f.workspace / f"active-group-{round_number}").exists())
             if fanout and role != "native-b":
                 predecessor = "native-b" if role == "native-a" else "native-a"
                 assert wait_for(f, lambda: (f.workspace / f"terminal-{predecessor}-{round_number}").exists())
