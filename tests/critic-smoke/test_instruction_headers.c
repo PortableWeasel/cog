@@ -1,6 +1,7 @@
 /** @file test_instruction_headers.c @brief Compile-only draft API type coverage. */
 #include <cog/instruction_source.h>
 #include <cog/instructions.h>
+#include <cog/instruction_codec.h>
 #include <cog/provider_prompt.h>
 
 static cog_result_t render(const cog_provider_prompt_input_t *input,
@@ -14,6 +15,15 @@ static cog_result_t render(const cog_provider_prompt_input_t *input,
 
 int main(void)
 {
+    cog_result_t (*encode)(const cog_instruction_manifest_t *, void *, size_t,
+        size_t *) = cog_instruction_manifest_encode;
+    cog_result_t (*decode)(cog_instruction_snapshot_t **,
+        const cog_instruction_limits_t *, const void *, size_t,
+        cog_instruction_restore_mode_t, const cog_prompt_tool_binding_t *,
+        size_t) = cog_instruction_snapshot_decode;
+    cog_result_t (*fingerprint)(const cog_instruction_snapshot_t *,
+        unsigned char *) = cog_instruction_snapshot_fingerprint;
+    (void)encode; (void)decode; (void)fingerprint;
     cog_result_t (*reader_new)(cog_instruction_source_reader_t **,
         const cog_instruction_source_config_t *, cog_instruction_diagnostic_t *) =
         cog_instruction_source_reader_new;

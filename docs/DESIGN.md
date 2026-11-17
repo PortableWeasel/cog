@@ -448,6 +448,26 @@ under `1ddb6d2` before the full header gate `04800f5` can pass:
   proposed call groups, without changing an already admitted effect's context.
   Ordinary input/retry deadlines and request/tool budgets remain unchanged.
 
+The continuation adds [instruction_codec.h](../libraries/cog-instructions/include/cog/instruction_codec.h)
+with the canonical CGIM v1 format shared by persistence and native bootstrap.
+It encodes explicit little-endian fields, complete cached sources, source hashes,
+selection, effective tool metadata and exact fragments. Decode performs the same
+semantic validation as restoration; neither source hashes alone nor supplied
+fragments are sufficient proof of a consistent snapshot. Constructors may copy
+bounded bytes; ordinary queries and encoding do not allocate. Instruction data
+is private session content, excluded from UI replay and diagnostic logs.
+
+The next runtime boundary promotes the existing cooperative executor rather
+than adding another event loop. Terminal parsing/output currently embedded in
+turn, policy, session and reload handlers moves to the CLI adapter. Public runtime
+configuration contains resolved values, no argv/environment precedence or FILE
+objects. Existing `cog::cli` interfaces remain compatibility adapters during the
+migration. A runtime-only installed consumer must work with CLI building disabled.
+
+The implementation dependency plan is tracked by `tix show 7eb6cf9`; the
+[instruction contract inventory](../libraries/cog-instructions/contracts/CONTRACT.md)
+defines module obligations without duplicating progress in this docs folder.
+
 The independent B1–B6 draft surface can be compiled and traced while these joins
 are designed. It does not authorize implementation, claim all scenarios covered,
 or bypass the three full header/scenario passes plus additional final review.

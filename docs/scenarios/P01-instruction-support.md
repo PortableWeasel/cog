@@ -1,4 +1,4 @@
-# P01–P16: Instruction support contract traces
+# P01–P17: Instruction support contract traces
 
 Header authoring under `e321ec3` / `57e749b`. These are design traces, not runtime
 test passes. The draft B1–B6 APIs exist as declarations; B7 app/store/worker
@@ -12,6 +12,7 @@ Header key used by every coverage table:
 
 - **S:** [instruction_source.h](../../libraries/cog-instructions/include/cog/instruction_source.h)
 - **I:** [instructions.h](../../libraries/cog-instructions/include/cog/instructions.h)
+- **M:** [instruction_codec.h](../../libraries/cog-instructions/include/cog/instruction_codec.h)
 - **N:** [prompt.h](../../libraries/cog-core/include/cog/prompt.h)
 - **P:** [provider_prompt.h](../../libraries/cog-provider/include/cog/provider_prompt.h)
 - **O:** [openrouter.h](../../libraries/cog-provider/include/cog/openrouter.h)
@@ -376,6 +377,36 @@ sequenceDiagram
 error; callers clear aliases and preserve the first error. A completed source
 result wins later cancellation. No destructor waits for remote peers or runs a
 script. Raw source text and absolute host paths are not diagnostic payloads.
+
+## P17 — Portable capsule round trip and malformed input
+
+```mermaid
+sequenceDiagram
+    Host->>Snapshot: cog_instruction_snapshot_view(manifest)
+    Host->>Codec: cog_instruction_manifest_encode(NULL,0,required)
+    Codec-->>Host: OVERFLOW plus exact required bytes
+    Host->>Codec: cog_instruction_manifest_encode(reserved bytes)
+    Host->>Snapshot: cog_instruction_snapshot_fingerprint(digest)
+    Host->>Codec: cog_instruction_snapshot_decode(limits,bytes,mode,bindings)
+    alt exact supported capsule
+        Codec-->>Host: owned snapshot, no source reread
+    else truncated, oversized, inconsistent or unknown version
+        Codec-->>Host: PROTOCOL / LIMIT / UNSUPPORTED, output NULL
+    end
+```
+
+| Step | Exact coverage | Header |
+|---|---|---|
+| Canonical measured encoding | `cog_instruction_manifest_encode`, `COG_INSTRUCTION_CONTEXT_NAMESPACE`, `COG_INSTRUCTION_CONTEXT_FORMAT` | M |
+| Stable canonical identity | `cog_instruction_snapshot_fingerprint` | M |
+| Bounded owned decode | `cog_instruction_snapshot_decode`, `cog_instruction_limits_t`, `cog_instruction_restore_mode_t` | M,I |
+| Semantic verification | `cog_instruction_snapshot_restore` rederives metadata and fragments and compares exact retained bytes | I |
+
+**Gap:** the codec's independent public boundary is covered. Session attachment
+and native capsule transport still require the B7 joins below; a valid digest
+never authorizes an effect. Tests must cover every-byte truncation, unknown
+versions, oversized count arithmetic, source/fragment inconsistency and identical
+canonical bytes after a successful round trip. No native struct is serialized.
 
 ## Original 01–20 retrace
 

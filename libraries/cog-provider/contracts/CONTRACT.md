@@ -78,3 +78,31 @@ unknown members remain lossless, including payload-like names on other kinds.
 Null signature is outside the pinned profile (UNSUPPORTED); other malformed
 recognized kinds are PROTOCOL. No base64, index-range or format-value policy is
 introduced; the approved profile clarification is archived on `tix show a81767d`.
+
+## Draft prompt compiler extension
+
+`provider_prompt.h` and the static `cog_openrouter_prompt_template` add pure,
+bounded preparation. They do not change the existing provider request/vtable
+layout or authorize network/effect work. The joined instruction gate remains a
+prerequisite to implementation (`tix show 04800f5`).
+
+The constructor reserves scratch and two aligned output lanes. Compile validates
+identity, counts, strict input and model/token ceilings, renders into the inactive
+lane, checks all transitive returned ranges and unchanged history/settings, then
+publishes. Every failure preserves the previous request and output parameter.
+No compile-time allocation, source loading, provider callbacks or credential
+resolution is permitted. Destruction ends all borrowed views without I/O.
+
+Contract tests must cover constructor overflow, exact capacity edges, invalid
+model/template/provider bindings, duplicate tool names (including denied rows),
+ASK guidance, denied omission, strict object schemas and decoded duplicate keys,
+quotes/newlines/Unicode escaping, exact framed fragment order, copied history
+roles/calls/results/opaque bytes/usage, output-token and logical byte ceilings,
+and every codec range violation. An intentionally invalid static test renderer
+must not publish storage outside the candidate lane or mutate preserved settings.
+Successful requests remain valid after caller input storage changes. Test
+success/error/success alternation to verify two-lane ownership.
+
+Integration must use the same prepared input for send, restored-tool preflight,
+reload and staged handoff. No compiler test alone proves runtime publication or
+execution eligibility; those belong to runtime/store scenarios.

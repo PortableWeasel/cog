@@ -227,7 +227,9 @@ cog_result_t cog_instruction_catalog_view(const cog_instruction_catalog_t *catal
  * sibling subtree; host establishes completeness with a B1 SCOPE read. Resolver
  * cannot infer absent filesystem rules from missing caller bytes. Tool names,
  * descriptions and schemas derive from the same selected static descriptors;
- * denied bindings are omitted, ASK is never converted to ALLOW. Snapshot owns
+ * denied bindings are omitted, ASK is never converted to ALLOW. Tool names
+ * must be nonempty UTF-8 without whitespace or ASCII controls, so exact-name
+ * lists and generated guidance cannot acquire extra records from a name. Snapshot owns
  * all manifest text and no longer borrows catalog/additions/selection strings.
  * It still borrows code-bearing static descriptors until snapshot_free.
  * Order: HOST, shallow-to-deep AGENTS, agent role, skill metadata, active skills
@@ -236,6 +238,19 @@ cog_result_t cog_instruction_catalog_view(const cog_instruction_catalog_t *catal
  * duplicate names within the explicit input are INVALID_ARG. Advertised skill
  * metadata is filtered to capabilities available under the effective bindings;
  * explicit ineligible activation fails rather than silently skipping a skill.
+ * For AGENT/SKILL fragments only the Markdown body following the closing
+ * frontmatter delimiter is emitted, preserving its original bytes. HOST,
+ * AGENTS and RESOURCE fragments retain their entire original text. Metadata
+ * advertisements use one SKILL_CATALOG fragment per eligible skill, source_id
+ * equal to its root_id + ":" + path, scope empty, text equal to name + "\n" +
+ * decoded description + "\n". Tool guidance uses one TOOL_GUIDANCE fragment
+ * per enabled tool sorted by name, source_id equal to tool name, scope empty,
+ * text exactly "Tool NAME: allowed\n" or "Tool NAME: decision required\n".
+ * NAME is the validated descriptor name, not a format/template expression.
+ * Other source fragment IDs use root_id + ":" + path; root IDs cannot contain
+ * ':' or '/' so this identity is unambiguous. HOST ties sort by root_id then
+ * path; resource ties sort by owner_skill, root_id, path. AGENTS text is ordered
+ * by scope depth and each applicable scope appears at most once.
  * Text order expresses source scope, not enforced security authority. Byte
  * exhaustion fails rather than truncates. Catalog generation stays pinned.
  */
@@ -272,7 +287,11 @@ cog_result_t cog_instruction_snapshot_view(const cog_instruction_snapshot_t *sna
  * corrupt identities/hashes/fragment/source associations; UNSUPPORTED version,
  * changed tool grammar or descriptor metadata; DENIED current permissions no
  * longer permit the retained set; LIMIT; NOMEM. No source/provider/tool calls.
- * @note Restore never silently rebases model/template/scope/tools. Explicit
+ * @note EXECUTE and INSPECT both rederive catalog metadata and resolved
+ * fragments from retained sources and exact effective tool records, then compare
+ * every retained field/byte. Source hashes alone do not validate injected or
+ * inconsistent fragments. No host binding is invoked during validation.
+ * Restore never silently rebases model/template/scope/tools. Explicit
  * fresh-input rebase is separate runtime admission, not pending-tool replay.
  * Native structs/pointers are not a wire format. Legacy sessions with no stored
  * manifest need an explicit runtime adoption policy before effect admission.

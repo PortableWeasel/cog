@@ -101,7 +101,7 @@ extern const cog_provider_vtable_t cog_openrouter_provider_vtable;
  *
  * provider_prompt.h defines constructor/callback/output lifetime. The descriptor
  * binds exactly cog_openrouter_provider_vtable and the ID/revision above. It
- * prepends one SYSTEM message for nonempty instruction content, preserving the
+ * prepends one SYSTEM message when fragment_count is nonzero, preserving the
  * original history verbatim afterward, including any existing SYSTEM messages.
  * Each fragment is framed as `[COG ORIGIN source=JSON_STRING scope=JSON_STRING]`,
  * newline, exact text, newline, `[/COG]`, newline. ORIGIN is the lowercase enum

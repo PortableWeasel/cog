@@ -14,7 +14,6 @@
 #ifndef COG_TOOL_H
 #define COG_TOOL_H
 
-#include <cog/event.h>
 #include <cog/result.h>
 
 #include <stdbool.h>

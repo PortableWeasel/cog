@@ -9,7 +9,7 @@
  * begin/poll/view/cancel never allocate or grow it. Filesystem calls can block
  * in the OS: a byte/work quantum is not a universal I/O-latency guarantee.
  *
- * Root IDs are host-assigned logical names, not filesystem authority supplied
+ * Root IDs are nonempty UTF-8 logical names without ':' or '/', not filesystem authority supplied
  * by Markdown. Relative paths use '/' and reject absolute paths, empty interior
  * components, '.', '..', NUL, symlinks and nonregular files. The empty path is
  * allowed only to name a root directory for scans/scope. Traversal is relative
@@ -147,7 +147,13 @@ cog_result_t cog_instruction_source_begin(cog_instruction_source_reader_t *reade
  * ABORTED after cancel. Terminal errors repeat without further I/O and expose
  * no partial results. Runtime file descriptors close on completion/failure.
  * @note On NULL_PTR/INVALID_STATE, done is unchanged. Empty scan is successful;
- * entries are sorted by unsigned UTF-8 path bytes using reserved/in-place
+ * AGENT_SCAN considers only names ending in .md, ignoring other names;
+ * a matching symlink/nonregular entry fails DENIED. SKILL_SCAN ignores regular
+ * files and nonmatching children, rejects symlink children, and checks direct
+ * directories for regular no-follow SKILL.md; missing SKILL.md is skipped.
+ * Both scans return names only, never content_loaded text. Result paths include
+ * the requested directory prefix and, for skills, the SKILL.md suffix.
+ * Entries are sorted by unsigned UTF-8 path bytes using reserved/in-place
  * resumable sorting; scope results are shallow to deep. Hidden recursive
  * scanning and filesystem discovery outside roots
  * are forbidden. Per-job aggregate bounds include every retained item.

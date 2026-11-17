@@ -1,6 +1,8 @@
 /** @file contract.c @brief Loader-only consumer with no frontend/provider tree. */
 #include <cog/instruction_source.h>
 #include <cog/instructions.h>
+#include <cog/instruction_codec.h>
+#include <cog/tool.h>
 
 #if defined(COG_CLI_H) || defined(COG_PROVIDER_VTABLE_H) || defined(COG_NET_H) || defined(COG_IPC_H)
 #error "Instruction loading must not pull UI, provider, networking or IPC APIs"
