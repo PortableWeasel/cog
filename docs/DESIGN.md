@@ -1,10 +1,14 @@
 # Cog — System Design Blueprint
 
-> Current delivery snapshot: accepted integration `2723c36`. A–L/Q, live reload
+> Current delivery snapshot: accepted main `c052b172`. A–L/Q, live reload
 > and real observation are integrated; M is accepted at its recorded
 > single-process scope and N's contract gate passed. O4/O9 and the installed
-> public proof are integrated. Whole-O review `5cd1d25` and release gate P remain
-> open. [Runnable instructions](README.md), the
+> public proof are integrated; whole-O review `5cd1d25` passed exact code
+> `5df4069` and the package is merged. The
+> [release manifest](REAL_CLIENT_RELEASE_MANIFEST.md) records full GCC/Clang/
+> ASan 185-case results, scoped TSan 36 and 112 public-header checks.
+> Supported-profile release validation passed; `77adfec` tracks acceptance.
+> [Runnable instructions](README.md), the
 > [current roadmap](REAL_CLIENT_WBS.md) and
 > [assertion map](REAL_CLIENT_RELEASE_COVERAGE.md) distinguish current results
 > from the original engine/mock baseline and dated design notes below.
@@ -33,8 +37,8 @@
 > retained typed output, final opaque preservation, mock conformance, offline
 > TLS and installed link closure. K conversation-loop delivery is also integrated;
 > its [independent evidence](REAL_CLIENT_K_EVIDENCE.md) records the scoped result.
-> L/M and O deliveries now have separate accepted evidence; whole-O and full
-> release validation remain distinct gates.
+> L/M and whole O now have accepted evidence; the release manifest records
+> supported-profile validation.
 
 > Stage 14.Q runtime implementation passed independent revision review and is integrated;
 > [Q evidence](REAL_CLIENT_Q_EVIDENCE.md) records bounded nonblocking IPC,
@@ -59,7 +63,7 @@
 > evidence for the accepted header profile; runtime lifecycle and maintained-build
 > conformance is recorded by [transport delivery F](REAL_CLIENT_F_EVIDENCE.md).
 > The initial no-replay profile uses fresh HTTP/1.1 connections, no pooling or
-> HTTP/2, and a second-attempt guard. Full release validation remains pending.
+> HTTP/2, and a second-attempt guard. Supported-profile release validation passed.
 > DNS follow-up requires a c-ares primary resolver with
 > threaded resolution disabled, empirical shipped-profile validation and explicit
 > rejection of unsupported builds. Threaded/QUICK_EXIT alternatives fail cleanup.
@@ -77,7 +81,7 @@
 > Cog workspaces are constructor-bounded; third-party handle runtime allocation
 > is explicitly declared and total dependency-memory caps are unsupported. Final E
 > review accepts that declared profile. Transport F is integrated; sibling
-> delivery is now integrated; final whole-package/release gates remain open.
+> delivery and whole-O package review are accepted; release validation passed.
 
 The [Stage 14.D pass-2 scenario register](REAL_CLIENT_SCENARIO_PASS2.md) records
 the current header amendments, all original20 plus R01–R18 traces and delivery

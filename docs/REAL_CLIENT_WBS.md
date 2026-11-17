@@ -4,7 +4,8 @@
 > independent review of `8563f81`. The three header passes and final review are
 > complete. A–L/Q, R12 and runtime observation are integrated. M is accepted;
 > N's integration contracts passed. O's component, O9 and installed deliveries
-> are integrated at `2723c36`; whole-O review and P remain open.
+> are integrated and whole-O review passed. Accepted main is `c052b172`;
+> supported-profile release validation passed. See the [release manifest](REAL_CLIENT_RELEASE_MANIFEST.md).
 
 Parent: `2b9d0ea`. This is the current real-client roadmap; Stage 12 remains
 historical engine/mock-CLI delivery evidence. User delegates routine design
@@ -32,11 +33,11 @@ header gate because it must complete before K.
 | L | `ff2dbc9` | [Resume/fork and terminal interaction](REAL_CLIENT_L_INTEGRATION_EVIDENCE.md) | Integrated | G,K |
 | M | `d0f910f` | [Single-process offline acceptance](REAL_CLIENT_M_OFFLINE_EVIDENCE.md) and [bounded installed live smoke](REAL_CLIENT_M_LIVE_EVIDENCE.md) | Accepted, dated single-process scope | L and required followups |
 | N | `035219b` | [Headless/subagent three-pass integration contracts](REAL_CLIENT_HEADLESS_PASSES.md) | Passed | M |
-| O | `0e35c23` | [O9 actual joins](REAL_CLIENT_O9_INTEGRATION_EVIDENCE.md) and [installed public proof](REAL_CLIENT_INSTALLED_PROOF_INTEGRATION.md) | Deliveries integrated; whole-O review `5cd1d25` open | N and component gates |
-| P | `77adfec` | Release packaging and full supported-profile validation | Open | Accepted whole O |
+| O | `0e35c23` | [Whole-O package review](REAL_CLIENT_WHOLE_O_PACKAGE_REVIEW.md), O9 and installed public proof | Accepted and merged at main `c052b172` | N and component gates |
+| P | `77adfec` | [Final release manifest](REAL_CLIENT_RELEASE_MANIFEST.md) and documentation | Validation passed; release manifest complete | Accepted whole O |
 
-Current integration snapshot: `2723c36`, before whole-O/P approval or a main
-merge. The combined real-library Q/G
+Current main snapshot: `c052b172`, the accepted whole-O tree from integration
+`b9140b68`. Ticket `77adfec` tracks release acceptance. The combined real-library Q/G
 check `b8a6fc1` is complete: strict and ASan/UBSan targeted suites each passed
 27/27; see the [G/Q acceptance record](../libraries/cog-core/contracts/session_store/CONTRACT.md#independent-acceptance-and-combined-gq-integration).
 Earlier evidence reports retain their dated scope and then-open dependencies.
@@ -45,11 +46,11 @@ Two primitive deliveries were pulled ahead of O and are complete:
 
 - Local agents: `bf7a450`, legacy-test migration `b569276`, and
   [reviewed integration](REAL_CLIENT_LOCAL_AGENT_INTEGRATION.md) supply leased
-  SPAWN/CANCEL, copied config, bounded updates and CGA1. O retains authenticated
-  remote routing, placement and process lifecycle composition.
+  SPAWN/CANCEL, copied config, bounded updates and CGA1. O added the accepted
+  authenticated routing, placement and process lifecycle composition.
 - Replay: `91108c5` and [CGR1 evidence](REAL_CLIENT_REPLAY_EVIDENCE.md) supply
-  bounded retention, GAP and codecs. K supplies CGD1 display snapshots; O retains
-  reconnect, snapshot/resync and deduplication integration.
+  bounded retention, GAP and codecs. K supplies CGD1 snapshots; accepted O9 joins
+  actual reconnect, snapshot/resync and command deduplication.
 
 Release assertion preservation `0966ef0` is also integrated: PRIVATE test-only
 undefine flags, early explicit opt-in and executable-registration/forced-failure
@@ -84,9 +85,9 @@ reassessment per cog-dev. No user confirmation is needed for routine fixes.
 The parent stays in progress until release gate P passes. M acceptance is
 complete at its recorded single-process scope; the six former M exceptions
 are resolved by integrated O deliveries, not retroactively removed from M's
-dated report. Whole-O package review and P still require their own exact source,
-profile, inventory and result receipts. Routine documentation work neither
-repeats the paid smoke nor closes those gates.
+dated report. Whole-O package review has its own exact source, profile,
+inventory and result receipt. The release manifest records supported-profile
+validation; ticket `77adfec` tracks acceptance without repeating the paid smoke.
 
 ## Verification plan
 
@@ -102,7 +103,7 @@ QUICK_EXIT leaves a thread alive after cleanup. Measured ceilings are empirical,
 and maintained shipped profiles must rerun the probes. Passed gate E specifies
 feature rejection/lifecycle and accepts explicit DYNAMIC third-party allocation
 without a total byte ceiling. F records implementation OOM/cleanup and lifecycle
-checks; P must revalidate the shipped dependency profile and installation. Q
+checks; whole-O review revalidated the shipped dependency profile/install. Q
 records timer, IPC and cancellation progress with a nonempty core event queue;
 the earlier PoC used only a synthetic queue.
 
@@ -133,8 +134,10 @@ preserves its six actual O-dependent exceptions and 129 applicable-case result.
 The [O9 integration](REAL_CLIENT_O9_INTEGRATION_EVIDENCE.md) later passed 184/184;
 the [installed extension](REAL_CLIENT_INSTALLED_PROOF_INTEGRATION.md) passed
 185/185 in the admitted GCC Release profile, with no exclusions or disabled
-cases. Those results establish their exact profile, not fresh full Clang/ASan/
-TSan coverage. Whole-O review `5cd1d25` and P retain that work.
+cases. The later [whole-O review](REAL_CLIENT_WHOLE_O_PACKAGE_REVIEW.md) supplies
+fresh full GCC/Clang/ASan 185, separate TSan 36 and 112 strict header checks for
+code `5df4069`. Each receipt retains its own scope; the release manifest records
+supported-profile validation.
 
 P requires the **full suite without the former M exclusions**,
 all 20 original plus R01–R18 executable scenario oracles and shutdown regression,

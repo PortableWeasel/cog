@@ -2,8 +2,11 @@
 
 This map joins the twenty original scenarios, shutdown regression 05b and
 R01–R18: 39 assertion rows, not 39 independently named CTests. It describes the
-accepted integration `2723c36`, before whole-O review `5cd1d25` and release gate
-P. A target name or design trace alone is not runtime evidence.
+accepted main `c052b172`, with whole-O code `5df4069` independently approved by
+`5cd1d25`. Supported-profile release validation passed; `77adfec` tracks
+acceptance. A target name or design
+trace alone is not runtime evidence. See the
+[current release manifest](REAL_CLIENT_RELEASE_MANIFEST.md) for exact identities.
 
 ## Evidence and profile boundaries
 
@@ -14,14 +17,16 @@ P. A target name or design trace alone is not runtime evidence.
 | [Focused M joins](REAL_CLIENT_ACCEPTANCE_EVIDENCE.md) | Actual ASK/output faults, shared retry/tool budgets, real transport cancellation phases, completed-effect/opaque fork and terminal/signal ownership assertions. |
 | [O9 case map](REAL_CLIENT_O9_SCENARIO_EVIDENCE.md) and [accepted integration](REAL_CLIENT_O9_INTEGRATION_EVIDENCE.md) | Actual REAL loopback/native replacements for 03/07/09/10/11/17, five extra modes and preserved components. Postmerge strict GCC Release 184/184; exact separate compiler/sanitizer/repetition scopes remain in those receipts. |
 | [Installed public integration](REAL_CLIENT_INSTALLED_PROOF_INTEGRATION.md) | Accepted integrated GCC Release 185/185 with no disabled/skipped/excluded cases. Actual normal installs/two relocations, public-only CLI closure, owned native lifecycle, custom fenced backend, separate REAL TLS app and installed MOCK UI roles. |
+| [Whole-O independent review](REAL_CLIENT_WHOLE_O_PACKAGE_REVIEW.md) | Exact code `5df4069`: full GCC 185/185, Clang 185/185 and ASan/UBSan/LSan 185/185; separate meaningful TSan 36/36; all 28 public headers in 112 strict C11/C++17 combinations. Final installed proof independently passes in each profile. |
 
 The 185 count is conditional on the admitted curl/c-ares, CLI/Linux and installed
 fixture configuration. Real HTTPS/OOM/net cases require
 `COG_NET_CURL_BUILD_DIR` and `COG_NET_CURL_LIBRARY`; installed proof additionally
 requires `COG_TEST_CARES_BUILD_DIR`. An unsupported-profile `unit-net` refusal
 does not substitute for these tests. The current full suite does not retain M's
-six exceptions. Independent whole-O supported-profile validation and P remain
-open; older scopes are not silently promoted to a new full Clang/sanitizer pass.
+six exceptions. Whole-O supported-profile validation is accepted; its fresh
+results are distinct from older M scopes. The release manifest records
+supported-profile validation; `77adfec` tracks acceptance.
 
 ## Original 01–20 and 05b
 
@@ -98,13 +103,15 @@ INDETERMINATE. Migration is same-host exact-checkpoint transfer; no cross-host,
 live handle transfer, automatic retry/replacement or external-effect rollback is
 claimed. Loopback REAL scripts are not paid/live model behavior.
 
-## Final gate use
+## Final gate record
 
-Freeze the final source and admitted dependency provenance, record the actual
-enabled CTest inventory, run full strict supported GCC/Clang and separate
-sanitizer profiles with no old M exceptions, and retain exact meaningful TSan/
-process-stress scopes. Include public C11/C++ promised header checks, assertion
-policy/allocator controls, normal installed closure and these 39 assertion rows.
-Whole-O/P approval and any main merge require their own independent decisions.
-Current runnable commands are in [README.md](README.md); dated M/F/H/O receipts
-and their old paths/counts remain historical evidence rather than being edited.
+The accepted whole-O review froze code and admitted dependency provenance,
+checked the actual enabled inventory, ran the full supported GCC/Clang/ASan
+suites without old M exceptions, and retained exact TSan/process-stress scopes.
+It verified C11/C++ headers, assertion/allocator controls, normal installed
+closure and these unchanged 39 assertion rows. Main `c052b172` preserves the
+approved integration tree. Supported-profile release validation passed;
+`77adfec` tracks acceptance.
+The [release manifest](REAL_CLIENT_RELEASE_MANIFEST.md) indexes exact hashes and
+limits. Runnable commands are in [README.md](README.md); dated M/F/H/O receipts
+and old paths/counts remain historical evidence rather than being edited.
