@@ -1,762 +1,460 @@
-/**
- * @file test_orchestrator.c
- * @brief Contract test for cog/orchestrator.h implemented by
- *        libraries/cog-orchestrator/src/orchestrator.c.
- *
- * The orchestrator's public contract covers lifecycle/config, auxiliary
- * core spawn and process ownership, health monitoring, placement,
- * graceful shutdown with timeout, crash detection and session recovery,
- * and auto-replace.
- *
- * This white-box test drives the orchestrator through the private hooks
- * declared in orchestrator_internal.h (accept, poll, register_session,
- * clock override, timeout overrides).  Most cores are "self-connected":
- * the test process opens a cog-ipc client endpoint against the
- * orchestrator's listener and the orchestrator accepts it, so no separate
- * process is needed for the logic-level assertions.  Real process spawn,
- * crash, kill and auto-replace are exercised in the integration test
- * (test_orchestrator_ipc.c) with the aux_core fixture.
- *
- * Covered here:
- *   - new/free: NULL checks, invalid config (NULL socket path, overlong
- *     path), defaults applied, socket binding, NULL-free no-op
- *   - spawn: NULL checks, OVERFLOW at max_aux_cores, IO on exec failure
- *   - stop/kill: NULL and NOT_FOUND error paths, graceful ack
- *   - health: UNKNOWN -> HEALTHY -> DEGRADED -> DEAD over the clock
- *   - list: NULL checks, count, truncation
- *   - place: NULL -> INVALID, health/capacity selection, local fallback
- *   - shutdown: NULL, graceful ack, timeout with force-kill
- *   - sessions: NULL, NOT_FOUND, register/unregister, listing
- *   - stress cleanup under ASan/UBSan/LSan
- *
- * Ticket: 3e6262c (Stage 12.5 — Orchestrator)
- */
-
-#define _POSIX_C_SOURCE 200809L
-
-#include "cog/orchestrator.h"
-
+/** @file test_orchestrator.c @brief Real owned worker and bounded lifecycle contracts. */
+#define _GNU_SOURCE
+#include <cog/orchestrator.h>
+#include "orchestrator_layout.h"
 #include "orchestrator_internal.h"
-
-#include <pthread.h>
-#include <stddef.h>
-#include <stdint.h>
+#include <assert.h>
+#include <errno.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <limits.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
-#ifndef COG_ORCHESTRATOR_H
-#error "COG_ORCHESTRATOR_H include guard missing"
-#endif
-
-/* ------------------------------------------------------------------ */
-/* Test harness                                                        */
-/* ------------------------------------------------------------------ */
-
-static unsigned g_failures = 0U;
-
-#define CHECK(label, expr)                                                   \
-    do {                                                                     \
-        if (!(expr)) {                                                       \
-            (void)fprintf(stderr, "FAIL: %s (line %d)\n", label, __LINE__);  \
-            ++g_failures;                                                    \
-        }                                                                    \
-    } while (0)
-
-#define CHECK_RESULT(label, expected, actual)                                \
-    do {                                                                     \
-        cog_result_t _e = (expected);                                        \
-        cog_result_t _a = (actual);                                          \
-        if (_e != _a) {                                                      \
-            (void)fprintf(stderr,                                            \
-                          "FAIL: %s (line %d): expected %d, got %d\n",       \
-                          label, __LINE__, (int)_e, (int)_a);                \
-            ++g_failures;                                                    \
-        }                                                                    \
-    } while (0)
-
-/** Create a unique temporary socket path; caller unlinks it when done. */
-static int
-make_socket_path(char *buf, size_t bufsize)
+void *__real_malloc(size_t bytes); void *__wrap_malloc(size_t bytes);
+void *__real_calloc(size_t count,size_t width); void *__wrap_calloc(size_t count,size_t width);
+void *__real_realloc(void *data,size_t bytes); void *__wrap_realloc(void *data,size_t bytes);
+static size_t allocation_calls,fail_allocation;
+static bool watch_allocations,deny_allocations;
+static bool allocation_fail(void)
 {
-    char tmpl[] = "/tmp/cog-orch-unit-XXXXXX";
-    int fd = mkstemp(tmpl);
-
-    if (fd < 0) {
-        return -1;
-    }
-    (void)close(fd);
-    (void)unlink(tmpl);
-    (void)snprintf(buf, bufsize, "%s", tmpl);
-    return 0;
+    assert(!deny_allocations);
+    return watch_allocations && ++allocation_calls==fail_allocation;
 }
-
-/** Build a config with the given parameters. */
-static cog_orchestrator_config_t
-make_config(const char *path, size_t max_aux, uint32_t interval,
-            uint32_t threshold, size_t capacity, bool auto_replace)
+void *__wrap_malloc(size_t bytes) { return allocation_fail()?NULL:__real_malloc(bytes); }
+void *__wrap_calloc(size_t count,size_t width) { return allocation_fail()?NULL:__real_calloc(count,width); }
+void *__wrap_realloc(void *data,size_t bytes) { return allocation_fail()?NULL:__real_realloc(data,bytes); }
+static uint64_t now_ms(void)
 {
-    cog_orchestrator_config_t cfg;
-
-    (void)memset(&cfg, 0, sizeof(cfg));
-    cfg.socket_path = path;
-    cfg.max_aux_cores = max_aux;
-    cfg.health_interval_ms = interval;
-    cfg.unhealthy_threshold = threshold;
-    cfg.default_core_capacity = capacity;
-    cfg.auto_replace = auto_replace;
-    return cfg;
+    struct timespec t;assert(clock_gettime(CLOCK_MONOTONIC,&t)==0);
+    return (uint64_t)t.tv_sec*1000U+(uint64_t)t.tv_nsec/1000000U;
 }
-
-/** Create an orchestrator on a fresh temp path. */
-static cog_orchestrator_t *
-make_orch(char *path, size_t pathsize, size_t max_aux, uint32_t interval,
-          uint32_t threshold, size_t capacity)
+static void pause_unit(void) { const struct timespec t={0,1000000L};(void)nanosleep(&t,NULL); }
+static int worker_main(int argc,char **argv)
 {
-    cog_orchestrator_config_t cfg;
-    cog_orchestrator_t *orch = NULL;
-
-    if (make_socket_path(path, pathsize) != 0) {
-        return NULL;
-    }
-    cfg = make_config(path, max_aux, interval, threshold, capacity, false);
-    if (cog_orchestrator_new(&orch, &cfg) != COG_OK) {
-        return NULL;
-    }
-    return orch;
-}
-
-/** Send a NUL-terminated string as a framed message on a client endpoint. */
-static cog_result_t
-client_send(cog_ipc_endpoint_t *client, const char *text)
-{
-    cog_ipc_message_t msg;
-    size_t len = strlen(text);
-    cog_result_t rc;
-
-    rc = cog_ipc_message_new(&msg, len + 1U);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    (void)memcpy(msg.data, text, len);
-    msg.len = len;
-    rc = cog_ipc_endpoint_send(client, &msg);
-    (void)cog_ipc_message_free(&msg);
-    return rc;
-}
-
-/**
- * @brief Add a self-connected core to the orchestrator.
- *
- * Opens a client endpoint against the orchestrator's listener, accepts it
- * on the orchestrator side, and returns the orchestrator's peer id and the
- * caller-owned client endpoint.
- */
-static cog_result_t
-add_self_core(cog_orchestrator_t *orch, const char *path,
-              cog_peer_id_t *out_peer_id, cog_ipc_endpoint_t **out_client)
-{
-    cog_ipc_endpoint_t *client = NULL;
-    cog_peer_id_t peer_id = COG_PEER_ID_INVALID;
-    cog_result_t rc;
-
-    rc = cog_ipc_endpoint_new(&client);
-    if (rc != COG_OK) {
-        return rc;
-    }
-    rc = cog_ipc_endpoint_connect(client, path, NULL);
-    if (rc != COG_OK) {
-        (void)cog_ipc_endpoint_free(client);
-        return rc;
-    }
-    rc = cog_orchestrator_accept(orch, &peer_id);
-    if (rc != COG_OK) {
-        (void)cog_ipc_endpoint_free(client);
-        return rc;
-    }
-    *out_peer_id = peer_id;
-    *out_client = client;
-    return COG_OK;
-}
-
-/* ------------------------------------------------------------------ */
-/* new / free                                                          */
-/* ------------------------------------------------------------------ */
-
-static void
-test_new_free(void)
-{
-    char path[128];
-    cog_orchestrator_t *orch = NULL;
-    cog_orchestrator_config_t cfg;
-
-    (void)memset(&cfg, 0, sizeof(cfg));
-
-    /* NULL out / config */
-    CHECK_RESULT("new NULL out", COG_ERROR_NULL_PTR,
-                 cog_orchestrator_new(NULL, &cfg));
-    CHECK_RESULT("new NULL config", COG_ERROR_NULL_PTR,
-                 cog_orchestrator_new(&orch, NULL));
-
-    /* NULL socket path */
-    (void)memset(&cfg, 0, sizeof(cfg));
-    cfg.socket_path = NULL;
-    CHECK_RESULT("new NULL socket", COG_ERROR_INVALID_ARG,
-                 cog_orchestrator_new(&orch, &cfg));
-
-    /* overlong socket path */
-    {
-        char longpath[256];
-        (void)memset(longpath, 'a', sizeof(longpath) - 1U);
-        longpath[sizeof(longpath) - 1U] = '\0';
-        cfg.socket_path = longpath;
-        CHECK_RESULT("new overlong socket", COG_ERROR_INVALID_ARG,
-                     cog_orchestrator_new(&orch, &cfg));
-    }
-
-    /* happy path with defaults */
-    if (make_socket_path(path, sizeof(path)) != 0) {
-        CHECK("new path", 0);
-        return;
-    }
-    cfg = make_config(path, 0, 0, 0, 0, false);
-    CHECK_RESULT("new ok", COG_OK, cog_orchestrator_new(&orch, &cfg));
-    CHECK("new non-null", orch != NULL);
-    /* defaults applied: max_aux=4, interval=1000, threshold=3, cap=8 */
-    CHECK("new defaults max_aux", orch != NULL);
-    cog_orchestrator_free(orch);
-
-    /* free(NULL) is a no-op */
-    cog_orchestrator_free(NULL);
-}
-
-/* ------------------------------------------------------------------ */
-/* spawn                                                               */
-/* ------------------------------------------------------------------ */
-
-static void
-test_spawn_errors(void)
-{
-    char path[128];
-    cog_orchestrator_t *orch;
-    cog_peer_id_t peer_id = COG_PEER_ID_INVALID;
-
-    orch = make_orch(path, sizeof(path), 2, 100, 3, 8);
-    CHECK("spawn orch", orch != NULL);
-    if (orch == NULL) {
-        return;
-    }
-
-    CHECK_RESULT("spawn NULL orch", COG_ERROR_NULL_PTR,
-                 cog_orchestrator_spawn(NULL, "/bin/true", &peer_id));
-    CHECK_RESULT("spawn NULL binary", COG_ERROR_NULL_PTR,
-                 cog_orchestrator_spawn(orch, NULL, &peer_id));
-    CHECK_RESULT("spawn NULL out", COG_ERROR_NULL_PTR,
-                 cog_orchestrator_spawn(orch, "/bin/true", NULL));
-
-    /* exec failure -> IO (child exits, no connection) */
-    cog_orchestrator_set_spawn_timeout(orch, 200);
-    CHECK_RESULT("spawn IO", COG_ERROR_IO,
-                 cog_orchestrator_spawn(orch, "/nonexistent/cog-aux", &peer_id));
-
-    /* OVERFLOW: fill max_aux_cores (2) with self-connected cores */
-    {
-        cog_peer_id_t p1 = COG_PEER_ID_INVALID;
-        cog_peer_id_t p2 = COG_PEER_ID_INVALID;
-        cog_ipc_endpoint_t *c1 = NULL;
-        cog_ipc_endpoint_t *c2 = NULL;
-
-        CHECK_RESULT("spawn fill1", COG_OK,
-                     add_self_core(orch, path, &p1, &c1));
-        CHECK_RESULT("spawn fill2", COG_OK,
-                     add_self_core(orch, path, &p2, &c2));
-        CHECK_RESULT("spawn overflow", COG_ERROR_OVERFLOW,
-                     cog_orchestrator_spawn(orch, "/bin/true", &peer_id));
-        if (c1 != NULL) {
-            (void)cog_ipc_endpoint_free(c1);
+    assert(argc==14 && strcmp(argv[1],"--worker")==0);
+    assert(strcmp(argv[2],"--control-socket")==0 && strcmp(argv[4],"--worker-incarnation")==0 &&
+        strcmp(argv[6],"--worker-number")==0 && strcmp(argv[8],"--parent-pid")==0 &&
+        strcmp(argv[10],"--executor-slots")==0 && strcmp(argv[12],"--frame-bytes")==0);
+    assert(getenv("COG_TEST_PARENT_SECRET")==NULL && getenv("LD_PRELOAD")==NULL);
+    assert(strcmp(getenv("PATH"),"/usr/bin:/bin")==0 && strcmp(getenv("LC_ALL"),"C.UTF-8")==0);
+    sigset_t mask;assert(sigprocmask(SIG_SETMASK,NULL,&mask)==0);
+    assert(sigismember(&mask,SIGINT)==0 && sigismember(&mask,SIGTERM)==0);
+    uint64_t physical=strtoull(argv[11],NULL,10);assert(physical>=3U);
+    cog_worker_id_t id={strtoull(argv[5],NULL,10),strtoull(argv[7],NULL,10)};
+    cog_ipc_endpoint_config_t config={0};config.max_frame_bytes=strtoull(argv[13],NULL,10);
+    config.receive_frames=2U;config.send_frames=2U;config.wipe_buffers=true;
+    cog_ipc_endpoint_t *endpoint;assert(cog_ipc_endpoint_new_ex(&endpoint,&config)==COG_OK);
+    cog_result_t rc=cog_ipc_endpoint_connect(endpoint,argv[3],NULL);assert(rc==COG_ERROR_AGAIN || rc==COG_OK);
+    unsigned char wire[256];size_t required;bool hello_sent=false,closing=false,stay=false;
+    uint64_t limit=now_ms()+10000U,heartbeat=0U;unsigned flood=0U;
+    while(now_ms()<limit) {
+        uint64_t next;rc=cog_ipc_endpoint_service(endpoint,now_ms(),&next);
+        if(rc!=COG_OK && rc!=COG_ERROR_AGAIN) break;
+        cog_peer_id_t peer;
+        if(!hello_sent && cog_ipc_endpoint_get_peer_id(endpoint,&peer)==COG_OK) {
+            cog_ipc_peer_info_t proof;
+            if(cog_ipc_endpoint_peer_info(endpoint,peer,&proof)!=COG_OK) { pause_unit();continue; }
+            assert(proof.process_id==strtoull(argv[9],NULL,10));
+            cog_worker_control_t message={COG_WORKER_HELLO,id,0U,0U,COG_OK};
+            assert(cog_orchestrator_worker_encode(&message,wire,sizeof(wire),&required)==COG_OK);
+            cog_ipc_message_t output={wire,required,sizeof(wire)};
+            if(cog_ipc_endpoint_send(endpoint,&output)==COG_OK) hello_sent=true;
         }
-        if (c2 != NULL) {
-            (void)cog_ipc_endpoint_free(c2);
+        if(hello_sent && !closing && now_ms()>=heartbeat && flood==0U) {
+            cog_worker_control_t message={COG_WORKER_HEARTBEAT,id,0U,0U,COG_OK};
+            assert(cog_orchestrator_worker_encode(&message,wire,sizeof(wire),&required)==COG_OK);
+            cog_ipc_message_t output={wire,required,sizeof(wire)};
+            if(cog_ipc_endpoint_send(endpoint,&output)==COG_OK) heartbeat=now_ms()+20U;
         }
-    }
-
-    cog_orchestrator_free(orch);
-}
-
-/* ------------------------------------------------------------------ */
-/* stop / kill                                                         */
-/* ------------------------------------------------------------------ */
-
-static void *
-ack_responder(void *arg)
-{
-    cog_ipc_endpoint_t *client = (cog_ipc_endpoint_t *)arg;
-    cog_ipc_message_t msg;
-
-    if (cog_ipc_message_new(&msg, 256U) == COG_OK) {
-        (void)cog_ipc_endpoint_recv(client, &msg); /* "shutdown" */
-        (void)client_send(client, "ack\n");
-        (void)cog_ipc_message_free(&msg);
-    }
-    return NULL;
-}
-
-static void
-test_stop_kill(void)
-{
-    char path[128];
-    cog_orchestrator_t *orch;
-    cog_peer_id_t peer_id = COG_PEER_ID_INVALID;
-    cog_ipc_endpoint_t *client = NULL;
-    pthread_t th;
-
-    orch = make_orch(path, sizeof(path), 4, 100, 3, 8);
-    CHECK("stop orch", orch != NULL);
-    if (orch == NULL) {
-        return;
-    }
-
-    CHECK_RESULT("stop NULL", COG_ERROR_NULL_PTR,
-                 cog_orchestrator_stop(NULL, 1U));
-    CHECK_RESULT("stop not found", COG_ERROR_NOT_FOUND,
-                 cog_orchestrator_stop(orch, 999U));
-    CHECK_RESULT("kill NULL", COG_ERROR_NULL_PTR,
-                 cog_orchestrator_kill(NULL, 1U));
-    CHECK_RESULT("kill not found", COG_ERROR_NOT_FOUND,
-                 cog_orchestrator_kill(orch, 999U));
-
-    /* graceful stop: client acks on a helper thread */
-    CHECK_RESULT("stop add core", COG_OK,
-                 add_self_core(orch, path, &peer_id, &client));
-    CHECK("stop peer", peer_id != COG_PEER_ID_INVALID);
-    if (client != NULL) {
-        CHECK_RESULT("stop thread", 0, pthread_create(&th, NULL,
-                                                      ack_responder, client));
-        CHECK_RESULT("stop ok", COG_OK, cog_orchestrator_stop(orch, peer_id));
-        (void)pthread_join(th, NULL);
-        (void)cog_ipc_endpoint_free(client);
-    }
-
-    cog_orchestrator_free(orch);
-}
-
-/* ------------------------------------------------------------------ */
-/* health                                                              */
-/* ------------------------------------------------------------------ */
-
-static void
-test_health(void)
-{
-    char path[128];
-    cog_orchestrator_t *orch;
-    cog_peer_id_t peer_id = COG_PEER_ID_INVALID;
-    cog_ipc_endpoint_t *client = NULL;
-
-    orch = make_orch(path, sizeof(path), 4, 100, 3, 8);
-    CHECK("health orch", orch != NULL);
-    if (orch == NULL) {
-        return;
-    }
-
-    /* unknown peer -> UNKNOWN */
-    CHECK("health unknown peer", cog_orchestrator_health(orch, 999U) ==
-                                 COG_HEALTH_UNKNOWN);
-    CHECK("health NULL orch", cog_orchestrator_health(NULL, 1U) ==
-                              COG_HEALTH_UNKNOWN);
-
-    CHECK_RESULT("health add core", COG_OK,
-                 add_self_core(orch, path, &peer_id, &client));
-    CHECK("health peer", peer_id != COG_PEER_ID_INVALID);
-
-    /* no heartbeat yet -> UNKNOWN */
-    CHECK("health initial", cog_orchestrator_health(orch, peer_id) ==
-                            COG_HEALTH_UNKNOWN);
-
-    /* heartbeat at T0 -> HEALTHY */
-    cog_orchestrator_set_now(orch, 1000U);
-    CHECK_RESULT("health hb", COG_OK,
-                 cog_orchestrator_heartbeat(orch, peer_id, 2U));
-    CHECK("health healthy", cog_orchestrator_health(orch, peer_id) ==
-                            COG_HEALTH_HEALTHY);
-
-    /* within interval -> still HEALTHY */
-    cog_orchestrator_set_now(orch, 1050U);
-    CHECK("health within", cog_orchestrator_health(orch, peer_id) ==
-                           COG_HEALTH_HEALTHY);
-
-    /* missed one interval -> DEGRADED */
-    cog_orchestrator_set_now(orch, 1100U);
-    CHECK("health degraded", cog_orchestrator_health(orch, peer_id) ==
-                             COG_HEALTH_DEGRADED);
-
-    /* missed threshold intervals -> DEAD */
-    cog_orchestrator_set_now(orch, 1300U);
-    CHECK("health dead", cog_orchestrator_health(orch, peer_id) ==
-                         COG_HEALTH_DEAD);
-
-    /* a fresh heartbeat restores HEALTHY */
-    cog_orchestrator_set_now(orch, 2000U);
-    CHECK_RESULT("health hb2", COG_OK,
-                 cog_orchestrator_heartbeat(orch, peer_id, 0U));
-    CHECK("health restored", cog_orchestrator_health(orch, peer_id) ==
-                             COG_HEALTH_HEALTHY);
-
-    /* heartbeat on unknown peer -> NOT_FOUND */
-    CHECK_RESULT("health hb notfound", COG_ERROR_NOT_FOUND,
-                 cog_orchestrator_heartbeat(orch, 999U, 0U));
-    CHECK_RESULT("health hb NULL", COG_ERROR_NULL_PTR,
-                 cog_orchestrator_heartbeat(NULL, peer_id, 0U));
-
-    if (client != NULL) {
-        (void)cog_ipc_endpoint_free(client);
-    }
-    cog_orchestrator_free(orch);
-}
-
-/* ------------------------------------------------------------------ */
-/* list                                                                */
-/* ------------------------------------------------------------------ */
-
-static void
-test_list(void)
-{
-    char path[128];
-    cog_orchestrator_t *orch;
-    cog_peer_id_t p1 = COG_PEER_ID_INVALID;
-    cog_peer_id_t p2 = COG_PEER_ID_INVALID;
-    cog_ipc_endpoint_t *c1 = NULL;
-    cog_ipc_endpoint_t *c2 = NULL;
-    cog_core_info_t infos[4];
-    size_t count = 0U;
-
-    orch = make_orch(path, sizeof(path), 4, 100, 3, 8);
-    CHECK("list orch", orch != NULL);
-    if (orch == NULL) {
-        return;
-    }
-
-    CHECK_RESULT("list NULL orch", COG_ERROR_NULL_PTR,
-                 cog_orchestrator_list(NULL, infos, 4U, &count));
-    CHECK_RESULT("list NULL count", COG_ERROR_NULL_PTR,
-                 cog_orchestrator_list(orch, infos, 4U, NULL));
-
-    /* empty list */
-    CHECK_RESULT("list empty", COG_OK, cog_orchestrator_list(orch, infos, 4U,
-                                                            &count));
-    CHECK("list empty count", count == 0U);
-
-    /* two cores */
-    CHECK_RESULT("list add1", COG_OK, add_self_core(orch, path, &p1, &c1));
-    CHECK_RESULT("list add2", COG_OK, add_self_core(orch, path, &p2, &c2));
-    CHECK_RESULT("list ok", COG_OK, cog_orchestrator_list(orch, infos, 4U,
-                                                         &count));
-    CHECK("list count", count == 2U);
-    CHECK("list peer1", infos[0].peer_id == p1 || infos[0].peer_id == p2);
-    CHECK("list peer2", infos[1].peer_id == p1 || infos[1].peer_id == p2);
-    CHECK("list health unknown", infos[0].health == COG_HEALTH_UNKNOWN);
-    CHECK("list capacity", infos[0].capacity == 8U);
-
-    /* truncation: max_infos=1 still reports count 2 */
-    CHECK_RESULT("list trunc", COG_OK, cog_orchestrator_list(orch, infos, 1U,
-                                                            &count));
-    CHECK("list trunc count", count == 2U);
-
-    /* NULL infos just reports count */
-    CHECK_RESULT("list null infos", COG_OK,
-                 cog_orchestrator_list(orch, NULL, 0U, &count));
-    CHECK("list null infos count", count == 2U);
-
-    if (c1 != NULL) {
-        (void)cog_ipc_endpoint_free(c1);
-    }
-    if (c2 != NULL) {
-        (void)cog_ipc_endpoint_free(c2);
-    }
-    cog_orchestrator_free(orch);
-}
-
-/* ------------------------------------------------------------------ */
-/* place                                                               */
-/* ------------------------------------------------------------------ */
-
-static void
-test_place(void)
-{
-    char path[128];
-    cog_orchestrator_t *orch;
-    cog_peer_id_t p1 = COG_PEER_ID_INVALID;
-    cog_peer_id_t p2 = COG_PEER_ID_INVALID;
-    cog_ipc_endpoint_t *c1 = NULL;
-    cog_ipc_endpoint_t *c2 = NULL;
-
-    orch = make_orch(path, sizeof(path), 4, 100, 3, 8);
-    CHECK("place orch", orch != NULL);
-    if (orch == NULL) {
-        return;
-    }
-
-    /* NULL orch -> INVALID (local) */
-    CHECK("place NULL", cog_orchestrator_place(NULL, 0U) ==
-                        COG_PEER_ID_INVALID);
-
-    /* no cores -> INVALID (local) */
-    CHECK("place empty", cog_orchestrator_place(orch, 0U) ==
-                         COG_PEER_ID_INVALID);
-
-    /* one healthy core -> that core */
-    CHECK_RESULT("place add1", COG_OK, add_self_core(orch, path, &p1, &c1));
-    cog_orchestrator_set_now(orch, 1000U);
-    CHECK_RESULT("place hb1", COG_OK,
-                 cog_orchestrator_heartbeat(orch, p1, 0U));
-    CHECK("place one", cog_orchestrator_place(orch, 0U) == p1);
-
-    /* second core with more free capacity is preferred */
-    CHECK_RESULT("place add2", COG_OK, add_self_core(orch, path, &p2, &c2));
-    cog_orchestrator_set_now(orch, 2000U);
-    CHECK_RESULT("place hb2", COG_OK,
-                 cog_orchestrator_heartbeat(orch, p2, 0U));
-    /* both have capacity 8, free 8; p2 added later, tie -> p1 kept */
-    CHECK("place tie", cog_orchestrator_place(orch, 0U) == p1 ||
-                       cog_orchestrator_place(orch, 0U) == p2);
-
-    /* fill p1 to capacity -> p2 chosen */
-    CHECK_RESULT("place fill p1", COG_OK,
-                 cog_orchestrator_heartbeat(orch, p1, 8U));
-    CHECK("place p2", cog_orchestrator_place(orch, 0U) == p2);
-
-    /* estimated_load exceeds remaining capacity -> local fallback */
-    CHECK("place overload", cog_orchestrator_place(orch, 9U) ==
-                            COG_PEER_ID_INVALID);
-
-    /* dead core is never chosen */
-    cog_orchestrator_set_now(orch, 5000U); /* p2 now DEAD (interval 100*3) */
-    CHECK("place dead", cog_orchestrator_place(orch, 0U) ==
-                        COG_PEER_ID_INVALID);
-
-    if (c1 != NULL) {
-        (void)cog_ipc_endpoint_free(c1);
-    }
-    if (c2 != NULL) {
-        (void)cog_ipc_endpoint_free(c2);
-    }
-    cog_orchestrator_free(orch);
-}
-
-/* ------------------------------------------------------------------ */
-/* shutdown                                                            */
-/* ------------------------------------------------------------------ */
-
-static void
-test_shutdown(void)
-{
-    char path[128];
-    cog_orchestrator_t *orch;
-    cog_peer_id_t peer_id = COG_PEER_ID_INVALID;
-    cog_ipc_endpoint_t *client = NULL;
-    pthread_t th;
-
-    orch = make_orch(path, sizeof(path), 4, 100, 3, 8);
-    CHECK("shutdown orch", orch != NULL);
-    if (orch == NULL) {
-        return;
-    }
-
-    CHECK_RESULT("shutdown NULL", COG_ERROR_NULL_PTR,
-                 cog_orchestrator_shutdown(NULL, 1000U));
-
-    /* graceful shutdown with ack */
-    CHECK_RESULT("shutdown add core", COG_OK,
-                 add_self_core(orch, path, &peer_id, &client));
-    CHECK("shutdown peer", peer_id != COG_PEER_ID_INVALID);
-    if (client != NULL) {
-        CHECK_RESULT("shutdown thread", 0,
-                     pthread_create(&th, NULL, ack_responder, client));
-        CHECK_RESULT("shutdown ok", COG_OK,
-                     cog_orchestrator_shutdown(orch, 2000U));
-        (void)pthread_join(th, NULL);
-        (void)cog_ipc_endpoint_free(client);
-    }
-
-    cog_orchestrator_free(orch);
-}
-
-static void
-test_shutdown_timeout(void)
-{
-    char path[128];
-    cog_orchestrator_t *orch;
-    cog_peer_id_t peer_id = COG_PEER_ID_INVALID;
-    cog_ipc_endpoint_t *client = NULL;
-
-    orch = make_orch(path, sizeof(path), 4, 100, 3, 8);
-    CHECK("shutdown-timeout orch", orch != NULL);
-    if (orch == NULL) {
-        return;
-    }
-
-    /* a core that never acks -> TIMEOUT (and force-killed) */
-    CHECK_RESULT("shutdown-timeout add", COG_OK,
-                 add_self_core(orch, path, &peer_id, &client));
-    CHECK("shutdown-timeout peer", peer_id != COG_PEER_ID_INVALID);
-    CHECK_RESULT("shutdown-timeout", COG_ERROR_TIMEOUT,
-                 cog_orchestrator_shutdown(orch, 200U));
-    CHECK("shutdown-timeout dead",
-          cog_orchestrator_health(orch, peer_id) == COG_HEALTH_DEAD);
-
-    if (client != NULL) {
-        (void)cog_ipc_endpoint_free(client);
-    }
-    cog_orchestrator_free(orch);
-}
-
-/* ------------------------------------------------------------------ */
-/* sessions                                                            */
-/* ------------------------------------------------------------------ */
-
-static void
-test_sessions(void)
-{
-    char path[128];
-    cog_orchestrator_t *orch;
-    cog_peer_id_t peer_id = COG_PEER_ID_INVALID;
-    cog_ipc_endpoint_t *client = NULL;
-    const char *out[8];
-    size_t count = 0U;
-
-    orch = make_orch(path, sizeof(path), 4, 100, 3, 8);
-    CHECK("sessions orch", orch != NULL);
-    if (orch == NULL) {
-        return;
-    }
-
-    CHECK_RESULT("sessions NULL orch", COG_ERROR_NULL_PTR,
-                 cog_orchestrator_sessions(NULL, 1U, out, 8U, &count));
-    CHECK_RESULT("sessions NULL out", COG_ERROR_NULL_PTR,
-                 cog_orchestrator_sessions(orch, 1U, NULL, 8U, &count));
-    CHECK_RESULT("sessions NULL count", COG_ERROR_NULL_PTR,
-                 cog_orchestrator_sessions(orch, 1U, out, 8U, NULL));
-    CHECK_RESULT("sessions not found", COG_ERROR_NOT_FOUND,
-                 cog_orchestrator_sessions(orch, 999U, out, 8U, &count));
-
-    CHECK_RESULT("sessions add", COG_OK,
-                 add_self_core(orch, path, &peer_id, &client));
-    CHECK("sessions peer", peer_id != COG_PEER_ID_INVALID);
-
-    /* empty */
-    CHECK_RESULT("sessions empty", COG_OK,
-                 cog_orchestrator_sessions(orch, peer_id, out, 8U, &count));
-    CHECK("sessions empty count", count == 0U);
-
-    /* register two */
-    CHECK_RESULT("sessions reg1", COG_OK,
-                 cog_orchestrator_register_session(orch, peer_id, "sess-a"));
-    CHECK_RESULT("sessions reg2", COG_OK,
-                 cog_orchestrator_register_session(orch, peer_id, "sess-b"));
-    /* idempotent */
-    CHECK_RESULT("sessions reg dup", COG_OK,
-                 cog_orchestrator_register_session(orch, peer_id, "sess-a"));
-    CHECK_RESULT("sessions list", COG_OK,
-                 cog_orchestrator_sessions(orch, peer_id, out, 8U, &count));
-    CHECK("sessions count", count == 2U);
-    CHECK("sessions a", (strcmp(out[0], "sess-a") == 0) ||
-                        (strcmp(out[1], "sess-a") == 0));
-    CHECK("sessions b", (strcmp(out[0], "sess-b") == 0) ||
-                        (strcmp(out[1], "sess-b") == 0));
-
-    /* unregister */
-    CHECK_RESULT("sessions unreg", COG_OK,
-                 cog_orchestrator_unregister_session(orch, peer_id, "sess-a"));
-    CHECK_RESULT("sessions unreg again", COG_ERROR_NOT_FOUND,
-                 cog_orchestrator_unregister_session(orch, peer_id, "sess-a"));
-    CHECK_RESULT("sessions list2", COG_OK,
-                 cog_orchestrator_sessions(orch, peer_id, out, 8U, &count));
-    CHECK("sessions count2", count == 1U);
-    CHECK("sessions b2", strcmp(out[0], "sess-b") == 0);
-
-    /* NULL / not-found on register */
-    CHECK_RESULT("sessions reg NULL", COG_ERROR_NULL_PTR,
-                 cog_orchestrator_register_session(orch, peer_id, NULL));
-    CHECK_RESULT("sessions reg notfound", COG_ERROR_NOT_FOUND,
-                 cog_orchestrator_register_session(orch, 999U, "x"));
-    CHECK_RESULT("sessions unreg NULL", COG_ERROR_NULL_PTR,
-                 cog_orchestrator_unregister_session(orch, peer_id, NULL));
-
-    if (client != NULL) {
-        (void)cog_ipc_endpoint_free(client);
-    }
-    cog_orchestrator_free(orch);
-}
-
-/* ------------------------------------------------------------------ */
-/* stress cleanup                                                      */
-/* ------------------------------------------------------------------ */
-
-static void
-test_stress(void)
-{
-    char path[128];
-    cog_orchestrator_t *orch;
-    cog_peer_id_t peers[16];
-    cog_ipc_endpoint_t *clients[16];
-    size_t i;
-    size_t n = 8U;
-
-    orch = make_orch(path, sizeof(path), 16, 50, 3, 8);
-    CHECK("stress orch", orch != NULL);
-    if (orch == NULL) {
-        return;
-    }
-
-    for (i = 0U; i < n; i++) {
-        peers[i] = COG_PEER_ID_INVALID;
-        clients[i] = NULL;
-        CHECK_RESULT("stress add", COG_OK,
-                     add_self_core(orch, path, &peers[i], &clients[i]));
-        CHECK_RESULT("stress hb", COG_OK,
-                     cog_orchestrator_heartbeat(orch, peers[i], i));
-        CHECK_RESULT("stress session", COG_OK,
-                     cog_orchestrator_register_session(orch, peers[i],
-                                                       "stress-sess"));
-    }
-
-    /* place should pick the least-loaded healthy core */
-    {
-        cog_peer_id_t chosen = cog_orchestrator_place(orch, 0U);
-        CHECK("stress place", chosen != COG_PEER_ID_INVALID);
-    }
-
-    for (i = 0U; i < n; i++) {
-        if (clients[i] != NULL) {
-            (void)cog_ipc_endpoint_free(clients[i]);
+        if(flood!=0U) {
+            unsigned char payload[48];memset(payload,(int)flood,sizeof(payload));
+            cog_ipc_message_t output={payload,sizeof(payload),sizeof(payload)};
+            if(cog_ipc_endpoint_send(endpoint,&output)==COG_OK) --flood;
         }
+        cog_ipc_message_t input={wire,0U,sizeof(wire)};rc=cog_ipc_endpoint_recv(endpoint,&input);
+        if(rc==COG_OK) {
+            if(input.len==1U) {
+                if(wire[0]=='X') break;
+                if(wire[0]=='F') flood=6U;
+                if(wire[0]=='S') stay=true;
+            } else {
+                cog_worker_control_t message;
+                assert(cog_orchestrator_worker_decode(wire,input.len,&message)==COG_OK && message.kind==COG_WORKER_SHUTDOWN);
+                message.kind=COG_WORKER_SHUTDOWN_ACK;
+                assert(cog_orchestrator_worker_encode(&message,wire,sizeof(wire),&required)==COG_OK);
+                cog_ipc_message_t output={wire,required,sizeof(wire)};
+                do {
+                    rc=cog_ipc_endpoint_send(endpoint,&output);
+                    if(rc==COG_ERROR_AGAIN) { assert(cog_ipc_endpoint_service(endpoint,now_ms(),&next)==COG_OK);pause_unit(); }
+                } while(rc==COG_ERROR_AGAIN);
+                assert(rc==COG_OK);closing=true;
+            }
+        } else assert(rc==COG_ERROR_AGAIN || rc==COG_ERROR_INVALID_STATE);
+        if(closing && !stay) {
+            for(unsigned i=0U;i<8U;++i) { (void)cog_ipc_endpoint_service(endpoint,now_ms(),&next);pause_unit(); }
+            break;
+        }
+        pause_unit();
     }
-    cog_orchestrator_free(orch);
+    assert(cog_ipc_endpoint_free(endpoint)==COG_OK);return 0;
 }
-
-/* ------------------------------------------------------------------ */
-/* main                                                                */
-/* ------------------------------------------------------------------ */
-
-int
-main(void)
+static cog_orchestrator_t *make(char path[64],size_t workers)
 {
-    test_new_free();
-    test_spawn_errors();
-    test_stop_kill();
-    test_health();
-    test_list();
-    test_place();
-    test_shutdown();
-    test_shutdown_timeout();
-    test_sessions();
-    test_stress();
+    strcpy(path,"cog-orch-unit-XXXXXX");int fd=mkstemp(path);assert(fd>=0 && close(fd)==0 && unlink(path)==0);
+    cog_orchestrator_config_t cfg={0};cfg.socket_path=path;cfg.max_aux_cores=workers;
+    cfg.default_core_capacity=4U;cfg.max_frame_bytes=128U;cfg.message_bytes=128U;cfg.message_events=2U;
+    cfg.health_interval_ms=1000U;cfg.shutdown_timeout_ms=100U;
+    cog_orchestrator_t *o;assert(cog_orchestrator_new(&o,&cfg)==COG_OK);return o;
+}
+static void service(cog_orchestrator_t *o)
+{
+    bool done;uint64_t deadline;cog_result_t rc=cog_orchestrator_service(o,now_ms(),&done,&deadline);
+    assert(rc==COG_OK || rc==COG_ERROR_AGAIN);pause_unit();
+}
+static cog_core_info_t info(cog_orchestrator_t *o,cog_worker_id_t id)
+{
+    cog_core_info_t list[4];size_t count;assert(cog_orchestrator_list(o,list,4U,&count)==COG_OK);
+    for(size_t i=0U;i<count && i<4U;++i) if(list[i].worker_id.incarnation==id.incarnation && list[i].worker_id.number==id.number) return list[i];
+    assert(false);return (cog_core_info_t){0};
+}
+static void ready(cog_orchestrator_t *o,cog_worker_id_t id)
+{
+    uint64_t until=now_ms()+3000U;
+    while(now_ms()<until && cog_orchestrator_health(o,id)!=COG_HEALTH_HEALTHY) service(o);
+    assert(cog_orchestrator_health(o,id)==COG_HEALTH_HEALTHY);
+}
+static void acknowledge(cog_orchestrator_t *o)
+{
+    unsigned char storage[256];cog_orchestrator_event_t event;size_t required;
+    for(unsigned cls=1U;cls<=2U;++cls)
+        while(cog_orchestrator_copy_event(o,(cog_orchestrator_event_class_t)cls,&event,storage,sizeof(storage),&required)==COG_OK) {
+            assert(cog_orchestrator_ack_event(o,event.event_id)==COG_OK);
+            assert(cog_orchestrator_ack_event(o,event.event_id)==COG_OK);
+        }
+}
+static void command(cog_orchestrator_t *o,cog_worker_id_t id,unsigned char value)
+{
+    cog_ipc_message_t message={&value,1U,1U};cog_result_t rc;
+    do { rc=cog_orchestrator_send(o,id,&message);if(rc==COG_ERROR_AGAIN) service(o); } while(rc==COG_ERROR_AGAIN);
+    assert(rc==COG_OK);
+}
+static void lifecycle(const char *binary)
+{
+    char path[64];cog_orchestrator_t *o=make(path,2U);cog_worker_id_t first,second;
+    assert(setenv("COG_TEST_PARENT_SECRET","must-not-inherit",1)==0);
+    sigset_t blocked,old;assert(sigemptyset(&blocked)==0 && sigaddset(&blocked,SIGINT)==0 && sigaddset(&blocked,SIGTERM)==0);
+    assert(sigprocmask(SIG_BLOCK,&blocked,&old)==0);
+    assert(cog_orchestrator_spawn(o,binary,&first)==COG_OK);
+    assert(cog_orchestrator_health(o,first)==COG_HEALTH_UNKNOWN && info(o,first).peer_id==0U);
+    assert(sigprocmask(SIG_SETMASK,&old,NULL)==0);assert(unsetenv("COG_TEST_PARENT_SECRET")==0);
+    assert(cog_orchestrator_spawn(o,binary,&second)==COG_OK);
+    assert(first.number!=second.number && first.incarnation==second.incarnation);
+    cog_worker_id_t untouched={77U,88U};assert(cog_orchestrator_spawn(o,binary,&untouched)==COG_ERROR_OVERFLOW);
+    assert(untouched.number==88U);ready(o,first);ready(o,second);
+    cog_core_info_t a=info(o,first),b=info(o,second);
+    assert(a.pid!=b.pid && a.pid>0 && b.pid>0 && a.peer_id!=b.peer_id && a.peer_id!=0U);
+    assert(cog_orchestrator_place(o,0U)==a.peer_id);
+    assert(cog_orchestrator_heartbeat(o,a.peer_id,4U)==COG_OK && cog_orchestrator_place(o,0U)==b.peer_id);
+    assert(cog_orchestrator_heartbeat(o,b.peer_id,4U)==COG_OK && cog_orchestrator_place(o,0U)==0U);
+    assert(cog_orchestrator_heartbeat(o,a.peer_id,5U)==COG_ERROR_INVALID_ARG);
+    assert(cog_orchestrator_register_session(o,a.peer_id,"diagnosis")==COG_OK);
+    const char *sessions[2];size_t count;
+    assert(cog_orchestrator_sessions(o,a.peer_id,sessions,2U,&count)==COG_OK && count==1U && strcmp(sessions[0],"diagnosis")==0);
+    assert(cog_orchestrator_shutdown(o,1000U)==COG_OK);
+    assert(info(o,first).reaped && info(o,second).reaped);
+    assert(cog_orchestrator_kill(o,first)==COG_OK);
+    assert(cog_orchestrator_release_worker(o,first)==COG_ERROR_INVALID_STATE);
+    acknowledge(o);
+    assert(cog_orchestrator_unregister_session(o,a.peer_id,"diagnosis")==COG_OK);
+    /* EOF drain can follow native reap; its retained proof remains exact. */
+    for(unsigned i=0U;i<16U;++i) { service(o);acknowledge(o); }
+    assert(cog_orchestrator_release_worker(o,first)==COG_OK);
+    assert(cog_orchestrator_kill(o,first)==COG_ERROR_NOT_FOUND);
+    assert(cog_orchestrator_release_worker(o,second)==COG_OK);cog_orchestrator_free(o);
+    assert(access(path,F_OK)!=0);
+}
+static void loss_and_pressure(const char *binary)
+{
+    char path[64];cog_orchestrator_t *o=make(path,1U);cog_worker_id_t id;
+    assert(cog_orchestrator_spawn(o,binary,&id)==COG_OK);ready(o,id);acknowledge(o);
+    command(o,id,'F');
+    uint64_t until=now_ms()+1000U;
+    while(now_ms()<until && o->message_count<2U) service(o);
+    assert(o->message_count==2U && o->bytes_used==96U);
+    cog_orchestrator_event_t event,before;memset(&event,0xa5,sizeof(event));before=event;
+    unsigned char storage[128];memset(storage,0xcc,sizeof(storage));size_t needed=0U;
+    assert(cog_orchestrator_copy_event(o,COG_ORCHESTRATOR_MESSAGE_EVENTS,&event,storage,1U,&needed)==COG_ERROR_OVERFLOW);
+    assert(needed==48U && memcmp(&event,&before,sizeof(event))==0 && storage[0]==0xcc);
+    assert(cog_orchestrator_stop(o,id)==COG_OK);
+    bool done=false;uint64_t deadline;
+    assert(cog_orchestrator_request_shutdown(o,now_ms(),50U)==COG_OK);
+    cog_result_t rc=COG_OK;until=now_ms()+2000U;
+    while(!done && now_ms()<until) { rc=cog_orchestrator_service(o,now_ms(),&done,&deadline);pause_unit(); }
+    assert(done && (rc==COG_OK || rc==COG_ERROR_TIMEOUT));assert(info(o,id).reaped);
+    assert(o->control_count>=1U && o->message_count==2U);
+    assert(cog_orchestrator_copy_event(o,COG_ORCHESTRATOR_MESSAGE_EVENTS,&event,storage,sizeof(storage),&needed)==COG_OK);
+    assert(event.worker_id.number==id.number && event.peer_info.process_id==(uint64_t)info(o,id).pid);
+    for(size_t i=0U;i<needed;++i) assert(storage[i]==6U);
+    assert(cog_orchestrator_ack_event(o,event.event_id)==COG_OK);
+    cog_orchestrator_free(o);
 
-    if (g_failures != 0U) {
-        (void)fprintf(stderr, "test_orchestrator: %u failure(s)\n",
-                      g_failures);
-        return 1;
+    o=make(path,1U);assert(cog_orchestrator_spawn(o,binary,&id)==COG_OK);ready(o,id);
+    cog_core_info_t child=info(o,id);assert(child.pid>0 && !child.reaped && !child.ownership_lost);
+    assert(kill(child.pid,SIGKILL)==0);
+    int status;assert(waitpid(child.pid,&status,0)==child.pid); /* Deliberate host-profile violation. */
+    assert(cog_orchestrator_kill(o,id)==COG_ERROR_IO);
+    assert(info(o,id).ownership_lost && !info(o,id).reaped);
+    assert(cog_orchestrator_request_shutdown(o,now_ms(),0U)==COG_OK);
+    assert(cog_orchestrator_service(o,now_ms(),&done,&deadline)==COG_ERROR_IO && done);
+    bool lost=false;
+    while(cog_orchestrator_copy_event(o,COG_ORCHESTRATOR_CONTROL_EVENTS,&event,NULL,0U,&needed)==COG_OK) {
+        if(event.kind==COG_ORCHESTRATOR_OWNERSHIP_LOST) lost=true;
+        assert(cog_orchestrator_ack_event(o,event.event_id)==COG_OK);
     }
-    (void)printf("test_orchestrator: all ok\n");
-    return 0;
+    assert(lost);cog_orchestrator_free(o);
+}
+static void boundaries(const char *binary)
+{
+    cog_orchestrator_t *o=NULL;cog_orchestrator_config_t cfg={0};
+    assert(cog_orchestrator_new(NULL,&cfg)==COG_ERROR_NULL_PTR);
+    assert(cog_orchestrator_new(&o,NULL)==COG_ERROR_NULL_PTR);
+    assert(cog_orchestrator_new(&o,&cfg)==COG_ERROR_INVALID_ARG);
+    char path[64];o=make(path,1U);cog_worker_id_t unknown={1U,1U},id;
+    assert(cog_orchestrator_spawn(NULL,binary,&id)==COG_ERROR_NULL_PTR);
+    assert(cog_orchestrator_spawn(o,NULL,&id)==COG_ERROR_NULL_PTR);
+    assert(cog_orchestrator_spawn(o,binary,NULL)==COG_ERROR_NULL_PTR);
+    assert(cog_orchestrator_spawn(o,"relative",&id)==COG_ERROR_INVALID_ARG);
+    assert(cog_orchestrator_stop(NULL,unknown)==COG_ERROR_NULL_PTR);
+    assert(cog_orchestrator_kill(NULL,unknown)==COG_ERROR_NULL_PTR);
+    assert(cog_orchestrator_stop(o,unknown)==COG_ERROR_NOT_FOUND);
+    assert(cog_orchestrator_kill(o,unknown)==COG_ERROR_NOT_FOUND);
+    assert(cog_orchestrator_health(NULL,unknown)==COG_HEALTH_UNKNOWN);
+    assert(cog_orchestrator_place(NULL,0U)==0U && cog_orchestrator_shutdown(NULL,0U)==COG_ERROR_NULL_PTR);
+    size_t count;assert(cog_orchestrator_list(o,NULL,0U,&count)==COG_OK && count==0U);
+    assert(cog_orchestrator_list(o,NULL,1U,&count)==COG_ERROR_NULL_PTR);
+    bool done=true;uint64_t deadline=123U;
+    assert(cog_orchestrator_service(o,o->now_ms-1U,&done,&deadline)==COG_ERROR_INVALID_ARG && done && deadline==123U);
+    o->last_worker_number=UINT64_MAX;
+    assert(cog_orchestrator_spawn(o,binary,&id)==COG_ERROR_LIMIT);o->last_worker_number=0U;
+    o->last_event_id=UINT64_MAX-2U;
+    assert(cog_orchestrator_spawn(o,binary,&id)==COG_ERROR_LIMIT);o->last_event_id=0U;
+    /* Exec failure is postpublication ownership, never synchronous spawn IO. */
+    assert(cog_orchestrator_spawn(o,"/nonexistent/cog-worker",&id)==COG_OK);
+    uint64_t until=now_ms()+1000U;
+    while(!info(o,id).reaped && now_ms()<until) service(o);
+    assert(info(o,id).reaped && info(o,id).peer_id==0U && cog_orchestrator_health(o,id)==COG_HEALTH_DEAD);
+    acknowledge(o);assert(cog_orchestrator_release_worker(o,id)==COG_OK);
+    cog_worker_id_t old=id;
+    assert(cog_orchestrator_spawn(o,binary,&id)==COG_OK && id.number>old.number);
+    assert(cog_orchestrator_kill(o,old)==COG_ERROR_NOT_FOUND);
+    assert(cog_orchestrator_stop(o,id)==COG_OK); /* Before connection. */
+    cog_result_t rc=cog_orchestrator_shutdown(o,100U);assert(rc==COG_OK || rc==COG_ERROR_TIMEOUT);
+    cog_orchestrator_free(o);cog_orchestrator_free(NULL);
+    struct sigaction previous,ignored={0};ignored.sa_handler=SIG_IGN;assert(sigemptyset(&ignored.sa_mask)==0);
+    assert(sigaction(SIGCHLD,&ignored,&previous)==0);cfg.socket_path="ignored-orch.sock";
+    assert(cog_orchestrator_new(&o,&cfg)==COG_ERROR_UNSUPPORTED);
+    assert(sigaction(SIGCHLD,&previous,NULL)==0);
+    ignored.sa_handler=SIG_DFL;ignored.sa_flags=SA_NOCLDWAIT;
+    assert(sigaction(SIGCHLD,&ignored,&previous)==0);
+    assert(cog_orchestrator_new(&o,&cfg)==COG_ERROR_UNSUPPORTED);
+    assert(sigaction(SIGCHLD,&previous,NULL)==0);
+    /* The orchestrator must never reap a different host child. */
+    o=make(path,1U);pid_t unrelated=fork();assert(unrelated>=0);
+    if(unrelated==0) _exit(23);
+    for(unsigned i=0U;i<8U;++i) service(o);
+    int status;assert(waitpid(unrelated,&status,0)==unrelated && WEXITSTATUS(status)==23);cog_orchestrator_free(o);
+    cfg.default_core_capacity=UINT32_MAX;orch_reservations_t plan;
+    assert(orch_reservation_plan(&cfg,&plan)==COG_OK && plan.worker_executor_slots==UINT64_C(4294967297));
+    cfg.max_aux_cores=SIZE_MAX;assert(orch_reservation_plan(&cfg,&plan)==COG_ERROR_INVALID_ARG);
+}
+static void allocation_bounds(const char *binary)
+{
+    char path[]="cog-orch-allocation-XXXXXX";int fd=mkstemp(path);assert(fd>=0 && close(fd)==0 && unlink(path)==0);
+    cog_orchestrator_config_t cfg={0};cfg.socket_path=path;cfg.max_aux_cores=2U;
+    cfg.max_frame_bytes=128U;cfg.message_bytes=256U;
+    cog_orchestrator_t *o;allocation_calls=0U;fail_allocation=0U;watch_allocations=true;
+    assert(cog_orchestrator_new(&o,&cfg)==COG_OK);watch_allocations=false;
+    size_t count=allocation_calls;assert(count>10U);cog_orchestrator_free(o);
+    for(size_t i=1U;i<=count;++i) {
+        allocation_calls=0U;fail_allocation=i;watch_allocations=true;
+        assert(cog_orchestrator_new(&o,&cfg)==COG_ERROR_NOMEM && o==NULL);
+        watch_allocations=false;assert(access(path,F_OK)!=0);
+    }
+    char other[64];o=make(other,1U);cog_worker_id_t id;
+    assert(cog_orchestrator_spawn(o,binary,&id)==COG_OK);ready(o,id);acknowledge(o);
+    deny_allocations=true;
+    for(unsigned i=0U;i<20U;++i) service(o);
+    command(o,id,'F');
+    for(unsigned i=0U;i<50U;++i) { service(o);acknowledge(o); }
+    assert(cog_orchestrator_request_shutdown(o,now_ms(),500U)==COG_OK);
+    bool done=false;uint64_t deadline;uint64_t until=now_ms()+1500U;
+    while(!done && now_ms()<until) {
+        cog_result_t rc=cog_orchestrator_service(o,now_ms(),&done,&deadline);
+        assert(rc==COG_OK || rc==COG_ERROR_AGAIN);acknowledge(o);pause_unit();
+    }
+    assert(done);deny_allocations=false;cog_orchestrator_free(o);
+}
+/* Independent critic: accepted-endpoint constructors are the only runtime
+ * allocation exception. Every failure must retire the accepted native socket,
+ * preserve bounded link accounting, and remain the primary cleanup outcome. */
+static size_t native_fd_count(void)
+{
+    DIR *dir=opendir("/proc/self/fd");assert(dir!=NULL);
+    size_t count=0U;struct dirent *entry;
+    while((entry=readdir(dir))!=NULL)
+        if(strcmp(entry->d_name,".")!=0 && strcmp(entry->d_name,"..")!=0) ++count;
+    assert(closedir(dir)==0);return count;
+}
+static void accepted_allocation_failures(void)
+{
+    size_t allocations=0U;
+    for(size_t fail=0U;fail<=allocations;++fail) {
+        size_t before=native_fd_count();
+        char path[64];cog_orchestrator_t *o=make(path,1U);
+        cog_ipc_endpoint_t *peer;assert(cog_ipc_endpoint_new(&peer)==COG_OK);
+        cog_result_t rc=cog_ipc_endpoint_connect(peer,path,NULL);
+        assert(rc==COG_OK || rc==COG_ERROR_AGAIN);
+        o->config.service_quantum=1U;
+        allocation_calls=0U;fail_allocation=fail;watch_allocations=true;
+        bool done=false;uint64_t deadline;
+        rc=cog_orchestrator_service(o,now_ms(),&done,&deadline);
+        watch_allocations=false;
+        if(fail==0U) {
+            allocations=allocation_calls;assert(allocations!=0U);
+            assert(rc==COG_OK && o->link_count==1U);
+        } else {
+            assert(rc==COG_ERROR_NOMEM && o->link_count==0U && o->worker_count==0U);
+            assert(cog_orchestrator_request_shutdown(o,now_ms(),1U)==COG_OK);
+            assert(cog_orchestrator_service(o,now_ms(),&done,&deadline)==COG_ERROR_NOMEM && done);
+        }
+        assert(cog_ipc_endpoint_free(peer)==COG_OK);cog_orchestrator_free(o);
+        assert(native_fd_count()==before && access(path,F_OK)!=0);
+    }
+}
+static void impostor_and_ids(const char *binary)
+{
+    char path[64];cog_orchestrator_t *o=make(path,2U);cog_worker_id_t id;
+    assert(cog_orchestrator_spawn(o,binary,&id)==COG_OK);
+    cog_ipc_endpoint_t *fake;assert(cog_ipc_endpoint_new(&fake)==COG_OK);
+    cog_result_t rc=cog_ipc_endpoint_connect(fake,path,NULL);assert(rc==COG_OK || rc==COG_ERROR_AGAIN);
+    unsigned char wire[37];size_t length;
+    cog_worker_control_t claim={COG_WORKER_HELLO,id,0U,0U,COG_OK};
+    assert(cog_orchestrator_worker_encode(&claim,wire,sizeof(wire),&length)==COG_OK);
+    bool sent=false;uint64_t until=now_ms()+1000U;
+    while(now_ms()<until) {
+        service(o);uint64_t next;rc=cog_ipc_endpoint_service(fake,now_ms(),&next);
+        if(rc!=COG_OK && rc!=COG_ERROR_AGAIN) break;
+        cog_ipc_message_t message={wire,length,sizeof(wire)};
+        if(!sent && cog_ipc_endpoint_send(fake,&message)==COG_OK) sent=true;
+    }
+    assert(sent);ready(o,id);cog_core_info_t actual=info(o,id);
+    assert(actual.pid!=(int)getpid() && actual.peer_id!=0U && o->worker_count==1U);
+    assert(cog_ipc_endpoint_free(fake)==COG_OK);acknowledge(o);
+    /* Ordinary event capture must leave both final control IDs available. */
+    assert(o->mandatory_event_ids==2U);o->last_event_id=UINT64_MAX-2U;
+    command(o,id,'F');bool done=false;uint64_t next;until=now_ms()+1000U;
+    do { rc=cog_orchestrator_service(o,now_ms(),&done,&next);pause_unit(); } while(rc!=COG_ERROR_LIMIT && now_ms()<until);
+    assert(rc==COG_ERROR_LIMIT && o->message_count==0U && o->last_event_id+o->mandatory_event_ids==UINT64_MAX);
+    assert(cog_orchestrator_request_shutdown(o,now_ms(),10U)==COG_OK);until=now_ms()+1000U;
+    while(!done && now_ms()<until) { assert(cog_orchestrator_service(o,now_ms(),&done,&next)==COG_ERROR_LIMIT);pause_unit(); }
+    assert(done && info(o,id).reaped && o->mandatory_event_ids==0U && o->last_event_id==UINT64_MAX);
+    cog_orchestrator_free(o);
+}
+static void shortened_shutdown(const char *binary)
+{
+    char path[64];cog_orchestrator_t *o=make(path,1U);cog_worker_id_t id;
+    assert(cog_orchestrator_spawn(o,binary,&id)==COG_OK);ready(o,id);command(o,id,'S');
+    for(unsigned i=0U;i<10U;++i) service(o);
+    assert(cog_orchestrator_request_shutdown(o,now_ms(),1000U)==COG_OK);
+    while(!o->workers[0].shutdown_queued) service(o);
+    uint64_t wire_deadline=o->workers[0].stop_deadline_ms;
+    assert(cog_orchestrator_request_shutdown(o,now_ms(),100U)==COG_OK);
+    assert(o->workers[0].stop_deadline_ms==wire_deadline && o->workers[0].terminate_deadline_ms<wire_deadline);
+    bool done=false;uint64_t next,until=now_ms()+1500U;cog_result_t rc=COG_OK;
+    while(!done && now_ms()<until) { rc=cog_orchestrator_service(o,now_ms(),&done,&next);pause_unit(); }
+    assert(done && rc==COG_ERROR_TIMEOUT && o->workers[0].shutdown_acked && info(o,id).reaped);
+    cog_orchestrator_free(o);
+}
+static void silent_handshake(void)
+{
+    char path[64];cog_orchestrator_t *o=make(path,1U);o->config.service_quantum=1U;
+    cog_orchestrator_set_spawn_timeout(o,100U);
+    cog_ipc_endpoint_t *peer;assert(cog_ipc_endpoint_new(&peer)==COG_OK);
+    cog_result_t rc=cog_ipc_endpoint_connect(peer,path,NULL);assert(rc==COG_OK || rc==COG_ERROR_AGAIN);
+    bool done;uint64_t next;uint64_t now=now_ms();
+    assert(cog_orchestrator_service(o,now,&done,&next)==COG_OK);
+    assert(o->link_count==1U && next==now+100U);
+    assert(cog_orchestrator_service(o,now,&done,&next)==COG_ERROR_AGAIN && next==now+100U);
+    for(unsigned i=0U;i<9U;++i) {
+        rc=cog_orchestrator_service(o,now,&done,&next);assert(rc==COG_OK || rc==COG_ERROR_AGAIN);
+        uint64_t endpoint_deadline;rc=cog_ipc_endpoint_service(peer,now,&endpoint_deadline);
+        assert(rc==COG_OK || rc==COG_ERROR_AGAIN);
+    }
+    assert(o->links[0].proof_valid && o->links[0].worker==SIZE_MAX);
+    for(unsigned i=0U;i<3U;++i) {
+        rc=cog_orchestrator_service(o,now+100U,&done,&next);assert(rc==COG_OK || rc==COG_ERROR_AGAIN);
+    }
+    assert(o->link_count==0U);assert(cog_ipc_endpoint_free(peer)==COG_OK);cog_orchestrator_free(o);
+}
+static void remove_tree(const char *path)
+{
+    DIR *dir=opendir(path);assert(dir!=NULL);struct dirent *entry;
+    while((entry=readdir(dir))!=NULL) {
+        if(strcmp(entry->d_name,".")==0 || strcmp(entry->d_name,"..")==0) continue;
+        char child[PATH_MAX];int n=snprintf(child,sizeof(child),"%s/%s",path,entry->d_name);
+        assert(n>0 && (size_t)n<sizeof(child));struct stat status;assert(lstat(child,&status)==0);
+        if(S_ISDIR(status.st_mode)) remove_tree(child);else assert(unlink(child)==0);
+    }
+    assert(closedir(dir)==0 && rmdir(path)==0);
+}
+static void owner_routes(void)
+{
+    char base[]="cog-orch-store-XXXXXX";assert(mkdtemp(base)!=NULL);
+    cog_store_config_t store_cfg={0};store_cfg.base_dir=base;store_cfg.require_owner=true;
+    store_cfg.max_record_bytes=1048576U;
+    cog_store_t *store;assert(cog_store_new(&store,&store_cfg)==COG_OK);
+    cog_session_config_t session_cfg={0};session_cfg.id="guarded-route";
+    cog_session_t *session;assert(cog_session_new(&session,&session_cfg)==COG_OK);
+    cog_store_owner_t old={1U,41U},next={2U,42U};cog_store_checkpoint_t checkpoint={0};
+    assert(cog_store_owner_compare_exchange(store,session_cfg.id,(cog_store_owner_t){0},old,checkpoint)==COG_OK);
+    cog_store_owner_guard_t *guard;assert(cog_store_owner_acquire(store,session_cfg.id,old,&guard)==COG_OK);
+    assert(cog_store_checkpoint_save(store,session,guard,&checkpoint)==COG_OK && checkpoint.generation!=0U);
+    char path[64];cog_orchestrator_t *o=make(path,1U);
+    assert(cog_orchestrator_publish_owner(o,session_cfg.id,0U,old,checkpoint)==COG_ERROR_UNSUPPORTED);
+    cog_orchestrator_config_t config=o->config;config.socket_path=path;config.store=store;
+    cog_orchestrator_free(o);assert(cog_orchestrator_new(&o,&config)==COG_OK);
+    deny_allocations=true;
+    assert(cog_orchestrator_publish_owner(o,session_cfg.id,0U,old,checkpoint)==COG_OK);
+    assert(cog_orchestrator_publish_owner(o,session_cfg.id,0U,old,checkpoint)==COG_OK);
+    assert(o->route_count==1U);
+    assert(cog_orchestrator_publish_owner(o,session_cfg.id,99U,old,checkpoint)==COG_ERROR_NOT_FOUND);
+    assert(cog_orchestrator_publish_owner(o,session_cfg.id,0U,next,checkpoint)==COG_ERROR_INVALID_STATE);
+    cog_peer_id_t peer=7U;cog_store_owner_t owner={0};cog_store_checkpoint_t copied={0};
+    assert(cog_orchestrator_session_owner(o,session_cfg.id,&peer,&owner,&copied)==COG_OK);
+    assert(peer==0U && owner.epoch==old.epoch && owner.instance_id==old.instance_id && copied.generation==checkpoint.generation);
+    assert(cog_orchestrator_forget_owner(o,session_cfg.id,next)==COG_ERROR_INVALID_STATE);
+    assert(cog_store_owner_release(guard)==COG_OK);
+    assert(cog_store_owner_compare_exchange(store,session_cfg.id,old,next,checkpoint)==COG_OK);
+    deny_allocations=false;assert(cog_store_owner_acquire(store,session_cfg.id,next,&guard)==COG_OK);deny_allocations=true;
+    assert(cog_orchestrator_publish_owner(o,session_cfg.id,0U,next,checkpoint)==COG_OK);
+    assert(cog_orchestrator_publish_owner(o,session_cfg.id,0U,old,checkpoint)==COG_ERROR_INVALID_STATE);
+    assert(cog_orchestrator_forget_owner(o,session_cfg.id,old)==COG_ERROR_INVALID_STATE);
+    assert(cog_orchestrator_forget_owner(o,session_cfg.id,next)==COG_OK && o->route_count==0U);
+    assert(cog_store_owner_release(guard)==COG_OK);deny_allocations=false;
+    cog_orchestrator_free(o);cog_session_free(session);cog_store_free(store);remove_tree(base);
+}
+int main(int argc,char **argv)
+{
+    if(argc>1) return worker_main(argc,argv);
+    char executable[PATH_MAX];ssize_t size=readlink("/proc/self/exe",executable,sizeof(executable)-1U);
+    assert(size>0 && (size_t)size<sizeof(executable));executable[size]='\0';
+    boundaries(executable);lifecycle(executable);loss_and_pressure(executable);
+    allocation_bounds(executable);accepted_allocation_failures();impostor_and_ids(executable);shortened_shutdown(executable);silent_handshake();owner_routes();
+    puts("orchestrator owned native lifecycle PASS");return 0;
 }

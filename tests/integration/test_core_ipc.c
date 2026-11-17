@@ -12,8 +12,8 @@
  *     (COG_EVENT_IPC_CONNECTED), receives a framed message
  *     (COG_EVENT_IPC_MESSAGE) carrying peer/session metadata, and reports
  *     the peer's disconnect (COG_EVENT_IPC_DISCONNECTED);
- *   - a malformed frame (oversized length) closes the connection and is
- *     reported as a disconnect without deadlocking the event loop;
+ *   - a malformed frame (oversized length) retires its endpoint and returns
+ *     the fatal LIMIT before further dispatch; explicit rebegin is clean;
  *   - cog_core_free destroys the endpoint (the listener's socket path is
  *     unlinked) and its accepted clients.
  *
@@ -30,6 +30,8 @@
 #include "cog/core.h"
 
 #include <pthread.h>
+#include <poll.h>
+#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -338,12 +340,14 @@ static void *server_thread(void *arg)
 }
 
 /** Connect to the core's listener and write an oversized frame header. */
+typedef struct malformed_ctx { const char *path; bool sent, closed; } malformed_ctx_t;
 static void *malformed_client_thread(void *arg)
 {
-    const char *path = (const char *)arg;
+    malformed_ctx_t *result = (malformed_ctx_t *)arg;
+    const char *path = result->path;
     uint8_t header[4];
     int fd;
-    struct timespec ts;
+
 
     fd = raw_connect(path);
     if (fd < 0) {
@@ -354,11 +358,17 @@ static void *malformed_client_thread(void *arg)
     header[1] = 0xFFU;
     header[2] = 0xFFU;
     header[3] = 0xFFU;
-    (void)write(fd, header, sizeof(header));
+    result->sent = write(fd, header, sizeof(header)) == (ssize_t)sizeof(header);
 
-    ts.tv_sec = 0;
-    ts.tv_nsec = 200000000L; /* 200 ms */
-    (void)nanosleep(&ts, NULL);
+    struct pollfd watched = {.fd = fd, .events = POLLIN};
+    for (unsigned i = 0U; i < 16U && !result->closed; ++i) {
+        if (poll(&watched, 1U, 200) <= 0) break;
+        /* The server handshake may precede physical EOF. */
+        unsigned char bytes[64];
+        ssize_t amount = recv(fd, bytes, sizeof(bytes), 0);
+        result->closed = amount == 0 || (amount < 0 && errno == ECONNRESET);
+        if (amount < 0 && !result->closed) break;
+    }
 
     (void)close(fd);
     return NULL;
@@ -562,17 +572,51 @@ static void test_malformed_frame(void)
     memset(&ctx, 0, sizeof(ctx));
     ctx.core = core;
 
-    CHECK(pthread_create(&tid, NULL, malformed_client_thread, path) == 0);
-    CHECK(cog_core_run(core) == COG_ERROR_LIMIT);
-    CHECK(cog_core_run(core) == COG_OK);
+    malformed_ctx_t malformed = {.path = path};
+    CHECK(pthread_create(&tid, NULL, malformed_client_thread, &malformed) == 0);
+    CHECK(cog_core_drive_begin(core) == COG_OK);
+    cog_core_step_info_t info = {0};
+    cog_result_t rc = COG_OK;
+    for (unsigned i = 0U; i < 2000U && rc == COG_OK && !info.done; ++i) {
+        rc = cog_core_step(core, &info);
+        if (rc == COG_OK && !info.done) {
+            const struct timespec pause = {0, 1000000L};
+            (void)nanosleep(&pause, NULL);
+        }
+    }
+    CHECK(rc == COG_ERROR_LIMIT);
+    CHECK(info.done);
+    CHECK_EQ_INT(info.dispatched, 0U);
+    CHECK(cog_core_step(core, &info) == COG_ERROR_INVALID_STATE);
+    CHECK(cog_core_drive_end(core) == COG_ERROR_LIMIT);
     CHECK(pthread_join(tid, NULL) == 0);
 
-    /* The peer connected, then the oversized frame closed the link. */
+    /* Approved O2 fatal-service contract: immediate endpoint retirement and
+     * frozen dispatch, not an ordinary EOF notification. Already copied events
+     * retain their owners, but no synthetic disconnect is owed on rebegin.
+     * Ordinary EOF CONNECTED/MESSAGE/DISCONNECTED controls above stay intact. */
+    CHECK(g_state.connected_count >= 0 && g_state.connected_count <= 1);
+    CHECK_EQ_INT(g_state.message_count, 0);
+    CHECK_EQ_INT(g_state.disconnected_count, 0);
+    CHECK(malformed.sent && malformed.closed);
+    int connected_before = g_state.connected_count;
+    size_t dispatched = 0U;
+    CHECK(cog_core_drive_begin(core) == COG_OK);
+    for (unsigned i = 0U; i < 16U; ++i) {
+        CHECK(cog_core_step(core, &info) == COG_OK);
+        CHECK(!info.done);
+        dispatched += info.dispatched;
+    }
+    CHECK(dispatched == (size_t)(1 - connected_before));
+    cog_core_stop(core);
+    CHECK(cog_core_step(core, &info) == COG_OK && info.done);
+    CHECK(cog_core_drive_end(core) == COG_OK);
     CHECK_EQ_INT(g_state.connected_count, 1);
     CHECK_EQ_INT(g_state.message_count, 0);
-    CHECK_EQ_INT(g_state.disconnected_count, 1);
+    CHECK_EQ_INT(g_state.disconnected_count, 0);
 
     cog_core_free(core);
+    CHECK(access(path, F_OK) != 0);
     cog_session_free(session);
 }
 

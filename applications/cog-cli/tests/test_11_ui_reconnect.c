@@ -1,281 +1,256 @@
-/**
- * @file test_11_ui_reconnect.c
- * @brief Scenario 11 — UI disconnect -> buffer -> reconnect -> replay.
- *
- * The scenario doc (docs/scenarios/11-ui-reconnect.md) records a design
- * decision: **output buffering is the application's responsibility**; the
- * core continues processing during a UI disconnect.  The CLI harness has
- * no real UI, so this test exercises the contract with a small
- * scenario-local output buffer plus the core's real session-scoped
- * pending-message queue (the input-buffering mechanism).
- *
- * What is verified:
- *  1. Output buffering is application responsibility: a scenario-local
- *     buffer captures every assistant chunk produced while the UI is
- *     "disconnected", with no loss (captured == provider chunk_count).
- *  2. Reconnect by session id: the session id is stable across the run
- *     and can be used to re-identify the session; a fresh app created
- *     with the same id reconnects to the same session identity.
- *  3. Replay without duplication/loss: replaying the buffer yields
- *     exactly the captured chunks (replayed == captured, no duplicates).
- *  4. Input buffering during a disconnect: messages queued while the
- *     turn is pending are buffered by the core and delivered (replayed)
- *     as new turns after the current one, each exactly once.
+/** @file test_11_ui_reconnect.c
+ * @brief Actual coordinator/socket/client replay, ASK and retained command join.
+ * Old scenario-local queue/buffer assertions remain in components/.
  */
 #define _POSIX_C_SOURCE 200809L
-
-#include "cog_cli/cli.h"
-#include "cog_cli/mock_provider.h"
-
-#include <stdio.h>
+#include "session_scenario.h"
+#include <inttypes.h>
+#include <errno.h>
 #include <stdlib.h>
-#include <string.h>
+#define CHECK(x) do { if(!(x)){fprintf(stderr,"reconnect line %d: %s (rc=%d)\n",__LINE__,#x,(int)primary);if(primary==COG_OK)primary=COG_ERROR_PROTOCOL;goto finish;} }while(0)
 
-static int failures = 0;
-
-#define CHECK(cond)                                                     \
-    do {                                                                \
-        if (!(cond)) {                                                  \
-            (void)fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__,         \
-                          __LINE__, #cond);                             \
-            ++failures;                                                 \
-        }                                                               \
-    } while (0)
-
-#define CHECK_EQ_INT(a, b)                                              \
-    do {                                                                \
-        long long _a = (long long)(a);                                  \
-        long long _b = (long long)(b);                                  \
-        if (_a != _b) {                                                 \
-            (void)fprintf(stderr, "FAIL %s:%d: %s == %s (%lld != %lld)\n", \
-                          __FILE__, __LINE__, #a, #b, _a, _b);          \
-            ++failures;                                                 \
-        }                                                               \
-    } while (0)
-
-/* ------------------------------------------------------------------ */
-/* Scenario-local UI output buffer (application responsibility)        */
-/* ------------------------------------------------------------------ */
-
-#define UI_BUF_CAP 32U
-
-/** Fixed-capacity buffer of copied chunk strings, owned by the test. */
-typedef struct ui_buffer {
-    char *chunks[UI_BUF_CAP]; /**< Owned copies of captured chunks. */
-    size_t captured;          /**< Number of chunks captured. */
-    size_t replayed;          /**< Number of chunks replayed. */
-} ui_buffer_t;
-
-static void ui_buffer_init(ui_buffer_t *b)
+/* Observe actual successful client transport copies. This wrapper introduces
+   no frame or result; it proves that reconnect resends the identical command. */
+typedef struct command_probe {
+    cog_ipc_endpoint_t *endpoint;
+    unsigned char original[65536];size_t length,sends;
+    uint64_t wire;bool conflict;
+} command_probe_t;
+static command_probe_t *active_probe;
+cog_result_t __real_cog_ipc_endpoint_send(cog_ipc_endpoint_t *endpoint,const cog_ipc_message_t *message);
+cog_result_t __wrap_cog_ipc_endpoint_send(cog_ipc_endpoint_t *endpoint,const cog_ipc_message_t *message);
+cog_result_t __wrap_cog_ipc_endpoint_send(cog_ipc_endpoint_t *endpoint,const cog_ipc_message_t *message)
 {
-    (void)memset(b, 0, sizeof(*b));
+    cog_result_t rc=__real_cog_ipc_endpoint_send(endpoint,message);
+    command_probe_t *p=active_probe;
+    if(rc!=COG_OK || p==NULL || endpoint!=p->endpoint)return rc;
+    unsigned char storage[65536];cog_cli_control_message_t frame;size_t required=0U;
+    if(cog_cli_control_decode(message->data,message->len,&frame,storage,sizeof(storage),&required)!=COG_OK || frame.kind!=COG_CLI_CONTROL_UI_COMMAND)return rc;
+    if(p->sends==0U){
+        if(message->len>sizeof(p->original)){p->conflict=true;return rc;}
+        memcpy(p->original,message->data,message->len);p->length=message->len;p->wire=frame.wire_id;
+    }else if(message->len!=p->length || memcmp(message->data,p->original,p->length)!=0 || frame.wire_id!=p->wire)p->conflict=true;
+    ++p->sends;return rc;
 }
-
-/** Capture one chunk (copy) into the buffer; drop-oldest when full. */
-static void ui_buffer_capture(ui_buffer_t *b, const char *text, size_t len)
+static bool same_view(const cog_cli_projection_view_t *a,const cog_cli_projection_view_t *b)
 {
-    char *copy;
-
-    if (b->captured == UI_BUF_CAP) {
-        /* Buffer limit reached: drop the oldest (documented behaviour). */
-        free(b->chunks[0]);
-        (void)memmove(&b->chunks[0], &b->chunks[1],
-                      (UI_BUF_CAP - 1U) * sizeof(b->chunks[0]));
-        b->captured--;
+    if(strcmp(a->display.session_id,b->display.session_id)!=0 ||
+       a->display.generation!=b->display.generation || a->display.through_sequence!=b->display.through_sequence ||
+       a->display.item_count!=b->display.item_count || a->policy_count!=b->policy_count ||
+       a->agent_count!=b->agent_count || a->active_configuration!=b->active_configuration ||
+       a->published_configuration!=b->published_configuration)return false;
+    for(size_t i=0U;i<a->display.item_count;++i){
+        const cog_cli_display_item_t *x=&a->display.items[i],*y=&b->display.items[i];
+        if(x->node_id!=y->node_id || x->role!=y->role || x->status!=y->status ||
+           x->text_len!=y->text_len || memcmp(x->text,y->text,x->text_len)!=0)return false;
     }
-    copy = (char *)malloc(len + 1U);
-    if (copy == NULL) {
-        return;
+    for(size_t i=0U;i<a->policy_count;++i){
+        const cog_cli_policy_view_t *x=&a->policies[i],*y=&b->policies[i];
+        if(strcmp(x->session_id,y->session_id)!=0 || x->assistant_node!=y->assistant_node ||
+           x->call_ordinal!=y->call_ordinal || x->nonce!=y->nonce ||
+           x->configuration_generation!=y->configuration_generation || x->deadline_ms!=y->deadline_ms ||
+           strcmp(x->tool_name,y->tool_name)!=0)return false;
     }
-    (void)memcpy(copy, text, len);
-    copy[len] = '\0';
-    b->chunks[b->captured++] = copy;
+    return a->agent_count==0U; /* This scenario admits no child attempts. */
 }
-
-/** Replay every captured chunk to the (reconnected) UI. */
-static void ui_buffer_replay(ui_buffer_t *b)
+static cli_client_record_t *record(cog_cli_host_runtime_t *host,uint64_t lease)
 {
-    size_t i;
-
-    for (i = 0U; i < b->captured; ++i) {
-        /* Simulated render to the UI; count it to prove no dup/loss. */
-        (void)b->chunks[i];
-        b->replayed++;
-    }
+    for(size_t i=0U;i<host->bounds.clients;++i)
+        if(host->clients[i].used && host->clients[i].logical_lease==lease)return &host->clients[i];
+    return NULL;
 }
-
-static void ui_buffer_free(ui_buffer_t *b)
+/* The client is deliberately stopped with an empty decoded endpoint. Read and
+   discard only genuine framed bytes until its correlated final is observed;
+   shutdown alone does not discard queued socket bytes on Linux. */
+static cog_result_t lose_final(headless_fixture_t *f,session_client_t *c,
+    uint64_t request,uint64_t *result_wire)
 {
-    size_t i;
-
-    for (i = 0U; i < b->captured; ++i) {
-        free(b->chunks[i]);
-        b->chunks[i] = NULL;
+    cog_ipc_endpoint_t *ep=c->client->endpoint;
+    if(ep->rx_count!=0U || ep->prefix_used!=0U || ep->rx_partial!=0U)return COG_ERROR_INVALID_STATE;
+    unsigned char bytes[65536],decoded[65536];size_t used=0U,parsed=0U;
+    uint64_t deadline=headless_fixture_clock_ms()+2000U;bool found=false;
+    while(!found && headless_fixture_clock_ms()<deadline){
+        cog_result_t rc=session_tick(f,NULL,NULL);if(rc!=COG_OK)return rc;
+        ssize_t n=recv(ep->fd,bytes+used,sizeof(bytes)-used,MSG_DONTWAIT);
+        if(n<0){if(errno==EAGAIN || errno==EINTR)continue;return COG_ERROR_IO;}
+        if(n==0)return COG_ERROR_IO;
+        used+=(size_t)n;
+        while(used-parsed>=4U){
+            const unsigned char *p=bytes+parsed;
+            size_t length=((size_t)p[0]<<24U)|((size_t)p[1]<<16U)|((size_t)p[2]<<8U)|(size_t)p[3];
+            if(length==0U || length>sizeof(bytes)-4U)return COG_ERROR_LIMIT;
+            if(used-parsed<length+4U)break;
+            cog_cli_control_message_t message;size_t required=0U;
+            rc=cog_cli_control_decode(p+4U,length,&message,decoded,sizeof(decoded),&required);
+            if(rc!=COG_OK)return rc;
+            if(message.kind==COG_CLI_CONTROL_COMMAND_RESULT && message.reply_to==request){
+                if(message.runtime_incarnation!=c->client->runtime || strcmp(message.session_id,c->client->session)!=0 ||
+                   message.payload_len!=21U)return COG_ERROR_PROTOCOL;
+                bool cached=false;
+                for(size_t i=0U;i<f->host->bounds.command_records;++i){
+                    const cli_command_record_t *r=&f->host->commands[i];
+                    if(r->phase==CLI_COMMAND_FINAL && r->lease==c->client->lease && r->request_wire==request &&
+                       r->reply.length==length && memcmp(r->reply.data,p+4U,length)==0)cached=true;
+                }
+                if(!cached)return COG_ERROR_PROTOCOL;
+                *result_wire=message.wire_id;found=true;
+            }
+            parsed+=length+4U;
+        }
+        if(used==sizeof(bytes) && !found)return COG_ERROR_LIMIT;
     }
-    b->captured = 0U;
-    b->replayed = 0U;
+    if(!found)return COG_ERROR_TIMEOUT;
+    cog_result_t rc=session_disconnect(c);if(rc!=COG_OK)return rc;
+    /* With SHUT_RDWR, drain the bounded remainder before client service. The
+       endpoint has consumed no bytes from this exchange and will observe EOF. */
+    size_t discarded=0U;
+    for(;;){ssize_t n=recv(ep->fd,bytes,sizeof(bytes),MSG_DONTWAIT);
+        if(n==0)break;
+        if(n<0){if(errno==EINTR)continue;if(errno==EAGAIN)break;return COG_ERROR_IO;}
+        discarded+=(size_t)n;if(discarded>1024U*1024U)return COG_ERROR_LIMIT;
+    }
+    return COG_OK;
 }
-
-/* ------------------------------------------------------------------ */
-/* Fixture helper                                                      */
-/* ------------------------------------------------------------------ */
-
-static cog_cli_app_t *fixture_new(cog_cli_options_t *opts)
+int main(int argc,char **argv)
 {
-    cog_cli_app_t *app = NULL;
-
-    if (opts->model_id == NULL) {
-        opts->model_id = "mock-model";
+    headless_fixture_t f={0};cog_result_t primary=COG_OK;bool complete=false;
+    session_client_t controller={.input={-1,-1}},watch={.input={-1,-1}},replacement={.input={-1,-1}};
+    unsigned char *original=NULL;size_t original_length=0U;uint64_t original_wire=0U,lost_result_wire=0U;
+    char path[4096],effect[4096];uint64_t deadline=0U;
+    command_probe_t probe={0};
+    CHECK(argc==8 && strcmp(argv[7],"reconnect")==0);
+    const char *paths[6]={argv[1],argv[2],argv[3],argv[4],argv[5],argv[6]};
+    CHECK(headless_fixture_init(&f,paths,0U,1U)==COG_OK);
+    f.options.tool_policy=COG_CLI_TOOL_POLICY_ASK;
+    f.config.replay_records=2U;f.config.controller_reconnect_ms=1000U;f.config.client_receipt_ms=2000U;
+    primary=headless_fixture_open(&f);CHECK(primary==COG_OK);
+    CHECK(snprintf(path,sizeof(path),"%s/controller.ndjson",argv[4])>0);
+    CHECK(session_client_open(&controller,f.ui_path,path,false)==COG_OK);
+    deadline=headless_fixture_clock_ms()+3000U;
+    while(!session_online(&f,&controller) && headless_fixture_clock_ms()<deadline){primary=session_tick(&f,&controller,NULL);CHECK(primary==COG_OK);}
+    CHECK(session_online(&f,&controller));
+    uint64_t lease=controller.client->lease,generation=controller.client->replay_generation;
+    char session[128];CHECK(snprintf(session,sizeof(session),"%s",controller.client->session)>0);
+    uint64_t before=controller.client->rendered_sequence;
+    /* Five explicit client inputs are admitted while the first real TLS request
+       waits for our offline marker. Four completions then the ASK publication
+       overrun the real two-record ring while this same client is disconnected. */
+    for(unsigned int input=1U;input<=5U;++input){
+        if(input==5U)CHECK(snprintf(path,sizeof(path),"policy\n")>0);
+        else CHECK(snprintf(path,sizeof(path),"stream %u\n",input)>0);
+        CHECK(session_write(&controller,path)==COG_OK);
+        deadline=headless_fixture_clock_ms()+2000U;
+        while((controller.client->last_input_serial<input || controller.client->requests[0].phase!=CLI_CLIENT_REQUEST_ACKED || !session_online(&f,&controller)) && headless_fixture_clock_ms()<deadline){primary=session_tick(&f,&controller,NULL);CHECK(primary==COG_OK);}
+        CHECK(controller.client->last_input_serial==input && controller.client->requests[0].phase==CLI_CLIENT_REQUEST_ACKED && controller.client->final_input_result==COG_OK && session_online(&f,&controller));
     }
-    if (opts->endpoint_name == NULL) {
-        opts->endpoint_name = "mock";
+    CHECK(session_disconnect(&controller)==COG_OK);
+    CHECK(snprintf(path,sizeof(path),"%s/offline",argv[4])>0);
+    FILE *marker=fopen(path,"w");CHECK(marker!=NULL);CHECK(fclose(marker)==0);
+    cog_cli_projection_view_t current={0};deadline=headless_fixture_clock_ms()+5000U;
+    do{primary=session_tick(&f,NULL,NULL);CHECK(primary==COG_OK);
+       CHECK(cog_cli_projection_snapshot(f.host->projection,&current)==COG_OK);
+    }while(current.policy_count!=1U && headless_fixture_clock_ms()<deadline);
+    CHECK(current.policy_count==1U && current.display.through_sequence>before+2U);
+    CHECK(snprintf(effect,sizeof(effect),"%s/effect-policy",argv[4])>0);CHECK(access(effect,F_OK)!=0);
+    cog_cli_policy_view_t prompt=current.policies[0];
+    uint64_t prompt_node=prompt.assistant_node,prompt_nonce=prompt.nonce;
+    uint16_t prompt_ordinal=prompt.call_ordinal;
+    deadline=headless_fixture_clock_ms()+3000U;
+    while((!session_online(&f,&controller) || controller.client->gap_last==0U) && headless_fixture_clock_ms()<deadline){primary=session_tick(&f,&controller,NULL);CHECK(primary==COG_OK);}
+    CHECK(session_online(&f,&controller) && controller.client->gap_last>before);
+    CHECK(controller.client->lease==lease && controller.client->replay_generation==generation && strcmp(session,controller.client->session)==0);
+    CHECK(cog_cli_projection_snapshot(f.host->projection,&current)==COG_OK);
+    CHECK(same_view(&current,&controller.client->banks[controller.client->current].view));
+    CHECK(current.policy_count==1U && current.policies[0].assistant_node==prompt_node && current.policies[0].nonce==prompt_nonce && current.policies[0].call_ordinal==prompt_ordinal && current.policies[0].configuration_generation==prompt.configuration_generation && current.policies[0].deadline_ms==prompt.deadline_ms);
+    CHECK(access(effect,F_OK)!=0); /* Reconnect/render is never implicit ALLOW. */
+    /* A separate actual watch client consumes state but cannot mutate it. */
+    CHECK(snprintf(path,sizeof(path),"%s/watch.ndjson",argv[4])>0);
+    CHECK(session_client_open(&watch,f.ui_path,path,true)==COG_OK);
+    deadline=headless_fixture_clock_ms()+3000U;
+    while(!session_online(&f,&watch) && headless_fixture_clock_ms()<deadline){primary=session_tick(&f,&controller,&watch);CHECK(primary==COG_OK);}
+    CHECK(session_online(&f,&watch));
+    uint64_t watch_wire=watch.client->requests[0].wire;
+    CHECK(session_write(&watch,"watch-mutation\n/shutdown\n")==COG_OK);
+    deadline=headless_fixture_clock_ms()+1000U;
+    while(watch.client->last_input_serial<2U && headless_fixture_clock_ms()<deadline){primary=session_tick(&f,&controller,&watch);CHECK(primary==COG_OK);}
+    CHECK(watch.client->last_input_serial==2U && watch.client->final_input_result==COG_ERROR_DENIED && watch.client->requests[0].wire==watch_wire);
+    CHECK(!f.host->shutdown && access(effect,F_OK)!=0);
+    primary=session_client_close(&watch,primary);CHECK(primary==COG_OK);
+    CHECK(snprintf(path,sizeof(path),"/allow %" PRIu64 "\n",prompt_nonce)>0);
+    probe.endpoint=controller.client->endpoint;active_probe=&probe;
+    CHECK(session_write(&controller,path)==COG_OK);
+    /* Send explicit decision, then stop reading before the host's final reply. */
+    deadline=headless_fixture_clock_ms()+1000U;
+    while((controller.client->requests[0].phase!=CLI_CLIENT_REQUEST_PENDING || !controller.client->requests[0].sent || controller.client->endpoint->tx_count!=0U) && headless_fixture_clock_ms()<deadline){
+        cog_cli_host_runtime_step_t step={0};primary=cog_cli_host_client_step(controller.client,&step);CHECK(primary==COG_OK || primary==COG_ERROR_AGAIN);primary=COG_OK;
     }
-    opts->interactive = false;
-    opts->backend = COG_CLI_BACKEND_MOCK;
-    opts->explicit_options |= COG_CLI_OPT_BACKEND | COG_CLI_OPT_MODEL | COG_CLI_OPT_ENDPOINT;
-    if (opts->store_dir != NULL) {
-        opts->store_mode = COG_CLI_STORE_DURABLE;
-        opts->explicit_options |= COG_CLI_OPT_STORE_MODE | COG_CLI_OPT_STORE_DIR;
+    CHECK(controller.client->requests[0].phase==CLI_CLIENT_REQUEST_PENDING);
+    original_length=controller.client->requests[0].frame_length;original_wire=controller.client->requests[0].wire;
+    original=malloc(original_length);CHECK(original!=NULL);memcpy(original,controller.client->requests[0].frame,original_length);
+    bool final=false;deadline=headless_fixture_clock_ms()+3000U;
+    while(!final && headless_fixture_clock_ms()<deadline){primary=session_tick(&f,NULL,NULL);CHECK(primary==COG_OK);
+        for(size_t i=0U;i<f.host->bounds.command_records;++i){const cli_command_record_t *r=&f.host->commands[i];
+            if(r->lease==lease && r->request_wire==original_wire && r->phase==CLI_COMMAND_FINAL){CHECK(r->result==COG_OK);final=true;}}
     }
-    if (cog_cli_app_new(&app, opts) != COG_OK) {
-        return NULL;
-    }
-    return app;
-}
-
-/** Read the session history into a caller array (max @p cap). */
-static size_t fixture_history(cog_cli_app_t *app, cog_message_t *out,
-                              size_t cap)
-{
-    const cog_message_t *msgs = NULL;
-    size_t count = 0U;
-    size_t i;
-
-    if (cog_session_get_history(cog_cli_app_session(app),
-                                cog_session_active(cog_cli_app_session(app)),
-                                &msgs, &count) != COG_OK) {
-        return 0U;
-    }
-    if (count > cap) {
-        count = cap;
-    }
-    for (i = 0U; i < count; ++i) {
-        out[i] = msgs[i];
-    }
-    return count;
-}
-
-/* ------------------------------------------------------------------ */
-/* Scenario 11                                                         */
-/* ------------------------------------------------------------------ */
-
-static void scenario_ui_reconnect(void)
-{
-    /* One chunk per turn; repeat forever so the buffered (queued)
-     * messages each get their own assistant turn. */
-    static const cog_mock_step_t steps[] = {
-        {COG_MOCK_STEP_CHUNK, "ok", COG_OK, 0, false, 0U, NULL},
-    };
-    static const cog_mock_script_t script = {
-        steps, 1U, SIZE_MAX, COG_OK, 0U,
-    };
-    cog_cli_options_t opts;
-    cog_cli_app_t *app = NULL;
-    cog_cli_app_t *reconnected = NULL;
-    cog_message_t hist[16];
-    size_t n;
-    size_t i;
-    cog_mock_state_t st;
-    ui_buffer_t buf;
-    const char *sid;
-    size_t user_second = 0U;
-    size_t user_third = 0U;
-
-    (void)memset(&opts, 0, sizeof(opts));
-    opts.prompt = "first";
-    opts.script = &script;
-    app = fixture_new(&opts);
-    CHECK(app != NULL);
-
-    /* Reconnect identity: capture the session id before the run. */
-    sid = cog_session_id(cog_cli_app_session(app));
-    CHECK(sid != NULL);
-    CHECK(strlen(sid) > 0U);
-
-    /* Input buffering during a "disconnect": queue two messages for the
-     * session while the first turn is pending.  The core buffers them
-     * (application responsibility) and delivers them after the turn. */
-    CHECK(cog_cli_app_queue(app, "second", 6U) == COG_OK);
-    CHECK(cog_cli_app_queue(app, "third", 5U) == COG_OK);
-
-    CHECK(cog_cli_app_run(app) == COG_OK);
-    CHECK(cog_cli_app_state(app) == (cog_state_t)0); /* IDLE */
-
-    /* Session id is stable after the run (reconnect key). */
-    CHECK(strcmp(sid, cog_session_id(cog_cli_app_session(app))) == 0);
-
-    /* Output buffering: capture every assistant chunk into the
-     * scenario-local buffer (the UI was "disconnected" during the run). */
-    ui_buffer_init(&buf);
-    n = fixture_history(app, hist, 16U);
-    for (i = 0U; i < n; ++i) {
-        if (hist[i].role == COG_MESSAGE_ROLE_ASSISTANT) {
-            ui_buffer_capture(&buf, hist[i].content, hist[i].content_len);
+    CHECK(final && controller.client->requests[0].phase==CLI_CLIENT_REQUEST_PENDING && probe.sends==1U && probe.wire==original_wire && !probe.conflict);
+    primary=lose_final(&f,&controller,original_wire,&lost_result_wire);CHECK(primary==COG_OK && lost_result_wire!=0U);
+    deadline=headless_fixture_clock_ms()+3000U;
+    do{primary=session_tick(&f,NULL,NULL);CHECK(primary==COG_OK);CHECK(cog_cli_projection_snapshot(f.host->projection,&current)==COG_OK);
+    }while((current.policy_count!=0U || access(effect,F_OK)!=0 || f.host->executors[f.host->primary_slot].app->active) && headless_fixture_clock_ms()<deadline);
+    CHECK(current.policy_count==0U && access(effect,F_OK)==0);
+    deadline=headless_fixture_clock_ms()+3000U;
+    while((!session_online(&f,&controller) || controller.client->requests[0].phase!=CLI_CLIENT_REQUEST_ACKED) && headless_fixture_clock_ms()<deadline){primary=session_tick(&f,&controller,NULL);CHECK(primary==COG_OK);}
+    CHECK(session_online(&f,&controller) && controller.client->requests[0].phase==CLI_CLIENT_REQUEST_ACKED);
+    CHECK(controller.client->requests[0].result_wire==lost_result_wire && controller.client->requests[0].wire==original_wire && controller.client->requests[0].frame_length==original_length && memcmp(original,controller.client->requests[0].frame,original_length)==0);
+    CHECK(controller.client->lease==lease && session_contains(&controller,"POLICY_DONE") && probe.sends==2U && !probe.conflict);
+    active_probe=NULL;
+    CHECK(cog_cli_projection_snapshot(f.host->projection,&current)==COG_OK);
+    CHECK(same_view(&current,&controller.client->banks[controller.client->current].view));
+    /* Expire actual disconnected lease, assign a fresh controller, then let the
+       old retained client attempt its known-lease reconnect with explicit input. */
+    CHECK(session_disconnect(&controller)==COG_OK);
+    deadline=headless_fixture_clock_ms()+3000U;
+    while(record(f.host,lease)!=NULL && headless_fixture_clock_ms()<deadline){primary=session_tick(&f,NULL,NULL);CHECK(primary==COG_OK);}
+    CHECK(record(f.host,lease)==NULL);
+    CHECK(snprintf(path,sizeof(path),"%s/new-controller.ndjson",argv[4])>0);
+    CHECK(session_client_open(&replacement,f.ui_path,path,false)==COG_OK);
+    deadline=headless_fixture_clock_ms()+3000U;
+    while(!session_online(&f,&replacement) && headless_fixture_clock_ms()<deadline){primary=session_tick(&f,&replacement,NULL);CHECK(primary==COG_OK);}
+    CHECK(session_online(&f,&replacement) && replacement.client->lease!=lease);
+    CHECK(record(f.host,replacement.client->lease)!=NULL && record(f.host,replacement.client->lease)->controller);
+    CHECK(session_write(&controller,"expired-mutation\n")==COG_OK);
+    cog_result_t rejected=COG_OK;bool replayed_expired=false;
+    /* control.h UI discovery and HEADLESS_CONTROL section UI lease expiry
+       require uniformly stale refusal before lookup/admission, without requiring
+       a negative HELLO receipt. The finite IO below proves delivery failure only;
+       the absent old lease/receipt and unchanged authority prove refusal. Replay the exact earlier command on this client's authenticated new link;
+       it must not allocate a receipt or acquire the new controller's identity. */
+    deadline=headless_fixture_clock_ms()+3200U;
+    while(rejected==COG_OK && headless_fixture_clock_ms()<deadline){
+        rejected=session_tick(&f,&controller,&replacement);
+        if(rejected==COG_OK && !replayed_expired && controller.client->authenticated && controller.client->hello.sent){
+            cog_ipc_message_t bytes={original,original_length,original_length};
+            primary=cog_ipc_endpoint_send(controller.client->endpoint,&bytes);
+            CHECK(primary==COG_OK || primary==COG_ERROR_AGAIN);
+            if(primary==COG_OK)replayed_expired=true;
+            primary=COG_OK;
         }
     }
-
-    /* No loss: every chunk the provider emitted was captured. */
-    CHECK(cog_mock_provider_state(cog_cli_app_provider(app), &st) == COG_OK);
-    CHECK_EQ_INT((long long)st.chunk_count, 3LL); /* 3 turns x 1 chunk */
-    CHECK_EQ_INT((long long)buf.captured, 3LL);
-
-    /* The buffered (queued) inputs were replayed as new turns, each
-     * exactly once (no duplication). */
-    CHECK_EQ_INT((long long)n, 6LL); /* user,assistant x 3 turns */
-    for (i = 0U; i < n; ++i) {
-        if (hist[i].role == COG_MESSAGE_ROLE_USER &&
-            hist[i].content_len == 6U &&
-            memcmp(hist[i].content, "second", 6U) == 0) {
-            user_second++;
-        }
-        if (hist[i].role == COG_MESSAGE_ROLE_USER &&
-            hist[i].content_len == 5U &&
-            memcmp(hist[i].content, "third", 5U) == 0) {
-            user_third++;
-        }
-    }
-    CHECK_EQ_INT((long long)user_second, 1LL);
-    CHECK_EQ_INT((long long)user_third, 1LL);
-
-    /* Reconnect by session id: a fresh app with the same id reconnects
-     * to the same session identity. */
-    (void)memset(&opts, 0, sizeof(opts));
-    opts.session_id = sid;
-    opts.script = &script;
-    reconnected = fixture_new(&opts);
-    CHECK(reconnected != NULL);
-    CHECK(strcmp(sid, cog_session_id(cog_cli_app_session(reconnected))) == 0);
-
-    /* Replay without duplication/loss: the buffer replays exactly the
-     * captured chunks. */
-    ui_buffer_replay(&buf);
-    CHECK_EQ_INT((long long)buf.replayed, 3LL);
-    CHECK_EQ_INT((long long)buf.replayed, (long long)buf.captured);
-
-    ui_buffer_free(&buf);
-    cog_cli_app_free(reconnected);
-    cog_cli_app_free(app);
-}
-
-int main(void)
-{
-    scenario_ui_reconnect();
-
-    if (failures != 0) {
-        (void)fprintf(stderr, "test_11_ui_reconnect: %d failure(s)\n",
-                      failures);
-        return 1;
-    }
-    (void)printf("test_11_ui_reconnect: all checks passed\n");
-    return 0;
+    CHECK(replayed_expired && rejected==COG_ERROR_IO && record(f.host,lease)==NULL);
+    for(size_t i=0U;i<f.host->bounds.command_records;++i)
+        CHECK(f.host->commands[i].phase==CLI_COMMAND_FREE || f.host->commands[i].lease!=lease);
+    CHECK(controller.client->lease==lease && controller.client->hello.phase!=CLI_CLIENT_REQUEST_ACKED);
+    CHECK(!f.host->shutdown && f.host->primary==COG_OK);
+    CHECK(cog_cli_projection_snapshot(f.host->projection,&current)==COG_OK && current.policy_count==0U);
+    /* The client's own refusal is expected; retain success for cleanup. */
+    (void)cog_cli_host_client_close(&controller.client,rejected);
+finish:
+    active_probe=NULL;
+    free(original);
+    primary=session_client_close(&controller,primary);
+    primary=session_client_close(&watch,primary);
+    primary=session_client_close(&replacement,primary);
+    primary=headless_fixture_close(&f,primary,&complete);
+    if(primary!=COG_OK || !complete){fprintf(stderr,"reconnect outcome=%d cleanup=%d\n",(int)primary,(int)complete);return 1;}
+    puts("actual reconnect/GAP/ASK/retained command/lease/watch: PASS");return 0;
 }

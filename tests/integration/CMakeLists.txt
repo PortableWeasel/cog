@@ -80,7 +80,7 @@ target_enable_warnings(test_core_toolkit)
 # It is owned exclusively by the orchestrator integration test; it never
 # touches processes outside the test.
 add_executable(aux_core fixtures/aux_core.c)
-target_link_libraries(aux_core PRIVATE cog::ipc)
+target_link_libraries(aux_core PRIVATE cog::orchestrator)
 target_enable_warnings(aux_core)
 
 # test_orchestrator_ipc drives real aux_core processes over a local Unix

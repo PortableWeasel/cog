@@ -7,6 +7,8 @@
 #include <cog/workspace.h>
 /* Control-tree ownership is private; only app_reload.c needs config.h. */
 typedef struct cog_config_tree cog_config_tree_t;
+/* O4 private implementation layout; standalone constructors leave this NULL. */
+typedef struct cli_execution_state cli_execution_state_t;
 #include <stdatomic.h>
 #define CLI_NODES 1024U
 #define CLI_CALLS 16U
@@ -20,8 +22,12 @@ typedef struct cog_config_tree cog_config_tree_t;
 #define CLI_EVIDENCE_BYTES 4096U
 #define CLI_RELOAD_ATTEMPTS 64U
 
-enum { CLI_IDLE = 0, CLI_MODEL, CLI_BACKOFF, CLI_POLICY, CLI_TOOL };
-enum { CLI_EVENT_RESUME_POLICY = 0x7f00 };
+/* N headless uses PUBLICATION and PREPARE as explicit static dispatch states;
+   standalone behavior keeps original values and paths. No bodies added here. */
+enum { CLI_IDLE = 0, CLI_MODEL, CLI_BACKOFF, CLI_POLICY, CLI_TOOL,
+       CLI_PUBLICATION, CLI_PREPARE };
+enum { CLI_EVENT_RESUME_POLICY = 0x7f00,
+       CLI_EVENT_PUBLICATION = 0x7f01, CLI_EVENT_PREPARE = 0x7f02 };
 typedef struct cli_call {
     cog_message_tool_call_t view;
     char id[CLI_ID_BYTES], name[CLI_ID_BYTES];
@@ -35,6 +41,7 @@ typedef struct cli_input {
     bool used, queued, continuation_authorized;
 } cli_input_t;
 struct cog_cli_app {
+    cli_execution_state_t *headless; /* Owned explicit app constructor reservation. */
     /* Optional host bridge borrowed past provider teardown, never net-owned.
        Application timing/error state exists even with an external observer. */
     cog_cli_observer_t *observer;

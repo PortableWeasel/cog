@@ -20,24 +20,43 @@ endforeach()
 add_executable(installed_embedder consumer.c)
 target_link_libraries(installed_embedder PRIVATE
     cog::cli cog::orchestrator cog::config cog::toolkit cog::provider cog::net)
+# A separate executable must rely exclusively on CLI's declared public graph.
+# Keeping the older explicit multi-package target above preserves its evidence.
+get_target_property(cli_public_links cog::cli INTERFACE_LINK_LIBRARIES)
+if(NOT "cog::orchestrator" IN_LIST cli_public_links)
+    message(FATAL_ERROR "Installed cog::cli does not export cog::orchestrator")
+endif()
+add_executable(installed_cli_only cli_only.c fenced_store.c orchestrator.c real_app.c)
+target_link_libraries(installed_cli_only PRIVATE cog::cli)
+foreach(host installed_embedder installed_cli_only)
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(installed_embedder PRIVATE
+    target_compile_options(${host} PRIVATE
         -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wsign-conversion
         -Wmissing-prototypes -Wstrict-prototypes -Wundef -Wpointer-arith
         -Wcast-align -Wwrite-strings -Wformat=2 -Werror)
     if(EMBEDDER_ASAN)
-        target_compile_options(installed_embedder PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
-        target_link_options(installed_embedder PRIVATE -fsanitize=address,undefined)
+        target_compile_options(${host} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(${host} PRIVATE -fsanitize=address,undefined)
+    elseif(EMBEDDER_TSAN)
+        target_compile_options(${host} PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
+        target_link_options(${host} PRIVATE -fsanitize=thread)
     endif()
-    target_link_options(installed_embedder PRIVATE -Wl,--wrap=curl_global_init,--wrap=curl_global_cleanup)
+    if(host STREQUAL "installed_embedder")
+        target_link_options(${host} PRIVATE -Wl,--wrap=curl_global_init,--wrap=curl_global_cleanup)
+    endif()
 endif()
+endforeach()
+# The custom backend proof intercepts allocations before acquire callbacks.
+# Optimizer builtin folding must not erase the interception/positive control.
+target_link_options(installed_cli_only PRIVATE -Wl,--wrap=calloc)
+target_compile_options(installed_cli_only PRIVATE -fno-builtin-calloc)
 # Record resolved public imports so the driver can reject source/build leaks.
 file(GENERATE OUTPUT "imports.txt" CONTENT
-    "provider=$<TARGET_FILE:cog::provider>\nnet=$<TARGET_FILE:cog::net>\nconfig=$<TARGET_FILE:cog::config>\ncurl=$<TARGET_FILE:CURL::libcurl>\n")
+    "provider=$<TARGET_FILE:cog::provider>\nnet=$<TARGET_FILE:cog::net>\nconfig=$<TARGET_FILE:cog::config>\ncli=$<TARGET_FILE:cog::cli>\norchestrator=$<TARGET_FILE:cog::orchestrator>\ncurl=$<TARGET_FILE:CURL::libcurl>\n")
 
 file(RELATIVE_PATH embedder_library_path
     "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}"
     "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
-set_target_properties(installed_embedder PROPERTIES
+set_target_properties(installed_embedder installed_cli_only PROPERTIES
     INSTALL_RPATH "$ORIGIN/${embedder_library_path}")
-install(TARGETS installed_embedder RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS installed_embedder installed_cli_only RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

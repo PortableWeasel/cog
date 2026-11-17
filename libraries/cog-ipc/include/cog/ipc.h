@@ -27,6 +27,7 @@
 
 #include <cog/result.h>
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -83,6 +84,18 @@ typedef enum cog_ipc_poll_event {
  */
 typedef struct cog_ipc_endpoint cog_ipc_endpoint_t;
 
+/** @brief Kernel-origin identity of one established Unix connection.
+ * peer_id identifies the link within its listener, not these native credentials.
+ * Linux SO_PEERCRED values are the kernel connection-establishment snapshot
+ * (socketpair creation for socketpairs), never HELLO/user PID or a refreshed
+ * effective-credential/process-liveness query. */
+typedef struct cog_ipc_peer_info {
+    cog_peer_id_t peer_id;
+    uint64_t process_id; /**< Nonzero native peer PID, diagnostic/auth input only. */
+    uint64_t user_id; /**< Native UID at establishment; zero is a valid UID. */
+    uint64_t group_id; /**< Native GID at establishment. */
+} cog_ipc_peer_info_t;
+
 /**
  * @brief Allocate an IPC message buffer.
  *
@@ -121,6 +134,14 @@ typedef struct cog_ipc_endpoint_config {
     size_t service_quantum; /**< Default 16 bounded read/write/frame units. */
     size_t max_routes; /**< Default 64 copied session routes; ID max 127 bytes. */
     uint32_t connect_timeout_ms; /**< Default 1000; asynchronous handshake timer. */
+    bool wipe_buffers; /**< Default false. Private authenticated bootstrap
+       fabrics set true: wipe copied payloads on LOGICAL queue retirement, and
+       all payload storage on explicit disconnect/free/constructor unwind.
+       Socket EOF/service error alone preserves committed complete readable RX
+       frames until recv retirement; never wipe readable retained bytes merely
+       because physical I/O ended. Discarded partial RX/TX/error payloads wipe on
+       abandonment. No logging/allocation or changed send/recv outcome. Caller
+       separately wipes its owned encoded/decoded credential storage. */
 } cog_ipc_endpoint_config_t;
 /**
  * @brief Reserve bounded framing/routing storage; all sockets are nonblocking.
@@ -383,6 +404,42 @@ cog_result_t cog_ipc_endpoint_disconnect(cog_ipc_endpoint_t *endpoint);
  */
 cog_result_t cog_ipc_endpoint_get_peer_id(const cog_ipc_endpoint_t *endpoint,
                                           cog_peer_id_t *peer_id);
+
+/**
+ * @brief Query kernel credentials for an exact current connection without I/O.
+ * @param[in] endpoint Listener/fabric, or one connected endpoint.
+ * @param[in] peer_id Nonzero assigned link ID. Listener resolves that accepted
+ * connection; connected endpoint requires its published matching link ID.
+ * @param[out] info Copied metadata, unchanged on failure.
+ * @return OK; NULL_PTR; INVALID_ARG zero; NOT_FOUND unknown/disconnected link;
+ * AGAIN before handshake; INVALID_STATE unbound; IO credential-query failure;
+ * UNSUPPORTED without authoritative native peer credentials. No allocation,
+ * peer wait, send/recv or ownership transfer. Owner thread.
+ * @note PID/UID alone does not prove a current worker attempt: apps also check
+ * immutable unreaped spawn ownership and exact trusted bootstrap incarnation.
+ * A reaped PID is never signalled/reused as authority; old socket/HELLO cannot
+ * bind a replacement worker. Identity is scoped by endpoint/fabric as usual.
+ */
+cog_result_t cog_ipc_endpoint_peer_info(const cog_ipc_endpoint_t *endpoint,
+                                         cog_peer_id_t peer_id,
+                                         cog_ipc_peer_info_t *info);
+
+/**
+ * @brief Queue one copied frame to an exact accepted peer without a route.
+ * @param[in,out] listener Owning listener/fabric, one owner thread.
+ * @param[in] peer_id Current nonzero connection identity in this fabric.
+ * @param[in] message Complete caller-owned frame.
+ * @return OK copies exactly once; AGAIN full output queue accepts nothing;
+ * NULL_PTR; INVALID_ARG; NOT_FOUND unknown/disconnected peer; INVALID_STATE
+ * nonlistener/incomplete handshake; LIMIT above constructor frame bound.
+ * No allocation/wait; existing endpoint_service cursor flushes partial bytes.
+ * @note Grants no role/session/execution authority. Authenticate/bind before
+ * private control/bootstrap. IDs never alias after disconnect in this listener
+ * lifetime. Retry only AGAIN, never a send already accepted with OK.
+ */
+cog_result_t cog_ipc_send_to_peer(cog_ipc_endpoint_t *listener,
+                                   cog_peer_id_t peer_id,
+                                   const cog_ipc_message_t *message);
 
 /* ── Broadcast ──────────────────────────────────────────────────── */
 

@@ -62,8 +62,89 @@ Runtime scope:
   context. Wrapped public curl global calls prove one explicit host init and one
   final cleanup, with no hidden Cog cleanup.
 - All exported module graphs link. Config, IPC, obs, toolkit and mock CLI use
-  supported basic lifecycle calls. Orchestrator is symbol/argument-error closure
-  only: new O async/handoff implementation remains pending.
+  supported basic lifecycle calls. The retained multi-package executable keeps its basic orchestrator
+  argument-error check; the additional CLI-only executable supplies real public
+  native lifecycle, route and CGW1/CGH1 checks below.
 
 This fixture does not establish C++ standalone headers, every sparse snapshot
-edge case, O runtime behavior, all original20 plus R01-R18, or release gate P.
+edge case, full O composition, all original20 plus R01-R18, or release gate P.
+
+The whole-O extension adds a second external executable linked **only** with
+`cog::cli`. Its test-only [proof boundary](project/installed_proof.h) precedes
+implementation. The existing multi-package consumer stays intact. The new host
+exercises installed public orchestrator/CGW1/CGH1 ownership primitives,
+spawn the actual relocated `cog-cli --worker`, and prove asynchronous readiness,
+shutdown and reap. A public real application uses an explicit local TLS CA.
+Private `src/host_runtime.h` and execution/worker composition remain private;
+they are neither copied nor installed by this fixture. Actual installed CLI
+headless/attach/watch roles supply a separate binary-level proof.
+
+The custom fenced plugin wraps a real file backend through public callbacks.
+`INVALID_STATE` retains its guard; every other release result (including IO and
+AGAIN) consumes it. Acquisition OOM must happen before custom normal/recovery
+callbacks. These tests extend installed compatibility evidence for the approved
+consuming-release contract; they introduce no new production API.
+
+
+The CLI-only target imports installed exports and links no target other than
+`cog::cli`; configure also requires its public interface to export
+`cog::orchestrator`. Both external executables receive matching producer
+ASan/UBSan or TSan flags and relative runtime paths. The driver audits actual
+loader paths/digests for the new host after the second relocation as well.
+
+Runtime assertions check a genuine native READY event against the observed
+kernel PID/UID and installed executable inode, then asynchronous shutdown,
+retained event ACKs, native reap and slot retirement. Its expected minimal worker
+environment must exclude the synthetic credential and loader override. A fresh
+Linux subreaper supervises only that external host tree; an infrastructure kill
+makes a positive run fail. Separate controls cover success, exit17, SIGABRT and
+timeout with escaped-session descendants, leaving no child or grandchild.
+
+The public REAL application sends exactly two actual loopback TLS requests,
+executes one real command effect, verifies its correlated TOOL result and durable
+SUCCEEDED ledger, then exercises public cooperative core stop/end. The installed
+CLI role check separately launches headless MOCK, watch and attach, verifies an
+explicit second turn and stable session/replay identity, detaches and drains.
+This installed proof does **not** claim remote-worker REAL HTTP: the installed
+CLI's trust template has no local-CA input. That joined private host/worker TLS
+composition remains O9's in-tree evidence. No trust bypass, private-header copy,
+new public embedding surface or paid call is used.
+
+The JSON receipt adds `public_headless_proof` (two requests, once-only effect,
+owned-process disposal and installed role results). Writer validation below records the admitted GCC profile; this text does
+not assert a whole-O or P pass. All producer, external compiler and process
+scratch lives under the producer build tree.
+
+
+Writer validation uses the accepted O4 production tree `e8c155f` plus only this
+external-proof extension. Full strict GCC Release/Werror all-target build passes
+in `impl-installed-proof/build-installed` with two jobs, using the existing
+admitted dependency arguments from
+`integrate-headless/build-dependencies/cmake-args.txt`; dependencies are not
+rebuilt or copied to another development prefix. `TMPDIR` is the producer's
+`build-installed/tmp`. Compiler, configuration and build logs remain there.
+
+```sh
+mkdir -p build-installed/tmp
+export TMPDIR="$PWD/build-installed/tmp"
+mapfile -t dependency_args < ../integrate-headless/build-dependencies/cmake-args.txt
+cmake -S . -B build-installed -DCMAKE_BUILD_TYPE=Release \
+  -DCOG_ENABLE_WERROR=ON -DCMAKE_C_COMPILER=gcc "${dependency_args[@]}"
+cmake --build build-installed --parallel 2
+ctest --test-dir build-installed \
+  -R '^unit-installed-(path-audit|process-owner)$' --output-on-failure -j2
+ctest --test-dir build-installed \
+  -R '^integration-installed-embedder$' --output-on-failure
+```
+
+Both registered negative/control tests and the actual installed fixture pass.
+`installed-embedder-report.json` records exactly two REAL loopback requests,
+once-only effect, all installed role checks, native supervisor status0 with
+cleanup true and **zero infrastructure kills**, plus actual relocated loader
+paths. The admitted curl SHA-256 remains
+`ae1a9e77488254d744c9064972b025d8eb7210e73ea900cd5f3632995bb29d18`;
+c-ares remains
+`b4d2377241c646dc2054e864e403f162d4b5969823bdd86ec5ff49ecf7e79f53`.
+GCC/Clang strict standalone source syntax checks and Python syntax also pass.
+Independent compiler/sanitizer review remains ticket `7eb47a1`; this writer
+execution neither accepts whole O nor closes P.

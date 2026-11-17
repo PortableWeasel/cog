@@ -1,5 +1,14 @@
 # Cog — System Design Blueprint
 
+> Current delivery snapshot: accepted integration `2723c36`. A–L/Q, live reload
+> and real observation are integrated; M is accepted at its recorded
+> single-process scope and N's contract gate passed. O4/O9 and the installed
+> public proof are integrated. Whole-O review `5cd1d25` and release gate P remain
+> open. [Runnable instructions](README.md), the
+> [current roadmap](REAL_CLIENT_WBS.md) and
+> [assertion map](REAL_CLIENT_RELEASE_COVERAGE.md) distinguish current results
+> from the original engine/mock baseline and dated design notes below.
+
 > Runtime observability design `d32fafd` passed independent header gate
 > `a26a179` at `7096360`. Transport facts travel through an optional
 > constructor-borrowed numeric net observer, independent of retained body queues.
@@ -13,27 +22,34 @@
 > tool replayable. No Cog runtime allocation, mutable global, observer registry
 > or net-to-obs/app dependency is added. Net primitive delivery `1a2b9c8` passed
 > independent source review; its [evidence](REAL_CLIENT_NET_OBSERVATION_EVIDENCE.md)
-> records the scoped result. Application bridge/timing delivery `b64ee7c` remains
-> pending after R12 `af6956a`; this does not close the full release gate.
+> records the scoped result. Application bridge/timing delivery `b64ee7c` and
+> R12 `af6956a` are integrated; the
+> [application observation receipt](REAL_CLIENT_OBSERVATION_INTEGRATION_EVIDENCE.md)
+> records actual provider/tool and network lifecycle assertions. This does not
+> close the full release gate.
 
 > Stage 14.H provider delivery passed independent revision review and is
 > integrated. [H evidence](REAL_CLIENT_H_EVIDENCE.md) records bounded JSON/SSE,
 > retained typed output, final opaque preservation, mock conformance, offline
 > TLS and installed link closure. K conversation-loop delivery is also integrated;
 > its [independent evidence](REAL_CLIENT_K_EVIDENCE.md) records the scoped result.
-> Broader application and full release validation remain pending.
+> L/M and O deliveries now have separate accepted evidence; whole-O and full
+> release validation remain distinct gates.
 
 > Stage 14.Q runtime implementation passed independent revision review and is integrated;
 > [Q evidence](REAL_CLIENT_Q_EVIDENCE.md) records bounded nonblocking IPC,
 > fixed core reservations and fair rotating local/IPC dispatch. External event
 > capacity stays configured; separate IPC ingress descriptors derive from the
 > configured IPC service quantum to prevent saturation starvation. Combined
-> real G-library validation remains tracked before full release gate approval.
+> real G-library validation `b8a6fc1` is complete; the
+> [G/Q record](../libraries/cog-core/contracts/session_store/CONTRACT.md#independent-acceptance-and-combined-gq-integration)
+> preserves its scope. Full release approval remains separate.
 
 
 > [Stage 14.E final review](REAL_CLIENT_PASS3.md) passed after the additional
 > independent review of `8563f81`. The three header passes and final review are
-> complete; implementation and executable conformance remain delivery work.
+> complete. That design pass did not itself establish runtime conformance;
+> the current delivery records above supply the later implementation evidence.
 
 > Current extension: [real-client blueprint](REAL_CLIENT_BLUEPRINT.md) and
 > [Stage 14 execution scaffold](REAL_CLIENT_WBS.md). The material below
@@ -61,7 +77,7 @@
 > Cog workspaces are constructor-bounded; third-party handle runtime allocation
 > is explicitly declared and total dependency-memory caps are unsupported. Final E
 > review accepts that declared profile. Transport F is integrated; sibling
-> implementation and full release gates remain pending.
+> delivery is now integrated; final whole-package/release gates remain open.
 
 The [Stage 14.D pass-2 scenario register](REAL_CLIENT_SCENARIO_PASS2.md) records
 the current header amendments, all original20 plus R01–R18 traces and delivery
@@ -726,7 +742,89 @@ The Process Orchestrator manages auxiliary core lifecycle:
 
 ---
 
-## Next steps
+## Historical N contract-refinement snapshot
+
+The paragraphs in this section record the pre-implementation N design passes.
+Their draft/gate language is historical, not current delivery status. N passed;
+the resulting O implementations and actual joins are recorded in
+[O9 integration](REAL_CLIENT_O9_INTEGRATION_EVIDENCE.md) and
+[installed public proof](REAL_CLIENT_INSTALLED_PROOF_INTEGRATION.md). No private
+host-runtime header became an installed public API.
+
+Stage14.N now refines headless/subagent composition against the completed M
+single-process client. Its [design inventory](REAL_CLIENT_HEADLESS_CONTRACTS.md)
+keeps UI and worker-control fabrics under separate single owners and consumes
+the shipped Q/G/CGA1/CGR1/CGD1 primitives. Required amendments include authenticated
+owned-child binding, cooperative app execution, canonical replay anchoring and
+explicit staged handoff; no implementation is authorized by this inventory.
+Three header passes and a different final gate precede O bodies. Existing live-
+handle/cross-host migration, uncertain-effect replay and unbounded growth remain
+unsupported.
+The first foundation subset adds kernel-origin peer queries/directed sends,
+explicit bounded core begin/step/end using the existing clock/dispatch engine,
+and an exact local agent-session execution borrow. These are draft contracts
+for incremental review, not implemented headless or child behavior.
+Managed process reservations now have a separate strong incarnation/number
+identity; nonblocking spawn and pre-auth stop/kill cannot masquerade as actual
+listener peers. Ready placement and CGA1/CGH1/routes retain actual fabric-scoped
+peer IDs. Immutable native spawn PID, kernel credentials and matching managed
+bootstrap identity are all required before worker readiness.
+The draft private host runtime keeps one coordinator/child registry alive across
+primary executor handoff. Explicit parent-session IDs link actual execution;
+local child apps borrow the registry's exact tree, while remote registry records
+are status/identity shadows. Only the coordinator publishes the canonical replay
+projection; an executor's standalone display counter is not a wire cursor.
+Resolved executor admission separates STAGED preparation from owner CAS/guard/
+activation and suppresses startup prompt/queue replay. A published runtime owns
+all native child lifetimes: construction never forks, and checked cooperative
+drain precedes consuming close. These remain pass1 declarations, not O behavior.
+Handoff separates QUIESCE from CHECKPOINTED because the guarded source save
+creates its exact immutable token. PREPARED precedes source guard release and
+exact CAS; target guarded READY precedes route publication and ACTIVATE. Trusted
+local peer0 participates explicitly; old epochs/startup input cannot be restored
+on failure. The gated O ownership matrix keeps shared app glue serial while
+IPC/core/pure codecs and later leaf modules use disjoint source locks.
+The private CGL1 protocol has static role/kind ingress and distinct wire IDs,
+semantic CGA sequences, command receipts and replay cursors. Resolved credential
+bootstrap travels only coordinator-to-authenticated-worker in dedicated wiped
+arenas/IPC TX storage, outside UI/replay/generic event or receipt caches. Worker
+configuration never rereads startup sources or retains resolver authority.
+Explicit primary reload resolves at the coordinator and preserves R12's exact
+three-field transaction and whole-turn pinning at the owning executor. Aborted
+handoff always requires a fresh epoch; no pre-CAS old-guard thaw is authorized.
+Headless visible mutations enter a private publication barrier before later
+ordinary effects; coordinator atomically commits full CGV1 conversation/control
+projections to existing CGR1. Client GAP resync includes current correlated ASK
+nonces and cannot replay input/effects. Static application tool-table references
+reuse original workspace descriptors alongside bounded delegation/mailbox tools;
+failed partial group reservation drains nonexecuting registry prefixes. Dedicated
+worker/client step hosts retain one endpoint reader and explicit cleanup owners.
+The [N iteration map](REAL_CLIENT_HEADLESS_PASSES.md) and
+[process/authority diagram](headless-integration.svg) assemble the pass1 surface
+and all20/R13/R14 call paths. Native worker management is library-owned CGW1;
+private CGL1 uses independently reserved per-attempt lanes, authoritative global
+pre-STARTED reservation and actual pinned generation facts. Primary ASK is
+resynchronized; child ASK deliberately denies noninteractively with durable
+identified no-effect results. Child SYSTEM context records real provenance before
+effects, but volatile receipt/prefix/placement state is never claimed recoverable
+after coordinator crash. No automatic replay/rebind or live migration is added.
+The full N pass2 retrace closes the actual Q opaque-frame discriminator, early
+cancel latch/finite attempt watermark, server-issued UI lease/receipt retirement,
+and final-command render/admission distinctions. Headless MOCK remains UI-only;
+actual child acceptance uses offline REAL TLS. Handoff carries consumed R12
+attempt budget as well as active generation, including failed attempts. Group
+and mailbox result capacity is proven before STARTED/copy, with no hidden text
+truncation. Direct bounded drain units replace nested app-drain waits after core
+drive completion. The full pass3 audit records authorization at valid-lease forwarding, actual
+executor version checks, independent cancel/state receipts and checked consuming
+cleanup. Gated per-file O tickets preserve one shared app source lane, disjoint
+pure codecs/profiles/projection and different critics. All three writer passes
+are complete; the different final N gate remains open, with no bodies authorized.
+N's per-peer application refusal applies only after Q delivered a valid complete
+frame. Malformed CGL/schema/stale identity does not kill headless work; propagated
+Q framing/core-ceiling PROTOCOL/LIMIT or other driver failure retains existing
+core freeze/drain behavior. Normal disconnect handling stays unchanged; no new
+transport-fault isolation is implied by the UI replay contract.
 
 Stage 6 — Headers first. Design all public APIs as headers before any
 implementation. Three iterations:
@@ -846,3 +944,65 @@ including consuming-disconnect error handling, retained notices and EOF-aware
 input admission. [Scoped writer evidence](REAL_CLIENT_RELOAD_EVIDENCE.md) records
 actual two-generation composition; independent package/integration gates remain
 separate from the original header approval.
+
+### O3 private ownership and worker capacity
+
+[O3 private layout](REAL_CLIENT_ORCHESTRATOR_LAYOUT.md) freezes bounded native
+worker, authenticated link, copied event and advisory route ownership before
+runtime bodies. Generic child placement capacity C defaults to4 and remains
+<=UINT32_MAX. Fixed worker startup carries physical C+2 in checked uint64_t
+arithmetic, including on 32-bit hosts; primary and staged slots never count as
+children. The installed application accepts C<=16, physical<=18, independently
+of the generic library contract. Unsupported selected binaries fail before
+readiness. This header-only clarification does not waive O2 or independent
+layout review gates.
+
+### O2 cooperative accepted-endpoint allocation clarification
+
+The cooperative driver preserves Q/M's existing explicit constructor profile.
+Both run and manual step can call `cog_ipc_endpoint_accept` during listener
+service, with live accepted objects bounded by `ipc_peer_capacity` and each
+paired with `cog_ipc_endpoint_free`. Tracking records, queues, payload arenas,
+driver state and child session borrows never grow during driving. This corrects
+the overly broad step comment; it admits no new allocation class.
+[Targeted resource/error/shutdown passes](REAL_CLIENT_CORE_O2_ALLOCATION.md)
+record the clarification gate, separate from recovered implementation acceptance.
+
+### Stage 14.O3 native orchestrator delivery checkpoint
+
+The approved managed-worker design now has bounded runtime bodies and real
+nonblocking native component fixtures. Fresh worker identity, immutable owned
+PID and kernel-bound CGW HELLO gate READY; classed copied events retain proof
+and mandatory control identities through queue pressure and reap. The legacy
+synchronous text/PID protocol is removed. Exact-PID cleanup and advisory fenced
+route checks preserve the approved N/O3 authority boundaries.
+[O3 writer evidence](REAL_CLIENT_ORCHESTRATOR_O3_EVIDENCE.md) records strict full
+GCC/Clang builds and scoped sanitizer/component tests. Independent runtime
+review and O/P integration remain distinct from these writer results.
+
+### Retained native control send ownership
+
+Headless application frames retain semantic request/receipt ownership independently
+of their copied transport ownership. `REAL_CLIENT_CONTROL_SEND_OWNERSHIP.md`
+(ticket92a7d46) specifies bounded retry eligibility after accepted native copies,
+one-way copied-send retirement, and separate unchanged operation deadlines. The
+private lane/PROFILE metadata makes that distinction explicit without new wire
+kinds, buffers, runtime allocations, process rebinding, or semantic ACK shortcuts.
+
+Generic retained response delivery additionally has an independent selector under
+`REAL_CLIENT_SEND_REPLY_RETENTION.md` (81431a3), so throttling cannot silently lose
+a re-armed reply or misuse a still-pending semantic request flag.
+
+### Guard release failures and cleanup ownership
+
+The public fenced guard destructor and its custom-backend vtable callback share
+one result/ownership classification: valid-handle INVALID_STATE refuses without
+consumption; OK and cleanup errors consume both backend handle and public wrapper.
+A consuming IO is retained failure, not successful release or handoff evidence.
+Callers clear consumed aliases, continue remaining teardown, preserve first error,
+and keep failed handoff sources frozen. Checked app output pointers distinguish
+complete consumption from a late nonconsuming guard refusal and cleanup-only
+remaining ownership. Custom retain-on-error backends require explicit semantic
+migration; no ABI layout change or file-backend-specific guess supplies it.
+See `STORE_GUARD_RELEASE_OWNERSHIP.md` for the three resource/borrow/custom/handoff
+traces and the d97a81b header gate addressing independently reproduced fae1e27.

@@ -4,6 +4,7 @@ No repository/build files are changed. Variants link the unchanged production
 archives. Linux/GNU-ld and CMake Makefiles are required for this diagnostic.
 """
 import argparse
+import os
 import pathlib
 import resource
 import shlex
@@ -78,6 +79,9 @@ if __name__ == "__main__":
     parser.add_argument("--clang-build", type=pathlib.Path, required=True)
     args = parser.parse_args()
     root = pathlib.Path(__file__).resolve().parents[1]
-    with tempfile.TemporaryDirectory(prefix="cog-oracle-negative-") as path:
+    scratch = args.gcc_build.resolve() / "allocation-oracle-tmp"
+    scratch.mkdir(exist_ok=True)
+    os.environ["TMPDIR"] = str(scratch)
+    with tempfile.TemporaryDirectory(prefix="cog-oracle-negative-", dir=scratch) as path:
         replay(root, args.gcc_build.resolve(), "nonvolatile", pathlib.Path(path))
         replay(root, args.clang_build.resolve(), "builtin", pathlib.Path(path))

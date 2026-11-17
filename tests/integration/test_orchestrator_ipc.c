@@ -1,431 +1,214 @@
-/**
- * @file test_orchestrator_ipc.c
- * @brief Integration test: real auxiliary-core processes over IPC.
- *
- * Wires the orchestrator to the aux_core fixture process over a local Unix
- * domain socket and proves the full process lifecycle:
- *
- *   - spawn (fork+exec) and process ownership
- *   - health monitoring via real heartbeats
- *   - placement among healthy cores
- *   - graceful shutdown with acknowledgement
- *   - shutdown timeout when a core never acks (force-kill)
- *   - crash detection and session recovery
- *   - force kill
- *   - auto-replace of a dead core
- *
- * The fixture binary path is supplied at compile time via
- * COG_AUX_CORE_BIN.  The fixture is owned exclusively by this test; every
- * spawned pid is recorded and reaped by the orchestrator.  No process is
- * killed by name and no unrelated process is signalled.
- *
- * Ticket: 3e6262c (Stage 12.5 — Orchestrator)
- */
-
+/** @file Fixture component migration: real owned processes, CGW, and retained diagnosis. */
 #define _POSIX_C_SOURCE 200809L
-
-#include "cog/orchestrator.h"
-
+#include <cog/orchestrator.h>
 #include "orchestrator_internal.h"
-
-#include <stddef.h>
-#include <stdint.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-
 #ifndef COG_AUX_CORE_BIN
-#error "COG_AUX_CORE_BIN must be defined to the aux_core fixture path"
+#error COG_AUX_CORE_BIN required
 #endif
-
-/* ------------------------------------------------------------------ */
-/* Test harness                                                        */
-/* ------------------------------------------------------------------ */
-
-static unsigned g_failures = 0U;
-
-#define CHECK(label, expr)                                                   \
-    do {                                                                     \
-        if (!(expr)) {                                                       \
-            (void)fprintf(stderr, "FAIL: %s (line %d)\n", label, __LINE__);  \
-            ++g_failures;                                                    \
-        }                                                                    \
-    } while (0)
-
-#define CHECK_RESULT(label, expected, actual)                                \
-    do {                                                                     \
-        cog_result_t _e = (expected);                                        \
-        cog_result_t _a = (actual);                                          \
-        if (_e != _a) {                                                      \
-            (void)fprintf(stderr,                                            \
-                          "FAIL: %s (line %d): expected %d, got %d\n",       \
-                          label, __LINE__, (int)_e, (int)_a);                \
-            ++g_failures;                                                    \
-        }                                                                    \
-    } while (0)
-
-/** Create a unique temporary socket path; caller unlinks it when done. */
-static int
-make_socket_path(char *buf, size_t bufsize)
+static unsigned failures;
+#define FX_CHECK(x) do { if(!(x)) { (void)fprintf(stderr,"FAIL %s:%d %s\n",__FILE__,__LINE__,#x);++failures; } } while(0)
+static uint64_t fx_now(void)
 {
-    char tmpl[] = "/tmp/cog-orch-ipc-XXXXXX";
-    int fd = mkstemp(tmpl);
-
-    if (fd < 0) {
-        return -1;
+    struct timespec ts;FX_CHECK(clock_gettime(CLOCK_MONOTONIC,&ts)==0);
+    return (uint64_t)ts.tv_sec*1000U+(uint64_t)ts.tv_nsec/1000000U;
+}
+static void fx_pause(void) { (void)nanosleep(&(struct timespec){0,1000000L},NULL); }
+static bool fx_same(cog_worker_id_t a,cog_worker_id_t b)
+{ return a.incarnation==b.incarnation&&a.number==b.number; }
+static cog_result_t fx_service(cog_orchestrator_t *o)
+{
+    bool done=false;uint64_t deadline;
+    cog_result_t rc=cog_orchestrator_service(o,fx_now(),&done,&deadline);
+    FX_CHECK(rc==COG_OK||rc==COG_ERROR_AGAIN||rc==COG_ERROR_TIMEOUT);
+    return rc;
+}
+/* Failed prerequisites drain every owned lifetime before stopping this test.
+ * Never continue a stress iteration with an all-zero identity or PID. */
+static void fx_abort(cog_orchestrator_t *o)
+{
+    if(o!=NULL) {
+        bool done=false;uint64_t deadline,end=fx_now()+4000;
+        (void)cog_orchestrator_request_shutdown(o,fx_now(),1);
+        while(!done&&fx_now()<end) { (void)cog_orchestrator_service(o,fx_now(),&done,&deadline);fx_pause(); }
+        if(done) cog_orchestrator_free(o);
+        else (void)fprintf(stderr,"fixture fatal: native cleanup did not complete\n");
     }
-    (void)close(fd);
-    (void)unlink(tmpl);
-    (void)snprintf(buf, bufsize, "%s", tmpl);
-    return 0;
+    exit(EXIT_FAILURE);
+}
+static cog_core_info_t fx_info(cog_orchestrator_t *o,cog_worker_id_t id)
+{
+    cog_core_info_t info[16],found={0};size_t count=0;
+    FX_CHECK(cog_orchestrator_list(o,info,16,&count)==COG_OK);
+    for(size_t i=0;i<count&&i<16;++i) if(fx_same(info[i].worker_id,id)) return info[i];
+    return found;
+}
+static bool fx_wait(cog_orchestrator_t *o,cog_worker_id_t id,bool reaped)
+{
+    uint64_t end=fx_now()+4000;
+    do {
+        (void)fx_service(o);cog_core_info_t info=fx_info(o,id);
+        if(reaped?info.reaped:info.health==COG_HEALTH_HEALTHY) return true;
+        fx_pause();
+    } while(fx_now()<end);
+    return false;
+}
+static void fx_ack(cog_orchestrator_t *o)
+{
+    unsigned char data[256];cog_orchestrator_event_t event;size_t required;
+    for(int cls=COG_ORCHESTRATOR_CONTROL_EVENTS;cls<=COG_ORCHESTRATOR_MESSAGE_EVENTS;++cls) {
+        cog_result_t rc;
+        while((rc=cog_orchestrator_copy_event(o,(cog_orchestrator_event_class_t)cls,&event,data,sizeof(data),&required))==COG_OK)
+            FX_CHECK(cog_orchestrator_ack_event(o,event.event_id)==COG_OK);
+        FX_CHECK(rc==COG_ERROR_AGAIN);
+    }
+}
+static cog_result_t fx_release(cog_orchestrator_t *o,cog_worker_id_t id)
+{
+    cog_result_t rc;uint64_t end=fx_now()+2000;
+    do {
+        fx_ack(o);rc=cog_orchestrator_release_worker(o,id);
+        if(rc!=COG_ERROR_INVALID_STATE) return rc;
+        (void)fx_service(o);fx_pause();
+    } while(fx_now()<end);
+    return rc;
+}
+static void fx_command(cog_orchestrator_t *o,cog_worker_id_t id,unsigned char mode,unsigned char active)
+{
+    unsigned char bytes[6]={'F','X','M','1',mode,active};
+    cog_ipc_message_t message={.data=bytes,.capacity=sizeof(bytes),.len=sizeof(bytes)};
+    FX_CHECK(cog_orchestrator_send(o,id,&message)==COG_OK);
+    uint64_t end=fx_now()+2000;bool received=false;
+    while(fx_now()<end&&!received) {
+        unsigned char data[256];cog_orchestrator_event_t event;size_t required;
+        (void)fx_service(o);
+        cog_result_t rc=cog_orchestrator_copy_event(o,COG_ORCHESTRATOR_MESSAGE_EVENTS,&event,data,sizeof(data),&required);
+        if(rc==COG_OK) {
+            FX_CHECK(fx_same(event.worker_id,id)&&required==6&&memcmp(data,bytes,6)==0);
+            FX_CHECK(cog_orchestrator_ack_event(o,event.event_id)==COG_OK);received=true;
+        } else FX_CHECK(rc==COG_ERROR_AGAIN);
+        fx_pause();
+    }
+    FX_CHECK(received);
+}
+static cog_orchestrator_t *fx_new(char *path,size_t capacity,bool replace)
+{
+    static unsigned serial=0;
+    int n=snprintf(path,capacity,"orch-%ld-%u.sock",(long)getpid(),++serial);
+    FX_CHECK(n>0&&(size_t)n<capacity);(void)unlink(path);
+    cog_orchestrator_config_t cfg={0};cfg.socket_path=path;cfg.max_aux_cores=8;
+    cfg.health_interval_ms=200;cfg.unhealthy_threshold=3;cfg.default_core_capacity=8;
+    cfg.shutdown_timeout_ms=200;cfg.auto_replace=replace;
+    cfg.max_frame_bytes=256;cfg.message_bytes=4096;cfg.message_events=8;
+    cog_orchestrator_t *o=NULL;
+    cog_result_t rc=cog_orchestrator_new(&o,&cfg);FX_CHECK(rc==COG_OK);
+    if(rc!=COG_OK||o==NULL) fx_abort(o);
+    return o;
+}
+static cog_worker_id_t fx_spawn(cog_orchestrator_t *o)
+{
+    cog_worker_id_t id={0};
+    cog_result_t rc=cog_orchestrator_spawn(o,COG_AUX_CORE_BIN,&id);FX_CHECK(rc==COG_OK);
+    if(rc!=COG_OK||id.incarnation==0||id.number==0) fx_abort(o);
+    bool ready=fx_wait(o,id,false);FX_CHECK(ready);if(!ready) fx_abort(o);
+    cog_core_info_t info=fx_info(o,id);FX_CHECK(info.peer_id!=0&&info.pid>0&&info.capacity==8);
+    return id;
+}
+static void fx_close_at(cog_orchestrator_t *o,char *path,cog_result_t expected,const char *test)
+{
+    FX_CHECK(cog_orchestrator_request_shutdown(o,fx_now(),300)==COG_OK);
+    bool done=false;uint64_t deadline,end=fx_now()+4000;cog_result_t rc=COG_ERROR_AGAIN;
+    while(!done&&fx_now()<end) { rc=cog_orchestrator_service(o,fx_now(),&done,&deadline);fx_pause(); }
+    FX_CHECK(done);
+    if(rc!=expected) (void)fprintf(stderr,"%s shutdown: actual %d expected %d done %d\n",test,(int)rc,(int)expected,(int)done);
+    FX_CHECK(rc==expected);
+    cog_core_info_t infos[16];size_t count=0;FX_CHECK(cog_orchestrator_list(o,infos,16,&count)==COG_OK);
+    fx_ack(o);
+    for(size_t i=0;i<count&&i<16;++i) {
+        FX_CHECK(infos[i].reaped&&!infos[i].ownership_lost);
+        /* Native done is not logical endpoint/event retirement. Continue the
+           actual owner service and ACK copied events before bounded release. */
+        cog_result_t released=fx_release(o,infos[i].worker_id);
+        if(released!=COG_OK) (void)fprintf(stderr,"%s release worker %llu: actual %d reaped %d lost %d\n",test,(unsigned long long)infos[i].worker_id.number,(int)released,(int)infos[i].reaped,(int)infos[i].ownership_lost);
+        FX_CHECK(released==COG_OK);
+    }
+    if(done) cog_orchestrator_free(o);
+    (void)unlink(path);
+}
+#define fx_close(o,p,e) fx_close_at(o,p,e,__func__)
+static cog_worker_id_t fx_replacement(cog_orchestrator_t *o,cog_worker_id_t old)
+{
+    uint64_t end=fx_now()+4000;
+    do {
+        fx_ack(o);(void)fx_service(o);cog_core_info_t infos[16];size_t count=0;
+        FX_CHECK(cog_orchestrator_list(o,infos,16,&count)==COG_OK);
+        if(count==1&&!fx_same(infos[0].worker_id,old)&&infos[0].health==COG_HEALTH_HEALTHY) return infos[0].worker_id;
+        fx_pause();
+    } while(fx_now()<end);
+    FX_CHECK(false);fx_abort(o);return (cog_worker_id_t){0};
 }
 
-/** Set an environment variable for the next spawned fixture. */
-static void
-set_aux_env(const char *mode, const char *session)
+static void test_spawn_health_place(void)
 {
-    if (mode != NULL) {
-        (void)setenv("COG_AUX_MODE", mode, 1);
-    }
-    if (session != NULL) {
-        (void)setenv("COG_AUX_SESSION", session, 1);
-    } else {
-        (void)unsetenv("COG_AUX_SESSION");
-    }
-    (void)setenv("COG_AUX_INTERVAL_MS", "40", 1);
+    char path[96];cog_orchestrator_t *o=fx_new(path,sizeof(path),false);
+    /* Host poison variables cannot become fixture configuration through exec. */
+    (void)setenv("COG_AUX_MODE","crash",1);(void)setenv("COG_AUX_SESSION","forged",1);
+    cog_worker_id_t id=fx_spawn(o);cog_core_info_t info=fx_info(o,id);
+    FX_CHECK(cog_orchestrator_place(o,0)==info.peer_id);
+    size_t count=0;FX_CHECK(cog_orchestrator_list(o,NULL,0,&count)==COG_OK&&count==1);
+    fx_close(o,path,COG_OK);
+    (void)unsetenv("COG_AUX_MODE");(void)unsetenv("COG_AUX_SESSION");
 }
-
-/**
- * @brief Drive the orchestrator until @p pred returns true or timeout.
- */
-static int
-poll_until(cog_orchestrator_t *orch, int (*pred)(cog_orchestrator_t *),
-           int timeout_ms)
+static void test_crash_recovery(void)
 {
-    struct timespec ts;
-    int waited = 0;
-
-    ts.tv_sec = 0;
-    ts.tv_nsec = 10000000L; /* 10 ms */
-    while (waited < timeout_ms) {
-        (void)cog_orchestrator_poll(orch, 0);
-        if (pred(orch)) {
-            return 0;
-        }
-        (void)nanosleep(&ts, NULL);
-        waited += 10;
-    }
-    return -1;
+    char path[96];cog_orchestrator_t *o=fx_new(path,sizeof(path),false);
+    cog_worker_id_t id=fx_spawn(o);cog_peer_id_t peer=fx_info(o,id).peer_id;
+    FX_CHECK(cog_orchestrator_register_session(o,peer,"crash-sess")==COG_OK);
+    fx_command(o,id,1,0);FX_CHECK(fx_wait(o,id,true));
+    FX_CHECK(cog_orchestrator_health(o,id)==COG_HEALTH_DEAD);
+    const char *sessions[8];size_t count=0;
+    FX_CHECK(cog_orchestrator_sessions(o,peer,sessions,8,&count)==COG_OK);
+    FX_CHECK(count==1&&strcmp(sessions[0],"crash-sess")==0);
+    FX_CHECK(cog_orchestrator_release_worker(o,id)==COG_ERROR_INVALID_STATE);
+    fx_ack(o);FX_CHECK(cog_orchestrator_release_worker(o,id)==COG_ERROR_INVALID_STATE);
+    FX_CHECK(cog_orchestrator_unregister_session(o,peer,"crash-sess")==COG_OK);
+    FX_CHECK(fx_release(o,id)==COG_OK);
+    FX_CHECK(cog_orchestrator_kill(o,id)==COG_ERROR_NOT_FOUND);
+    fx_close(o,path,COG_OK);
 }
-
-/** Predicate: the given peer is HEALTHY. */
-static cog_peer_id_t g_healthy_peer = COG_PEER_ID_INVALID;
-static int
-pred_healthy(cog_orchestrator_t *orch)
+static void test_kill(void)
 {
-    return cog_orchestrator_health(orch, g_healthy_peer) == COG_HEALTH_HEALTHY;
+    char path[96];cog_orchestrator_t *o=fx_new(path,sizeof(path),false);
+    cog_worker_id_t id=fx_spawn(o);FX_CHECK(cog_orchestrator_kill(o,id)==COG_OK);
+    FX_CHECK(fx_wait(o,id,true));FX_CHECK(cog_orchestrator_health(o,id)==COG_HEALTH_DEAD);
+    fx_close(o,path,COG_OK);
 }
-
-/** Predicate: the given peer is DEAD. */
-static cog_peer_id_t g_dead_peer = COG_PEER_ID_INVALID;
-static int
-pred_dead(cog_orchestrator_t *orch)
+static void test_auto_replace(void)
 {
-    return cog_orchestrator_health(orch, g_dead_peer) == COG_HEALTH_DEAD;
+    char path[96];cog_orchestrator_t *o=fx_new(path,sizeof(path),true);
+    cog_worker_id_t old=fx_spawn(o);cog_peer_id_t peer=fx_info(o,old).peer_id;
+    /* Real crash, not stop intent: automatic idle replacement preserves the old
+       record until the consumer ACKs its independently reserved transitions. */
+    fx_command(o,old,1,0);FX_CHECK(fx_wait(o,old,true));
+    FX_CHECK(fx_info(o,old).reaped);fx_ack(o);
+    cog_worker_id_t replacement=fx_replacement(o,old);
+    FX_CHECK(!fx_same(replacement,old)&&fx_info(o,replacement).peer_id!=peer);
+    FX_CHECK(cog_orchestrator_kill(o,old)==COG_ERROR_NOT_FOUND);
+    fx_close(o,path,COG_OK);
 }
-
-/** Predicate: the orchestrator has exactly one core. */
-static int
-pred_one_core(cog_orchestrator_t *orch)
+static void test_shutdown_timeout(void)
 {
-    size_t count = 0U;
-
-    (void)cog_orchestrator_list(orch, NULL, 0U, &count);
-    return count == 1U;
+    char path[96];cog_orchestrator_t *o=fx_new(path,sizeof(path),false);
+    cog_worker_id_t id=fx_spawn(o);fx_command(o,id,2,0);
+    fx_close(o,path,COG_ERROR_TIMEOUT);
 }
-
-/** Predicate: the given peer reports exactly one session. */
-static cog_peer_id_t g_sess_peer = COG_PEER_ID_INVALID;
-static int
-pred_has_session(cog_orchestrator_t *orch)
+int main(void)
 {
-    const char *sessions[8];
-    size_t count = 0U;
-
-    if (cog_orchestrator_sessions(orch, g_sess_peer, sessions, 8U, &count) !=
-        COG_OK) {
-        return 0;
-    }
-    return count == 1U;
-}
-
-/* ------------------------------------------------------------------ */
-/* Spawn + health + placement                                          */
-/* ------------------------------------------------------------------ */
-
-static void
-test_spawn_health_place(void)
-{
-    char path[128];
-    cog_orchestrator_config_t cfg;
-    cog_orchestrator_t *orch = NULL;
-    cog_peer_id_t peer = COG_PEER_ID_INVALID;
-    cog_core_info_t infos[4];
-    size_t count = 0U;
-
-    if (make_socket_path(path, sizeof(path)) != 0) {
-        CHECK("shp path", 0);
-        return;
-    }
-    (void)memset(&cfg, 0, sizeof(cfg));
-    cfg.socket_path = path;
-    cfg.max_aux_cores = 4;
-    cfg.health_interval_ms = 200;
-    cfg.unhealthy_threshold = 3;
-    cfg.default_core_capacity = 8;
-    cfg.auto_replace = false;
-    CHECK_RESULT("shp new", COG_OK, cog_orchestrator_new(&orch, &cfg));
-    if (orch == NULL) {
-        return;
-    }
-
-    set_aux_env("hb", NULL);
-    CHECK_RESULT("shp spawn", COG_OK,
-                 cog_orchestrator_spawn(orch, COG_AUX_CORE_BIN, &peer));
-    CHECK("shp peer", peer != COG_PEER_ID_INVALID);
-
-    /* wait for the first heartbeat */
-    g_healthy_peer = peer;
-    CHECK("shp healthy", poll_until(orch, pred_healthy, 3000) == 0);
-
-    /* placement returns the healthy core */
-    CHECK("shp place", cog_orchestrator_place(orch, 0U) == peer);
-
-    /* list reports one core with the right capacity */
-    CHECK_RESULT("shp list", COG_OK,
-                 cog_orchestrator_list(orch, infos, 4U, &count));
-    CHECK("shp list count", count == 1U);
-    CHECK("shp list peer", infos[0].peer_id == peer);
-    CHECK("shp list cap", infos[0].capacity == 8U);
-
-    /* graceful shutdown */
-    CHECK_RESULT("shp shutdown", COG_OK, cog_orchestrator_shutdown(orch, 2000));
-    CHECK("shp dead after shutdown",
-          cog_orchestrator_health(orch, peer) == COG_HEALTH_DEAD);
-
-    cog_orchestrator_free(orch);
-}
-
-/* ------------------------------------------------------------------ */
-/* Session recovery on crash                                           */
-/* ------------------------------------------------------------------ */
-
-static void
-test_crash_recovery(void)
-{
-    char path[128];
-    cog_orchestrator_config_t cfg;
-    cog_orchestrator_t *orch = NULL;
-    cog_peer_id_t peer = COG_PEER_ID_INVALID;
-    const char *sessions[8];
-    size_t count = 0U;
-
-    if (make_socket_path(path, sizeof(path)) != 0) {
-        CHECK("crash path", 0);
-        return;
-    }
-    (void)memset(&cfg, 0, sizeof(cfg));
-    cfg.socket_path = path;
-    cfg.max_aux_cores = 4;
-    cfg.health_interval_ms = 200;
-    cfg.unhealthy_threshold = 3;
-    cfg.default_core_capacity = 8;
-    cfg.auto_replace = false;
-    CHECK_RESULT("crash new", COG_OK, cog_orchestrator_new(&orch, &cfg));
-    if (orch == NULL) {
-        return;
-    }
-
-    /* fixture registers a session, heartbeats once, then crashes */
-    set_aux_env("crash", "crash-sess");
-    CHECK_RESULT("crash spawn", COG_OK,
-                 cog_orchestrator_spawn(orch, COG_AUX_CORE_BIN, &peer));
-    CHECK("crash peer", peer != COG_PEER_ID_INVALID);
-
-    g_dead_peer = peer;
-    CHECK("crash detected", poll_until(orch, pred_dead, 3000) == 0);
-
-    /* session recovery: the crashed core still reports its sessions.
-     * The session message is drained asynchronously, so poll until it
-     * is registered before asserting on it. */
-    g_sess_peer = peer;
-    CHECK("crash session drained", poll_until(orch, pred_has_session, 3000) == 0);
-    CHECK_RESULT("crash sessions", COG_OK,
-                 cog_orchestrator_sessions(orch, peer, sessions, 8U, &count));
-    CHECK("crash sessions count", count == 1U);
-    CHECK("crash sessions id", count == 1U &&
-          strcmp(sessions[0], "crash-sess") == 0);
-
-    cog_orchestrator_free(orch);
-}
-
-/* ------------------------------------------------------------------ */
-/* Force kill                                                          */
-/* ------------------------------------------------------------------ */
-
-static void
-test_kill(void)
-{
-    char path[128];
-    cog_orchestrator_config_t cfg;
-    cog_orchestrator_t *orch = NULL;
-    cog_peer_id_t peer = COG_PEER_ID_INVALID;
-
-    if (make_socket_path(path, sizeof(path)) != 0) {
-        CHECK("kill path", 0);
-        return;
-    }
-    (void)memset(&cfg, 0, sizeof(cfg));
-    cfg.socket_path = path;
-    cfg.max_aux_cores = 4;
-    cfg.health_interval_ms = 200;
-    cfg.unhealthy_threshold = 3;
-    cfg.default_core_capacity = 8;
-    cfg.auto_replace = false;
-    CHECK_RESULT("kill new", COG_OK, cog_orchestrator_new(&orch, &cfg));
-    if (orch == NULL) {
-        return;
-    }
-
-    set_aux_env("hb", NULL);
-    CHECK_RESULT("kill spawn", COG_OK,
-                 cog_orchestrator_spawn(orch, COG_AUX_CORE_BIN, &peer));
-    g_healthy_peer = peer;
-    CHECK("kill healthy", poll_until(orch, pred_healthy, 3000) == 0);
-
-    CHECK_RESULT("kill ok", COG_OK, cog_orchestrator_kill(orch, peer));
-    CHECK("kill dead", cog_orchestrator_health(orch, peer) == COG_HEALTH_DEAD);
-
-    cog_orchestrator_free(orch);
-}
-
-/* ------------------------------------------------------------------ */
-/* Auto-replace                                                        */
-/* ------------------------------------------------------------------ */
-
-static void
-test_auto_replace(void)
-{
-    char path[128];
-    cog_orchestrator_config_t cfg;
-    cog_orchestrator_t *orch = NULL;
-    cog_peer_id_t peer = COG_PEER_ID_INVALID;
-    cog_peer_id_t replacement = COG_PEER_ID_INVALID;
-    cog_core_info_t infos[4];
-    size_t count = 0U;
-
-    if (make_socket_path(path, sizeof(path)) != 0) {
-        CHECK("ar path", 0);
-        return;
-    }
-    (void)memset(&cfg, 0, sizeof(cfg));
-    cfg.socket_path = path;
-    cfg.max_aux_cores = 4;
-    cfg.health_interval_ms = 200;
-    cfg.unhealthy_threshold = 3;
-    cfg.default_core_capacity = 8;
-    cfg.auto_replace = true;
-    CHECK_RESULT("ar new", COG_OK, cog_orchestrator_new(&orch, &cfg));
-    if (orch == NULL) {
-        return;
-    }
-
-    set_aux_env("hb", NULL);
-    CHECK_RESULT("ar spawn", COG_OK,
-                 cog_orchestrator_spawn(orch, COG_AUX_CORE_BIN, &peer));
-    g_healthy_peer = peer;
-    CHECK("ar healthy", poll_until(orch, pred_healthy, 3000) == 0);
-
-    /* kill the core; auto-replace should spawn a healthy replacement.
-     * The replacement reuses the dead core's slot, so the old peer id is
-     * gone as soon as the replacement connects. */
-    CHECK_RESULT("ar kill", COG_OK, cog_orchestrator_kill(orch, peer));
-
-    /* drive until the replacement connects and heartbeats */
-    CHECK("ar one core", poll_until(orch, pred_one_core, 3000) == 0);
-    CHECK_RESULT("ar list", COG_OK,
-                 cog_orchestrator_list(orch, infos, 4U, &count));
-    CHECK("ar count", count == 1U);
-    replacement = infos[0].peer_id;
-    CHECK("ar replaced", replacement != peer);
-    g_healthy_peer = replacement;
-    CHECK("ar replacement healthy", poll_until(orch, pred_healthy, 3000) == 0);
-
-    cog_orchestrator_free(orch);
-}
-
-/* ------------------------------------------------------------------ */
-/* Shutdown timeout (noack fixture)                                    */
-/* ------------------------------------------------------------------ */
-
-static void
-test_shutdown_timeout(void)
-{
-    char path[128];
-    cog_orchestrator_config_t cfg;
-    cog_orchestrator_t *orch = NULL;
-    cog_peer_id_t peer = COG_PEER_ID_INVALID;
-
-    if (make_socket_path(path, sizeof(path)) != 0) {
-        CHECK("st path", 0);
-        return;
-    }
-    (void)memset(&cfg, 0, sizeof(cfg));
-    cfg.socket_path = path;
-    cfg.max_aux_cores = 4;
-    cfg.health_interval_ms = 200;
-    cfg.unhealthy_threshold = 3;
-    cfg.default_core_capacity = 8;
-    cfg.auto_replace = false;
-    CHECK_RESULT("st new", COG_OK, cog_orchestrator_new(&orch, &cfg));
-    if (orch == NULL) {
-        return;
-    }
-
-    /* noack fixture heartbeats but never acks shutdown */
-    set_aux_env("noack", NULL);
-    CHECK_RESULT("st spawn", COG_OK,
-                 cog_orchestrator_spawn(orch, COG_AUX_CORE_BIN, &peer));
-    g_healthy_peer = peer;
-    CHECK("st healthy", poll_until(orch, pred_healthy, 3000) == 0);
-
-    CHECK_RESULT("st timeout", COG_ERROR_TIMEOUT,
-                 cog_orchestrator_shutdown(orch, 300));
-    CHECK("st dead", cog_orchestrator_health(orch, peer) == COG_HEALTH_DEAD);
-
-    cog_orchestrator_free(orch);
-}
-
-/* ------------------------------------------------------------------ */
-/* main                                                                */
-/* ------------------------------------------------------------------ */
-
-int
-main(void)
-{
-    test_spawn_health_place();
-    test_crash_recovery();
-    test_kill();
-    test_auto_replace();
-    test_shutdown_timeout();
-
-    if (g_failures != 0U) {
-        (void)fprintf(stderr, "test_orchestrator_ipc: %u failure(s)\n",
-                      g_failures);
-        return 1;
-    }
-    (void)printf("test_orchestrator_ipc: all ok\n");
-    return 0;
+    test_spawn_health_place();test_crash_recovery();test_kill();test_auto_replace();test_shutdown_timeout();
+    return failures==0?0:1;
 }

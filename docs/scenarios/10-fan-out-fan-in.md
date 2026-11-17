@@ -1,5 +1,12 @@
 # Scenario 10: Fan-out/fan-in across auxiliary cores
 
+O9 executable update: the canonical CTest runs one local and two distinct
+authenticated native children, ordered fan-in, repeated reuse, cancellation and
+admission refusal. Historical placement/registry assertions remain in
+`component-fan_out_fan_in`. See the
+[joined evidence and exact limits](../REAL_CLIENT_O9_SCENARIO_EVIDENCE.md).
+The contract/design-pass history below is retained as such.
+
 Stage 14.D pass-2 retrace from public-contract baseline `29b41e8`.
 This replaces the earlier schematic SVG as the normative call trace. The SVG is
 retained as historical design material and is not current API coverage.

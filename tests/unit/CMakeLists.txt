@@ -245,3 +245,79 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 target_enable_warnings(test_ipc_replay_critic)
 add_test(NAME unit-ipc-replay-critic COMMAND test_ipc_replay_critic)
+
+# O1 native provenance and secret-retirement oracles; no production wrapper.
+add_executable(test_ipc_authenticated test_ipc_authenticated.c)
+target_link_libraries(test_ipc_authenticated PRIVATE cog::ipc)
+target_enable_warnings(test_ipc_authenticated)
+target_link_options(test_ipc_authenticated PRIVATE
+    -Wl,--wrap=getsockopt,--wrap=malloc,--wrap=calloc,--wrap=free,--wrap=send)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_ipc_authenticated PRIVATE
+        -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-free)
+endif()
+add_test(NAME unit-ipc-authenticated COMMAND test_ipc_authenticated)
+set_tests_properties(unit-ipc-authenticated PROPERTIES LABELS "unit;ipc" TIMEOUT 20)
+
+# Independent O1 prequeued-proof, wrapped-RX retirement and isolated-TX joins.
+add_executable(test_ipc_o1_review test_ipc_o1_review.c)
+target_link_libraries(test_ipc_o1_review PRIVATE cog::ipc)
+target_enable_warnings(test_ipc_o1_review)
+target_link_options(test_ipc_o1_review PRIVATE
+    -Wl,--wrap=getsockopt,--wrap=recv,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_ipc_o1_review PRIVATE
+        -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-free)
+endif()
+add_test(NAME unit-ipc-o1-review COMMAND test_ipc_o1_review)
+set_tests_properties(unit-ipc-o1-review PROPERTIES LABELS "unit;ipc" TIMEOUT 20)
+
+# Private read-only work query needed by cooperative core driving (5fcaef7).
+add_executable(test_ipc_readiness test_ipc_readiness.c)
+target_link_libraries(test_ipc_readiness PRIVATE cog::ipc)
+target_enable_warnings(test_ipc_readiness)
+target_link_options(test_ipc_readiness PRIVATE -Wl,--wrap=poll,--wrap=connect,--wrap=send)
+add_test(NAME unit-ipc-readiness COMMAND test_ipc_readiness)
+set_tests_properties(unit-ipc-readiness PROPERTIES LABELS "unit;ipc" TIMEOUT 20)
+
+# O2 manual/run engine equivalence and registry execution-session lifetime.
+add_executable(test_core_cooperative test_core_cooperative.c)
+target_link_libraries(test_core_cooperative PRIVATE cog::core)
+target_enable_warnings(test_core_cooperative)
+target_link_options(test_core_cooperative PRIVATE -Wl,--wrap=clock_gettime)
+add_test(NAME unit-core-cooperative COMMAND test_core_cooperative)
+set_tests_properties(unit-core-cooperative PROPERTIES LABELS "unit;core" TIMEOUT 20)
+
+# O2 captures real kernel proof before further I/O despite queue/arena pressure.
+add_executable(test_core_proof test_core_proof.c)
+target_link_libraries(test_core_proof PRIVATE cog::core)
+target_enable_warnings(test_core_proof)
+target_link_options(test_core_proof PRIVATE
+    -Wl,--wrap=cog_ipc_endpoint_peer_info,--wrap=getsockopt)
+add_test(NAME unit-core-proof COMMAND test_core_proof)
+set_tests_properties(unit-core-proof PROPERTIES LABELS "unit;core;ipc" TIMEOUT 20)
+
+# O2 allocation fault/positive controls use real libraries and keep optimizer oracles.
+add_executable(test_core_reservations test_core_reservations.c)
+target_link_libraries(test_core_reservations PRIVATE cog::core)
+target_enable_warnings(test_core_reservations)
+target_link_options(test_core_reservations PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_core_reservations PRIVATE
+        -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc)
+endif()
+add_test(NAME unit-core-reservations COMMAND test_core_reservations)
+set_tests_properties(unit-core-reservations PROPERTIES LABELS "unit;core" TIMEOUT 20)
+
+# O3 allocator failure/steady-state oracle covers real constructors and runtime.
+target_link_options(test_orchestrator PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(test_orchestrator PRIVATE
+        -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc)
+endif()
+add_executable(test_orchestrator_wire ../orchestrator-wire/test_orchestrator_wire.c)
+target_link_libraries(test_orchestrator_wire PRIVATE cog::orchestrator)
+target_enable_warnings(test_orchestrator_wire)
+target_link_options(test_orchestrator_wire PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+add_test(NAME unit-orchestrator-wire COMMAND test_orchestrator_wire)
+set_tests_properties(unit-orchestrator-wire PROPERTIES LABELS "unit;orchestrator" TIMEOUT 20)
