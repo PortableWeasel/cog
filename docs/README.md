@@ -13,6 +13,12 @@ and the [application contract](../applications/cog-cli/CONTRACT.md) and
 The supported-profile acceptance record is historical evidence for its exact
 code and dependencies; it does not imply a fresh test of the current checkout.
 
+Instruction support is in header design: see the
+[frontend-neutral block diagram](instruction-blocks.svg) and
+[draft contract traces](scenarios/P01-instruction-support.md). The target
+architecture keeps skill/agent loading in `cog-instructions`, execution in a
+headless runtime, and the CLI as a minimal test/proof frontend.
+
 Implementation planning and dated reviews/evidence live in git `tix`:
 
 ```bash

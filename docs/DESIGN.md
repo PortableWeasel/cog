@@ -153,8 +153,9 @@ Prompt text never grants execution policy or replaces schema validation.
 The user confirmed that agents means both named agent-definition files and
 runtime subagents, and approved keeping the seven block boundaries on
 2026-11-17. Parent `e321ec3` owns this design; `76aa2a9` records the block-planning
-work. The next stages are the goals cross-check, system diagram, research and
-headers, with their own review checkpoints. Existing headers and shipped
+work. The goals cross-check and diagram iterations now lead into draft headers.
+Loaders/catalogs are frontend-neutral; CLI is a minimal test/proof host in the
+target architecture. Existing headers and shipped
 behavior remain the contract until reviewed amendments land.
 
 The requested capabilities are to assemble system instructions, read scoped
@@ -165,20 +166,25 @@ Use seven responsibilities, with one shared reader and one composition path:
 
 | Block | Inputs → outputs | Responsibility and proposed owner |
 |---|---|---|
-| B1. Bounded source reader | Explicit roots/relative references or caller-supplied blobs → owned UTF-8 source bytes, source identity and content digest | Read resources with file/count/depth/aggregate limits and no-follow containment. Own copied bytes and I/O progress; do not interpret instructions or execute files. Application source layer; reuse workspace traversal techniques without depending on private toolkit internals. Embedders can supply bytes without filesystem discovery. |
-| B2. Workspace instruction resolver | Workspace/working-directory/target scope plus B1 → ordered applicable `AGENTS.md` fragments with scope metadata | Resolve root-to-specific instruction applicability and deterministic ordering. Keep host-provided instructions separate from project text. Application instruction layer; core does not learn Markdown or filesystem discovery. |
-| B3. Named agent catalog | Agent-definition sources plus explicit selection → validated role profile | Describe a name, purpose, instruction fragment, permitted model preference, tool subset, skill references and limits. Bind the profile to existing local/native child admission. A definition is data; selection alone does not spawn a process, register code or expand host permissions. Application profile layer. |
-| B4. Skill catalog and activation | `SKILL.md` metadata, explicit or validated model selection, referenced resources → skill listing and activated content | Discover bounded names/descriptions first; load the selected body/resources on demand. Track activation identity, relative resource scope and required capabilities. Parsing/discovery does not run bundled scripts. Application skill layer, using B1 and normal policy-controlled tools for execution. |
-| B5. Prompt composer and tool guidance | Host/base instructions, B2, selected B3/B4, task context and effective static tool bindings → provider-neutral prompt bundle | Establish explicit fragment order, source boundaries, inclusion/deduplication and byte budgets. Derive tool names, descriptions, argument guidance and schemas from the same effective bindings used by dispatch. Keep user/history content and opaque continuation distinct. Pure bounded composition owned by the application; public reusable placement is a later header decision. |
+| B1. Bounded source reader | Explicit roots/relative references or caller-supplied blobs → owned UTF-8 source bytes, source identity and content digest | `cog-instructions`: read resources with file/count/depth/aggregate limits and no-follow containment. Own copied bytes and I/O progress; do not interpret instructions or execute files. Reuse workspace traversal techniques without depending on private toolkit internals. Embedders can supply bytes without filesystem discovery. |
+| B2. Workspace instruction resolver | Workspace/working-directory/target scope plus B1 → ordered applicable `AGENTS.md` fragments with scope metadata | `cog-instructions`: resolve root-to-specific instruction applicability and deterministic ordering. Keep host-provided instructions separate from project text. Core and UI do not parse Markdown or discover files. |
+| B3. Named agent catalog | Agent-definition sources plus explicit selection → validated role profile | `cog-instructions`: describe name, purpose, instruction fragment, model constraint, tool subset, skill references and limits. The headless runtime binds the profile to existing local/native admission. A definition is data; selection alone does not spawn, register code or expand permissions. |
+| B4. Skill catalog and activation | `SKILL.md` metadata, explicit or validated model selection, referenced resources → skill listing and activated content | `cog-instructions`: discover bounded names/descriptions first; disclose selected bodies/resources on activation. Track activation identity and resource scope. Runtime admission owns effects; parsing/discovery does not run scripts. |
+| B5. Prompt composer and tool guidance | Host/base instructions, B2, selected B3/B4, task context and effective static tool bindings → provider-neutral prompt bundle | `cog-instructions`: establish fragment order, source boundaries, deduplication and byte budgets. Derive names/descriptions/schemas/guidance from original effective static descriptors. Return neutral data without provider request or UI types. |
 | B6. Provider request adaptation | B5 plus selected endpoint/model capabilities and a versioned static template → validated wire request | Map instruction roles and tool declarations into the selected protocol. Keep JSON/wire encoding and provider-required continuation in existing provider adapters. Model/template selection is explicit and validated; no guessed fallback or second competing prompt compiler. |
-| B7. Snapshot lifecycle and runtime binding | Resolved sources/profiles/activations plus current branch, generation and admission state → retained instruction snapshots and child/restore inputs | Own publication, borrowing, durable provenance and cleanup. Reuse current app/config/store/agent/orchestrator lifecycles for send, preflight, retry, resume, fork, reload and handoff. Children receive their resolved context and intersected capabilities, rather than reinterpreting a parent host path. |
+| B7. Snapshot lifecycle and runtime binding | Resolved sources/profiles/activations plus current branch, generation and admission state → retained instruction snapshots and child/restore inputs | Planned headless `cog-runtime`: own publication, borrowing, durable provenance and cleanup; reuse core/config/store/agent/orchestrator lifecycles. Children receive resolved context and intersected capabilities. CLI supplies input/control and renders views. |
 
-These are responsibility boundaries, not seven new libraries or seven new
-registries. B1–B5 belong together in application composition unless the next
-cross-check establishes an independent reusable public boundary. B6 extends
-the existing provider boundary. B7 joins existing lifecycles; it does not add a
-second session store, process supervisor or subagent scheduler. File catalogs
-may contain runtime data while implementations and callbacks remain static.
+These responsibilities share one frontend-neutral `cog-instructions` library
+for B1–B5. Its draft target currently exports headers only; it has no UI,
+provider/net or terminal dependency. Neutral `cog/prompt.h` data belongs to core.
+B6 stays in `cog-provider`, consuming the neutral bundle independently of the
+loader. B7 belongs in a reusable headless `cog-runtime` extraction, tracked by
+`fa56e22`, which joins the existing engine/services. It adds no second session
+store, process supervisor or subagent scheduler. Existing composition is still
+physically in `applications/cog-cli`; extraction is planned, not claimed done.
+New loading/composition logic must not be added to the CLI. The CLI becomes a
+minimal test/proof frontend over runtime operations and immutable views.
+File catalogs are data; implementations/callbacks remain static.
 
 ### Composition and authority
 
@@ -235,7 +241,7 @@ are not diagnostic payloads by default.
   preserve structured sessions but do not establish a full prompt-source
   manifest. B7 needs an explicit persistence/compatibility decision.
 
-### Questions to resolve before public headers
+### Initial contract questions
 
 1. **Scope changes:** how are nested `AGENTS.md` rules discovered before a
    workspace operation enters a new subtree? A proposed call must not execute
@@ -266,6 +272,187 @@ variation, context exhaustion, retry, restart/fork with changed files, reload,
 handoff and cancellation/cleanup. These are coverage requirements for the next
 stages; this block proposal claims no completed header passes or runtime proof.
 Research and later execution plans stay under `tix show e321ec3`.
+
+### Goals cross-check and diagram iterations
+
+The approved seven boundaries serve these testable goals. They add no new
+library dependency from core to the application or provider implementation.
+
+| Goal | Blocks | Smallest proving observation |
+|---|---|---|
+| Load only explicitly configured sources | B1 | Unknown root/escape fails before content is published; caller blobs need no reader. |
+| Apply the correct workspace rules before effects | B1,B2,B7 | Root-to-target rules are present before admission; a newly discovered scope denies stale proposals and requires replanning. |
+| Select named agents without granting capabilities | B3,B7 | A role narrows existing bindings/limits and uses the existing child lifecycle. |
+| Discover skills cheaply in model context | B4,B5 | Metadata is advertised first; unselected bodies are cached off-prompt. |
+| Activate procedures/resources deliberately | B1,B4,B7 | Exact selected bytes become a new immutable snapshot; scripts are ordinary tools, never parse-time execution. |
+| Keep advertisement and dispatch consistent | B5,B6 | Names, descriptions and schemas derive from the same original static descriptors. |
+| Encode for the selected provider | B6 | Exact static template/table agreement; mismatch fails without a provider call. |
+| Reproduce context across retry/restart/children | B7 | Exact bytes survive; no source reread or hash-only reconstruction. Store/worker integration is still a joined contract gap. |
+
+![Instruction support block diagram](instruction-blocks.svg)
+
+[Editable Graphviz source](instruction-blocks.dot). Diagram pass 1 mapped the
+seven blocks onto existing processes/libraries. Pass 2 made caller-supplied
+sources bypass the shared reader for every catalog/scope path. Pass 3 separated
+the implemented lifecycle from the still-open durable/worker capsule contracts.
+Pass 4 places B1–B5 in `cog-instructions`, B7 in the planned headless runtime,
+and a minimal CLI/test frontend outside loading and execution ownership.
+Pass 5 removes redundant service-edge labels so ownership and data paths remain
+readable at ordinary zoom.
+Green is existing behavior, yellow is new header design, red is an unresolved
+join; the diagram is not a runtime acceptance receipt.
+
+### Initial source, catalog and provider profile
+
+The following choices enable independent header authoring. They do not close
+the full B7 app/store/worker gate. New contracts are
+[instruction_source.h](../libraries/cog-instructions/include/cog/instruction_source.h),
+[instructions.h](../libraries/cog-instructions/include/cog/instructions.h) and
+[provider_prompt.h](../libraries/cog-provider/include/cog/provider_prompt.h).
+Shared [prompt.h](../libraries/cog-core/include/cog/prompt.h) contains only
+neutral borrowed data and an opaque static-tool reference. The loader target
+uses core's header-only `cog::result` include contract; it does not link UI,
+provider or networking code. Providers consume the neutral bundle without
+depending on the loader. Planned `cog-runtime` composes both with existing
+services; CLI/test hosts depend on that runtime. Current source extraction is
+still pending, and the new loader target supplies headers only until delivery.
+Existing request/vtable structs and library implementation bodies are unchanged.
+
+| Target boundary | Dependencies / output |
+|---|---|
+| `cog::instructions` draft | Neutral core headers through `cog::result`; reader/catalog/snapshot APIs, no UI/provider request types. |
+| `cog::provider` | Existing core/net dependencies; consumes `cog_prompt_bundle_t` without linking the loader. |
+| Planned `cog::runtime` | Joins instructions, provider and existing execution services; owns effects, state and lifecycle. |
+| Minimal CLI/test PoC | Calls runtime operations and renders progress/views; does not discover or parse agent/skill files. |
+
+The compile-only `instruction-loader-no-ui` consumer exposes only instruction
+and neutral core include roots, with no UI/provider/net/IPC targets or headers.
+It guards the dependency boundary independently of the main CLI build.
+
+**Discovery and scope.** A host passes explicit logical root IDs and absolute
+opened directories. There is no implicit home scan or walk above the workspace.
+Agent scans list direct `.md` files; skill scans list direct child directories
+with `SKILL.md`. A SCOPE job reads the `AGENTS.md` ancestor chain from workspace
+root through the target directory. Existing workspace code supplies the proven
+descriptor-relative/no-follow technique; the new reader requires its own
+bounded public owner, not access to private toolkit structs. Poll bounds bytes
+and work units; OS filesystem latency remains outside that guarantee.
+The initial Linux reader follows existing workspace search's caller-buffer
+[`getdents64`](https://man7.org/linux/man-pages/man2/getdents.2.html) path, with
+reserved/in-place resumable sorting. It does not create allocating directory
+streams during poll; unsupported filesystem backends fail construction.
+Reader failures retain logical root/path diagnostics; catalog/snapshot
+constructors can return an optional caller-owned diagnostic with source identity
+and original byte offset. They expose neither source contents nor absolute host
+paths, and no failed-constructor storage escapes through a diagnostic pointer.
+
+The [AGENTS.md convention](https://agents.md/) supports nested files and
+closer-file precedence. Cog retains the root-to-specific text with scope
+labels, keeps direct user instructions as user messages, and enforces
+permissions structurally. Before a workspace call enters a new scope, the app
+must compare applicable sources with the snapshot used for its proposal. A
+changed scope closes unstarted proposals with identified no-effect denials,
+then publishes the replacement context only after the group is closed. Any
+next model turn is ordinary bounded continuation, not a rerun of the old call.
+Commands use their declared cwd scope; this is not a claim to know every path
+an arbitrary command may access. The joined publication is a B7 gap below.
+
+**Metadata and progressive disclosure.** The
+[Agent Skills specification](https://agentskills.io/specification) defines
+`SKILL.md` with name/description frontmatter and optional resources. Its
+[client guide](https://agentskills.io/client-implementation/adding-skills-support)
+separates catalog metadata, activated instructions and referenced resources;
+it also permits caching bodies during discovery. Cog's initial parser is an
+explicit bounded subset, not a claim of complete YAML or client compatibility.
+Names use ASCII lowercase letters/digits/hyphens, match directory/basename and
+fit 64 bytes. Descriptions support 1–1024 UTF-8 characters, compatibility up to
+500. Invalid syntax fails closed instead of being guessed or silently repaired.
+
+Frontmatter starts/ends with a line exactly `---`, with LF or CRLF. Required
+skill keys are name/description; optional keys are license, compatibility,
+metadata and allowed-tools. Agent files additionally require `cog-agent: 1`;
+their keys are name,description,model,tools,skills,max-context-bytes,
+max-output-tokens,max-tool-rounds. Agent numeric limits are positive decimal
+reductions when present. Sources are retained byte-for-byte; parsing normalizes
+line endings only in decoded metadata. Supported string scalars are plain,
+single-quoted (doubled quote escapes), double-quoted (JSON escape set), and
+literal/folded `|`/`>` blocks with two-space indentation. Block chomping/indent
+modifiers, anchors, aliases, tags, collections and nested metadata maps return
+UNSUPPORTED. Plain `: ` requires quoting; a whitespace-preceded unquoted `#`
+starts a comment. A single metadata string map is allowed. Duplicate keys or
+malformed scalars are PROTOCOL; unknown keys are UNSUPPORTED.
+
+Catalog sources are HOST/AGENT/SKILL; per-snapshot additions are AGENTS and
+explicitly loaded RESOURCE text. The host assigns precedence: higher wins a
+same-kind catalog name; equal-precedence duplicates fail. Project roots should
+be assigned above user roots explicitly. Effective entries and advertised
+skills sort by name, independent of directory iteration order. Markdown bodies
+remain text, with no include/shell/template evaluation. Agent tool/skill lists
+are space-separated exact names. A model field constrains a selected profile;
+the host still validates/selects that exact model through existing configuration.
+No implicit model routing, recursive child delegation or new process scheduler
+is introduced.
+
+Skill `allowed-tools` is treated as required capability metadata, never an
+approval grant. The initial profile accepts exact tool names; pattern dialects
+are unsupported on explicit activation. Ineligible skills are omitted from
+advertisement, while an explicit missing/unsupported choice produces a specific
+error. Child policy intersection still applies, including noninteractive ASK
+denial. Complete bounded source bodies are cached at catalog construction;
+only selected bodies enter fragments. Resources are loaded through B1 and
+explicitly supplied to a replacement snapshot. Parsing does not execute scripts.
+
+**One compiler and static templates.** Snapshot fragment order is host,
+root-to-specific workspace, selected role, skill metadata, active skill names
+in lexical order, explicit resources, then tool guidance. Request history and
+opaque continuation remain separate. The host supplies the same effective
+original static descriptors used by dispatch; denied tools are omitted, ASK is
+advertised as requiring a decision, and descriptions are encoded with schemas.
+The [OpenRouter client-tools contract](https://openrouter.ai/docs/guides/features/tool-calling)
+uses names/descriptions/parameters and correlated tool results; its wire
+representation belongs in the provider codec.
+
+A static template descriptor binds ID/revision to an exact provider vtable and
+one pure render callback. It receives explicit scratch/output capacities and
+has no provider calls, I/O or allocator. A compiler reserves two output lanes;
+only successful complete validation replaces the old copied request view.
+The snapshot view returns a `cog_prompt_bundle_t` with no provider request type.
+The headless runtime pairs it with selected history/settings. The bundle carries
+template ID/revision into compiler input; compile validates both before calling
+the renderer. The runtime uses the same
+compiled context for ordinary send, restored-tool preflight,
+reload preflight and staged-execution preflight. No developer-role expansion
+or additional provider is promised by the initial template interface.
+
+### Remaining joined contracts and header gate
+
+The in-memory manifest retains the complete bounded catalog plus applicable
+scope/resources and exact resolved fragments. This allows restoration without
+reading changed source files, but it is not a native memory wire/disk format.
+Instruction data must not be placed in provider opaque continuation, and hashes
+alone cannot reconstruct it. The following remain explicit open contract work
+under `1ddb6d2` before the full header gate `04800f5` can pass:
+
+- Define a versioned generic session context attachment, immutable per-branch
+  bindings and bounded public snapshot/restore capacities. Core stores opaque
+  namespace/format/data, without parsing Markdown or importing application types.
+- Define a new store format and explicit custom-backend capability refusal, so
+  exact result/ledger/context publication is one checkpoint transaction. Older
+  backends must fail instead of dropping new context fields. Inspection remains
+  offline and does not scan sources; legacy adoption must be explicit.
+- Define an authenticated, capacity-bounded worker instruction/catalog capsule
+  and resource request/receipt lifetime, including ordering with bootstrap,
+  staged handoff, partial delivery, cancellation and slot reuse. Local/native
+  children must use the same resolved bytes and permission intersection.
+- Define publication hooks for scope changes and skill activation after closing
+  proposed call groups, without changing an already admitted effect's context.
+  Ordinary input/retry deadlines and request/tool budgets remain unchanged.
+
+The independent B1–B6 draft surface can be compiled and traced while these joins
+are designed. It does not authorize implementation, claim all scenarios covered,
+or bypass the three full header/scenario passes plus additional final review.
+The consolidated [instruction traces](scenarios/P01-instruction-support.md)
+record exact drafted calls and the remaining gaps rather than inventing app APIs.
 
 ## Tools and effect admission
 

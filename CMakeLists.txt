@@ -50,6 +50,7 @@ add_subdirectory(vendor/yyjson)
 # Libraries
 # -----------------------------------------------------------------------
 add_subdirectory(libraries/cog-core)
+add_subdirectory(libraries/cog-instructions)
 add_subdirectory(libraries/cog-provider)
 add_subdirectory(libraries/cog-toolkit)
 add_subdirectory(libraries/cog-ipc)

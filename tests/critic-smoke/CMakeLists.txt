@@ -33,3 +33,10 @@ add_test(NAME critic-header-smoke COMMAND ${CMAKE_COMMAND}
     --build "${CMAKE_BINARY_DIR}" --target critic-header-smoke --config "$<CONFIG>")
 # This test invokes the build tool; avoid competing build/install test commands.
 set_tests_properties(critic-header-smoke PROPERTIES LABELS headers RUN_SERIAL TRUE TIMEOUT 60)
+
+add_test(NAME instruction-loader-no-ui COMMAND ${CMAKE_COMMAND}
+    "-DCOG_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+    "-DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/instruction-loader-no-ui"
+    "-DC_COMPILER=${CMAKE_C_COMPILER}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/instruction-loader/check.cmake")
+set_tests_properties(instruction-loader-no-ui PROPERTIES LABELS headers TIMEOUT 60)
