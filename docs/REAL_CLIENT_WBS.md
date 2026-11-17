@@ -2,7 +2,9 @@
 
 > [Stage 14.E final review](REAL_CLIENT_PASS3.md) passed after the additional
 > independent review of `8563f81`. The three header passes and final review are
-> complete. A–K and Q are integrated; L is in progress. M/N/O/P remain open.
+> complete. A–L/Q, R12 and runtime observation are integrated. M is accepted;
+> N's integration contracts passed. O's component, O9 and installed deliveries
+> are integrated at `2723c36`; whole-O review and P remain open.
 
 Parent: `2b9d0ea`. This is the current real-client roadmap; Stage 12 remains
 historical engine/mock-CLI delivery evidence. User delegates routine design
@@ -27,13 +29,14 @@ header gate because it must complete before K.
 | I | `03f60d7` | [Tool policy and workspace/process tools](REAL_CLIENT_I_EVIDENCE.md) | Integrated | E |
 | J | `32db464` | [CLI config and credential resolution](REAL_CLIENT_J_EVIDENCE.md) | Integrated | E |
 | K | `78760e5` | [Real conversation and bounded tool loop](REAL_CLIENT_K_EVIDENCE.md#main-integration) | Integrated | H,I,J,Q |
-| L | `ff2dbc9` | Resume/fork and terminal interaction | In progress | G,K |
-| M | `d0f910f` | Single-process coding-client acceptance | Pending | L, local-agent package `bf7a450` (complete) |
-| N | `035219b` | Headless/subagent integration contract refinement | Pending | M |
-| O | `0e35c23` | Headless reconnect and bounded subagents | Pending | N, replay primitive `91108c5` (complete) |
-| P | `77adfec` | Release packaging and full validation | Pending | O |
+| L | `ff2dbc9` | [Resume/fork and terminal interaction](REAL_CLIENT_L_INTEGRATION_EVIDENCE.md) | Integrated | G,K |
+| M | `d0f910f` | [Single-process offline acceptance](REAL_CLIENT_M_OFFLINE_EVIDENCE.md) and [bounded installed live smoke](REAL_CLIENT_M_LIVE_EVIDENCE.md) | Accepted, dated single-process scope | L and required followups |
+| N | `035219b` | [Headless/subagent three-pass integration contracts](REAL_CLIENT_HEADLESS_PASSES.md) | Passed | M |
+| O | `0e35c23` | [O9 actual joins](REAL_CLIENT_O9_INTEGRATION_EVIDENCE.md) and [installed public proof](REAL_CLIENT_INSTALLED_PROOF_INTEGRATION.md) | Deliveries integrated; whole-O review `5cd1d25` open | N and component gates |
+| P | `77adfec` | Release packaging and full supported-profile validation | Open | Accepted whole O |
 
-Snapshot: 2026-11-15, integrated main `b8f28ad`. The combined real-library Q/G
+Current integration snapshot: `2723c36`, before whole-O/P approval or a main
+merge. The combined real-library Q/G
 check `b8a6fc1` is complete: strict and ASan/UBSan targeted suites each passed
 27/27; see the [G/Q acceptance record](../libraries/cog-core/contracts/session_store/CONTRACT.md#independent-acceptance-and-combined-gq-integration).
 Earlier evidence reports retain their dated scope and then-open dependencies.
@@ -54,7 +57,11 @@ checks are documented in the [test assertion policy](../cmake/tests/README.md).
 This restores Release test workloads; it does not turn historical Release passes
 into new runtime evidence. Process-fixture determinism follow-up `b4c9ca3` is
 integrated; its [scoped evidence](REAL_CLIENT_PROCESS_FIXTURE_EVIDENCE.md) preserves
-P full-profile validation as open. O migration `d5280b7` remains open.
+P full-profile validation as open. Orchestrator migration `d5280b7` is complete;
+the accepted O3/O4/O9 deliveries replace its old synchronous-fixture assumptions.
+R12 reload and [real observation](REAL_CLIENT_OBSERVATION_INTEGRATION_EVIDENCE.md)
+are integrated. The [release assertion map](REAL_CLIENT_RELEASE_COVERAGE.md)
+connects every original 20/05b and R01–R18 requirement to actual oracles and scope.
 
 ## Scheduling and completion rules
 
@@ -74,12 +81,12 @@ Close a package only when its child work and evidence are complete.
 A failed review returns work to its owner; repeated failures require design
 reassessment per cog-dev. No user confirmation is needed for routine fixes.
 
-The parent stays in progress until release gate P passes. A–K/Q and the local
-agent/replay/assertion primitives are complete; L owns the next application UX
-delivery. M acceptance, N/O headless integration and P release validation remain
-outstanding. Credentials are accessible through the OpenRouter entry
-in ~/.pi/agent/auth.json; no new key is presently required. Never include its
-contents in logs, shell arguments, tickets, fixtures or source control.
+The parent stays in progress until release gate P passes. M acceptance is
+complete at its recorded single-process scope; the six former M exceptions
+are resolved by integrated O deliveries, not retroactively removed from M's
+dated report. Whole-O package review and P still require their own exact source,
+profile, inventory and result receipts. Routine documentation work neither
+repeats the paid smoke nor closes those gates.
 
 ## Verification plan
 
@@ -107,7 +114,7 @@ identified tool/result correlation and repeated finish metadata. Reasoning was
 disabled; opaque continuation ownership/serialization/persistence and recoverable
 delta capacity semantics have component coverage in the accepted
 [H delivery](REAL_CLIENT_H_EVIDENCE.md) and G persistence. Final application and
-release coverage remains gated. Research review is offline and
+release coverage is recorded separately. Research review is offline and
 must not repeat the already completed live smoke.
 
 Each package validates its contract and negative paths. Gates run strict
@@ -121,29 +128,24 @@ tool/result associations and actual sandbox task outcomes.
 M is single-process acceptance, not full release. It requires strict GCC/Clang
 **full target builds**, exact recorded runtime selections, relevant separate
 sanitizer/concurrency runs, a disposable read/edit/build/resume task and bounded
-real application smoke. The current diagnosed O-dependent runtime exceptions are
-`unit-orchestrator`, `integration-orchestrator-ipc`,
-`integration-orchestrator-stress`, `scenario-test_07_aux_crash`,
-`scenario-test_09_subagent_messaging` and `scenario-test_10_fan_out_fan_in`.
-[K independent review](REAL_CLIENT_K_EVIDENCE.md#independent-critic-acceptance) records their
-actual failures: fixtures assume synchronous connect OK instead of AGAIN, and
-production orchestrator paths lack nonblocking endpoint service. Ticket
-`d5280b7` owns runtime and fixture migration; accepting AGAIN in a helper alone
-is insufficient. K's scenario03 and corrected scenario06 checks pass; original03
-end-to-end remote behavior remains an O obligation.
+real application smoke. [M's dated report](REAL_CLIENT_M_OFFLINE_EVIDENCE.md)
+preserves its six actual O-dependent exceptions and 129 applicable-case result.
+The [O9 integration](REAL_CLIENT_O9_INTEGRATION_EVIDENCE.md) later passed 184/184;
+the [installed extension](REAL_CLIENT_INSTALLED_PROOF_INTEGRATION.md) passed
+185/185 in the admitted GCC Release profile, with no exclusions or disabled
+cases. Those results establish their exact profile, not fresh full Clang/ASan/
+TSan coverage. Whole-O review `5cd1d25` and P retain that work.
 
-For M, record the complete command and outcomes, including these failures when
-still present, rather than calling an excluded selection a full-suite pass.
-The exact prior K selection is preserved in its evidence; L's added checks must
-also be assessed at M. P requires the **full suite without these exclusions**,
+P requires the **full suite without the former M exclusions**,
 all 20 original plus R01–R18 executable scenario oracles and shutdown regression,
 separate sanitizers, installed CLI restart and external embedder/dependency
 closure. The completed read-only inventory `543f057` is an assertion/ownership
 map, not a completed all-38 runtime gate; current names alone do not prove those
-oracles. O exceptions and timing follow-ups must be resolved before P.
+oracles. The current map names actual runtime assertions, including independent
+STARTED/RUNNING readiness facts, crash uncertainty, same-host transfer limits
+and preserved component controls.
 
-This status refresh validates ticket identities and local documentation links.
-It adds no runtime evidence and closes no acceptance gate.
+This documentation refresh adds no runtime evidence and closes no gate.
 
 
 ## Pass-2 ownership additions

@@ -2,19 +2,28 @@
 
 > [Stage 14.E final review](REAL_CLIENT_PASS3.md) passed after the additional
 > independent review of `8563f81`. The three header passes and final review are
-> complete. A–K/Q and local-agent/replay/assertion primitives are integrated;
-> L is in progress and M/N/O/P remain open. See the [current roadmap](REAL_CLIENT_WBS.md).
+> complete. A–L/Q, reload and real observation are integrated. M is accepted at
+> its single-process scope and N passed. O's deliveries are integrated; whole-O
+> review and P remain open. See the [current roadmap](REAL_CLIENT_WBS.md).
 
 > [Stage 14.F transport delivery](REAL_CLIENT_F_EVIDENCE.md) is independently
 > reviewed and integrated. The initial no-replay profile uses fresh HTTP/1.1
-> connections with pooling/HTTP2 disabled. Full project installation and shipped
-> dependency closure remain gate P requirements.
+> connections with pooling/HTTP2 disabled. Normal full install, relocation and
+> public closure have [accepted evidence](REAL_CLIENT_INSTALLED_PROOF_INTEGRATION.md);
+> P must still revalidate its final supported release profiles.
 
 > [Stage 14.Q scheduler delivery](REAL_CLIENT_Q_EVIDENCE.md) is independently
 > reviewed and integrated. Combined real-library Q/G check `b8a6fc1` is complete
-> ([acceptance evidence](../libraries/cog-core/contracts/session_store/CONTRACT.md#independent-acceptance-and-combined-gq-integration)); N/O protocol integration remains open.
+> ([acceptance evidence](../libraries/cog-core/contracts/session_store/CONTRACT.md#independent-acceptance-and-combined-gq-integration)).
+> N contracts and O protocol deliveries are integrated; package approval is separate.
 
-Status: implementation through K integrated at `b8f28ad`, 2026-11-15. Parent ticket: `2b9d0ea`.
+Status snapshot: accepted integration `2723c36`, before whole-O review `5cd1d25`
+and release gate P. Parent ticket: `2b9d0ea`. M's
+[offline](REAL_CLIENT_M_OFFLINE_EVIDENCE.md) and
+[three-request live](REAL_CLIENT_M_LIVE_EVIDENCE.md) evidence remain dated;
+O9 and the installed public proof close their specific delivery obligations.
+The [current assertion map](REAL_CLIENT_RELEASE_COVERAGE.md) combines those
+receipts without relabeling old profile results as a new all-profile pass.
 The user authorized autonomous design decisions and testing. This supersedes
 Stage 14's earlier scope-confirmation requirement. Header and implementation
 gates remain technical requirements, not repeated user approval requests.
@@ -52,8 +61,8 @@ provider matrix. These are follow-on scope, not silent release requirements.
    immutable data per configuration generation; do not mutate a static
    descriptor table or dynamically register provider implementations.
    In-flight instances retain their generation until teardown.
-3. Keep libcurl multi a conditional transport candidate, subject to the
-   [lifecycle and DNS research](research/https-lifecycle.md) and allocation gate. Its
+3. The delivered transport uses libcurl multi under the accepted
+   [lifecycle and DNS profile](research/https-lifecycle.md). Its
    process-global initialization must be explicit and host-owned, with no
    Cog global reference counter or lazy initialization. The host initializes
    the dependency before contexts and cleans up after all contexts. If this
@@ -226,11 +235,12 @@ OpenRouter base URL: https://openrouter.ai/api/v1. Live smoke uses synthetic
 prompts and a disposable workspace, max 3 requests per smoke run, max 512
 output tokens per request, no automatic model substitution or retry storm.
 Record model/date/status/usage without credentials or private source text.
-Testing is preapproved. pass list has no OpenRouter entry, but the user identified pi login storage.
-The OpenRouter entry in ~/.pi/agent/auth.json is accessible. Read its key only
-into the test process memory; never print it or pass it as a shell argument.
-The transport PoC uses local fixtures; protocol research performed the bounded
-authenticated smoke recorded above. Tests must not rerun that smoke implicitly.
+The separately accepted M live run used exactly three application generation
+requests for read/edit/build and fresh-process resume; its
+[sanitized receipt](REAL_CLIENT_M_LIVE_EVIDENCE.md) records the actual result.
+Current documentation uses environment credential references, never key bytes.
+No test or documentation refresh implicitly repeats the paid smoke. Exact model
+availability/support must be checked before any separately authorized new run.
 
 ## Three planning passes and final review
 
