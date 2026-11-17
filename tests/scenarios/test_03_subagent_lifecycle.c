@@ -84,8 +84,8 @@ int main(int argc,char **argv)
                     /* A real provider request may arrive before its copied
                      * RUNNING update reaches the coordinator registry. Cancel
                      * only after both independent facts have been observed. */
-                    if(access(entered,F_OK)==0 && a->status==COG_AGENT_STATUS_RUNNING) {
-                        CHECK(s->first_admission_sent && s->started);
+                    if(access(entered,F_OK)==0 && a->status==COG_AGENT_STATUS_RUNNING &&
+                        s->first_admission_sent && s->started) {
                         CHECK(cog_agent_cancel(h->control_core,s->agent)==COG_OK);
                         CHECK(cog_agent_cancel(h->control_core,s->agent)==COG_OK);
                         cancelled=true;
