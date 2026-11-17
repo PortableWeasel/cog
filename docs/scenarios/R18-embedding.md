@@ -2,8 +2,9 @@
 
 Stage 14.D pass 2; baseline header pass 1 `29b41e8`, amended by this pass.
 This remains the contract trace. The bounded permanent installed-consumer
-fixture below supplies scoped executable evidence; it does not close the full
-release gate or pending O runtime coverage.
+fixture below supplies scoped executable evidence. O9 and the installed public
+extension are now integrated; their exact scope is linked below. Whole-O review
+and the full release gate remain separate.
 
 ## Sequence
 
@@ -57,14 +58,21 @@ The permanent [installed C11 consumer fixture](../../tests/external-consumer/REA
 uses a full normal install, public target imports and two prefix relocations.
 It covers a bounded text-only nine-callback external provider/preflight, two
 independent custom store contexts, explicit host dependency lifetime and reverse
-two-net cleanup, exported module link closure and basic mock CLI lifecycle.
-Final acceptance is tracked by `8f13685`/`b61fb1b` and requires the separately
-reviewed installable dependency profile `ba50799`; the old development artifact
-with foreign RUNPATH is not shipped acceptance.
+two-net cleanup and exported module closure. The accepted
+[installed public extension](../REAL_CLIENT_INSTALLED_PROOF_INTEGRATION.md) adds
+a CLI-only link target/transitive orchestrator export check, actual relocated
+native READY/shutdown/reap, public CGW1/CGH1/routes, custom fenced
+normal/recovery OOM and consuming-release checks, a distinct two-request REAL
+TLS app/tool/durable proof, and actual installed MOCK headless/attach/watch
+roles. It uses the reviewed installable profile `ba50799`; no manual staging or
+loader override makes the old foreign-RUNPATH development artifact acceptable.
 
-**Remaining release evidence:** full original20/R01-R18, standalone C++ header
-checks, broader exact-restore edge cases and pending O async/handoff/runtime
-implementation remain separate. A passing scoped consumer does not close P.
+Private `src/host_runtime.h` remains private. Remote-worker REAL HTTP and actual
+composed same-host handoff are [in-tree O9 evidence](../REAL_CLIENT_O9_SCENARIO_EVIDENCE.md),
+not claims of the external installed host. The
+[current release assertion map](../REAL_CLIENT_RELEASE_COVERAGE.md) combines the
+dated M and accepted O/installed results. Final supported-profile execution and
+whole-O/P approval remain separate; a scoped consumer does not close P.
 
 **Amendment references:** D02,D10 in [pass-2 register](../REAL_CLIENT_SCENARIO_PASS2.md).
 

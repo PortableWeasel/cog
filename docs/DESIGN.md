@@ -1,5 +1,14 @@
 # Cog — System Design Blueprint
 
+> Current delivery snapshot: accepted integration `2723c36`. A–L/Q, live reload
+> and real observation are integrated; M is accepted at its recorded
+> single-process scope and N's contract gate passed. O4/O9 and the installed
+> public proof are integrated. Whole-O review `5cd1d25` and release gate P remain
+> open. [Runnable instructions](README.md), the
+> [current roadmap](REAL_CLIENT_WBS.md) and
+> [assertion map](REAL_CLIENT_RELEASE_COVERAGE.md) distinguish current results
+> from the original engine/mock baseline and dated design notes below.
+
 > Runtime observability design `d32fafd` passed independent header gate
 > `a26a179` at `7096360`. Transport facts travel through an optional
 > constructor-borrowed numeric net observer, independent of retained body queues.
@@ -13,27 +22,34 @@
 > tool replayable. No Cog runtime allocation, mutable global, observer registry
 > or net-to-obs/app dependency is added. Net primitive delivery `1a2b9c8` passed
 > independent source review; its [evidence](REAL_CLIENT_NET_OBSERVATION_EVIDENCE.md)
-> records the scoped result. Application bridge/timing delivery `b64ee7c` remains
-> pending after R12 `af6956a`; this does not close the full release gate.
+> records the scoped result. Application bridge/timing delivery `b64ee7c` and
+> R12 `af6956a` are integrated; the
+> [application observation receipt](REAL_CLIENT_OBSERVATION_INTEGRATION_EVIDENCE.md)
+> records actual provider/tool and network lifecycle assertions. This does not
+> close the full release gate.
 
 > Stage 14.H provider delivery passed independent revision review and is
 > integrated. [H evidence](REAL_CLIENT_H_EVIDENCE.md) records bounded JSON/SSE,
 > retained typed output, final opaque preservation, mock conformance, offline
 > TLS and installed link closure. K conversation-loop delivery is also integrated;
 > its [independent evidence](REAL_CLIENT_K_EVIDENCE.md) records the scoped result.
-> Broader application and full release validation remain pending.
+> L/M and O deliveries now have separate accepted evidence; whole-O and full
+> release validation remain distinct gates.
 
 > Stage 14.Q runtime implementation passed independent revision review and is integrated;
 > [Q evidence](REAL_CLIENT_Q_EVIDENCE.md) records bounded nonblocking IPC,
 > fixed core reservations and fair rotating local/IPC dispatch. External event
 > capacity stays configured; separate IPC ingress descriptors derive from the
 > configured IPC service quantum to prevent saturation starvation. Combined
-> real G-library validation remains tracked before full release gate approval.
+> real G-library validation `b8a6fc1` is complete; the
+> [G/Q record](../libraries/cog-core/contracts/session_store/CONTRACT.md#independent-acceptance-and-combined-gq-integration)
+> preserves its scope. Full release approval remains separate.
 
 
 > [Stage 14.E final review](REAL_CLIENT_PASS3.md) passed after the additional
 > independent review of `8563f81`. The three header passes and final review are
-> complete; implementation and executable conformance remain delivery work.
+> complete. That design pass did not itself establish runtime conformance;
+> the current delivery records above supply the later implementation evidence.
 
 > Current extension: [real-client blueprint](REAL_CLIENT_BLUEPRINT.md) and
 > [Stage 14 execution scaffold](REAL_CLIENT_WBS.md). The material below
@@ -61,7 +77,7 @@
 > Cog workspaces are constructor-bounded; third-party handle runtime allocation
 > is explicitly declared and total dependency-memory caps are unsupported. Final E
 > review accepts that declared profile. Transport F is integrated; sibling
-> implementation and full release gates remain pending.
+> delivery is now integrated; final whole-package/release gates remain open.
 
 The [Stage 14.D pass-2 scenario register](REAL_CLIENT_SCENARIO_PASS2.md) records
 the current header amendments, all original20 plus R01–R18 traces and delivery
@@ -726,7 +742,14 @@ The Process Orchestrator manages auxiliary core lifecycle:
 
 ---
 
-## Next steps
+## Historical N contract-refinement snapshot
+
+The paragraphs in this section record the pre-implementation N design passes.
+Their draft/gate language is historical, not current delivery status. N passed;
+the resulting O implementations and actual joins are recorded in
+[O9 integration](REAL_CLIENT_O9_INTEGRATION_EVIDENCE.md) and
+[installed public proof](REAL_CLIENT_INSTALLED_PROOF_INTEGRATION.md). No private
+host-runtime header became an installed public API.
 
 Stage14.N now refines headless/subagent composition against the completed M
 single-process client. Its [design inventory](REAL_CLIENT_HEADLESS_CONTRACTS.md)
