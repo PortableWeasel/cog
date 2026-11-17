@@ -6,6 +6,8 @@
 # they depend on the CLI library target.
 # -----------------------------------------------------------------------
 
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
 # Options parsing contract.
 add_executable(test_cli_options test_cli_options.c)
 target_link_libraries(test_cli_options PRIVATE cog-cli-config)
@@ -61,7 +63,24 @@ target_compile_definitions(run_cli_smoke PRIVATE
 function(cog_add_cli_scenario target)
     add_executable(${target} ${target}.c)
     target_enable_warnings(${target})
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+    set(scenario_timeout 30)
+    if(target STREQUAL "test_11_ui_reconnect" OR target STREQUAL "test_17_session_migration")
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        target_link_libraries(${target} PRIVATE cog-headless-fixture)
+        add_dependencies(${target} cog-cli)
+        if(target STREQUAL "test_11_ui_reconnect")
+            set(session_mode reconnect)
+            set(scenario_timeout 60)
+        else()
+            set(session_mode migration)
+            set(scenario_timeout 100)
+            target_link_options(${target} PRIVATE -Wl,--wrap=cog_orchestrator_copy_event)
+        endif()
+        add_test(NAME scenario-${target} COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/run_session_scenarios.py
+            $<TARGET_FILE:${target}> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} ${session_mode})
+        set_tests_properties(scenario-${target} PROPERTIES RESOURCE_LOCK cog-native-scenarios)
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
        AND COG_NET_CURL_BUILD_DIR AND COG_NET_CURL_LIBRARY
        AND ("${target}" STREQUAL "test_18_observability" OR "${target}" STREQUAL "test_19_connection_events"))
         find_package(Python3 COMPONENTS Interpreter REQUIRED)
@@ -74,7 +93,8 @@ function(cog_add_cli_scenario target)
     endif()
     set_tests_properties(scenario-${target} PROPERTIES
         LABELS "scenario"
-        TIMEOUT 30)
+        TIMEOUT ${scenario_timeout}
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
 endfunction()
 
 set(COG_APP_SCENARIO_TESTS
@@ -95,6 +115,7 @@ foreach(test IN LISTS COG_APP_SCENARIO_TESTS)
 endforeach()
 
 target_link_libraries(test_11_ui_reconnect PRIVATE cog::cli)
+target_link_options(test_11_ui_reconnect PRIVATE -Wl,--wrap=cog_ipc_endpoint_send)
 target_link_libraries(test_12_rate_limit PRIVATE cog::cli)
 target_link_libraries(test_13_session_persistence PRIVATE cog::core)
 target_link_libraries(test_14_conversation_fork PRIVATE cog::core)
@@ -105,6 +126,22 @@ target_link_libraries(test_17_session_migration PRIVATE cog::cli)
 target_link_libraries(test_18_observability PRIVATE cog::obs)
 target_link_libraries(test_19_connection_events PRIVATE cog::obs)
 target_link_libraries(test_20_interrupt_and_queue PRIVATE cog::cli)
+
+add_test(NAME scenario-test_17_session_migration-timeout COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_session_scenarios.py
+    $<TARGET_FILE:test_17_session_migration> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} migration-timeout)
+set_tests_properties(scenario-test_17_session_migration-timeout PROPERTIES
+    LABELS "scenario" TIMEOUT 60 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+    RESOURCE_LOCK cog-native-scenarios)
+
+foreach(name IN ITEMS ui_buffer store_transfer)
+    add_executable(test_${name}_component components/test_${name}_component.c)
+    target_link_libraries(test_${name}_component PRIVATE cog::cli)
+    target_enable_warnings(test_${name}_component)
+    add_test(NAME component-${name} COMMAND test_${name}_component
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(component-${name} PROPERTIES LABELS "component" TIMEOUT 30)
+endforeach()
 
 # -----------------------------------------------------------------------
 # CTest registration
@@ -403,6 +440,41 @@ add_test(NAME cli-headless-native-limit COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
     $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} limit)
 set_tests_properties(cli-headless-native-limit PROPERTIES TIMEOUT 70)
+
+# Shared O9 support is deliberately test-only; canonical leaves assert their
+# own actual runtime joins and keep their provider responders in disjoint files.
+add_library(cog-headless-fixture STATIC
+    ${PROJECT_SOURCE_DIR}/tests/scenarios/fixtures/headless_fixture.c)
+target_include_directories(cog-headless-fixture PUBLIC
+    ${PROJECT_SOURCE_DIR}/tests/scenarios/fixtures
+    ${PROJECT_SOURCE_DIR}/applications/cog-cli/src)
+target_link_libraries(cog-headless-fixture PUBLIC cog::cli)
+target_enable_warnings(cog-headless-fixture)
+if(MSVC)
+    target_compile_options(cog-headless-fixture PRIVATE /UNDEBUG)
+elseif(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(cog-headless-fixture PRIVATE -UNDEBUG)
+else()
+    message(FATAL_ERROR "Test fixture assertions need an undefine option")
+endif()
+add_executable(test_headless_fixture_smoke test_headless_fixture_smoke.c)
+target_link_libraries(test_headless_fixture_smoke PRIVATE cog-headless-fixture)
+target_enable_warnings(test_headless_fixture_smoke)
+add_dependencies(test_headless_fixture_smoke cog-cli)
+add_test(NAME cli-headless-fixture-smoke COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
+    $<TARGET_FILE:test_headless_fixture_smoke> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} single)
+set_tests_properties(cli-headless-fixture-smoke PROPERTIES TIMEOUT 70 LABELS "component;headless")
+add_test(NAME cli-headless-fixture-python COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_fixture_smoke.py
+    $<TARGET_FILE:test_headless_fixture_smoke> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR})
+set_tests_properties(cli-headless-fixture-python PROPERTIES TIMEOUT 70 LABELS "component;headless"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" RESOURCE_LOCK cog-native-scenarios)
+add_test(NAME cli-headless-fixture-cleanup COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_headless_fixture_cleanup.py ${CMAKE_BINARY_DIR})
+set_tests_properties(cli-headless-fixture-cleanup PROPERTIES TIMEOUT 20 LABELS "component;headless"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+set_tests_properties(cli-headless-fixture-smoke PROPERTIES RESOURCE_LOCK cog-native-scenarios)
 # Lane A owns shared CMake; append these real-source private branch fixtures.
 foreach(name IN ITEMS worker_receipt_owned delegation_callbacks worker_handoff_critic worker_reload_failure)
     add_executable(test_${name} test_${name}.c)
@@ -430,6 +502,12 @@ target_link_options(test_cli_coordinator_receipt PRIVATE -Wl,--gc-sections)
 target_enable_warnings(test_cli_coordinator_receipt)
 add_test(NAME cli-coordinator-receipt COMMAND test_cli_coordinator_receipt)
 set_tests_properties(cli-coordinator-receipt PROPERTIES LABELS "unit;cli;headless")
+add_executable(test_cli_coordinator_admission coordinator-leaf/test_admission.c)
+target_include_directories(test_cli_coordinator_admission PRIVATE ../src)
+target_link_libraries(test_cli_coordinator_admission PRIVATE cog::cli)
+target_enable_warnings(test_cli_coordinator_admission)
+add_test(NAME component-coordinator-admission COMMAND test_cli_coordinator_admission)
+set_tests_properties(component-coordinator-admission PROPERTIES LABELS "component;headless" TIMEOUT 10)
 add_executable(test_cli_coordinator_identity coordinator-leaf/test_stream_identity_critic.c)
 target_link_libraries(test_cli_coordinator_identity PRIVATE cog::cli)
 target_include_directories(test_cli_coordinator_identity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
@@ -461,6 +539,9 @@ add_test(NAME cli-headless-native-handoff-timeout COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/run_headless_native.py
     $<TARGET_FILE:test_headless_native> $<TARGET_FILE:cog-cli> ${CMAKE_BINARY_DIR} handoff-timeout)
 set_tests_properties(cli-headless-native-handoff-timeout PROPERTIES TIMEOUT 145)
+set_tests_properties(cli-headless-native cli-headless-native-limit cli-headless-native-single
+    cli-headless-native-handoff cli-headless-native-cancel cli-headless-native-handoff-timeout
+    PROPERTIES RESOURCE_LOCK cog-native-scenarios)
 # Includes the actual coordinator source. Link real orchestrator and Q implementations.
 add_executable(test_coordinator_send_schedule coordinator-leaf/test_send_schedule.c)
 target_link_libraries(test_coordinator_send_schedule PRIVATE cog-cli-lib)

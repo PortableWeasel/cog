@@ -1,5 +1,12 @@
 # Scenario 07: Auxiliary core crash → detection → safe recovery
 
+O9 executable update: the canonical CTest kills an actual admitted native worker
+before/after an observed effect and requires durable uncertainty, reap and
+ordinary-resume refusal. Historical aux-core replacement/registry assertions
+remain in `component-aux_crash`. See the
+[joined evidence and exact limits](../REAL_CLIENT_O9_SCENARIO_EVIDENCE.md).
+The contract/design-pass history below is retained as such.
+
 Stage 14.D pass-2 retrace from public-contract baseline `29b41e8`.
 This replaces the earlier schematic SVG as the normative call trace. The SVG is
 retained as historical design material and is not current API coverage.

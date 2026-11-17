@@ -1,5 +1,12 @@
 # Scenario 09: Subagent-to-subagent messaging across cores
 
+O9 executable update: the canonical CTest runs actual sibling mailbox tools and
+bounded-pressure retry; historical endpoint assertions remain in
+`component-subagent_messaging`, with live foreign-group refusal separately in
+`component-coordinator-admission`. See the
+[joined evidence and exact limits](../REAL_CLIENT_O9_SCENARIO_EVIDENCE.md).
+The contract/design-pass history below is retained as such.
+
 Stage 14.D pass-2 retrace from public-contract baseline `29b41e8`.
 This replaces the earlier schematic SVG as the normative call trace. The SVG is
 retained as historical design material and is not current API coverage.
