@@ -13,10 +13,10 @@ and the [application contract](../applications/cog-cli/CONTRACT.md) and
 The supported-profile acceptance record is historical evidence for its exact
 code and dependencies; it does not imply a fresh test of the current checkout.
 
-Instruction support is in header design: see the
+Instruction loading, composition and durable contexts are implemented; runtime
+integration is being validated. See the
 [frontend-neutral block diagram](instruction-blocks.svg) and
-[draft contract traces](scenarios/P01-instruction-support.md). The target
-architecture keeps skill/agent loading in `cog-instructions`, execution in a
+[contract traces](scenarios/P01-instruction-support.md). The architecture keeps skill/agent loading in `cog-instructions`, execution in a
 headless runtime, and the CLI as a minimal test/proof frontend.
 
 Implementation planning and dated reviews/evidence live in git `tix`:
@@ -277,6 +277,32 @@ public REAL TLS app and MOCK UI roles are distinct proofs; remote-worker REAL
 TLS is actual in-tree O9 composition. See the
 [external project](../tests/external-consumer/README.md) and
 accepted receipt (`tix show f016189`).
+
+For a UI-independent embedding API, link `cog::runtime` and include
+[`cog/runtime.h`](../libraries/cog-runtime/include/cog/runtime.h). Supply resolved
+endpoints, original static tool bindings, explicit capacities and optional
+instruction sources/snapshots. Drive `begin` / `step`, copy retained `view`
+results and `ack` them before further admission. The runtime owns execution;
+the host owns input and rendering. Native workers execute children while the
+public runtime root remains local.
+
+`cog::instructions` also works independently: callers can construct catalogs
+from supplied bytes or use its bounded source reader. It has no UI, provider or
+network dependency. Provider templates consume neutral prompt bundles.
+
+A CLI-disabled build exercises a separate installed runtime consumer:
+
+```bash
+cmake -S . -B build-runtime-off -DCOG_BUILD_CLI=OFF -DCOG_ENABLE_WERROR=ON \
+  -DCOG_USE_VENDORED_LIBS=OFF -DCOG_NET_CURL_BUILD_DIR="$curl_build" \
+  -DCOG_NET_CURL_LIBRARY="$curl_build/lib/libcurl.so"
+cmake --build build-runtime-off -j4
+ctest --test-dir build-runtime-off -R integration-installed-runtime-only --output-on-failure
+```
+
+Use the same admitted transport dependency settings as the normal build. The
+fixture relocates the install, rejects CLI headers/targets, then streams through
+a host-supplied provider using only installed public runtime contracts.
 
 Custom stores supply a static `cog_store_vtable_t` and caller-owned
 `backend_context`, alive through all guards and `cog_store_free`. Generic free

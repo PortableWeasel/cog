@@ -20,6 +20,7 @@ typedef struct ci_utf8 {
     uint32_t value, minimum;
     unsigned remaining;
 } ci_utf8;
+void ci_wipe(void *bytes, size_t capacity);
 bool ci_add(size_t a, size_t b, size_t *out);
 void *ci_array(size_t n, size_t width);
 char *ci_copy(ci_arena *a, const char *s, size_t n);

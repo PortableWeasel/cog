@@ -40,7 +40,9 @@ typedef struct cog_cli_host_options {
  * Internal worker grammar (all seven options required exactly once):
  * --worker --control-socket PATH --worker-incarnation U64 --worker-number U64
  * --parent-pid U64 --executor-slots N --frame-bytes N. U64 identities/PID and
- * frame bytes are nonzero; executor slots1..18, frame bytes<=UINT32_MAX. PID is
+ * frame bytes are nonzero; executor slots1..18, frame bytes<=UINT32_MAX. Optional
+ * internal --instruction-bytes N is nonzero<=frame bytes, defaults0, and may
+ * occur once only. It carries the trusted native capsule reservation. PID is
  * parsed metadata, never authority to signal/admit without kernel proof. No
  * task/secret/config/provider flags, mixed roles, duplicate or unknown worker
  * option is accepted. Role-looking values of ordinary options remain values.

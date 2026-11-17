@@ -10,7 +10,7 @@
 enum host_flag {
     H_HEADLESS, H_ATTACH, H_WATCH, H_WORKER, H_WORKERS, H_WORKER_SOCKET,
     H_CHILDREN, H_REQUESTS, H_TOOLS, H_POLICY, H_RECONNECT, H_PROJECTION,
-    H_CONTROL_SOCKET, H_INCARNATION, H_NUMBER, H_PARENT, H_SLOTS, H_FRAME, H_COUNT
+    H_CONTROL_SOCKET, H_INCARNATION, H_NUMBER, H_PARENT, H_SLOTS, H_FRAME, H_INSTRUCTIONS, H_COUNT
 };
 typedef struct host_flag_spec { const char *name; bool value; } host_flag_spec_t;
 static const host_flag_spec_t host_flags[H_COUNT] = {
@@ -19,7 +19,7 @@ static const host_flag_spec_t host_flags[H_COUNT] = {
     {"--child-requests", true}, {"--child-tools", true}, {"--child-policy", true},
     {"--reconnect-ms", true}, {"--projection-bytes", true}, {"--control-socket", true},
     {"--worker-incarnation", true}, {"--worker-number", true}, {"--parent-pid", true},
-    {"--executor-slots", true}, {"--frame-bytes", true}
+    {"--executor-slots", true}, {"--frame-bytes", true}, {"--instruction-bytes", true}
 };
 static bool flag_match(const char *arg, const char *flag)
 {
@@ -99,7 +99,7 @@ static cog_result_t set_host(cog_cli_host_options_t *o, enum host_flag flag,
         else return COG_ERROR_INVALID_ARG;
         return COG_OK;
     case H_WORKERS: case H_CHILDREN: case H_REQUESTS: case H_RECONNECT: case H_PROJECTION:
-    case H_INCARNATION: case H_NUMBER: case H_PARENT: case H_SLOTS: case H_FRAME:
+    case H_INCARNATION: case H_NUMBER: case H_PARENT: case H_SLOTS: case H_FRAME: case H_INSTRUCTIONS:
         if (!decimal(value, UINT64_MAX, &n)) return COG_ERROR_INVALID_ARG;
         break;
     case H_COUNT: return COG_ERROR_INVALID_ARG;
@@ -133,6 +133,9 @@ static cog_result_t set_host(cog_cli_host_options_t *o, enum host_flag flag,
     case H_FRAME:
         if (n == 0U || n > UINT32_MAX) return COG_ERROR_INVALID_ARG;
         o->worker.frame_bytes = (size_t)n; break;
+    case H_INSTRUCTIONS:
+        if(n==0U || n>UINT32_MAX) return COG_ERROR_INVALID_ARG;
+        o->worker.instruction_bytes=(size_t)n;break;
     default: return COG_ERROR_INVALID_ARG;
     }
     return COG_OK;
@@ -163,7 +166,8 @@ static cog_result_t host_finish(cog_cli_host_options_t *o, uint32_t seen,
     } else if (o->role == COG_CLI_HOST_WORKER) {
         permitted = bit(H_WORKER);
         for (enum host_flag f = H_CONTROL_SOCKET; f < H_COUNT; f = (enum host_flag)(f + 1)) permitted |= bit(f);
-        if (seen != permitted || count > 1) return host_bad(exit_code);
+        if ((seen | bit(H_INSTRUCTIONS)) != permitted || count > 1 ||
+            o->worker.instruction_bytes>o->worker.frame_bytes) return host_bad(exit_code);
         return COG_OK;
     } else if (seen != 0U) return host_bad(exit_code);
     rc = cog_cli_options_parse(&o->application, count, filtered, exit_code);

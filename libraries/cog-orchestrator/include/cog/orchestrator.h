@@ -110,6 +110,11 @@ typedef struct cog_orchestrator_config {
     size_t message_bytes; /**< Reserved copied message bytes; zero=4 MiB. */
     size_t max_frame_bytes; /**< Control/application frame ceiling; zero=1 MiB,
        <=UINT32_MAX and <=message_bytes. No truncation or runtime growth. */
+    size_t worker_instruction_bytes; /**< Explicit native capsule reservation;
+       zero retains legacy six-pair startup argv. Nonzero<=max_frame_bytes is
+       conveyed as seventh --instruction-bytes decimal flag/value pair, never
+       source paths, grants or capsule bytes. Worker independently validates
+       complete profile/frame reservations before accepting bootstrap. */
 } cog_orchestrator_config_t;
 
 /** @brief Independent bounded delivery classes; control progress cannot depend
@@ -241,7 +246,8 @@ void cog_orchestrator_free(cog_orchestrator_t *orch);
  * capacity/frame reservations only. Exact argv after executable is --worker,
  * then six flag/value pairs in this order: --control-socket,
  * --worker-incarnation, --worker-number, --parent-pid, --executor-slots,
- * --frame-bytes. Executor slots is decimal uint64_t C+2 (C normalized from
+ * --frame-bytes, followed by --instruction-bytes only when its reservation is
+ * nonzero. Executor slots is decimal uint64_t C+2 (C normalized from
  * default_core_capacity); no size_t intermediate may wrap or truncate it.
  * Unsupported worker profile/exec failure after publication follows the same
  * service/health/reap path and cannot produce READY or accept a task.

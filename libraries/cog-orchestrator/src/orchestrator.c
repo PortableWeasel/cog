@@ -69,7 +69,7 @@ cog_result_t orch_reservation_plan(const cog_orchestrator_config_t *cfg,orch_res
     p.routes=normalized(cfg->max_sessions,64U);p.message_entries=normalized(cfg->message_events,16U);
     p.message_bytes=normalized(cfg->message_bytes,4U*1024U*1024U);
     p.frame_bytes=normalized(cfg->max_frame_bytes,1024U*1024U);p.binary_bytes=PATH_MAX;
-    if(capacity>UINT32_MAX || p.frame_bytes>UINT32_MAX || p.frame_bytes>p.message_bytes ||
+    if(cfg->worker_instruction_bytes>p.frame_bytes || capacity>UINT32_MAX || p.frame_bytes>UINT32_MAX || p.frame_bytes>p.message_bytes ||
        p.workers>SIZE_MAX/ORCH_CONTROL_TRANSITIONS || p.workers>UINT64_MAX/ORCH_CONTROL_TRANSITIONS)
         return COG_ERROR_INVALID_ARG;
     p.control_entries=p.workers*ORCH_CONTROL_TRANSITIONS;
@@ -264,10 +264,13 @@ cog_result_t cog_orchestrator_spawn(cog_orchestrator_t *o,const char *binary,cog
     strcpy(w->binary_path,binary);
     if(!decimal(w->incarnation_arg,id.incarnation) || !decimal(w->number_arg,id.number) ||
        !decimal(w->parent_arg,(uint64_t)getpid()) || !decimal(w->executors_arg,o->bounds.worker_executor_slots) ||
-       !decimal(w->frame_arg,o->bounds.frame_bytes)) return COG_ERROR_INVALID_ARG;
+       !decimal(w->frame_arg,o->bounds.frame_bytes) ||
+       !decimal(w->instruction_arg,o->config.worker_instruction_bytes)) return COG_ERROR_INVALID_ARG;
     char *argv[]={w->binary_path,(char *)"--worker",(char *)"--control-socket",o->socket_path,
         (char *)"--worker-incarnation",w->incarnation_arg,(char *)"--worker-number",w->number_arg,
-        (char *)"--parent-pid",w->parent_arg,(char *)"--executor-slots",w->executors_arg,(char *)"--frame-bytes",w->frame_arg,NULL};
+        (char *)"--parent-pid",w->parent_arg,(char *)"--executor-slots",w->executors_arg,(char *)"--frame-bytes",w->frame_arg,
+        o->config.worker_instruction_bytes!=0U ? (char *)"--instruction-bytes" : NULL,
+        o->config.worker_instruction_bytes!=0U ? w->instruction_arg : NULL,NULL};
     memcpy(w->argv,argv,sizeof(argv));
     pid_t pid=fork();
     if(pid<0) return COG_ERROR_IO;

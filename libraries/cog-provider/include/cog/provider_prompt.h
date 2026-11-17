@@ -1,6 +1,6 @@
 /**
  * @file provider_prompt.h
- * @brief Draft provider-neutral instruction/tool input and static template codec.
+ * @brief provider-neutral instruction/tool input and static template codec.
  *
  * Header-first design, not delivered runtime support. This is a pure preparation
  * surface: it never invokes connect/send/poll/preflight, performs I/O, modifies

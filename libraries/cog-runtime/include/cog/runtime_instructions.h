@@ -1,5 +1,5 @@
 /** @file runtime_instructions.h
- * @brief Draft original static instruction-control tools and scope admission.
+ * @brief original static instruction-control tools and scope admission.
  * No dynamic registration or independent invocation: these descriptors use the
  * owning runtime's strict JSON, policy, ledger and publication machinery.
  */

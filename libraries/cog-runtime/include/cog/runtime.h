@@ -1,5 +1,5 @@
 /** @file runtime.h
- * @brief Draft frontend-neutral cooperative runtime; no implementation yet.
+ * @brief Frontend-neutral cooperative runtime with explicit ownership.
  * One owner thread; no recursive calls from callbacks, terminal IO, environment
  * discovery, signal mutation, implicit dependency init or mutable globals.
  * Constructors reserve bounded storage. Service never grows runtime pools.
@@ -74,7 +74,9 @@ typedef struct cog_runtime_limits {
 typedef struct cog_runtime_provider_config {
     const cog_endpoint_t *endpoint;
     const char *model_id; /**< Copied exact registered model, no fallback. */
-    const cog_provider_prompt_template_t *prompt_template;
+    const cog_provider_prompt_template_t *prompt_template; /**< Optional in DISABLED.
+       When supplied there, an empty-fragment transient bundle uses identity
+       (1,1) solely for compilation; it creates no durable context or adoption. */
     cog_provider_prompt_limits_t compiler_limits;
 } cog_runtime_provider_config_t;
 /** @brief Original static table/user borrows through close; bindings copied.
@@ -83,7 +85,9 @@ typedef struct cog_runtime_provider_config {
  * reference members of table or the exact cog_runtime_activate_skill_tool and
  * cog_runtime_read_skill_resource_tool objects. Those two builtin controls use
  * internal singleton static tables; including them never grants a policy
- * implicitly. Copies of their descriptors do not preserve their identity. */
+ * implicitly. Copies of their descriptors do not preserve their identity.
+ * The exact cog_runtime_delegation_tools members are also builtins; runtime
+ * supplies their private bridge userdata and enforces parent/child roles. */
 typedef struct cog_runtime_tool_config {
     const cog_tool_table_t *table;
     void *user;
@@ -104,13 +108,51 @@ typedef struct cog_runtime_scope_binding {
        NULL means a missing key is INVALID_ARG. Empty means workspace root. */
     bool file_target; /**< Strip final component; false directory/command cwd. */
 } cog_runtime_scope_binding_t;
-/** @brief Optional native workers; NULL disables them. Strings copied.
+/**
+ * @brief Original immutable delegation descriptors; runtime owns bridge userdata.
+ * Parent-only delegate accepts {"tasks":[{"task":STRING,"agent":STRING?,
+ * "skills":[STRING,...]?},...]}, 1..16 tasks, exact catalog names, no duplicate
+ * keys or skills and no other properties. Model choices pass the same validated
+ * child_select constructor as host choices; conflicting choices fail closed.
+ * Child-only send_message accepts {"agent_id":STRING,"message":STRING};
+ * receive_messages accepts {}. Existing admitted group/identity checks apply.
+ * Child descriptors never permit recursive delegation. Merely including a
+ * descriptor grants no policy; original pointers and effective bindings match.
+ */
+extern const cog_tool_table_t cog_runtime_delegation_tools;
+
+/** @brief Optional native child workers; NULL disables them. Strings copied.
+ * The public runtime root remains local; this API does not expose root migration.
  * Existing authenticated bootstrap/receipt/handoff used; no shell/PATH search.
  * Only builtin serializable provider/tool profiles supported; arbitrary native
- * implementation_config/user pointers fail UNSUPPORTED before launching. */
+ * implementation_config/user pointers fail UNSUPPORTED before launching.
+ * Native workers require the builtin guarded file store; custom stores cannot
+ * be serialized by V1. V1 uses the builtin OpenRouter template and STREAMING|TOOLS model profile.
+ * Version overrides are unsupported; output ceiling must fit any known model
+ * context window. Model display/cost metadata is not part of the worker profile.
+ * Worker adapter reservations/service quantum use the fixed bounded profile
+ * derived from transmitted context budgets, independently of root adapter
+ * buffers; URL/resolved credential/model/template/effective policy and context,
+ * output and round budgets remain exact and are preflighted before admission.
+ * Native worker session ceilings are 1024 nodes / 16 calls,
+ * payload 16 * limits.max_context_bytes, 16 contexts / 16 bindings, and context
+ * arena 16 * instruction_bytes in PINNED mode. Parent session reservations must cover
+ * these fixed ceilings (nodes/calls zero selects runtime maxima); smaller
+ * ceilings fail UNSUPPORTED before launch. Native scope mapping is fixed:
+ * read_file/edit_file use required path and strip filename; search uses path
+ * default empty directory; run_command uses cwd default empty directory.
+ * Enabled workspace bindings require matching explicit host scope rows;
+ * alternate mappings fail UNSUPPORTED before launching.
+ */
 typedef struct cog_runtime_workers {
     const char *executable; /**< Trusted absolute worker-capable executable. */
     const char *socket_path; /**< Dedicated worker fabric, never UI listener. */
+    const char *workspace_root; /**< Explicit trusted builtin workspace directory,
+       copied and canonicalized without symlink traversal before worker launch.
+       Required when tool_mask is nonzero or enabled root bindings use builtin
+       workspace tools; NULL otherwise. No derivation from instruction roots,
+       AGENTS paths, model arguments, environment or current working directory.
+       Pinned directory identity is retained until all executors close. */
     const cog_net_config_t *net_config; /**< Explicit immutable transport template
        borrowed through close; initialized host dependencies and fixed memory
        profile, observer/user NULL. Each executor constructs its own transport. */
@@ -298,6 +340,8 @@ cog_result_t cog_runtime_fork(cog_runtime_t *runtime, uint64_t node_id);
 cog_result_t cog_runtime_reconcile(cog_runtime_t *runtime, uint64_t node_id,
     const char *call_id, cog_tool_execution_state_t outcome, const char *evidence, size_t bytes);
 /** @brief Bind an explicit named role/skill choice to one proposed child task.
+ * Requires the original runtime delegation descriptor and non-DENY effective
+ * binding. ASK permits preparing a choice but never bypasses policy approval.
  * @param[in,out] runtime Parent owner, PINNED/ADOPT with pinned catalog.
  * @param[in] assistant_node_id Original delegate assistant group.
  * @param[in] call_id Exact unstarted delegate call ID.

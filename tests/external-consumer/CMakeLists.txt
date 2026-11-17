@@ -17,3 +17,12 @@ if(BUILD_TESTING AND COG_BUILD_CLI AND COG_NET_CURL_BUILD_DIR AND COG_NET_CURL_L
             --asan $<BOOL:${COG_ENABLE_ASAN}>)
     set_tests_properties(integration-installed-embedder PROPERTIES TIMEOUT 120 LABELS "installed;embedding" RUN_SERIAL TRUE)
 endif()
+
+if(BUILD_TESTING AND NOT COG_BUILD_CLI)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME integration-installed-runtime-only
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/run_runtime_only.py
+            ${PROJECT_BINARY_DIR} ${CMAKE_C_COMPILER})
+    set_tests_properties(integration-installed-runtime-only PROPERTIES
+        TIMEOUT 60 LABELS "installed;embedding;runtime" RUN_SERIAL TRUE)
+endif()

@@ -11,59 +11,25 @@
 include(GNUInstallDirs)
 
 # Configuration is independently buildable while H/K migrate the old app.
-add_library(cog-cli-config STATIC src/options.c src/configuration.c)
+add_library(cog-cli-config STATIC src/options.c)
 add_library(cog::cli-config ALIAS cog-cli-config)
 set_target_properties(cog-cli-config PROPERTIES EXPORT_NAME cli-config)
 target_compile_features(cog-cli-config PUBLIC c_std_11)
 target_include_directories(cog-cli-config PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-foreach(module core provider toolkit net obs ipc)
-    target_include_directories(cog-cli-config PUBLIC
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/libraries/cog-${module}/include>)
-endforeach()
+ $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+ $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+ $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_link_libraries(cog-cli-config PUBLIC cog::runtime)
 target_enable_warnings(cog-cli-config)
-
-add_library(cog-cli-lib STATIC
-    src/cli.c
-    src/execution.c
-    src/host_runtime.c
-    src/worker_host.c
-    src/delegation.c
-    src/handoff.c
-    src/control.c
-    src/control_receipt.c
-    src/projection_codec.c
-    src/child_context.c
-    src/projection.c
-    src/host_client.c
-    src/host_options.c
-    src/app_turn.c
-    src/app_tools.c
-    src/app_display.c
-    src/app_sessions.c
-    src/app_reload.c
-    src/app_observation.c
-    src/mock_provider.c
-)
+add_library(cog-cli-lib STATIC src/terminal.c src/host_client.c src/host_options.c)
 add_library(cog::cli ALIAS cog-cli-lib)
 set_target_properties(cog-cli-lib PROPERTIES EXPORT_NAME cli)
-
-target_include_directories(cog-cli-lib
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-
 target_compile_features(cog-cli-lib PUBLIC c_std_11)
-target_include_directories(cog-cli-lib PRIVATE
-    ${PROJECT_SOURCE_DIR}/libraries/cog-ipc/src
-    ${PROJECT_SOURCE_DIR}/libraries/cog-ipc/private)
-
-# cli.c and mock_provider.c use POSIX facilities (select, nanosleep,
-# signal); the _POSIX_C_SOURCE define lives in each source file.
-target_link_libraries(cog-cli-lib PUBLIC cog::core cog::provider cog::obs cog::toolkit cog::net cog::config cog::orchestrator cog-cli-config)
-
+target_include_directories(cog-cli-lib PUBLIC
+ $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+ $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+ PRIVATE ${PROJECT_SOURCE_DIR}/libraries/cog-ipc/src ${PROJECT_SOURCE_DIR}/libraries/cog-ipc/private)
+target_link_libraries(cog-cli-lib PUBLIC cog::runtime cog::core cog::provider cog::obs cog::toolkit cog::net cog::config cog::orchestrator cog-cli-config)
 target_enable_warnings(cog-cli-lib)
 
 add_executable(cog-cli src/main.c src/host_output.c)

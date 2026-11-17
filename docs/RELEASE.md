@@ -2,7 +2,21 @@
 
 Whole O is independently accepted and merged on main. Supported-profile release
 validation passed; this manifest records the evidence and `77adfec` tracks acceptance.
-This is a documentation-only record: no new runtime/model request was made.
+The whole-O evidence below describes that historical snapshot.
+
+Instruction/runtime integration is tracked in `7eb6cf9`, following header gate
+`04800f5`. Its validation passes 204 GCC tests and all 201 tests registered in
+the ASan/UBSan profile with leak detection enabled. Focused Clang and CLI-OFF
+profiles each pass 19 tests; 44 strict standalone checks cover the changed
+contracts under GCC/Clang C11 and C++17. The native integration fixture uses
+a real child process and a local TLS provider oracle, with no external model
+request. It exercises local/native named children through skill activation,
+resource loading, changed-scope refusal and unchanged-scope retry.
+
+[Instruction traces](scenarios/P01-instruction-support.md) map the maintained
+new test targets. The original scenario assertions below remain regression
+requirements. Native V1 limitations are documented in the public runtime
+header; this does not extend the historical whole-O transport profile.
 
 ## Exact identities
 

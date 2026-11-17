@@ -37,6 +37,18 @@ static int roles(void)
         ARG("--worker-number=2"), ARG("--parent-pid=3"), ARG("--executor-slots=18"), ARG("--frame-bytes=4294967295")};
     CHECK(PARSE(worker) == COG_OK && o.role == COG_CLI_HOST_WORKER);
     CHECK(o.worker.worker.incarnation == UINT64_MAX && o.worker.worker.number == 2U && o.worker.parent_pid == 3U && o.worker.executor_slots == 18U && o.worker.frame_bytes == UINT32_MAX && o.worker.signal_fd == -1);
+    CHECK(o.worker.instruction_bytes==0U);
+    cog_cli_host_options_close(&o);
+    char *instruction_worker[]={ARG("cog"),ARG("--worker"),ARG("--control-socket=/workers"),
+        ARG("--worker-incarnation=1"),ARG("--worker-number=2"),ARG("--parent-pid=3"),
+        ARG("--executor-slots=18"),ARG("--frame-bytes=1048576"),ARG("--instruction-bytes=65536")};
+    CHECK(PARSE(instruction_worker)==COG_OK && o.worker.instruction_bytes==65536U);
+    cog_cli_host_options_close(&o);
+    instruction_worker[8]=ARG("--instruction-bytes=1048577");CHECK(PARSE(instruction_worker)==COG_ERROR_ABORTED);
+    cog_cli_host_options_close(&o);
+    instruction_worker[8]=ARG("--instruction-bytes=0");CHECK(PARSE(instruction_worker)==COG_ERROR_ABORTED);
+    cog_cli_host_options_close(&o);
+    instruction_worker[8]=ARG("--instruction-bytes=18446744073709551616");CHECK(PARSE(instruction_worker)==COG_ERROR_ABORTED);
     cog_cli_host_options_close(&o);
     return 0;
 }

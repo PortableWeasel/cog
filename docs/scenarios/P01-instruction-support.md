@@ -3,13 +3,27 @@
 Header/scenario review under `e321ec3` / `04800f5`. These are design traces,
 not runtime test passes. Loading belongs to `cog-instructions`; `cog-runtime`
 consumes neutral bundles and owns publication. CLI remains the proof frontend.
-The APIs below are declared; implementation is gated on the full review.
+The joined header gate is accepted. Implementations and executable evidence are
+tracked by `7eb6cf9`; these diagrams remain contract traces rather than test claims.
+
+Executable coverage accompanies these traces:
+
+| Boundary | Maintained test targets |
+|---|---|
+| Source discovery, scope, metadata, ownership and bounds | `instruction-instructions`, `instruction-boundaries`, `instruction-allocations` |
+| Canonical manifests and exact restore | `instruction-codec`, `unit-session-context` |
+| Prompt/template identity, tool JSON and provider preflight | `unit-provider-prompt`, `runtime-headless` |
+| Pinned resume, paired reload, named selection and local delegation | `runtime-headless` |
+| Shared source lease and cancelled/waiting siblings | `runtime-instruction_resolver` |
+| Native capsules, receipt replay and checkpoint proof | `runtime-instruction_transfer`, `runtime-configuration_capsule`, `runtime-child_capsule`, `runtime-resource_exchange`, `runtime-resource_proof`, `runtime-resource_worker` |
+| Real local/native activation, resource and scope transactions | `runtime-native-instructions` |
+| Failed construction and CLI-independent installed embedding | `runtime-constructor-failure`, `integration-installed-runtime-only` |
 
 Header key used by every coverage table:
 
 - **R:** [runtime.h](../../libraries/cog-runtime/include/cog/runtime.h)
 - **X:** [runtime_instructions.h](../../libraries/cog-runtime/include/cog/runtime_instructions.h)
-- **W:** [instruction_transfer.h](../../applications/cog-cli/src/instruction_transfer.h), [execution.h](../../applications/cog-cli/src/execution.h), [control.h](../../applications/cog-cli/src/control.h)
+- **W:** [instruction_transfer.h](../../libraries/cog-runtime/src/instruction_transfer.h), [execution.h](../../libraries/cog-runtime/src/execution.h), [control.h](../../libraries/cog-runtime/src/control.h)
 - **S:** [instruction_source.h](../../libraries/cog-instructions/include/cog/instruction_source.h)
 - **I:** [instructions.h](../../libraries/cog-instructions/include/cog/instructions.h)
 - **M:** [instruction_codec.h](../../libraries/cog-instructions/include/cog/instruction_codec.h)
@@ -314,6 +328,11 @@ sequenceDiagram
 **Contract review:** A provider and matching context are one future candidate. Safe idle saves a replacement binding before switching references; failed/uncertain save freezes admission. Old-turn borrows survive through drain.
 
 ## P15 — Staged handoff preserves exact context and authority
+
+The public runtime worker configuration places children remotely and retains its
+root locally. It exposes no migration command. This trace covers the existing
+private handoff machinery and its exact-context guards; legacy CLI migration
+scenarios remain unchanged.
 
 ```mermaid
 sequenceDiagram

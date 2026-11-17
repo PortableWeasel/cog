@@ -14,7 +14,7 @@ int main(void)
     host.executors=&slot;host.executor_capacity=1U;host.startup_ready=true;
     host.fixed.worker=(cog_worker_id_t){11U,3U};host.runtime_incarnation=7U;
     slot.app=app;slot.owner_peer=9U;strcpy(slot.session,"root");
-    cli_secret_exchange_t *exchange=&slot.profile;assert(secret_new(exchange,4096U)==COG_OK);
+    cli_secret_exchange_t *exchange=&slot.profile;assert(secret_new(exchange,4096U,0U)==COG_OK);
     cog_cli_control_message_t request={COG_CLI_CONTROL_BOOTSTRAP,COG_CLI_LANE_PROFILE,
         7U,7U,19U,0U,{11U,3U},9U,0U,0U,"root",NULL,0U};
     secret_bind(exchange,&request);exchange->purpose=4U;exchange->reload_attempts_used=1U;exchange->generation=2U;

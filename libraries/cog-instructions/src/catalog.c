@@ -63,6 +63,7 @@ static const cog_instruction_source_t *entry_source(const cog_instruction_catalo
 }
 cog_result_t cog_instruction_catalog_free(cog_instruction_catalog_t *c) {
     if (c) {
+        ci_wipe(c->arena.data, c->arena.capacity);
         free(c->arena.data);
         free(c->sources);
         free(c->entries);

@@ -221,3 +221,10 @@ void ci_hash(const void *p, size_t n, unsigned char out[32]) {
     ci_sha_update(&s, p, n);
     ci_sha_finish(&s, out);
 }
+
+void ci_wipe(void *bytes, size_t capacity) {
+    if (bytes != NULL) {
+        volatile unsigned char *p = bytes;
+        while (capacity-- != 0U) *p++ = 0U;
+    }
+}

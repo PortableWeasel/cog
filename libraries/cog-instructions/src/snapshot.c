@@ -177,6 +177,7 @@ static cog_result_t active_add(cog_instruction_snapshot_t *s, const cog_instruct
 }
 cog_result_t cog_instruction_snapshot_free(cog_instruction_snapshot_t *s) {
     if (s) {
+        ci_wipe(s->arena.data, s->arena.capacity);
         free(s->arena.data);
         free(s->sources);
         free(s->hashes);

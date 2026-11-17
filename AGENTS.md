@@ -5,7 +5,7 @@ routes events (user input, tool results, signals) to handlers (provider calls,
 tool execution, file I/O), validates results, and advances session state.
 Think `pi` / `opencode`, but compiled and embeddable.
 
-**Status: pre-alpha, Phase 6 application integration.** The eight libraries and
+**Status: pre-alpha, Phase 6 application integration.** The ten libraries and
 `cog-cli` have C11 implementations. Public headers remain the contract, and
 `pocs/` contains standalone reference proofs rather than library code.
 
@@ -85,6 +85,8 @@ Scenarios 01–10 live in `tests/scenarios`; scenarios 11–20 live in
 libraries/
   cog-core/       agent loop, session tree, event queue, state machine
   cog-provider/   LLM endpoint registry, provider vtable, model/capability
+  cog-instructions/ bounded sources, AGENTS.md, agents, skills and prompt snapshots
+  cog-runtime/    frontend-neutral execution, context binding and child lifecycle
   cog-toolkit/    tool call/exec/result API
   cog-ipc/        Unix domain socket fabric, session routing, broadcast
   cog-config/     hierarchical config tree with commit/rollback
@@ -93,7 +95,7 @@ libraries/
   cog-orchestrator/  process lifecycle, health, placement
     include/cog/  public headers (the contract)
     src/          private implementation
-applications/cog-cli/  installed CLI, testable app library, scenarios 11–20
+applications/cog-cli/  terminal/options adapter and compatibility fixtures, scenarios 11–20
 pocs/             standalone proofs for risky design questions
 tests/critic-smoke/  header self-containment / strict-warning compile checks
 docs/scenarios/   20 end-to-end validation traces

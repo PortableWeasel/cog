@@ -22,7 +22,7 @@ static int profile_replay(void)
     host.startup_ready=true;host.fixed.worker=(cog_worker_id_t){11U,3U};host.runtime_incarnation=7U;
     host.net_template=(cog_net_config_t){.host_runtime_initialized=true,.dependency_memory=COG_NET_DEPENDENCY_MEMORY_DYNAMIC};
     cli_secret_exchange_t *exchange=&slots[1].profile;
-    REQUIRE(secret_new(exchange,32768U)==COG_OK);
+    REQUIRE(secret_new(exchange,32768U,0U)==COG_OK);
     exchange->source=config;exchange->probe=(cog_cli_bootstrap_probe_t){.session_id="root",.owner={1U,2U},.checkpoint={3U}};
     exchange->purpose=3U;exchange->generation=1U;exchange->acknowledged=true;
     slots[1].pending_profile=config;slots[1].phase=CLI_SLOT_PROFILE;strcpy(slots[1].session,"root");

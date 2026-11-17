@@ -10,7 +10,7 @@
 <title>instruction_support</title>
 <polygon fill="white" stroke="transparent" points="-21.6,21.6 -21.6,-1395.6 1860.6,-1395.6 1860.6,21.6 -21.6,21.6"/>
 <text text-anchor="middle" x="919.5" y="-1354" font-family="DejaVu Sans" font-size="20.00">Cog instruction support — seven approved blocks</text>
-<text text-anchor="middle" x="919.5" y="-1332" font-family="DejaVu Sans" font-size="20.00">Iteration 6 · joined runtime / context / worker contracts; implementation gate under review</text>
+<text text-anchor="middle" x="919.5" y="-1332" font-family="DejaVu Sans" font-size="20.00">Iteration 8 · seven implemented blocks; local and native integration</text>
 <g id="clust3" class="cluster">
 <title>cluster_main</title>
 <polygon fill="white" stroke="#3d83c6" stroke-width="2" stroke-dasharray="5,2" points="319,-385 319,-1232 1611,-1232 1611,-385 319,-385"/>
@@ -18,13 +18,13 @@
 </g>
 <g id="clust4" class="cluster">
 <title>cluster_instructions</title>
-<path fill="white" stroke="#afc6df" stroke-width="2" d="M390,-843C390,-843 1219,-843 1219,-843 1225,-843 1231,-849 1231,-855 1231,-855 1231,-1187 1231,-1187 1231,-1193 1225,-1199 1219,-1199 1219,-1199 390,-1199 390,-1199 384,-1199 378,-1193 378,-1187 378,-1187 378,-855 378,-855 378,-849 384,-843 390,-843"/>
-<text text-anchor="middle" x="804.5" y="-1183" font-family="DejaVu Sans" font-size="15.00">Frontend&#45;neutral cog::instructions · B1–B5</text>
+<path fill="white" stroke="#afc6df" stroke-width="2" d="M429,-843C429,-843 1258,-843 1258,-843 1264,-843 1270,-849 1270,-855 1270,-855 1270,-1187 1270,-1187 1270,-1193 1264,-1199 1258,-1199 1258,-1199 429,-1199 429,-1199 423,-1199 417,-1193 417,-1187 417,-1187 417,-855 417,-855 417,-849 423,-843 429,-843"/>
+<text text-anchor="middle" x="843.5" y="-1183" font-family="DejaVu Sans" font-size="15.00">Frontend&#45;neutral cog::instructions · B1–B5</text>
 </g>
 <g id="clust6" class="cluster">
 <title>cluster_runtime</title>
-<path fill="white" stroke="#afc6df" stroke-width="2" d="M751,-618C751,-618 1062,-618 1062,-618 1068,-618 1074,-624 1074,-630 1074,-630 1074,-801 1074,-801 1074,-807 1068,-813 1062,-813 1062,-813 751,-813 751,-813 745,-813 739,-807 739,-801 739,-801 739,-630 739,-630 739,-624 745,-618 751,-618"/>
-<text text-anchor="middle" x="906.5" y="-797" font-family="DejaVu Sans" font-size="15.00">Planned cog::runtime extraction · fa56e22</text>
+<path fill="white" stroke="#afc6df" stroke-width="2" d="M762,-618C762,-618 1042,-618 1042,-618 1048,-618 1054,-624 1054,-630 1054,-630 1054,-801 1054,-801 1054,-807 1048,-813 1042,-813 1042,-813 762,-813 762,-813 756,-813 750,-807 750,-801 750,-801 750,-630 750,-630 750,-624 756,-618 762,-618"/>
+<text text-anchor="middle" x="902" y="-797" font-family="DejaVu Sans" font-size="15.00">cog::runtime · B7</text>
 </g>
 <g id="clust7" class="cluster">
 <title>cluster_provider</title>
@@ -44,193 +44,193 @@
 <!-- sources -->
 <g id="node1" class="node">
 <title>sources</title>
-<path fill="#edf2f7" stroke="#65758a" d="M966.5,-1322C966.5,-1322 673.5,-1322 673.5,-1322 667.5,-1322 661.5,-1316 661.5,-1310 661.5,-1310 661.5,-1282 661.5,-1282 661.5,-1276 667.5,-1270 673.5,-1270 673.5,-1270 966.5,-1270 966.5,-1270 972.5,-1270 978.5,-1276 978.5,-1282 978.5,-1282 978.5,-1310 978.5,-1310 978.5,-1316 972.5,-1322 966.5,-1322"/>
-<text text-anchor="middle" x="820" y="-1305.2" font-family="DejaVu Sans" font-size="11.00">Explicit host / user / project roots</text>
-<text text-anchor="middle" x="820" y="-1293.2" font-family="DejaVu Sans" font-size="11.00">AGENTS.md · agent Markdown · SKILL.md · resources</text>
-<text text-anchor="middle" x="820" y="-1281.2" font-family="DejaVu Sans" font-size="11.00">Or caller&#45;supplied UTF&#45;8 blobs</text>
+<path fill="#edf2f7" stroke="#65758a" d="M989.5,-1322C989.5,-1322 696.5,-1322 696.5,-1322 690.5,-1322 684.5,-1316 684.5,-1310 684.5,-1310 684.5,-1282 684.5,-1282 684.5,-1276 690.5,-1270 696.5,-1270 696.5,-1270 989.5,-1270 989.5,-1270 995.5,-1270 1001.5,-1276 1001.5,-1282 1001.5,-1282 1001.5,-1310 1001.5,-1310 1001.5,-1316 995.5,-1322 989.5,-1322"/>
+<text text-anchor="middle" x="843" y="-1305.2" font-family="DejaVu Sans" font-size="11.00">Explicit host / user / project roots</text>
+<text text-anchor="middle" x="843" y="-1293.2" font-family="DejaVu Sans" font-size="11.00">AGENTS.md · agent Markdown · SKILL.md · resources</text>
+<text text-anchor="middle" x="843" y="-1281.2" font-family="DejaVu Sans" font-size="11.00">Or caller&#45;supplied UTF&#45;8 blobs</text>
 </g>
 <!-- b1 -->
 <g id="node3" class="node">
 <title>b1</title>
-<path fill="#fff2bf" stroke="#65758a" d="M817.5,-1166C817.5,-1166 588.5,-1166 588.5,-1166 582.5,-1166 576.5,-1160 576.5,-1154 576.5,-1154 576.5,-1126 576.5,-1126 576.5,-1120 582.5,-1114 588.5,-1114 588.5,-1114 817.5,-1114 817.5,-1114 823.5,-1114 829.5,-1120 829.5,-1126 829.5,-1126 829.5,-1154 829.5,-1154 829.5,-1160 823.5,-1166 817.5,-1166"/>
-<text text-anchor="middle" x="703" y="-1149.2" font-family="DejaVu Sans" font-size="11.00">B1 &#160;Shared bounded source reader</text>
-<text text-anchor="middle" x="703" y="-1137.2" font-family="DejaVu Sans" font-size="11.00">cog_instruction_source_reader_t</text>
-<text text-anchor="middle" x="703" y="-1125.2" font-family="DejaVu Sans" font-size="11.00">Explicit roots · read / scope / scan quanta</text>
+<path fill="#d9efdb" stroke="#41834a" d="M855.5,-1166C855.5,-1166 626.5,-1166 626.5,-1166 620.5,-1166 614.5,-1160 614.5,-1154 614.5,-1154 614.5,-1126 614.5,-1126 614.5,-1120 620.5,-1114 626.5,-1114 626.5,-1114 855.5,-1114 855.5,-1114 861.5,-1114 867.5,-1120 867.5,-1126 867.5,-1126 867.5,-1154 867.5,-1154 867.5,-1160 861.5,-1166 855.5,-1166"/>
+<text text-anchor="middle" x="741" y="-1149.2" font-family="DejaVu Sans" font-size="11.00">B1 &#160;Shared bounded source reader</text>
+<text text-anchor="middle" x="741" y="-1137.2" font-family="DejaVu Sans" font-size="11.00">cog_instruction_source_reader_t</text>
+<text text-anchor="middle" x="741" y="-1125.2" font-family="DejaVu Sans" font-size="11.00">Explicit roots · read / scope / scan quanta</text>
 </g>
 <!-- sources&#45;&gt;b1 -->
 <g id="edge3" class="edge">
 <title>sources&#45;&gt;b1</title>
-<path fill="none" stroke="#53677d" d="M788.73,-1269.87C775.9,-1259.56 764,-1250 764,-1250 764,-1250 738.52,-1204.46 720.49,-1172.25"/>
-<polygon fill="#53677d" stroke="#53677d" points="722.55,-1170.92 716.99,-1166.01 718.28,-1173.31 722.55,-1170.92"/>
-<text text-anchor="middle" x="811.5" y="-1242.8" font-family="DejaVu Sans" font-size="9.00">bounded source jobs</text>
+<path fill="none" stroke="#53677d" d="M820.1,-1269.87C810.71,-1259.56 802,-1250 802,-1250 802,-1250 776.52,-1204.46 758.49,-1172.25"/>
+<polygon fill="#53677d" stroke="#53677d" points="760.55,-1170.92 754.99,-1166.01 756.28,-1173.31 760.55,-1170.92"/>
+<text text-anchor="middle" x="849.5" y="-1242.8" font-family="DejaVu Sans" font-size="9.00">bounded source jobs</text>
 </g>
 <!-- blobs -->
 <g id="node7" class="node">
 <title>blobs</title>
-<text text-anchor="middle" x="828" y="-1052.5" font-family="DejaVu Sans" font-size="10.00">Owned source views / caller blobs</text>
+<text text-anchor="middle" x="867" y="-1052.5" font-family="DejaVu Sans" font-size="10.00">Owned source views / caller blobs</text>
 </g>
 <!-- sources&#45;&gt;blobs -->
 <g id="edge5" class="edge">
 <title>sources&#45;&gt;blobs</title>
-<path fill="none" stroke="#53677d" stroke-dasharray="1,5" d="M842.34,-1269.87C851.5,-1259.56 860,-1250 860,-1250 860,-1250 860,-1240 860,-1240 860,-1240 841,-1114 841,-1114 841,-1114 836.99,-1096.1 833.42,-1080.19"/>
-<polygon fill="#53677d" stroke="#53677d" points="835.75,-1079.38 831.83,-1073.09 830.97,-1080.45 835.75,-1079.38"/>
-<text text-anchor="middle" x="884" y="-1137.8" font-family="DejaVu Sans" font-size="9.00">caller blobs</text>
+<path fill="none" stroke="#53677d" stroke-dasharray="1,5" d="M873.72,-1269.87C886.31,-1259.56 898,-1250 898,-1250 898,-1250 898,-1240 898,-1240 898,-1240 879,-1114 879,-1114 879,-1114 875.3,-1096.1 872,-1080.19"/>
+<polygon fill="#53677d" stroke="#53677d" points="874.35,-1079.45 870.54,-1073.09 869.55,-1080.44 874.35,-1079.45"/>
+<text text-anchor="middle" x="922" y="-1137.8" font-family="DejaVu Sans" font-size="9.00">caller blobs</text>
 </g>
 <!-- ui -->
 <g id="node2" class="node">
 <title>ui</title>
-<path fill="#fff2bf" stroke="#65758a" d="M1390,-1322C1390,-1322 1148,-1322 1148,-1322 1142,-1322 1136,-1316 1136,-1310 1136,-1310 1136,-1282 1136,-1282 1136,-1276 1142,-1270 1148,-1270 1148,-1270 1390,-1270 1390,-1270 1396,-1270 1402,-1276 1402,-1282 1402,-1282 1402,-1310 1402,-1310 1402,-1316 1396,-1322 1390,-1322"/>
-<text text-anchor="middle" x="1269" y="-1305.2" font-family="DejaVu Sans" font-size="11.00">Minimal CLI / test PoC / other UI</text>
-<text text-anchor="middle" x="1269" y="-1293.2" font-family="DejaVu Sans" font-size="11.00">Arguments + input + rendering only</text>
-<text text-anchor="middle" x="1269" y="-1281.2" font-family="DejaVu Sans" font-size="11.00">No skill/agent file loading or execution state</text>
+<path fill="#d9efdb" stroke="#65758a" d="M1429,-1322C1429,-1322 1187,-1322 1187,-1322 1181,-1322 1175,-1316 1175,-1310 1175,-1310 1175,-1282 1175,-1282 1175,-1276 1181,-1270 1187,-1270 1187,-1270 1429,-1270 1429,-1270 1435,-1270 1441,-1276 1441,-1282 1441,-1282 1441,-1310 1441,-1310 1441,-1316 1435,-1322 1429,-1322"/>
+<text text-anchor="middle" x="1308" y="-1305.2" font-family="DejaVu Sans" font-size="11.00">Minimal CLI / test PoC / other UI</text>
+<text text-anchor="middle" x="1308" y="-1293.2" font-family="DejaVu Sans" font-size="11.00">Arguments + input + rendering only</text>
+<text text-anchor="middle" x="1308" y="-1281.2" font-family="DejaVu Sans" font-size="11.00">No skill/agent file loading or execution state</text>
 </g>
 <!-- app -->
 <g id="node10" class="node">
 <title>app</title>
-<path fill="#fff2bf" stroke="#65758a" d="M1037.5,-678C1037.5,-678 774.5,-678 774.5,-678 768.5,-678 762.5,-672 762.5,-666 762.5,-666 762.5,-638 762.5,-638 762.5,-632 768.5,-626 774.5,-626 774.5,-626 1037.5,-626 1037.5,-626 1043.5,-626 1049.5,-632 1049.5,-638 1049.5,-638 1049.5,-666 1049.5,-666 1049.5,-672 1043.5,-678 1037.5,-678"/>
-<text text-anchor="middle" x="906" y="-661.2" font-family="DejaVu Sans" font-size="11.00">Headless runtime boundary (planned)</text>
-<text text-anchor="middle" x="906" y="-649.2" font-family="DejaVu Sans" font-size="11.00">Extract existing policy / tool / turn / config loop</text>
-<text text-anchor="middle" x="906" y="-637.2" font-family="DejaVu Sans" font-size="11.00">All send and preflight paths use one B5/B6 view</text>
+<path fill="#d9efdb" stroke="#65758a" d="M1033.5,-678C1033.5,-678 770.5,-678 770.5,-678 764.5,-678 758.5,-672 758.5,-666 758.5,-666 758.5,-638 758.5,-638 758.5,-632 764.5,-626 770.5,-626 770.5,-626 1033.5,-626 1033.5,-626 1039.5,-626 1045.5,-632 1045.5,-638 1045.5,-638 1045.5,-666 1045.5,-666 1045.5,-672 1039.5,-678 1033.5,-678"/>
+<text text-anchor="middle" x="902" y="-661.2" font-family="DejaVu Sans" font-size="11.00">Headless runtime boundary</text>
+<text text-anchor="middle" x="902" y="-649.2" font-family="DejaVu Sans" font-size="11.00">Reuse policy / tool / turn / config loop</text>
+<text text-anchor="middle" x="902" y="-637.2" font-family="DejaVu Sans" font-size="11.00">All send and preflight paths use one B5/B6 view</text>
 </g>
 <!-- ui&#45;&gt;app -->
 <g id="edge4" class="edge">
 <title>ui&#45;&gt;app</title>
-<path fill="none" stroke="#3d83c6" stroke-dasharray="5,2" d="M1269,-1262.68C1269,-1217.52 1269,-1141 1269,-1141 1269,-1141 1269,-1141 1269,-753 1269,-753 1253,-698 1253,-698 1253,-698 1093.76,-682 1057.12,-678.1"/>
-<polygon fill="#3d83c6" stroke="#3d83c6" points="1266.55,-1262.91 1269,-1269.91 1271.45,-1262.91 1266.55,-1262.91"/>
-<polygon fill="#3d83c6" stroke="#3d83c6" points="1056.96,-675.62 1049.73,-677.28 1056.41,-680.49 1056.96,-675.62"/>
-<text text-anchor="middle" x="1328" y="-967.8" font-family="DejaVu Sans" font-size="9.00">control / immutable views</text>
+<path fill="none" stroke="#3d83c6" stroke-dasharray="5,2" d="M1308,-1262.68C1308,-1217.52 1308,-1141 1308,-1141 1308,-1141 1308,-1141 1308,-753 1308,-753 1292,-698 1292,-698 1292,-698 1093.25,-681.57 1052.8,-677.96"/>
+<polygon fill="#3d83c6" stroke="#3d83c6" points="1305.55,-1262.91 1308,-1269.91 1310.45,-1262.91 1305.55,-1262.91"/>
+<polygon fill="#3d83c6" stroke="#3d83c6" points="1052.93,-675.51 1045.73,-677.28 1052.46,-680.39 1052.93,-675.51"/>
+<text text-anchor="middle" x="1367" y="-967.8" font-family="DejaVu Sans" font-size="9.00">control / immutable views</text>
 </g>
 <!-- b1&#45;&gt;blobs -->
 <g id="edge6" class="edge">
 <title>b1&#45;&gt;blobs</title>
-<path fill="none" stroke="#53677d" d="M740.84,-1113.87C758.51,-1102.14 779.3,-1088.34 796.14,-1077.15"/>
-<polygon fill="#53677d" stroke="#53677d" points="797.68,-1079.07 802.16,-1073.16 794.97,-1074.99 797.68,-1079.07"/>
+<path fill="none" stroke="#53677d" d="M779.15,-1113.87C796.95,-1102.14 817.91,-1088.34 834.89,-1077.15"/>
+<polygon fill="#53677d" stroke="#53677d" points="836.45,-1079.06 840.95,-1073.16 833.76,-1074.96 836.45,-1079.06"/>
 </g>
 <!-- b2 -->
 <g id="node4" class="node">
 <title>b2</title>
-<path fill="#fff2bf" stroke="#65758a" d="M1211,-996C1211,-996 993,-996 993,-996 987,-996 981,-990 981,-984 981,-984 981,-956 981,-956 981,-950 987,-944 993,-944 993,-944 1211,-944 1211,-944 1217,-944 1223,-950 1223,-956 1223,-956 1223,-984 1223,-984 1223,-990 1217,-996 1211,-996"/>
-<text text-anchor="middle" x="1102" y="-979.2" font-family="DejaVu Sans" font-size="11.00">B2 &#160;AGENTS.md scope resolver</text>
-<text text-anchor="middle" x="1102" y="-967.2" font-family="DejaVu Sans" font-size="11.00">cog_instruction_source_t</text>
-<text text-anchor="middle" x="1102" y="-955.2" font-family="DejaVu Sans" font-size="11.00">Root → target directory; no sibling rules</text>
+<path fill="#d9efdb" stroke="#41834a" d="M1250,-996C1250,-996 1032,-996 1032,-996 1026,-996 1020,-990 1020,-984 1020,-984 1020,-956 1020,-956 1020,-950 1026,-944 1032,-944 1032,-944 1250,-944 1250,-944 1256,-944 1262,-950 1262,-956 1262,-956 1262,-984 1262,-984 1262,-990 1256,-996 1250,-996"/>
+<text text-anchor="middle" x="1141" y="-979.2" font-family="DejaVu Sans" font-size="11.00">B2 &#160;AGENTS.md scope resolver</text>
+<text text-anchor="middle" x="1141" y="-967.2" font-family="DejaVu Sans" font-size="11.00">cog_instruction_source_t</text>
+<text text-anchor="middle" x="1141" y="-955.2" font-family="DejaVu Sans" font-size="11.00">Root → target directory; no sibling rules</text>
 </g>
 <!-- b3 -->
 <g id="node5" class="node">
 <title>b3</title>
-<path fill="#fff2bf" stroke="#65758a" d="M640,-996C640,-996 398,-996 398,-996 392,-996 386,-990 386,-984 386,-984 386,-956 386,-956 386,-950 392,-944 398,-944 398,-944 640,-944 640,-944 646,-944 652,-950 652,-956 652,-956 652,-984 652,-984 652,-990 646,-996 640,-996"/>
-<text text-anchor="middle" x="519" y="-979.2" font-family="DejaVu Sans" font-size="11.00">B3 &#160;Named agent catalog</text>
-<text text-anchor="middle" x="519" y="-967.2" font-family="DejaVu Sans" font-size="11.00">cog_instruction_entry_t</text>
-<text text-anchor="middle" x="519" y="-955.2" font-family="DejaVu Sans" font-size="11.00">Role + model constraint + capability subset</text>
+<path fill="#d9efdb" stroke="#41834a" d="M679,-996C679,-996 437,-996 437,-996 431,-996 425,-990 425,-984 425,-984 425,-956 425,-956 425,-950 431,-944 437,-944 437,-944 679,-944 679,-944 685,-944 691,-950 691,-956 691,-956 691,-984 691,-984 691,-990 685,-996 679,-996"/>
+<text text-anchor="middle" x="558" y="-979.2" font-family="DejaVu Sans" font-size="11.00">B3 &#160;Named agent catalog</text>
+<text text-anchor="middle" x="558" y="-967.2" font-family="DejaVu Sans" font-size="11.00">cog_instruction_entry_t</text>
+<text text-anchor="middle" x="558" y="-955.2" font-family="DejaVu Sans" font-size="11.00">Role + model constraint + capability subset</text>
 </g>
 <!-- b2&#45;&gt;b3 -->
 <!-- b5 -->
 <g id="node8" class="node">
 <title>b5</title>
-<path fill="#fff2bf" stroke="#65758a" d="M1009,-903C1009,-903 719,-903 719,-903 713,-903 707,-897 707,-891 707,-891 707,-863 707,-863 707,-857 713,-851 719,-851 719,-851 1009,-851 1009,-851 1015,-851 1021,-857 1021,-863 1021,-863 1021,-891 1021,-891 1021,-897 1015,-903 1009,-903"/>
-<text text-anchor="middle" x="864" y="-886.2" font-family="DejaVu Sans" font-size="11.00">B5 &#160;One prompt composer</text>
-<text text-anchor="middle" x="864" y="-874.2" font-family="DejaVu Sans" font-size="11.00">cog_instruction_snapshot_t</text>
-<text text-anchor="middle" x="864" y="-862.2" font-family="DejaVu Sans" font-size="11.00">Ordered fragments + effective static tool references</text>
+<path fill="#d9efdb" stroke="#41834a" d="M1023,-903C1023,-903 733,-903 733,-903 727,-903 721,-897 721,-891 721,-891 721,-863 721,-863 721,-857 727,-851 733,-851 733,-851 1023,-851 1023,-851 1029,-851 1035,-857 1035,-863 1035,-863 1035,-891 1035,-891 1035,-897 1029,-903 1023,-903"/>
+<text text-anchor="middle" x="878" y="-886.2" font-family="DejaVu Sans" font-size="11.00">B5 &#160;One prompt composer</text>
+<text text-anchor="middle" x="878" y="-874.2" font-family="DejaVu Sans" font-size="11.00">cog_instruction_snapshot_t</text>
+<text text-anchor="middle" x="878" y="-862.2" font-family="DejaVu Sans" font-size="11.00">Ordered fragments + effective static tool references</text>
 </g>
 <!-- b2&#45;&gt;b5 -->
 <g id="edge10" class="edge">
 <title>b2&#45;&gt;b5</title>
-<path fill="none" stroke="#53677d" d="M1036.34,-943.89C1005.25,-932.01 968.04,-917.78 936.17,-905.59"/>
-<polygon fill="#53677d" stroke="#53677d" points="936.86,-903.24 929.45,-903.03 935.11,-907.81 936.86,-903.24"/>
+<path fill="none" stroke="#53677d" d="M1068.44,-943.89C1033.94,-931.96 992.63,-917.66 957.31,-905.44"/>
+<polygon fill="#53677d" stroke="#53677d" points="957.74,-903 950.33,-903.03 956.14,-907.63 957.74,-903"/>
 </g>
 <!-- b4 -->
 <g id="node6" class="node">
 <title>b4</title>
-<path fill="#fff2bf" stroke="#65758a" d="M946,-996C946,-996 710,-996 710,-996 704,-996 698,-990 698,-984 698,-984 698,-956 698,-956 698,-950 704,-944 710,-944 710,-944 946,-944 946,-944 952,-944 958,-950 958,-956 958,-956 958,-984 958,-984 958,-990 952,-996 946,-996"/>
-<text text-anchor="middle" x="828" y="-979.2" font-family="DejaVu Sans" font-size="11.00">B4 &#160;Skills and activation</text>
-<text text-anchor="middle" x="828" y="-967.2" font-family="DejaVu Sans" font-size="11.00">cog_instruction_catalog_t</text>
-<text text-anchor="middle" x="828" y="-955.2" font-family="DejaVu Sans" font-size="11.00">Metadata first; selected bodies / resources</text>
+<path fill="#d9efdb" stroke="#41834a" d="M985,-996C985,-996 749,-996 749,-996 743,-996 737,-990 737,-984 737,-984 737,-956 737,-956 737,-950 743,-944 749,-944 749,-944 985,-944 985,-944 991,-944 997,-950 997,-956 997,-956 997,-984 997,-984 997,-990 991,-996 985,-996"/>
+<text text-anchor="middle" x="867" y="-979.2" font-family="DejaVu Sans" font-size="11.00">B4 &#160;Skills and activation</text>
+<text text-anchor="middle" x="867" y="-967.2" font-family="DejaVu Sans" font-size="11.00">cog_instruction_catalog_t</text>
+<text text-anchor="middle" x="867" y="-955.2" font-family="DejaVu Sans" font-size="11.00">Metadata first; selected bodies / resources</text>
 </g>
 <!-- b3&#45;&gt;b4 -->
 <!-- b3&#45;&gt;b5 -->
 <g id="edge11" class="edge">
 <title>b3&#45;&gt;b5</title>
-<path fill="none" stroke="#53677d" d="M614.19,-943.89C660.19,-931.76 715.44,-917.18 762.28,-904.83"/>
-<polygon fill="#53677d" stroke="#53677d" points="762.98,-907.18 769.12,-903.03 761.73,-902.44 762.98,-907.18"/>
+<path fill="none" stroke="#53677d" d="M646.29,-943.89C688.78,-931.81 739.79,-917.3 783.11,-904.98"/>
+<polygon fill="#53677d" stroke="#53677d" points="783.94,-907.3 790,-903.03 782.6,-902.58 783.94,-907.3"/>
 </g>
 <!-- b4&#45;&gt;b5 -->
 <g id="edge12" class="edge">
 <title>b4&#45;&gt;b5</title>
-<path fill="none" stroke="#53677d" d="M838.03,-943.65C842.16,-933.2 847,-920.97 851.37,-909.92"/>
-<polygon fill="#53677d" stroke="#53677d" points="853.73,-910.62 854.03,-903.21 849.17,-908.82 853.73,-910.62"/>
+<path fill="none" stroke="#53677d" d="M870.06,-943.65C871.32,-933.3 872.78,-921.2 874.1,-910.23"/>
+<polygon fill="#53677d" stroke="#53677d" points="876.54,-910.46 874.95,-903.21 871.68,-909.87 876.54,-910.46"/>
 </g>
 <!-- blobs&#45;&gt;b2 -->
 <g id="edge7" class="edge">
 <title>blobs&#45;&gt;b2</title>
-<path fill="none" stroke="#53677d" d="M884.44,-1036.9C921.39,-1025.71 970.47,-1010.84 1012.67,-998.06"/>
-<polygon fill="#53677d" stroke="#53677d" points="1013.39,-1000.4 1019.37,-996.03 1011.97,-995.71 1013.39,-1000.4"/>
+<path fill="none" stroke="#53677d" d="M923.44,-1036.9C960.39,-1025.71 1009.47,-1010.84 1051.67,-998.06"/>
+<polygon fill="#53677d" stroke="#53677d" points="1052.39,-1000.4 1058.37,-996.03 1050.97,-995.71 1052.39,-1000.4"/>
 </g>
 <!-- blobs&#45;&gt;b3 -->
 <g id="edge8" class="edge">
 <title>blobs&#45;&gt;b3</title>
-<path fill="none" stroke="#53677d" d="M764.35,-1036.9C722.5,-1025.66 666.87,-1010.72 619.16,-997.9"/>
-<polygon fill="#53677d" stroke="#53677d" points="619.58,-995.48 612.18,-996.03 618.3,-1000.21 619.58,-995.48"/>
+<path fill="none" stroke="#53677d" d="M803.35,-1036.9C761.5,-1025.66 705.87,-1010.72 658.16,-997.9"/>
+<polygon fill="#53677d" stroke="#53677d" points="658.58,-995.48 651.18,-996.03 657.3,-1000.21 658.58,-995.48"/>
 </g>
 <!-- blobs&#45;&gt;b4 -->
 <g id="edge9" class="edge">
 <title>blobs&#45;&gt;b4</title>
-<path fill="none" stroke="#53677d" d="M828,-1036.8C828,-1027.14 828,-1014.77 828,-1003.37"/>
-<polygon fill="#53677d" stroke="#53677d" points="830.45,-1003.05 828,-996.05 825.55,-1003.05 830.45,-1003.05"/>
+<path fill="none" stroke="#53677d" d="M867,-1036.8C867,-1027.14 867,-1014.77 867,-1003.37"/>
+<polygon fill="#53677d" stroke="#53677d" points="869.45,-1003.05 867,-996.05 864.55,-1003.05 869.45,-1003.05"/>
 </g>
 <!-- b7 -->
 <g id="node9" class="node">
 <title>b7</title>
-<path fill="#fff2bf" stroke="#65758a" d="M1008.5,-780C1008.5,-780 763.5,-780 763.5,-780 757.5,-780 751.5,-774 751.5,-768 751.5,-768 751.5,-740 751.5,-740 751.5,-734 757.5,-728 763.5,-728 763.5,-728 1008.5,-728 1008.5,-728 1014.5,-728 1020.5,-734 1020.5,-740 1020.5,-740 1020.5,-768 1020.5,-768 1020.5,-774 1014.5,-780 1008.5,-780"/>
-<text text-anchor="middle" x="886" y="-763.2" font-family="DejaVu Sans" font-size="11.00">B7 &#160;Snapshot lifecycle / runtime binding</text>
-<text text-anchor="middle" x="886" y="-751.2" font-family="DejaVu Sans" font-size="11.00">cog_instruction_manifest_t</text>
-<text text-anchor="middle" x="886" y="-739.2" font-family="DejaVu Sans" font-size="11.00">Full bounded catalog + exact resolved bytes</text>
+<path fill="#d9efdb" stroke="#65758a" d="M1019.5,-780C1019.5,-780 774.5,-780 774.5,-780 768.5,-780 762.5,-774 762.5,-768 762.5,-768 762.5,-740 762.5,-740 762.5,-734 768.5,-728 774.5,-728 774.5,-728 1019.5,-728 1019.5,-728 1025.5,-728 1031.5,-734 1031.5,-740 1031.5,-740 1031.5,-768 1031.5,-768 1031.5,-774 1025.5,-780 1019.5,-780"/>
+<text text-anchor="middle" x="897" y="-763.2" font-family="DejaVu Sans" font-size="11.00">B7 &#160;Snapshot lifecycle / runtime binding</text>
+<text text-anchor="middle" x="897" y="-751.2" font-family="DejaVu Sans" font-size="11.00">cog_instruction_manifest_t</text>
+<text text-anchor="middle" x="897" y="-739.2" font-family="DejaVu Sans" font-size="11.00">Full bounded catalog + exact resolved bytes</text>
 </g>
 <!-- b5&#45;&gt;b7 -->
 <g id="edge13" class="edge">
 <title>b5&#45;&gt;b7</title>
-<path fill="none" stroke="#53677d" d="M868.56,-850.93C871.92,-832.43 876.52,-807.12 880.16,-787.14"/>
-<polygon fill="#53677d" stroke="#53677d" points="882.61,-787.36 881.45,-780.04 877.78,-786.49 882.61,-787.36"/>
-<text text-anchor="middle" x="929.5" y="-823.8" font-family="DejaVu Sans" font-size="9.00">resolved immutable view</text>
+<path fill="none" stroke="#53677d" d="M881.94,-850.93C884.84,-832.43 888.82,-807.12 891.95,-787.14"/>
+<polygon fill="#53677d" stroke="#53677d" points="894.4,-787.33 893.07,-780.04 889.56,-786.57 894.4,-787.33"/>
+<text text-anchor="middle" x="942.5" y="-823.8" font-family="DejaVu Sans" font-size="9.00">resolved immutable view</text>
 </g>
 <!-- b7&#45;&gt;app -->
 <g id="edge14" class="edge">
 <title>b7&#45;&gt;app</title>
-<path fill="none" stroke="#53677d" d="M858.08,-727.87C846.62,-717.56 836,-708 836,-708 836,-708 836,-698 836,-698 836,-698 847.39,-690.68 860.98,-681.94"/>
-<polygon fill="#53677d" stroke="#53677d" points="862.34,-683.98 866.91,-678.13 859.69,-679.86 862.34,-683.98"/>
-<text text-anchor="middle" x="871" y="-700.8" font-family="DejaVu Sans" font-size="9.00">pinned context</text>
+<path fill="none" stroke="#53677d" d="M864.61,-727.87C851.32,-717.56 839,-708 839,-708 839,-708 839,-698 839,-698 839,-698 848.89,-690.94 860.82,-682.41"/>
+<polygon fill="#53677d" stroke="#53677d" points="862.54,-684.19 866.82,-678.13 859.7,-680.21 862.54,-684.19"/>
+<text text-anchor="middle" x="874" y="-700.8" font-family="DejaVu Sans" font-size="9.00">pinned context</text>
 </g>
 <!-- durablegap -->
 <g id="node17" class="node">
 <title>durablegap</title>
-<path fill="#fff2bf" stroke="#65758a" d="M1438,-678C1438,-678 1130,-678 1130,-678 1124,-678 1118,-672 1118,-666 1118,-666 1118,-638 1118,-638 1118,-632 1124,-626 1130,-626 1130,-626 1438,-626 1438,-626 1444,-626 1450,-632 1450,-638 1450,-638 1450,-666 1450,-666 1450,-672 1444,-678 1438,-678"/>
-<text text-anchor="middle" x="1284" y="-661.2" font-family="DejaVu Sans" font-size="11.00">JOINED DRAFT CONTRACT</text>
-<text text-anchor="middle" x="1284" y="-649.2" font-family="DejaVu Sans" font-size="11.00">COGSNAP3 immutable context / branch revisions</text>
-<text text-anchor="middle" x="1284" y="-637.2" font-family="DejaVu Sans" font-size="11.00">Atomic result + context checkpoint / backend capability</text>
+<path fill="#d9efdb" stroke="#41834a" d="M1434,-678C1434,-678 1126,-678 1126,-678 1120,-678 1114,-672 1114,-666 1114,-666 1114,-638 1114,-638 1114,-632 1120,-626 1126,-626 1126,-626 1434,-626 1434,-626 1440,-626 1446,-632 1446,-638 1446,-638 1446,-666 1446,-666 1446,-672 1440,-678 1434,-678"/>
+<text text-anchor="middle" x="1280" y="-661.2" font-family="DejaVu Sans" font-size="11.00">IMPLEMENTED CORE CONTRACT</text>
+<text text-anchor="middle" x="1280" y="-649.2" font-family="DejaVu Sans" font-size="11.00">COGSNAP3 immutable context / branch revisions</text>
+<text text-anchor="middle" x="1280" y="-637.2" font-family="DejaVu Sans" font-size="11.00">Atomic result + context checkpoint / backend capability</text>
 </g>
 <!-- b7&#45;&gt;durablegap -->
 <g id="edge22" class="edge">
 <title>b7&#45;&gt;durablegap</title>
-<path fill="none" stroke="#bd4b40" stroke-dasharray="5,2" d="M981.48,-727.99C1036.95,-713.47 1096,-698 1096,-698 1096,-698 1132.15,-689.35 1172.74,-679.63"/>
-<polygon fill="#bd4b40" stroke="#bd4b40" points="1173.32,-682.01 1179.55,-678 1172.18,-677.25 1173.32,-682.01"/>
+<path fill="none" stroke="#41834a" stroke-dasharray="5,2" d="M993.15,-727.89C1049.26,-713.25 1120.03,-694.77 1177.23,-679.83"/>
+<polygon fill="#41834a" stroke="#41834a" points="1177.99,-682.17 1184.14,-678.03 1176.75,-677.43 1177.99,-682.17"/>
 </g>
 <!-- workergap -->
 <g id="node19" class="node">
 <title>workergap</title>
-<path fill="#fff2bf" stroke="#65758a" d="M289.5,-555C289.5,-555 28.5,-555 28.5,-555 22.5,-555 16.5,-549 16.5,-543 16.5,-543 16.5,-515 16.5,-515 16.5,-509 22.5,-503 28.5,-503 28.5,-503 289.5,-503 289.5,-503 295.5,-503 301.5,-509 301.5,-515 301.5,-515 301.5,-543 301.5,-543 301.5,-549 295.5,-555 289.5,-555"/>
-<text text-anchor="middle" x="159" y="-538.2" font-family="DejaVu Sans" font-size="11.00">JOINED DRAFT CONTRACT</text>
+<path fill="#d9efdb" stroke="#41834a" d="M289.5,-555C289.5,-555 28.5,-555 28.5,-555 22.5,-555 16.5,-549 16.5,-543 16.5,-543 16.5,-515 16.5,-515 16.5,-509 22.5,-503 28.5,-503 28.5,-503 289.5,-503 289.5,-503 295.5,-503 301.5,-509 301.5,-515 301.5,-515 301.5,-543 301.5,-543 301.5,-549 295.5,-555 289.5,-555"/>
+<text text-anchor="middle" x="159" y="-538.2" font-family="DejaVu Sans" font-size="11.00">NATIVE CONTEXT TRANSACTIONS</text>
 <text text-anchor="middle" x="159" y="-526.2" font-family="DejaVu Sans" font-size="11.00">CGB2 exact CGIM + pinned catalog</text>
 <text text-anchor="middle" x="159" y="-514.2" font-family="DejaVu Sans" font-size="11.00">Scope / activation / resource · COMMIT / READY</text>
 </g>
 <!-- b7&#45;&gt;workergap -->
 <g id="edge27" class="edge">
 <title>b7&#45;&gt;workergap</title>
-<path fill="none" stroke="#bd4b40" stroke-dasharray="5,2" d="M794.72,-727.92C715.35,-706.12 613,-678 613,-678 613,-678 322,-588 322,-588 322,-588 278.39,-572.48 236.28,-557.5"/>
-<polygon fill="#bd4b40" stroke="#bd4b40" points="236.96,-555.14 229.55,-555.1 235.32,-559.76 236.96,-555.14"/>
-<text text-anchor="middle" x="682" y="-649.8" font-family="DejaVu Sans" font-size="9.00">resolved bytes, not host paths</text>
+<path fill="none" stroke="#41834a" stroke-dasharray="5,2" d="M800.7,-727.92C716.98,-706.12 609,-678 609,-678 609,-678 322,-588 322,-588 322,-588 278.39,-572.48 236.28,-557.5"/>
+<polygon fill="#41834a" stroke="#41834a" points="236.96,-555.14 229.55,-555.1 235.32,-559.76 236.96,-555.14"/>
+<text text-anchor="middle" x="678" y="-649.8" font-family="DejaVu Sans" font-size="9.00">resolved bytes, not host paths</text>
 </g>
 <!-- b6 -->
 <g id="node11" class="node">
 <title>b6</title>
-<path fill="#fff2bf" stroke="#65758a" d="M594.5,-555C594.5,-555 347.5,-555 347.5,-555 341.5,-555 335.5,-549 335.5,-543 335.5,-543 335.5,-515 335.5,-515 335.5,-509 341.5,-503 347.5,-503 347.5,-503 594.5,-503 594.5,-503 600.5,-503 606.5,-509 606.5,-515 606.5,-515 606.5,-543 606.5,-543 606.5,-549 600.5,-555 594.5,-555"/>
+<path fill="#d9efdb" stroke="#41834a" d="M594.5,-555C594.5,-555 347.5,-555 347.5,-555 341.5,-555 335.5,-549 335.5,-543 335.5,-543 335.5,-515 335.5,-515 335.5,-509 341.5,-503 347.5,-503 347.5,-503 594.5,-503 594.5,-503 600.5,-503 606.5,-509 606.5,-515 606.5,-515 606.5,-543 606.5,-543 606.5,-549 600.5,-555 594.5,-555"/>
 <text text-anchor="middle" x="471" y="-538.2" font-family="DejaVu Sans" font-size="11.00">B6 &#160;Static provider template codec</text>
 <text text-anchor="middle" x="471" y="-526.2" font-family="DejaVu Sans" font-size="11.00">cog_provider_prompt_template_t / compiler_t</text>
 <text text-anchor="middle" x="471" y="-514.2" font-family="DejaVu Sans" font-size="11.00">Strict tool JSON + instruction role mapping</text>
@@ -238,9 +238,9 @@
 <!-- app&#45;&gt;b6 -->
 <g id="edge15" class="edge">
 <title>app&#45;&gt;b6</title>
-<path fill="none" stroke="#53677d" d="M788.22,-626C739.42,-615.64 694,-606 694,-606 694,-606 618,-588 618,-588 618,-588 578.99,-572.61 541.17,-557.68"/>
+<path fill="none" stroke="#53677d" d="M784.78,-626C736.21,-615.64 691,-606 691,-606 691,-606 618,-588 618,-588 618,-588 578.99,-572.61 541.17,-557.68"/>
 <polygon fill="#53677d" stroke="#53677d" points="542.03,-555.39 534.62,-555.1 540.23,-559.95 542.03,-555.39"/>
-<text text-anchor="middle" x="763.5" y="-598.8" font-family="DejaVu Sans" font-size="9.00">same input for send / preflight</text>
+<text text-anchor="middle" x="760.5" y="-598.8" font-family="DejaVu Sans" font-size="9.00">same input for send / preflight</text>
 </g>
 <!-- core -->
 <g id="node13" class="node">
@@ -252,8 +252,8 @@
 <!-- app&#45;&gt;core -->
 <g id="edge20" class="edge">
 <title>app&#45;&gt;core</title>
-<path fill="none" stroke="#41834a" d="M874.09,-625.93C847.06,-604.69 808.59,-574.46 782.09,-553.64"/>
-<polygon fill="#41834a" stroke="#41834a" points="783.31,-551.49 776.29,-549.09 780.28,-555.34 783.31,-551.49"/>
+<path fill="none" stroke="#41834a" d="M870.92,-625.93C844.59,-604.69 807.12,-574.46 781.31,-553.64"/>
+<polygon fill="#41834a" stroke="#41834a" points="782.65,-551.58 775.66,-549.09 779.57,-555.39 782.65,-551.58"/>
 </g>
 <!-- toolkit -->
 <g id="node14" class="node">
@@ -266,7 +266,7 @@
 <!-- app&#45;&gt;toolkit -->
 <g id="edge19" class="edge">
 <title>app&#45;&gt;toolkit</title>
-<path fill="none" stroke="#41834a" d="M941.34,-625.75C961.59,-611.3 983,-596 983,-596 983,-596 1128,-588 1128,-588 1128,-588 1155.97,-573.11 1183.58,-558.43"/>
+<path fill="none" stroke="#41834a" d="M991.97,-625.92C1054.99,-608.35 1128,-588 1128,-588 1128,-588 1155.97,-573.11 1183.58,-558.43"/>
 <polygon fill="#41834a" stroke="#41834a" points="1184.8,-560.55 1189.82,-555.1 1182.49,-556.23 1184.8,-560.55"/>
 </g>
 <!-- ipcorch -->
@@ -279,7 +279,7 @@
 <!-- app&#45;&gt;ipcorch -->
 <g id="edge25" class="edge">
 <title>app&#45;&gt;ipcorch</title>
-<path fill="none" stroke="#41834a" d="M1018.17,-625.99C1038.82,-621.39 1054,-618 1054,-618 1054,-618 1346,-588 1346,-588 1346,-588 1389.61,-568.54 1426.31,-552.17"/>
+<path fill="none" stroke="#41834a" d="M1014.17,-625.99C1034.82,-621.39 1050,-618 1050,-618 1050,-618 1346,-588 1346,-588 1346,-588 1389.61,-568.54 1426.31,-552.17"/>
 <polygon fill="#41834a" stroke="#41834a" points="1427.68,-554.24 1433.07,-549.15 1425.68,-549.77 1427.68,-554.24"/>
 </g>
 <!-- provider -->
@@ -323,14 +323,14 @@
 <title>core&#45;&gt;store</title>
 <path fill="none" stroke="#41834a" d="M828.02,-508.99C857.36,-501.66 884,-495 884,-495 884,-495 1379.8,-455.69 1611.84,-437.29"/>
 <polygon fill="#41834a" stroke="#41834a" points="1612.18,-439.72 1618.96,-436.72 1611.79,-434.84 1612.18,-439.72"/>
-<text text-anchor="middle" x="1209.5" y="-475.8" font-family="DejaVu Sans" font-size="9.00">existing v2 persistence</text>
+<text text-anchor="middle" x="1200.5" y="-475.8" font-family="DejaVu Sans" font-size="9.00">v2 / v3 persistence</text>
 </g>
 <!-- toolkit&#45;&gt;b5 -->
 <g id="edge18" class="edge">
 <title>toolkit&#45;&gt;b5</title>
-<path fill="none" stroke="#53677d" d="M1284.18,-555.1C1313.63,-570.78 1346,-588 1346,-588 1346,-588 1512,-618 1512,-618 1512,-618 1512,-678 1512,-678 1512,-678 1079,-813 1079,-813 1079,-813 1014.87,-831.79 956.66,-848.85"/>
-<polygon fill="#53677d" stroke="#53677d" points="955.62,-846.6 949.59,-850.92 957,-851.3 955.62,-846.6"/>
-<text text-anchor="middle" x="1505.5" y="-700.8" font-family="DejaVu Sans" font-size="9.00">same effective descriptors</text>
+<path fill="none" stroke="#53677d" d="M1284.18,-555.1C1313.63,-570.78 1346,-588 1346,-588 1346,-588 1487,-618 1487,-618 1487,-618 1487,-678 1487,-678 1487,-678 1129,-794.39 961.96,-848.7"/>
+<polygon fill="#53677d" stroke="#53677d" points="961.03,-846.43 955.13,-850.92 962.54,-851.09 961.03,-846.43"/>
+<text text-anchor="middle" x="1482.5" y="-700.8" font-family="DejaVu Sans" font-size="9.00">same effective descriptors</text>
 </g>
 <!-- configobs -->
 <g id="node15" class="node">
@@ -342,8 +342,8 @@
 <!-- configobs&#45;&gt;app -->
 <g id="edge21" class="edge">
 <title>configobs&#45;&gt;app</title>
-<path fill="none" stroke="#41834a" d="M990.23,-549.09C974.42,-568.22 949.83,-597.97 931.29,-620.4"/>
-<polygon fill="#41834a" stroke="#41834a" points="929.29,-618.97 926.72,-625.93 933.07,-622.09 929.29,-618.97"/>
+<path fill="none" stroke="#41834a" d="M989.59,-549.09C973.15,-568.22 947.58,-597.97 928.3,-620.4"/>
+<polygon fill="#41834a" stroke="#41834a" points="926.25,-619.02 923.55,-625.93 929.97,-622.22 926.25,-619.02"/>
 </g>
 <!-- worker -->
 <g id="node18" class="node">
@@ -363,51 +363,51 @@
 <!-- durablegap&#45;&gt;store -->
 <g id="edge23" class="edge">
 <title>durablegap&#45;&gt;store</title>
-<path fill="none" stroke="#bd4b40" stroke-dasharray="5,2" d="M1412.98,-625.92C1503.34,-608.35 1608,-588 1608,-588 1608,-588 1675.98,-498.11 1710.03,-453.08"/>
-<polygon fill="#bd4b40" stroke="#bd4b40" points="1712.14,-454.36 1714.4,-447.3 1708.23,-451.41 1712.14,-454.36"/>
+<path fill="none" stroke="#41834a" stroke-dasharray="5,2" d="M1410.58,-625.92C1502.05,-608.35 1608,-588 1608,-588 1608,-588 1675.98,-498.11 1710.03,-453.08"/>
+<polygon fill="#41834a" stroke="#41834a" points="1712.14,-454.36 1714.4,-447.3 1708.23,-451.41 1712.14,-454.36"/>
 </g>
 <!-- summary -->
 <g id="node22" class="node">
 <title>summary</title>
-<path fill="#fff2bf" stroke="transparent" d="M909.5,-266C909.5,-266 32.5,-266 32.5,-266 26.5,-266 20.5,-260 20.5,-254 20.5,-254 20.5,-12 20.5,-12 20.5,-6 26.5,0 32.5,0 32.5,0 909.5,0 909.5,0 915.5,0 921.5,-6 921.5,-12 921.5,-12 921.5,-254 921.5,-254 921.5,-260 915.5,-266 909.5,-266"/>
-<polygon fill="white" stroke="transparent" points="20.5,0 20.5,-266 921.5,-266 921.5,0 20.5,0"/>
-<polygon fill="#edf2f7" stroke="transparent" points="22,-241 22,-265 921,-265 921,-241 22,-241"/>
+<path fill="#d9efdb" stroke="transparent" d="M903.5,-266C903.5,-266 38.5,-266 38.5,-266 32.5,-266 26.5,-260 26.5,-254 26.5,-254 26.5,-12 26.5,-12 26.5,-6 32.5,0 38.5,0 38.5,0 903.5,0 903.5,0 909.5,0 915.5,-6 915.5,-12 915.5,-12 915.5,-254 915.5,-254 915.5,-260 909.5,-266 903.5,-266"/>
+<polygon fill="white" stroke="transparent" points="26.5,0 26.5,-266 915.5,-266 915.5,0 26.5,0"/>
+<polygon fill="#edf2f7" stroke="transparent" points="28,-241 28,-265 915,-265 915,-241 28,-241"/>
 <text text-anchor="start" x="388.5" y="-251.2" font-family="DejaVu Sans" font-weight="bold" font-size="11.00">Library / header ownership</text>
-<text text-anchor="start" x="28" y="-227.2" font-family="DejaVu Sans" font-weight="bold" font-size="11.00">Owner</text>
-<text text-anchor="start" x="227" y="-227.2" font-family="DejaVu Sans" font-weight="bold" font-size="11.00">Headers</text>
-<text text-anchor="start" x="503" y="-227.2" font-family="DejaVu Sans" font-weight="bold" font-size="11.00">Key contracts / types</text>
-<text text-anchor="start" x="28" y="-196.2" font-family="DejaVu Sans" font-size="11.00">cog::instructions · draft</text>
-<text text-anchor="start" x="268" y="-202.2" font-family="DejaVu Sans" font-size="11.00">cog/instruction_source.h</text>
-<text text-anchor="start" x="227" y="-190.2" font-family="DejaVu Sans" font-size="11.00">cog/instructions.h · instruction_codec.h</text>
-<text text-anchor="start" x="503" y="-196.2" font-family="DejaVu Sans" font-size="11.00">reader · catalog · snapshot · manifest; no UI/provider dependency</text>
-<text text-anchor="start" x="28" y="-166.2" font-family="DejaVu Sans" font-size="11.00">cog::runtime · planned extraction</text>
-<text text-anchor="start" x="227" y="-166.2" font-family="DejaVu Sans" font-size="11.00">cog/runtime.h · runtime_instructions.h</text>
-<text text-anchor="start" x="503" y="-166.2" font-family="DejaVu Sans" font-size="11.00">control / progress / execution ownership; CLI consumes views</text>
-<text text-anchor="start" x="28" y="-136.2" font-family="DejaVu Sans" font-size="11.00">cog::provider · draft + existing</text>
-<text text-anchor="start" x="270" y="-142.2" font-family="DejaVu Sans" font-size="11.00">cog/provider_prompt.h</text>
-<text text-anchor="start" x="227" y="-130.2" font-family="DejaVu Sans" font-size="11.00">provider_vtable.h · provider_request.h</text>
-<text text-anchor="start" x="503" y="-136.2" font-family="DejaVu Sans" font-size="11.00">static template · compiler · request / deltas</text>
-<text text-anchor="start" x="28" y="-106.2" font-family="DejaVu Sans" font-size="11.00">cog::core · existing / neutral draft</text>
-<text text-anchor="start" x="227" y="-106.2" font-family="DejaVu Sans" font-size="11.00">prompt.h · session.h · session_store.h · agent.h</text>
-<text text-anchor="start" x="503" y="-106.2" font-family="DejaVu Sans" font-size="11.00">neutral bundle + session / checkpoint / agent; immutable context bindings</text>
-<text text-anchor="start" x="28" y="-82.2" font-family="DejaVu Sans" font-size="11.00">cog::toolkit + core descriptors</text>
-<text text-anchor="start" x="227" y="-82.2" font-family="DejaVu Sans" font-size="11.00">tool.h · toolkit_exec.h · workspace.h</text>
-<text text-anchor="start" x="503" y="-82.2" font-family="DejaVu Sans" font-size="11.00">original descriptors · guarded async effects</text>
-<text text-anchor="start" x="28" y="-58.2" font-family="DejaVu Sans" font-size="11.00">cog::ipc / cog::orchestrator</text>
-<text text-anchor="start" x="227" y="-58.2" font-family="DejaVu Sans" font-size="11.00">ipc.h · orchestrator.h</text>
-<text text-anchor="start" x="503" y="-58.2" font-family="DejaVu Sans" font-size="11.00">peer / worker identity; CGB2 / CGIR context transaction</text>
-<text text-anchor="start" x="28" y="-34.2" font-family="DejaVu Sans" font-size="11.00">cog::config / cog::net / cog::obs</text>
-<text text-anchor="start" x="227" y="-34.2" font-family="DejaVu Sans" font-size="11.00">config.h · net.h · obs.h</text>
-<text text-anchor="start" x="503" y="-34.2" font-family="DejaVu Sans" font-size="11.00">generations · bounded transport · sanitized observation</text>
-<text text-anchor="start" x="28" y="-10.2" font-family="DejaVu Sans" font-size="11.00">Green: delivered baseline · Yellow: header design · Red: open joined contract · Blue/Purple: process boundaries</text>
-<polygon fill="none" stroke="#91a0b0" points="20.5,0 20.5,-266 921.5,-266 921.5,0 20.5,0"/>
+<text text-anchor="start" x="34" y="-227.2" font-family="DejaVu Sans" font-weight="bold" font-size="11.00">Owner</text>
+<text text-anchor="start" x="221" y="-227.2" font-family="DejaVu Sans" font-weight="bold" font-size="11.00">Headers</text>
+<text text-anchor="start" x="497" y="-227.2" font-family="DejaVu Sans" font-weight="bold" font-size="11.00">Key contracts / types</text>
+<text text-anchor="start" x="34" y="-196.2" font-family="DejaVu Sans" font-size="11.00">cog::instructions</text>
+<text text-anchor="start" x="262" y="-202.2" font-family="DejaVu Sans" font-size="11.00">cog/instruction_source.h</text>
+<text text-anchor="start" x="221" y="-190.2" font-family="DejaVu Sans" font-size="11.00">cog/instructions.h · instruction_codec.h</text>
+<text text-anchor="start" x="497" y="-196.2" font-family="DejaVu Sans" font-size="11.00">reader · catalog · snapshot · manifest; no UI/provider dependency</text>
+<text text-anchor="start" x="34" y="-166.2" font-family="DejaVu Sans" font-size="11.00">cog::runtime</text>
+<text text-anchor="start" x="221" y="-166.2" font-family="DejaVu Sans" font-size="11.00">cog/runtime.h · runtime_instructions.h</text>
+<text text-anchor="start" x="497" y="-166.2" font-family="DejaVu Sans" font-size="11.00">control / progress / execution ownership; CLI consumes views</text>
+<text text-anchor="start" x="34" y="-136.2" font-family="DejaVu Sans" font-size="11.00">cog::provider</text>
+<text text-anchor="start" x="264" y="-142.2" font-family="DejaVu Sans" font-size="11.00">cog/provider_prompt.h</text>
+<text text-anchor="start" x="221" y="-130.2" font-family="DejaVu Sans" font-size="11.00">provider_vtable.h · provider_request.h</text>
+<text text-anchor="start" x="497" y="-136.2" font-family="DejaVu Sans" font-size="11.00">static template · compiler · request / deltas</text>
+<text text-anchor="start" x="34" y="-106.2" font-family="DejaVu Sans" font-size="11.00">cog::core</text>
+<text text-anchor="start" x="221" y="-106.2" font-family="DejaVu Sans" font-size="11.00">prompt.h · session.h · session_store.h · agent.h</text>
+<text text-anchor="start" x="497" y="-106.2" font-family="DejaVu Sans" font-size="11.00">neutral bundle + session / checkpoint / agent; immutable context bindings</text>
+<text text-anchor="start" x="34" y="-82.2" font-family="DejaVu Sans" font-size="11.00">cog::toolkit + core descriptors</text>
+<text text-anchor="start" x="221" y="-82.2" font-family="DejaVu Sans" font-size="11.00">tool.h · toolkit_exec.h · workspace.h</text>
+<text text-anchor="start" x="497" y="-82.2" font-family="DejaVu Sans" font-size="11.00">original descriptors · guarded async effects</text>
+<text text-anchor="start" x="34" y="-58.2" font-family="DejaVu Sans" font-size="11.00">cog::ipc / cog::orchestrator</text>
+<text text-anchor="start" x="221" y="-58.2" font-family="DejaVu Sans" font-size="11.00">ipc.h · orchestrator.h</text>
+<text text-anchor="start" x="497" y="-58.2" font-family="DejaVu Sans" font-size="11.00">peer / worker identity; CGB2 / CGIR context transaction</text>
+<text text-anchor="start" x="34" y="-34.2" font-family="DejaVu Sans" font-size="11.00">cog::config / cog::net / cog::obs</text>
+<text text-anchor="start" x="221" y="-34.2" font-family="DejaVu Sans" font-size="11.00">config.h · net.h · obs.h</text>
+<text text-anchor="start" x="497" y="-34.2" font-family="DejaVu Sans" font-size="11.00">generations · bounded transport · sanitized observation</text>
+<text text-anchor="start" x="34" y="-10.2" font-family="DejaVu Sans" font-size="11.00">Green: implemented components and joined paths · Blue/Purple: process boundaries</text>
+<polygon fill="none" stroke="#91a0b0" points="26.5,0 26.5,-266 915.5,-266 915.5,0 26.5,0"/>
 </g>
 <!-- worker&#45;&gt;summary -->
 <!-- workergap&#45;&gt;worker -->
 <g id="edge28" class="edge">
 <title>workergap&#45;&gt;worker</title>
-<path fill="none" stroke="#bd4b40" stroke-dasharray="5,2" d="M158.44,-502.87C158.21,-492.56 158,-483 158,-483 158,-483 158,-473 158,-473 158,-473 161.11,-467.16 165.1,-459.7"/>
-<polygon fill="#bd4b40" stroke="#bd4b40" points="167.46,-460.46 168.6,-453.13 163.14,-458.15 167.46,-460.46"/>
+<path fill="none" stroke="#41834a" stroke-dasharray="5,2" d="M158.44,-502.87C158.21,-492.56 158,-483 158,-483 158,-483 158,-473 158,-473 158,-473 161.11,-467.16 165.1,-459.7"/>
+<polygon fill="#41834a" stroke="#41834a" points="167.46,-460.46 168.6,-453.13 163.14,-458.15 167.46,-460.46"/>
 </g>
 <!-- store&#45;&gt;summary -->
 <!-- llm&#45;&gt;summary -->

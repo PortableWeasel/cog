@@ -1396,8 +1396,35 @@ static void test_critic_wire_atomicity(void)
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
+static void test_explicit_child_session_reservations(void)
+{
+    cog_session_t *parent=NULL,*child=NULL;
+    cog_core_t *core=make_core(&parent);
+    cog_session_config_t session={.id="forbidden",.max_nodes=8U,.max_payload_bytes=4096U,
+        .max_tool_calls_per_message=2U,.max_contexts=1U,.max_context_bindings=1U,.max_context_bytes=64U};
+    cog_agent_config_t config={.task="bounded child",.force_local=true,.session_config=&session};
+    cog_agent_id_t id=99U;
+    CHECK_EQ_INT(cog_agent_spawn(core,&config,&id),COG_ERROR_INVALID_ARG);
+    session.id=NULL;session.max_context_bytes=0U;
+    CHECK_EQ_INT(cog_agent_spawn(core,&config,&id),COG_ERROR_INVALID_ARG);
+    session.max_context_bytes=64U;
+    CHECK_EQ_INT(cog_agent_spawn(core,&config,&id),COG_OK);
+    CHECK_EQ_INT(id,1U);
+    CHECK_EQ_INT(cog_agent_session_borrow(core,id,&child),COG_OK);
+    cog_session_context_t context={1U,"test",1U,(const unsigned char *)"x",1U};
+    CHECK_EQ_INT(cog_session_context_add(child,&context),COG_OK);
+    context.context_id=2U;
+    CHECK_EQ_INT(cog_session_context_add(child,&context),COG_ERROR_LIMIT);
+    char storage[256];size_t needed=0U;cog_agent_config_t copy={0};
+    CHECK_EQ_INT(cog_agent_copy_config(core,id,&copy,storage,sizeof(storage),&needed),COG_OK);
+    CHECK(copy.session_config==NULL);
+    CHECK_EQ_INT(cog_agent_session_return(core,id,child),COG_OK);
+    cog_core_free(core);cog_session_free(parent);
+}
+
 int main(void)
 {
+    test_explicit_child_session_reservations();
     test_critic_intent_boundaries();
     test_critic_wire_atomicity();
     test_intent_error_releases_lease();

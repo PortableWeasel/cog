@@ -75,6 +75,12 @@ typedef struct cog_agent_config {
        identity is scoped to this core lifetime, never a remote/restart token. */
     size_t max_status_bytes; /**< Including NUL; zero uses core reservation. */
     size_t max_result_bytes; /**< Including NUL; zero uses core reservation. */
+    /** Optional explicit child-session constructor reservations. Borrowed only
+     * through spawn, never retained or returned by copy_config. id must NULL:
+     * registry generates a fresh owned child identity. NULL keeps prior defaults.
+     * Invalid bounds/allocation failure leave registry and event queue unchanged.
+     * Context reservations are necessary for pinned local instruction history. */
+    const cog_session_config_t *session_config;
 } cog_agent_config_t;
 
 /**

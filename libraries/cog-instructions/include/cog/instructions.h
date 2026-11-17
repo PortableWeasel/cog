@@ -1,6 +1,6 @@
 /**
  * @file instructions.h
- * @brief Draft immutable agent/skill catalogs and resolved instruction snapshots.
+ * @brief immutable agent/skill catalogs and resolved instruction snapshots.
  *
  * Header-first authoring, not an implemented runtime/store/worker integration.
  * Constructors deep-copy all inputs into finite, constructor-owned storage.

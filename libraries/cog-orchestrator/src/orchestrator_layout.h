@@ -17,7 +17,7 @@ extern "C" {
 #endif
 #define ORCH_CONTROL_TRANSITIONS 3U
 #define ORCH_NUMBER_BYTES 21U
-#define ORCH_WORKER_ARGV_ENTRIES 15U /*14 argv strings incl executable +NULL */
+#define ORCH_WORKER_ARGV_ENTRIES 17U /*16 argv strings incl optional capsule bound +NULL */
 #define ORCH_RESERVED_EXECUTOR_SLOTS UINT64_C(2)
 
 typedef enum orch_native_state {
@@ -91,7 +91,7 @@ typedef struct orch_worker {
     size_t binary_capacity;
     char incarnation_arg[ORCH_NUMBER_BYTES], number_arg[ORCH_NUMBER_BYTES];
     char parent_arg[ORCH_NUMBER_BYTES], executors_arg[ORCH_NUMBER_BYTES];
-    char frame_arg[ORCH_NUMBER_BYTES];
+    char frame_arg[ORCH_NUMBER_BYTES], instruction_arg[ORCH_NUMBER_BYTES];
     char *argv[ORCH_WORKER_ARGV_ENTRIES]; /**< No task/config/credential strings. */
     orch_control_slot_t control[ORCH_CONTROL_TRANSITIONS];
     unsigned char shutdown_frame[ORCH_CGW1_BYTES];

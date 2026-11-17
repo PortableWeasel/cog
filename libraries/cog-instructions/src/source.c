@@ -240,14 +240,22 @@ cog_result_t cog_instruction_source_reader_free(cog_instruction_source_reader_t 
         if (!close_one(&r->roots[i].fd))
             ok = false;
     free(r->roots);
+    ci_wipe(r->config.data, r->config.capacity);
+    ci_wipe(r->arena.data, r->arena.capacity);
     free(r->config.data);
     free(r->arena.data);
     free(r->items);
+    ci_wipe(r->request, r->limits.max_path_bytes);
+    ci_wipe(r->walk, r->limits.max_path_bytes);
+    ci_wipe(r->current, r->limits.max_path_bytes);
+    ci_wipe(r->component, r->limits.max_path_bytes);
+    ci_wipe(r->directory, CI_DIRENTS);
     free(r->request);
     free(r->walk);
     free(r->current);
     free(r->component);
     free(r->directory);
+    ci_wipe(r, sizeof(*r));
     free(r);
     return ok ? COG_OK : COG_ERROR_IO;
 }
@@ -375,6 +383,7 @@ cog_result_t cog_instruction_source_begin(cog_instruction_source_reader_t *r,
     r->operation = q->operation;
     r->optional = q->optional;
     r->position = r->scope_position = 0;
+    ci_wipe(r->arena.data, r->arena.capacity);
     r->count = r->arena.used = 0;
     r->directory_used = r->directory_at = 0;
     r->result = COG_OK;

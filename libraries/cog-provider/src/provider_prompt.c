@@ -334,9 +334,18 @@ cog_result_t cog_provider_prompt_compile(cog_provider_prompt_compiler_t *c,
     *request = candidate;
     return COG_OK;
 }
+static void clear_buffer(void *buffer, size_t bytes)
+{
+    if (buffer == NULL) return;
+    volatile unsigned char *p = buffer;
+    while (bytes-- != 0U) *p++ = 0U;
+}
 cog_result_t cog_provider_prompt_compiler_free(cog_provider_prompt_compiler_t *c)
 {
     if (c != NULL) {
+        clear_buffer(c->scratch, c->limits.scratch_bytes);
+        clear_buffer(c->lanes[0], c->limits.max_request_bytes);
+        clear_buffer(c->lanes[1], c->limits.max_request_bytes);
         free(c->scratch); free(c->lanes[0]); free(c->lanes[1]); free(c);
     }
     return COG_OK;

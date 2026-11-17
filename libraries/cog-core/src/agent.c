@@ -125,8 +125,11 @@ cog_result_t cog_agent_spawn(cog_core_t *core,
      * generates a unique id when config->id is NULL, so sid is never NULL
      * after a successful creation. */
     memset(&scfg, 0, sizeof(scfg));
-    scfg.id = NULL;      /* generate a unique id */
-    scfg.max_nodes = 0U; /* default */
+    if (config->session_config != NULL) {
+        if (config->session_config->id != NULL) return COG_ERROR_INVALID_ARG;
+        scfg = *config->session_config;
+    }
+    scfg.id = NULL; /* registry always owns a fresh identity */
     child = NULL;
     rc = cog_session_new(&child, &scfg);
     if (rc != COG_OK) {
@@ -657,7 +660,7 @@ cog_result_t cog_agent_copy_config(const cog_core_t *core, cog_agent_id_t agent_
     copy = (cog_agent_config_t){storage, parent_bytes != 0U ? storage + task_bytes : NULL,
                                 entry->timeout_ms, entry->force_local, entry->group_id,
                                 entry->owner_peer, entry->execution_epoch,
-                                entry->status_capacity, entry->result_capacity};
+                                entry->status_capacity, entry->result_capacity, NULL};
     *out_config = copy;
     *out_required = needed;
     return COG_OK;

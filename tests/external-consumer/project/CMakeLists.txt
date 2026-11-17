@@ -9,9 +9,12 @@ find_package(cog-provider REQUIRED CONFIG)
 # These components currently publish raw target exports, not package configs.
 # Threads is their declared external requirement; it is not supplied by Cog.
 find_package(Threads REQUIRED)
-foreach(component config toolkit orchestrator cli)
+foreach(component config toolkit orchestrator)
     include("${cog-provider_DIR}/../cog/cog-${component}-targets.cmake")
 endforeach()
+include("${cog-provider_DIR}/../cog-instructions/cog-instructions-targets.cmake")
+include("${cog-provider_DIR}/../cog-runtime/cog-runtime-targets.cmake")
+include("${cog-provider_DIR}/../cog/cog-cli-targets.cmake")
 foreach(component result ipc obs core net provider config toolkit orchestrator cli cli-config)
     if(NOT TARGET cog::${component})
         message(FATAL_ERROR "Missing installed Cog target cog::${component}")

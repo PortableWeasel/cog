@@ -1,6 +1,6 @@
 /**
  * @file prompt.h
- * @brief Draft provider/UI-neutral instruction fragments and effective tool view.
+ * @brief provider/UI-neutral instruction fragments and effective tool view.
  *
  * These are borrowed immutable data views, not parsers, a registry or effect
  * authority. They introduce no dependency from core onto instruction loading,

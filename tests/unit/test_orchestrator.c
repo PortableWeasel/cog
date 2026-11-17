@@ -37,7 +37,8 @@ static uint64_t now_ms(void)
 static void pause_unit(void) { const struct timespec t={0,1000000L};(void)nanosleep(&t,NULL); }
 static int worker_main(int argc,char **argv)
 {
-    assert(argc==14 && strcmp(argv[1],"--worker")==0);
+    assert((argc==14 || argc==16) && strcmp(argv[1],"--worker")==0);
+    if(argc==16)assert(strcmp(argv[14],"--instruction-bytes")==0 && strcmp(argv[15],"123")==0);
     assert(strcmp(argv[2],"--control-socket")==0 && strcmp(argv[4],"--worker-incarnation")==0 &&
         strcmp(argv[6],"--worker-number")==0 && strcmp(argv[8],"--parent-pid")==0 &&
         strcmp(argv[10],"--executor-slots")==0 && strcmp(argv[12],"--frame-bytes")==0);
@@ -147,6 +148,7 @@ static void command(cog_orchestrator_t *o,cog_worker_id_t id,unsigned char value
 static void lifecycle(const char *binary)
 {
     char path[64];cog_orchestrator_t *o=make(path,2U);cog_worker_id_t first,second;
+    o->config.worker_instruction_bytes=123U;
     assert(setenv("COG_TEST_PARENT_SECRET","must-not-inherit",1)==0);
     sigset_t blocked,old;assert(sigemptyset(&blocked)==0 && sigaddset(&blocked,SIGINT)==0 && sigaddset(&blocked,SIGTERM)==0);
     assert(sigprocmask(SIG_BLOCK,&blocked,&old)==0);
@@ -225,6 +227,12 @@ static void boundaries(const char *binary)
     assert(cog_orchestrator_new(NULL,&cfg)==COG_ERROR_NULL_PTR);
     assert(cog_orchestrator_new(&o,NULL)==COG_ERROR_NULL_PTR);
     assert(cog_orchestrator_new(&o,&cfg)==COG_ERROR_INVALID_ARG);
+    cfg.socket_path="instruction-bound-check";cfg.max_frame_bytes=128U;cfg.message_bytes=128U;
+    cfg.worker_instruction_bytes=129U;
+    assert(cog_orchestrator_new(&o,&cfg)==COG_ERROR_INVALID_ARG && o==NULL);
+    cfg.worker_instruction_bytes=SIZE_MAX;
+    assert(cog_orchestrator_new(&o,&cfg)==COG_ERROR_INVALID_ARG && o==NULL);
+    cfg=(cog_orchestrator_config_t){0};
     char path[64];o=make(path,1U);cog_worker_id_t unknown={1U,1U},id;
     assert(cog_orchestrator_spawn(NULL,binary,&id)==COG_ERROR_NULL_PTR);
     assert(cog_orchestrator_spawn(o,NULL,&id)==COG_ERROR_NULL_PTR);

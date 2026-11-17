@@ -2,8 +2,8 @@
 
 Cog is a pre-alpha C11 LLM harness and agent framework. A table-driven core
 routes user input, provider progress, tool results and control events through
-explicit handlers. The CLI composes the eight libraries into a streaming coding
-agent with durable sessions, policy-controlled tools, headless clients and
+explicit handlers. Ten libraries provide a frontend-neutral runtime and a
+minimal CLI adapter for a streaming coding agent with durable sessions, policy-controlled tools, headless clients and
 bounded local/native children.
 
 Public headers define the contract. This document explains the current system
@@ -147,16 +147,17 @@ template selection are part of the proposed instruction-support blocks below:
 `tix show e321ec3`.
 Prompt text never grants execution policy or replaces schema validation.
 
-## Proposed instruction, agent and skill blocks
+## Instruction, agent and skill blocks
 
-**Software-blueprint Stage 2 boundaries approved; not an implemented contract.**
+**The seven approved boundaries have implementations and executable integration tests.**
 The user confirmed that agents means both named agent-definition files and
 runtime subagents, and approved keeping the seven block boundaries on
 2026-11-17. Parent `e321ec3` owns this design; `76aa2a9` records the block-planning
-work. The goals cross-check and diagram iterations now lead into draft headers.
-Loaders/catalogs are frontend-neutral; CLI is a minimal test/proof host in the
-target architecture. Existing headers and shipped
-behavior remain the contract until reviewed amendments land.
+work. The goals cross-check, diagram, three header passes and final review
+are recorded in `04800f5`.
+Loaders/catalogs are frontend-neutral; CLI is a minimal test/proof host. Public
+headers define the contracts. The real native-worker fixture validates the joined
+activation, resource and scope-publication protocol against a local TLS provider.
 
 The requested capabilities are to assemble system instructions, read scoped
 `AGENTS.md` files, select named agent profiles, discover/activate file-based
@@ -287,7 +288,7 @@ library dependency from core to the application or provider implementation.
 | Activate procedures/resources deliberately | B1,B4,B7 | Exact selected bytes become a new immutable snapshot; scripts are ordinary tools, never parse-time execution. |
 | Keep advertisement and dispatch consistent | B5,B6 | Names, descriptions and schemas derive from the same original static descriptors. |
 | Encode for the selected provider | B6 | Exact static template/table agreement; mismatch fails without a provider call. |
-| Reproduce context across retry/restart/children | B7 | Exact bytes survive; no source reread or hash-only reconstruction. Store/worker integration is still a joined contract gap. |
+| Reproduce context across retry/restart/children | B7 | Exact bytes survive; no source reread or hash-only reconstruction. Exact checkpoint and worker capsule tests verify the joined contract. |
 
 ![Instruction support block diagram](instruction-blocks.svg)
 
@@ -299,8 +300,10 @@ Pass 4 places B1–B5 in `cog-instructions`, B7 in the planned headless runtime,
 and a minimal CLI/test frontend outside loading and execution ownership.
 Pass 5 removes redundant service-edge labels so ownership and data paths remain
 readable at ordinary zoom.
-Green is existing behavior, yellow is new header design, red is an unresolved
-join; the diagram is not a runtime acceptance receipt.
+Pass 6 closed the header joins; pass 7 recorded module implementation and
+runtime integration. Pass 8 marks all seven implemented blocks and their joined
+checkpoint/worker paths. Green marks implemented components; dashed blue and
+purple outlines identify process boundaries.
 
 ### Initial source, catalog and provider profile
 
@@ -313,16 +316,16 @@ Shared [prompt.h](../libraries/cog-core/include/cog/prompt.h) contains only
 neutral borrowed data and an opaque static-tool reference. The loader target
 uses core's header-only `cog::result` include contract; it does not link UI,
 provider or networking code. Providers consume the neutral bundle without
-depending on the loader. Planned `cog-runtime` composes both with existing
-services; CLI/test hosts depend on that runtime. Current source extraction is
-still pending, and the new loader target supplies headers only until delivery.
-Existing request/vtable structs and library implementation bodies are unchanged.
+depending on the loader. `cog-runtime` composes both with existing services;
+CLI/test hosts depend on that runtime. Execution, policy, session and worker
+state now live in the runtime library. The CLI owns terminal input and rendering.
+A relocated installed consumer builds and runs with the CLI target disabled.
 
 | Target boundary | Dependencies / output |
 |---|---|
-| `cog::instructions` draft | Neutral core headers through `cog::result`; reader/catalog/snapshot APIs, no UI/provider request types. |
+| `cog::instructions` | Neutral core headers through `cog::result`; reader/catalog/snapshot APIs, no UI/provider request types. |
 | `cog::provider` | Existing core/net dependencies; consumes `cog_prompt_bundle_t` without linking the loader. |
-| Planned `cog::runtime` | Joins instructions, provider and existing execution services; owns effects, state and lifecycle. |
+| `cog::runtime` | Joins instructions, provider and existing execution services; owns effects, state and lifecycle. |
 | Minimal CLI/test PoC | Calls runtime operations and renders progress/views; does not discover or parse agent/skill files. |
 
 The compile-only `instruction-loader-no-ui` consumer exposes only instruction
@@ -493,12 +496,21 @@ A resource's package-relative request path is joined to the pinned SKILL.md
 parent within the same logical root before becoming a RESOURCE source. Execution
 settings must match the resulting reduced snapshot, not merely its advertised text.
 
-The next runtime boundary promotes the existing cooperative executor rather
-than adding another event loop. Terminal parsing/output currently embedded in
-turn, policy, session and reload handlers moves to the CLI adapter. Public runtime
+Original runtime delegation descriptors are exposed as a static public table;
+custom descriptors with matching names do not gain builtin authority. Delegate
+tasks may select a named agent and skills through the same host selection API.
+Each child receives an explicit constructor-time session reservation, a separate
+instruction/compiler owner and its reduced snapshot before its first checkpoint.
+The session reservation is copied during spawn and never escapes as a borrowed
+configuration pointer. Native workspace effect authority is an explicit worker
+configuration path, separate from instruction source roots and logical scope IDs.
+These integration amendments and their three-pass traces belong to `dc78c7f`.
+
+The runtime boundary reuses the existing cooperative executor and event loop.
+Terminal parsing/output lives in the CLI adapter. Public runtime
 configuration contains resolved values, no argv/environment precedence or FILE
-objects. Existing `cog::cli` interfaces remain compatibility adapters during the
-migration. A runtime-only installed consumer must work with CLI building disabled.
+objects. Existing `cog::cli` interfaces remain compatibility adapters. A
+runtime-only installed consumer verifies operation with CLI building disabled.
 
 The implementation dependency plan is tracked by `tix show 7eb6cf9`; the
 [instruction contract inventory](../libraries/cog-instructions/contracts/CONTRACT.md)
@@ -507,11 +519,13 @@ defines module obligations without duplicating progress in this docs folder.
 The complete draft surface is traced in the consolidated
 [instruction scenarios](scenarios/P01-instruction-support.md), including all 20
 baseline extensions. Ticket `04800f5` records acceptance after three full passes
-and an additional final review. Module implementation proceeds under `7eb6cf9`;
-core contexts/store v3, instruction loading/composition/CGIM, and the provider
-prompt compiler have implementations and focused contract tests. Runtime and
-native worker integration remain in progress. Module test success does not
-replace the joined publication, effect-admission and scenario gates.
+and an additional final review. Ticket `7eb6cf9` records implementation of core
+contexts/store v3, instruction loading/composition/CGIM, the provider compiler,
+and the headless runtime. Contract tests cover publication, effect admission,
+source-free resume and paired reload; an actual native process verifies named
+local/native child parity through guarded resource transactions. Native V1 uses
+the fixed profile documented in `runtime.h`; the public root executes locally,
+and optional native workers execute bounded children.
 
 ## Tools and effect admission
 

@@ -1,6 +1,6 @@
 /**
  * @file instruction_source.h
- * @brief Draft bounded, explicit-root reader for instruction files and catalogs.
+ * @brief bounded, explicit-root reader for instruction files and catalogs.
  *
  * Header-first design under e321ec3; runtime delivery is not yet implemented.
  * One owner thread drives one job at a time. No process cwd changes, environment

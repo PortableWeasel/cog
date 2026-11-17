@@ -2,7 +2,7 @@
  * @file instruction_codec.h
  * @brief Bounded portable encoding of pinned instruction manifests.
  *
- * Draft header-first contract. No UI, filesystem, provider or transport calls.
+ * Public header-first contract. No UI, filesystem, provider or transport calls.
  * Owner-thread operations; inputs remain immutable for the call. CGIM is an
  * explicit byte format, never a dump of native structs. Encoding contains
  * source bodies, so callers treat its buffers as private session data, exclude
