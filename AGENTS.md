@@ -203,3 +203,13 @@ PoC code is reference material, not library code: port ideas into
   `build(...)`).
 - **Track work with `tix`.** Every design decision, gap fix, and implementation
   task gets a ticket. Tickets are the project memory.
+- **Worktrees live on disk, beside the project.** Create git worktrees in a
+  sibling folder of this checkout, `../cog-worktrees/<name>` (for example
+  `git worktree add ../cog-worktrees/<name> -b <branch>`). Never place them
+  under `/tmp` (tmpfs, counts against RAM) or inside the agent tool's own
+  state directory such as `~/.codex/worktrees`.
+- **Build directories live inside the project folder.** Use `build/` or
+  `build-<profile>/` (for example `build-asan`, `build-tsan`) at the checkout
+  root of whichever worktree you are in; both patterns are gitignored. Never
+  put build trees or build logs in `/tmp`: it is a RAM-backed tmpfs and
+  filling it has OOM-killed the agent session.
