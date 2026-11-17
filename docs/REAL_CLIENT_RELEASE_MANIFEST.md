@@ -1,7 +1,7 @@
 # Current supported release manifest
 
-Whole O is independently accepted and merged on main. P is awaiting final
-documentation review and merge; this document does not mark P complete.
+Whole O is independently accepted and merged on main. Supported-profile release
+validation passed; this manifest records the evidence and `77adfec` tracks acceptance.
 This is a documentation-only record: no new runtime/model request was made.
 
 ## Exact identities

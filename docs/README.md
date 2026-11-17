@@ -9,8 +9,9 @@ Whole O is independently accepted and merged at main `c052b172`.
 The supported Release profiles pass all 185 tests under GCC, Clang and
 ASan/UBSan/LSan; separate TSan passes 36 selected cases, and all 28 public
 headers pass 112 strict C11/C++17 combinations. These are exact admitted-profile
-results, not universal platform guarantees. P awaits final documentation review
-and merge. See the [release manifest](REAL_CLIENT_RELEASE_MANIFEST.md),
+results, not universal platform guarantees. Supported-profile release validation
+passed; ticket `77adfec` tracks acceptance. See the
+[release manifest](REAL_CLIENT_RELEASE_MANIFEST.md),
 [assertion map](REAL_CLIENT_RELEASE_COVERAGE.md) and [roadmap](REAL_CLIENT_WBS.md).
 
 ## Build and run an offline demonstration

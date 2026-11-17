@@ -4,8 +4,8 @@
 > independent review of `8563f81`. The three header passes and final review are
 > complete. A–L/Q, R12 and runtime observation are integrated. M is accepted;
 > N's integration contracts passed. O's component, O9 and installed deliveries
-> are integrated and whole-O review passed. Accepted main is `c052b172`; P awaits
-> final documentation review/merge. See the [release manifest](REAL_CLIENT_RELEASE_MANIFEST.md).
+> are integrated and whole-O review passed. Accepted main is `c052b172`;
+> supported-profile release validation passed. See the [release manifest](REAL_CLIENT_RELEASE_MANIFEST.md).
 
 Parent: `2b9d0ea`. This is the current real-client roadmap; Stage 12 remains
 historical engine/mock-CLI delivery evidence. User delegates routine design
@@ -34,10 +34,10 @@ header gate because it must complete before K.
 | M | `d0f910f` | [Single-process offline acceptance](REAL_CLIENT_M_OFFLINE_EVIDENCE.md) and [bounded installed live smoke](REAL_CLIENT_M_LIVE_EVIDENCE.md) | Accepted, dated single-process scope | L and required followups |
 | N | `035219b` | [Headless/subagent three-pass integration contracts](REAL_CLIENT_HEADLESS_PASSES.md) | Passed | M |
 | O | `0e35c23` | [Whole-O package review](REAL_CLIENT_WHOLE_O_PACKAGE_REVIEW.md), O9 and installed public proof | Accepted and merged at main `c052b172` | N and component gates |
-| P | `77adfec` | [Final release manifest](REAL_CLIENT_RELEASE_MANIFEST.md) and documentation | Final documentation review/merge pending | Accepted whole O |
+| P | `77adfec` | [Final release manifest](REAL_CLIENT_RELEASE_MANIFEST.md) and documentation | Validation passed; release manifest complete | Accepted whole O |
 
 Current main snapshot: `c052b172`, the accepted whole-O tree from integration
-`b9140b68`. P is not yet marked complete. The combined real-library Q/G
+`b9140b68`. Ticket `77adfec` tracks release acceptance. The combined real-library Q/G
 check `b8a6fc1` is complete: strict and ASan/UBSan targeted suites each passed
 27/27; see the [G/Q acceptance record](../libraries/cog-core/contracts/session_store/CONTRACT.md#independent-acceptance-and-combined-gq-integration).
 Earlier evidence reports retain their dated scope and then-open dependencies.
@@ -86,8 +86,8 @@ The parent stays in progress until release gate P passes. M acceptance is
 complete at its recorded single-process scope; the six former M exceptions
 are resolved by integrated O deliveries, not retroactively removed from M's
 dated report. Whole-O package review has its own exact source, profile,
-inventory and result receipt. P awaits final documentation review/merge;
-routine documentation work does not repeat the paid smoke or mark P complete.
+inventory and result receipt. The release manifest records supported-profile
+validation; ticket `77adfec` tracks acceptance without repeating the paid smoke.
 
 ## Verification plan
 
@@ -136,8 +136,8 @@ the [installed extension](REAL_CLIENT_INSTALLED_PROOF_INTEGRATION.md) passed
 185/185 in the admitted GCC Release profile, with no exclusions or disabled
 cases. The later [whole-O review](REAL_CLIENT_WHOLE_O_PACKAGE_REVIEW.md) supplies
 fresh full GCC/Clang/ASan 185, separate TSan 36 and 112 strict header checks for
-code `5df4069`. Each receipt retains its own scope; P's remaining work is final
-documentation review/merge.
+code `5df4069`. Each receipt retains its own scope; the release manifest records
+supported-profile validation.
 
 P requires the **full suite without the former M exclusions**,
 all 20 original plus R01–R18 executable scenario oracles and shutdown regression,
