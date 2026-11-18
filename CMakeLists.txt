@@ -89,15 +89,4 @@ endif()
 # -----------------------------------------------------------------------
 # Packaging
 # -----------------------------------------------------------------------
-include(GNUInstallDirs)
-include(CMakePackageConfigHelpers)
-include(CPack)
-
-set(CPACK_PACKAGE_NAME          "${PROJECT_NAME}")
-set(CPACK_PACKAGE_VENDOR        "Cog Authors")
-set(CPACK_PACKAGE_VERSION       "${PROJECT_VERSION}")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
-set(CPACK_PACKAGE_CONTACT       "cog@example.com")
-set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
-set(CPACK_GENERATOR             "TGZ;STGZ")
-set(CPACK_VERBATIM_VARIABLES    ON)
+include(cmake/cog_packaging.cmake)

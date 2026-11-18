@@ -1,0 +1,27 @@
+# Source-only hook: exclude all checkout files absent from the tracked manifest.
+# Refresh at package time so newly created local files cannot slip into releases.
+if(CPACK_SOURCE_INSTALLED_DIRECTORIES AND EXISTS "@PROJECT_SOURCE_DIR@/.git")
+    find_program(_cog_git git)
+    if(NOT _cog_git)
+        message(FATAL_ERROR "Source packaging from a checkout requires git")
+    endif()
+    execute_process(COMMAND "${_cog_git}" -C "@PROJECT_SOURCE_DIR@"
+        ls-files --others --directory --no-empty-directory
+        OUTPUT_VARIABLE _cog_untracked OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _cog_untracked_status)
+    if(NOT _cog_untracked_status EQUAL 0)
+        message(FATAL_ERROR "Cannot enumerate untracked source-package exclusions")
+    endif()
+    string(REPLACE "\n" ";" _cog_untracked "${_cog_untracked}")
+    foreach(_path IN LISTS _cog_untracked)
+        if(_path STREQUAL "cmake/cog_packaging.cmake"
+           OR _path STREQUAL "cmake/cog_cpack_options.cmake.in"
+           OR _path STREQUAL "docs/PACKAGING.md"
+           OR _path STREQUAL "vendor/source-revisions.cmake"
+           OR _path STREQUAL "LICENSE")
+            continue()
+        endif()
+        string(REGEX REPLACE "([][+.*()^$?|\\\\])" "\\\\\\1" _escaped "@PROJECT_SOURCE_DIR@/${_path}")
+        list(APPEND CPACK_IGNORE_FILES "${_escaped}")
+    endforeach()
+endif()

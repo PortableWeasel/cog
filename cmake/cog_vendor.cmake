@@ -19,19 +19,25 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/libraries/cog-net/cmake/curl-cares-profile.cmake"
     "${PROJECT_SOURCE_DIR}/libraries/cog-net/cmake/relocatable/curl-8.23.0-relocatable-metadata.patch"
     "${PROJECT_SOURCE_DIR}/libraries/cog-net/cmake/relocatable/c-ares-1.34.9-relocatable-metadata.patch")
-find_package(Git REQUIRED)
+# Git checkouts watch submodule HEADs; source archives carry populated pinned
+# trees and their checked-in revision map instead of repository metadata.
 foreach(_dependency curl c-ares openssl yyjson)
-    execute_process(COMMAND "${GIT_EXECUTABLE}"
-        -C "${PROJECT_SOURCE_DIR}/vendor/${_dependency}/upstream"
-        rev-parse --git-path HEAD OUTPUT_VARIABLE _dependency_head
-        OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE _head_status)
-    if(NOT _head_status EQUAL 0)
-        message(FATAL_ERROR "Missing ${_dependency} submodule; run git submodule update --init --recursive")
+    if(EXISTS "${PROJECT_SOURCE_DIR}/vendor/${_dependency}/upstream/.git")
+        find_package(Git REQUIRED)
+        execute_process(COMMAND "${GIT_EXECUTABLE}"
+            -C "${PROJECT_SOURCE_DIR}/vendor/${_dependency}/upstream"
+            rev-parse --git-path HEAD OUTPUT_VARIABLE _dependency_head
+            OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE _head_status)
+        if(NOT _head_status EQUAL 0)
+            message(FATAL_ERROR "Cannot identify ${_dependency} submodule HEAD")
+        endif()
+        get_filename_component(_dependency_head "${_dependency_head}" ABSOLUTE
+            BASE_DIR "${PROJECT_SOURCE_DIR}/vendor/${_dependency}/upstream")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_dependency_head}")
     endif()
-    get_filename_component(_dependency_head "${_dependency_head}" ABSOLUTE
-        BASE_DIR "${PROJECT_SOURCE_DIR}/vendor/${_dependency}/upstream")
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_dependency_head}")
 endforeach()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${PROJECT_SOURCE_DIR}/vendor/source-revisions.cmake")
 set(_vendor_binary "${PROJECT_BINARY_DIR}/vendor")
 file(MAKE_DIRECTORY "${_vendor_binary}")
 message(STATUS "Preparing vendored networking libraries (logs: ${_vendor_binary})")
