@@ -1,0 +1,89 @@
+digraph tool_use {
+  graph [fontname="DejaVu Sans", fontsize=20, labelloc=t, label="Cog tool use — ownership and data flow",
+         rankdir=TB, bgcolor=white, pad=0.22, nodesep=0.34, ranksep=0.56, splines=polyline, newrank=true];
+  node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=11,
+        fillcolor="#e8f4e9", color="#52835a", margin="0.15,0.10"];
+  edge [fontname="DejaVu Sans", fontsize=9, color="#50677d", fontcolor="#30485d", arrowsize=0.7];
+
+  client [label="Host / controller\nRender requests, return decisions\nCLI terminal may share executor process", fillcolor="#edf3f8", color="#6a849d"];
+  llm [label="Model endpoint", fillcolor="#edf3f8", color="#6a849d"];
+  store [label="Guarded checkpoint store\nSelected branch, tool ledger, results, context"];
+  workspace [label="Opened workspace root\nDescriptor-relative operations"];
+
+  subgraph cluster_executor {
+    label="Executor process (root or owned native worker)"; fontname="DejaVu Sans"; fontsize=14;
+    style="rounded,dashed"; color="#4c84bd"; penwidth=2; bgcolor="#f1f7fd";
+
+    subgraph cluster_context {
+      label="cog::instructions"; color="#a2b8ab"; style=rounded;
+      snapshot [label="Immutable instruction snapshot\nFragments, context identity, tool subset\ncog_instruction_manifest_t"];
+    }
+    subgraph cluster_runtime {
+      label="cog::runtime"; color="#8caeca"; style=rounded;
+      binding [label="Effective static tool bindings (proposed)\nDescriptor, policy, role, durable mode and context\ncog_prompt_tool_binding_t", fillcolor="#fff0c2", color="#b58733"];
+      turn [label="Sequential tool turn\nProposal, ASK, scope, commit and continuation\ncog_runtime_t / cog_runtime_policy_t"];
+    }
+    subgraph cluster_provider {
+      label="cog::provider + cog::net"; color="#a2b8ab"; style=rounded;
+      wire [label="Request compiler and typed adapter\nTool schemas, retained deltas and FINISH\ncog_provider_request_t / cog_provider_delta_t"];
+    }
+    subgraph cluster_core {
+      label="cog::core"; color="#a2b8ab"; style=rounded;
+      ledger [label="Session tree and owner guard\nAssistant node + call ID on selected branch\ncog_tool_ledger_record_t / cog_store_owner_guard_t"];
+    }
+    subgraph cluster_toolkit {
+      label="cog::toolkit"; color="#a2b8ab"; style=rounded;
+      exec [label="Bounded schema and async execution\nPrepare, start, poll, cancel, retain result\ncog_toolkit_execution_t / cog_toolkit_result_t"];
+    }
+    config [label="cog::config / cog::obs\nPinned configuration / typed status"];
+    native [label="cog::ipc / cog::orchestrator\nAuthenticated worker lifecycle"];
+    { rank=same; binding; snapshot; }
+    { rank=same; wire; turn; }
+    { rank=same; ledger; exec; native; }
+  }
+
+  subgraph cluster_aux_helper {
+    label="Owned helper process"; fontname="DejaVu Sans"; fontsize=13;
+    style="rounded,dashed"; color="#8b64a9"; penwidth=2; bgcolor="#f7f0fa";
+    helper [label="Process supervisor\nCommand group and cleanup", fillcolor="#eee2f5", color="#8b64a9"];
+  }
+  subgraph cluster_aux_worker {
+    label="Owned native worker process"; fontname="DejaVu Sans"; fontsize=13;
+    style="rounded,dashed"; color="#8b64a9"; penwidth=2; bgcolor="#f7f0fa";
+    worker [label="Optional child executor\nSame tool loop, restricted profile", fillcolor="#eee2f5", color="#8b64a9"];
+  }
+
+  { rank=same; client; config; }
+  { rank=same; helper; worker; workspace; store; }
+  snapshot -> binding [label="pinned manifest"];
+  config -> binding:nw [label="config generation"];
+  binding -> wire [label="declarations"];
+  binding -> turn [label="exact descriptor / policy"];
+  client -> turn [label="view / delivery / decision", dir=both, color="#4c84bd"];
+  turn -> wire [label="complete history / typed deltas", dir=both];
+  wire -> llm [label="request / stream", dir=both];
+  turn -> ledger [label="proposals, intents, results"];
+  ledger -> store [label="guarded save / restore", dir=both];
+  turn -> exec [label="admit / retained result", dir=both];
+  exec -> workspace [label="workspace I/O"];
+  exec -> helper [label="permitted commands"];
+  turn -> native [label="parent delegation control"];
+  native -> worker [label="bootstrap / updates", dir=both];
+
+  summary [shape=plain, label=<
+    <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="6" COLOR="#91a0b0" BGCOLOR="white">
+      <TR><TD COLSPAN="3" BGCOLOR="#edf2f7"><B>Tool-use contract map</B></TD></TR>
+      <TR><TD ALIGN="LEFT"><B>Owner</B></TD><TD ALIGN="LEFT"><B>Headers</B></TD><TD ALIGN="LEFT"><B>Key types</B></TD></TR>
+      <TR><TD ALIGN="LEFT">Runtime</TD><TD ALIGN="LEFT">runtime.h, runtime_instructions.h</TD><TD ALIGN="LEFT">cog_runtime_t, cog_runtime_policy_t</TD></TR>
+      <TR><TD ALIGN="LEFT">Instructions / Core</TD><TD ALIGN="LEFT">instructions.h, prompt.h</TD><TD ALIGN="LEFT">cog_instruction_manifest_t, cog_prompt_tool_binding_t</TD></TR>
+      <TR><TD ALIGN="LEFT">Provider / Net</TD><TD ALIGN="LEFT">provider_request.h, provider_vtable.h, net.h</TD><TD ALIGN="LEFT">cog_provider_request_t, cog_provider_delta_t</TD></TR>
+      <TR><TD ALIGN="LEFT">Core</TD><TD ALIGN="LEFT">message.h, session.h, session_store.h</TD><TD ALIGN="LEFT">cog_tool_ledger_record_t, cog_store_owner_guard_t</TD></TR>
+      <TR><TD ALIGN="LEFT">Toolkit</TD><TD ALIGN="LEFT">tool.h (Core), toolkit_exec.h, workspace.h</TD><TD ALIGN="LEFT">cog_tool_t, cog_toolkit_execution_t, cog_toolkit_result_t</TD></TR>
+      <TR><TD ALIGN="LEFT">Config / Obs</TD><TD ALIGN="LEFT">config.h, obs.h</TD><TD ALIGN="LEFT">cog_config_t, cog_obs_t</TD></TR>
+      <TR><TD ALIGN="LEFT">IPC / Orchestrator</TD><TD ALIGN="LEFT">ipc.h, orchestrator.h</TD><TD ALIGN="LEFT">cog_ipc_endpoint_t, cog_orchestrator_t</TD></TR>
+    </TABLE>
+  >];
+  store -> summary [style=invis];
+  worker -> summary [style=invis];
+  workspace -> summary [style=invis];
+}

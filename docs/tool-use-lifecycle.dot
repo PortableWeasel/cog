@@ -1,0 +1,53 @@
+digraph tool_lifecycle {
+  graph [fontname="DejaVu Sans", fontsize=20, labelloc=t, label="Cog tool use — proposed admission and recovery flow",
+         fontcolor="#243647",
+         rankdir=TB, bgcolor=white, pad=0.22, nodesep=0.32, ranksep=0.48, splines=polyline];
+  node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=11,
+        fillcolor="#e8f4e9", color="#52835a", margin="0.14,0.09"];
+  edge [fontname="DejaVu Sans", fontsize=9, color="#50677d", fontcolor="#30485d", arrowsize=0.7];
+
+  finish [label="Provider validates terminal TOOL_CALLS FINISH\nComplete, bounded call group and continuation"];
+  proposed [label="Runtime + Core checkpoint\nAssistant message and PROPOSED calls"];
+  resume [label="Restore PROPOSED\nPreflight pending history; skip closed siblings\nEvaluate remaining calls afresh"];
+  eligible [label="Runtime checks effective binding, role,\npolicy, guard and remaining budget", fillcolor="#fff0c2", color="#b58733"];
+  validate [label="Toolkit validates bounded arguments\nagainst the original descriptor schema\nBefore ASK, scope resolution or preparation", fillcolor="#fff0c2", color="#b58733"];
+  ask [label="Runtime publishes exact ASK\nDeliver to authorized controller and\naccept an exact, timely decision", fillcolor="#fff0c2", color="#b58733"];
+  scope [label="Runtime resolves scope, then Toolkit prepares\nOne call at a time; preparation has no tool effects"];
+  started [label="Runtime + Core checkpoint\nSTARTED; acknowledge headless publication where required"];
+  tool [label="Toolkit rechecks guard, starts once and polls\nCancel / drain; retain correlated result"];
+  terminal [label="Runtime + Core checkpoint\nTOOL result and terminal ledger state"];
+  after [label="After commit and required publication\nWhile active, advance to next PROPOSED call or complete-history send\nAfter scope replacement, send under the new binding"];
+  denied [label="Runtime + Core checkpoint\nDENIED result for the unstarted call"];
+  change [label="Runtime + Core checkpoint\nClose unstarted suffix and install new scope\nNative activation waits for verified COMMIT / READY"];
+  frozen [label="Any failed checkpoint or uncertain execution freezes admission\nRetain owned result when available", fillcolor="#f9e2e2", color="#b45757"];
+  recover [label="Restored STARTED / INDETERMINATE\nOffline exact-call reconciliation under recovery guard\nExplicit ordinary resume once safe", fillcolor="#f9e2e2", color="#b45757"];
+  stopped [label="If stopping, retire ASK, drain owned work\nand close remaining unstarted calls"];
+
+  finish -> proposed [label="successful terminal group"];
+  resume -> eligible;
+  proposed -> eligible [label="after save and publication"];
+  eligible -> validate [label="eligible"];
+  eligible -> denied [label="refused or cancelled"];
+  validate -> ask [label="ASK"];
+  validate -> scope [label="ALLOW"];
+  validate -> denied [label="invalid"];
+  ask -> scope [label="exact timely ALLOW"];
+  ask -> denied [label="DENY or stopping", minlen=2];
+  scope -> started [label="unchanged scope or exempt"];
+  scope -> change [label="scope replacement"];
+  scope -> denied [label="call-level refusal"];
+  started -> tool [label="checkpoint committed and gate open"];
+  tool -> terminal [label="determinate outcome"];
+  tool -> frozen [label="uncertain outcome"];
+  terminal -> after [label="checkpoint committed"];
+  denied -> after;
+  change -> after;
+  after -> stopped [label="if stopping"];
+  frozen -> recover [label="if restore finds unresolved admission"];
+  started -> recover [label="crash before terminal checkpoint", style=dashed, color="#b45757"];
+  { rank=same; proposed; resume; }
+  { rank=same; ask; denied; }
+  { rank=same; scope; change; }
+  { rank=same; after; frozen; }
+  { rank=same; stopped; recover; }
+}

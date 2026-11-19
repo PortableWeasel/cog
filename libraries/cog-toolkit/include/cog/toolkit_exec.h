@@ -189,6 +189,50 @@ typedef enum cog_toolkit_policy_decision {
     COG_TOOLKIT_POLICY_DENY,
     COG_TOOLKIT_POLICY_ALLOW
 } cog_toolkit_policy_decision_t;
+/** @brief Owner-thread parser/schema reservation for pure admission checks. */
+typedef struct cog_toolkit_validator cog_toolkit_validator_t;
+
+/** @brief Allocate reusable bounded schema-validation storage.
+ * @param[out] out Owned validator on OK, NULL on failure.
+ * @param[in] config Read only argument, schema, depth and codec bounds, with
+ * the same zero defaults as cog_toolkit_execution_new.
+ * @return OK; NULL_PTR; INVALID_ARG invalid bounds; LIMIT arithmetic; NOMEM.
+ * @note No core/store/workspace access or callbacks. Owner thread.
+ */
+cog_result_t cog_toolkit_validator_new(cog_toolkit_validator_t **out,
+    const cog_tool_async_config_t *config);
+
+/** @brief Validate a configured descriptor schema before advertising it.
+ * @param[in,out] validator Owner-thread bounded reservation.
+ * @param[in] descriptor Exact static tool proposed for eligibility.
+ * @return OK; NULL_PTR; INVALID_ARG malformed schema; UNSUPPORTED unsupported
+ * validation semantics; LIMIT configured schema/codec bound. A NULL
+ * input_schema follows the same semantics as execution_new.
+ * @note No retained input, allocation, callbacks or permission grant.
+ */
+cog_result_t cog_toolkit_validate_schema(cog_toolkit_validator_t *validator,
+    const cog_tool_t *descriptor);
+
+/** @brief Validate exact complete arguments before ASK or scope resolution.
+ * @param[in,out] validator Owner-thread bounded reservation.
+ * @param[in] descriptor Exact static tool selected by effective binding.
+ * @param[in] arguments Strict NUL-free UTF-8 JSON object bytes.
+ * @param[in] bytes Argument bytes excluding any NUL terminator.
+ * @return OK; NULL_PTR; INVALID_ARG malformed input/schema or mismatch;
+ * UNSUPPORTED unsupported validation semantics; LIMIT configured bound.
+ * @note Same schema semantics as execution_new. No allocation, retained input,
+ * execution construction, callbacks, source reads, or permission grant.
+ * execution_new still validates independently for all callers.
+ */
+cog_result_t cog_toolkit_validate(cog_toolkit_validator_t *validator,
+    const cog_tool_t *descriptor, const char *arguments, size_t bytes);
+
+/** @brief Free reusable validation storage.
+ * @param[in,out] validator Owned pointer, NULL is accepted.
+ * @return OK; releases all resources. Owner thread, never waits.
+ */
+cog_result_t cog_toolkit_validator_free(cog_toolkit_validator_t *validator);
+
 /**
  * @brief Construct/validate one complete identified tool call without execution.
  * @param[out] out NULL on failure; caller-owned execution handle on success.
@@ -243,6 +287,12 @@ cog_result_t cog_toolkit_execution_new(cog_toolkit_execution_t **out,
  * and applied its workspace/command policy. An interactive prompt occurs in the
  * app while this handle remains prepared, never inside a blocking callback.
  * @note Owner thread. Decision fixed after admission. No hidden permission default.
+ * The workspace background descriptor returns OK at supervisor ownership,
+ * before command success is known. Verified no-effect supervisor launch
+ * refusal may return UNSUPPORTED/IO and exposes no live resources. Its
+ * accepted execution handle can be retained and
+ * polled through later provider turns under the same live guard. A launch
+ * receipt is a runtime result; toolkit result remains terminal-only.
  */
 cog_result_t cog_toolkit_execution_start(cog_toolkit_execution_t *execution,
                                          cog_toolkit_policy_decision_t decision,
