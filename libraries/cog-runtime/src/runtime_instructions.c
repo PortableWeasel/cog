@@ -208,7 +208,7 @@ static bool skip_value(runtime_json_t *p, unsigned depth) {
     p->at++;
   return p->at > begin;
 }
-static cog_result_t field(const char *json, size_t bytes, const char *wanted,
+cog_result_t cli_runtime_json_field(const char *json, size_t bytes, const char *wanted,
                           char *storage, size_t capacity, const char **value) {
   runtime_json_t p = {
       (const unsigned char *)json, bytes, 0U, storage, capacity, 0U, true};
@@ -298,13 +298,13 @@ static cog_result_t control_new(cog_core_t *core, const char *request,
   j->kind = kind;
   const char *name = NULL;
   cog_result_t rc =
-      field(request, bytes, kind == JOB_ACTIVATE ? "name" : "skill", j->strings,
+      cli_runtime_json_field(request, bytes, kind == JOB_ACTIVATE ? "name" : "skill", j->strings,
             CLI_ARGUMENT_BYTES, &name);
   if (rc == COG_OK && (name == NULL || *name == '\0'))
     rc = COG_ERROR_INVALID_ARG;
   j->skill = name;
   if (rc == COG_OK && kind == JOB_RESOURCE) {
-    rc = field(request, bytes, "path", j->strings + CLI_ARGUMENT_BYTES,
+    rc = cli_runtime_json_field(request, bytes, "path", j->strings + CLI_ARGUMENT_BYTES,
                CLI_ARGUMENT_BYTES, &j->path);
     if (rc == COG_OK && (!path_valid(j->path) || *j->path == '\0'))
       rc = COG_ERROR_DENIED;
@@ -680,6 +680,14 @@ cog_result_t cli_runtime_instruction_progress(cog_runtime_t *r) {
   cog_result_t rc = resolve_step(j);
   if (rc == COG_ERROR_AGAIN)
     return COG_OK;
+  if (rc == COG_OK && j->candidate != NULL && r->background_id != 0U && j->kind == JOB_SCOPE) {
+    r->scope_refused = true;
+    r->scope_refusal = COG_ERROR_DENIED;
+    r->instruction_job = NULL;
+    cog_instruction_snapshot_free(j->candidate);
+    j->candidate = NULL;
+    return COG_OK;
+  }
   if (rc == COG_OK && j->candidate != NULL)
     rc = cog_runtime_instruction_prepare(&r->control_change, r, j->candidate);
   if (j->kind == JOB_SCOPE) {
@@ -723,7 +731,7 @@ static cog_result_t scope_target(cog_runtime_t *r,const cog_tool_t *descriptor,
       const char *path = binding->default_scope;
       if (binding->path_key != NULL) {
         cog_result_t rc =
-            field(call->arguments, call->arguments_len, binding->path_key,
+            cli_runtime_json_field(call->arguments, call->arguments_len, binding->path_key,
                   r->json_storage, CLI_ARGUMENT_BYTES * 3U, &path);
         if (rc != COG_OK)
           return rc;
@@ -758,7 +766,7 @@ cog_result_t cli_runtime_scope(cog_cli_app_t *app,
       descriptor = r->bindings[i].descriptor;
   if (descriptor == NULL)
     return COG_ERROR_DENIED;
-  if (cli_runtime_instruction_table(descriptor) != NULL)
+  if (descriptor == &cog_runtime_background_status_tool || cli_runtime_instruction_table(descriptor) != NULL)
     return COG_OK;
   for (size_t i = 0U; i < cog_runtime_delegation_tools.count; i++)
     if (descriptor == &cog_runtime_delegation_tools.tools[i])
@@ -1175,13 +1183,13 @@ cog_result_t cli_runtime_resource_request_matches(cog_runtime_t *r,
   if(descriptor!=(activate?&cog_runtime_activate_skill_tool:&cog_runtime_read_skill_resource_tool))
     return COG_ERROR_DENIED;
   const char *name=NULL;
-  cog_result_t rc=field(call->arguments,call->arguments_len,activate?"name":"skill",
+  cog_result_t rc=cli_runtime_json_field(call->arguments,call->arguments_len,activate?"name":"skill",
       r->json_storage,CLI_ARGUMENT_BYTES*3U,&name);
   if(rc!=COG_OK)return rc;
   if(name==NULL || strcmp(name,request->skill_name)!=0)return COG_ERROR_PROTOCOL;
   if(!activate) {
     const char *path=NULL;
-    rc=field(call->arguments,call->arguments_len,"path",r->json_storage,CLI_ARGUMENT_BYTES*3U,&path);
+    rc=cli_runtime_json_field(call->arguments,call->arguments_len,"path",r->json_storage,CLI_ARGUMENT_BYTES*3U,&path);
     if(rc!=COG_OK)return rc;
     if(path==NULL || strcmp(path,request->path)!=0)return COG_ERROR_PROTOCOL;
   }
