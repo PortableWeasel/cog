@@ -163,8 +163,14 @@ cog_result_t cog_cli_sessions_open(cog_cli_app_t *app)
     }
     if (checkpoint.generation == 0U) return COG_ERROR_NOT_FOUND;
     bool recovery = app->opts.session_action == COG_CLI_SESSION_RECOVER;
-    rc = cog_store_checkpoint_load(app->store, id, checkpoint, recovery?COG_STORE_LOAD_INSPECT:COG_STORE_LOAD_REPLAY,
-        &loaded, &report);
+    rc = cog_store_checkpoint_load(app->store, id, checkpoint, COG_STORE_LOAD_REPLAY, &loaded, &report);
+    if (rc == COG_ERROR_INDETERMINATE && recovery) {
+        rc = cog_store_checkpoint_load(app->store,id,checkpoint,COG_STORE_LOAD_INSPECT,&loaded,&report);
+        if (rc == COG_OK && (report.source_version != COG_STORE_FORMAT_V4 || report.indeterminate_jobs == 0U)) {
+            cog_session_free(loaded);
+            return COG_ERROR_UNSUPPORTED;
+        }
+    }
     if (rc != COG_OK) return rc;
     bool unresolved=report.indeterminate_tools!=0U || report.indeterminate_jobs!=0U;
     if (unresolved && (!recovery || owner.epoch == 0U)) rc = COG_ERROR_INDETERMINATE;

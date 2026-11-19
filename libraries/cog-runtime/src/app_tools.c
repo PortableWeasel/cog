@@ -58,7 +58,11 @@ cog_result_t cli_tools_binding(const cog_cli_app_t *app, const char *name,
                 if(builtin==NULL && configured->table==&cog_workspace_tools && configured->user==NULL)
                     *user=app->workspace;
             }
-            *table=builtin!=NULL ? builtin : configured->table;return COG_OK;
+            *table=builtin!=NULL ? builtin : configured->table;
+            const cog_tool_t *resolved=NULL;
+            if(*table==NULL || cog_tool_table_lookup(*table,name,&resolved)!=COG_OK ||
+               resolved!=b->descriptor)return COG_ERROR_INVALID_STATE;
+            return COG_OK;
         }
         return COG_ERROR_NOT_FOUND;
     }
@@ -234,7 +238,7 @@ static cog_result_t finish_launch(cog_cli_app_t *app,cog_result_t disposition,co
         const char *why=cog_cli_result_name(disposition);
         cog_message_t failure={.role=COG_MESSAGE_ROLE_TOOL,.name=call->name,.tool_call_id=call->id,
             .content=why,.content_len=strlen(why)};
-        cog_tool_output_t outcome={.status=disposition,.output=why,.output_len=strlen(why)};
+        cog_tool_output_t outcome={.status=disposition,.output=""};
         rc=cog_session_tool_job_finish(app->session,r->background_id,&outcome,&failure);
         cog_result_t released=cog_toolkit_execution_free(app->execution);
         if(released==COG_OK)app->execution=NULL;

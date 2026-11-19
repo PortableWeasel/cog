@@ -43,6 +43,13 @@ typedef struct cog_workspace_config {
 cog_result_t cog_workspace_new(cog_workspace_t **out,
                                const cog_workspace_config_t *config);
 /**
+ * @brief Read the immutable command capability before advertising process tools.
+ * @param[in] workspace Live workspace owned by this thread.
+ * @param[out] enabled Receives the constructor's enable_commands setting.
+ * @return COG_OK; NULL_PTR for a missing argument. No allocation or effects.
+ */
+cog_result_t cog_workspace_commands_enabled(const cog_workspace_t *workspace, bool *enabled);
+/**
  * @brief Release workspace reservation and root descriptors.
  * @param[in,out] workspace NULL is COG_OK.
  * @return COG_OK; INVALID_STATE if any execution still borrows it.
