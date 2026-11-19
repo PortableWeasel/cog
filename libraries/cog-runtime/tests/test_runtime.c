@@ -494,6 +494,21 @@ static void background_job_round(void)
     } else if (step.input_ready && !step.publication_pending && submitted == 1U && receipt) {
       cog_tool_job_record_t job;
       assert(cog_runtime_job(runtime,1U,&job) == COG_OK && job.state == COG_TOOL_JOB_ACCEPTED);
+      assert(cog_runtime_fork(runtime,0U) == COG_ERROR_AGAIN);
+      cog_store_t *inspection = NULL;
+      cog_session_t *loaded = NULL;
+      cog_store_load_report_t load;
+      assert(cog_store_new(&inspection,&c.store) == COG_OK);
+      assert(cog_store_load_ex(inspection,c.session_id,COG_STORE_LOAD_REPLAY,&loaded,&load)
+             == COG_ERROR_INDETERMINATE);
+      assert(loaded == NULL);
+      assert(cog_store_load_ex(inspection,c.session_id,COG_STORE_LOAD_INSPECT,&loaded,&load) == COG_OK);
+      assert(load.indeterminate_jobs == 1U && load.indeterminate_tools == 0U);
+      cog_tool_job_record_t projected;
+      assert(cog_session_tool_job(loaded,1U,&projected) == COG_OK);
+      assert(projected.state == COG_TOOL_JOB_INDETERMINATE && projected.receipt_node_id == job.receipt_node_id);
+      cog_session_free(loaded);
+      cog_store_free(inspection);
       assert(cog_runtime_submit(runtime,"another prompt",14U,false) == COG_OK);
       submitted++;
     } else if (unrelated && !released) {
