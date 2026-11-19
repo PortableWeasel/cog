@@ -28,7 +28,10 @@ static cog_result_t validate(const cog_cli_execution_admission_t *a)
         a->configuration_generation == 0U || a->reload_attempts_used > CLI_RELOAD_ATTEMPTS)
         return COG_ERROR_INVALID_ARG;
     const cog_cli_options_t *o = cog_cli_configuration_options(a->configuration);
-    if (o == NULL || o->session_action == COG_CLI_SESSION_LIST || o->session_action == COG_CLI_SESSION_RECOVER ||
+    bool offline_recovery = a->kind == COG_CLI_EXECUTION_ROOT && a->runtime_config != NULL &&
+        a->runtime_config->mode == COG_RUNTIME_RECOVER;
+    if (o == NULL || o->session_action == COG_CLI_SESSION_LIST ||
+        (o->session_action == COG_CLI_SESSION_RECOVER && !offline_recovery) ||
         o->socket_path != NULL) return COG_ERROR_INVALID_ARG;
     bool is_child = a->kind == COG_CLI_EXECUTION_LOCAL_CHILD || a->kind == COG_CLI_EXECUTION_REMOTE_CHILD;
     if (is_child) {
