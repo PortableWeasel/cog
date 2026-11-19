@@ -307,6 +307,10 @@ static cog_result_t validate_config(const cog_runtime_config_t *c) {
       return COG_ERROR_UNSUPPORTED;
     if(!start_bound || !status_bound || c->tools.user==NULL || c->session.max_tool_jobs==0U ||
        c->session.max_tool_job_output_bytes==0U || c->scopes==NULL)return COG_ERROR_INVALID_ARG;
+    bool enabled=false;
+    cog_result_t permission=cog_workspace_commands_enabled(c->tools.user,&enabled);
+    if(permission!=COG_OK)return permission;
+    if(!enabled)return COG_ERROR_UNSUPPORTED;
     size_t cap=c->limits.max_tool_output_bytes;
     if(cap>c->limits.max_context_bytes)cap=c->limits.max_context_bytes;
     if(cap<256U || c->session.max_tool_job_output_bytes>(cap-256U)/6U)return COG_ERROR_LIMIT;
@@ -1090,7 +1094,7 @@ cog_runtime_instruction_publish(cog_runtime_t *r,
   cog_runtime_instruction_change_t *c = *owner;
   if (c->runtime != r || r->offline || r->app->recovery || r->shutdown)
     return COG_ERROR_INVALID_STATE;
-  if (r->app->active || r->app->provider_active || r->app->execution != NULL ||
+  if (r->background_id != 0U || r->app->active || r->app->provider_active || r->app->execution != NULL ||
       r->app->headless->publication_pending || r->future_provider!=NULL)
     return COG_ERROR_AGAIN;
   cog_session_snapshot_t state;
@@ -1286,7 +1290,7 @@ cog_runtime_reload(cog_runtime_t *r,
 cog_result_t cli_runtime_activate(cog_runtime_t *r) {
   if (r->future_provider == NULL)
     return COG_OK;
-  if (r->app->active || r->app->provider_active || r->app->execution != NULL ||
+  if (r->background_id != 0U || r->app->active || r->app->provider_active || r->app->execution != NULL ||
       r->app->headless->publication_pending || r->app->recovery)
     return COG_ERROR_AGAIN;
   if (r->future_instructions != NULL) {

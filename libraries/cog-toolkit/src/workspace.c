@@ -167,6 +167,13 @@ cog_result_t cog_workspace_new(cog_workspace_t **out, const cog_workspace_config
 #endif
 }
 
+cog_result_t cog_workspace_commands_enabled(const cog_workspace_t *workspace, bool *enabled)
+{
+    if (workspace == NULL || enabled == NULL) { return COG_ERROR_NULL_PTR; }
+    *enabled = workspace->commands;
+    return COG_OK;
+}
+
 cog_result_t cog_workspace_free(cog_workspace_t *workspace)
 {
     if (workspace == NULL) { return COG_OK; }
