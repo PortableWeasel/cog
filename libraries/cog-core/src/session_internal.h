@@ -87,6 +87,12 @@ struct cog_session {
     uint64_t audit_high_water;
     bool inspection_only;
     bool forked;
+    cog_tool_job_record_t *jobs;
+    cog_tool_output_t *job_outputs;
+    char *job_storage;
+    size_t job_count, max_tool_jobs, max_tool_job_output_bytes;
+    void *launch_payload; /* Reserved while an intent still needs its result. */
+    size_t launch_capacity;
     cog_session_context_t *contexts;
     cog_session_context_binding_t *context_bindings;
     unsigned char *context_data;

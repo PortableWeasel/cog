@@ -457,8 +457,61 @@ static void test_divergent_discard_leaf(void)
     cog_session_free(restored); cog_session_free(s);
 }
 
+static void test_background_job(void)
+{
+    const cog_session_config_t cfg = {.id = "job", .max_nodes = 8U,
+        .max_payload_bytes = 8192U, .max_tool_jobs = 1U, .max_tool_job_output_bytes = 64U};
+    const cog_message_tool_call_t call = {"launch", "start_background", "{}", 2U};
+    const cog_message_t model = {.role = COG_MESSAGE_ROLE_ASSISTANT, .tool_calls = &call, .tool_call_count = 1U};
+    const cog_message_t user = text(COG_MESSAGE_ROLE_USER, "unrelated");
+    const cog_tool_output_t outcome = {.status = COG_OK, .output = "done", .output_len = 4U,
+        .exit_status_known = true, .side_effects_possible = true};
+    cog_session_t *live = NULL, *restored = NULL;
+    cog_session_node_t *launch = NULL;
+    cog_tool_job_id_t id;
+    cog_tool_job_record_t job;
+    CHECK(cog_session_new(&live, &cfg) == COG_OK);
+    CHECK(cog_session_append(live, &model, &launch) == COG_OK);
+    CHECK(cog_session_tool_job_intent(live, launch, "launch", &id) == COG_OK && id != 0U);
+    CHECK(cog_session_tool_transition(live, launch, "launch", COG_TOOL_EXECUTION_STARTED,
+        COG_TOOL_EXECUTION_SUCCEEDED) == COG_ERROR_INVALID_STATE);
+    cog_message_t other = result("launch");
+    CHECK(cog_session_append(live, &other, NULL) == COG_ERROR_INVALID_STATE);
+    cog_session_snapshot_t v = snapshot(live);
+    CHECK(cog_session_restore(&restored, &cfg, &v) == COG_OK);
+    CHECK(cog_session_tool_job(restored, id, &job) == COG_OK && job.state == COG_TOOL_JOB_INDETERMINATE);
+    CHECK(cog_session_tool_job_reconcile(restored, id, NULL, "unknown", 7U) == COG_OK);
+    CHECK(cog_session_tool_job(restored, id, &job) == COG_OK && job.state == COG_TOOL_JOB_ACKNOWLEDGED);
+    CHECK(snapshot(restored).node_count == 2U && job.receipt_node_id == 0U);
+    cog_session_t *again = NULL;
+    cog_session_snapshot_t recovered = snapshot(restored);
+    CHECK(cog_session_restore(&again, &cfg, &recovered) == COG_OK);
+    cog_session_free(again);
+    cog_session_free(restored);
+
+    CHECK(cog_session_tool_job_accept(live, id) == COG_OK);
+    CHECK(cog_session_append(live, &user, NULL) == COG_OK);
+    CHECK(cog_session_fork(live, launch, NULL) == COG_ERROR_INVALID_STATE);
+    v = snapshot(live);
+    CHECK(cog_session_restore(&restored, &cfg, &v) == COG_OK);
+    CHECK(cog_session_append(restored, &user, NULL) == COG_ERROR_INVALID_STATE);
+    CHECK(cog_session_tool_job_reconcile(restored, id, &outcome, "fenced", 6U) == COG_OK);
+    CHECK(snapshot(restored).node_count == v.node_count);
+    CHECK(cog_session_tool_job(restored, id, &job) == COG_OK && job.receipt_node_id != 0U &&
+        job.state == COG_TOOL_JOB_FINISHED && strcmp(job.evidence, "fenced") == 0);
+    cog_session_free(restored);
+    CHECK(cog_session_tool_job_finish(live, id, &outcome, NULL) == COG_OK);
+    v = snapshot(live);
+    CHECK(cog_session_restore(&restored, &cfg, &v) == COG_OK);
+    cog_session_free(live);
+    CHECK(cog_session_tool_job(restored, id, &job) == COG_OK && strcmp(job.outcome->output, "done") == 0);
+    CHECK(cog_session_fork(restored, cog_session_active(restored), NULL) == COG_OK);
+    cog_session_free(restored);
+}
+
 int main(void)
 {
+    test_background_job();
     test_capacity_identity(); test_deep_copy(); test_crash_reconciliation();
     test_branch_and_associations(); test_snapshot_validation(); test_legacy_and_incomplete();
     test_branch_local_result_coverage(); test_divergent_discard_leaf(); test_legacy_helper_roundtrip();
