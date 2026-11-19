@@ -1,0 +1,34 @@
+digraph background_tool_jobs {
+  graph [rankdir=LR, fontname="sans-serif", bgcolor="white", pad=0.25,
+         label="Background tool jobs", labelloc=t, nodesep=0.35, ranksep=0.7];
+  node [shape=box, style="rounded,filled", fontname="sans-serif", color="#557084", fillcolor="#e7f2fa"];
+  edge [fontname="sans-serif", fontsize=10, color="#465968"];
+
+  host [label="Embedded host\nSubmit, cancel, shutdown"];
+  provider [label="Provider template\nStart and status calls"];
+  subgraph cluster_runtime {
+    label="Runtime owner · one cooperative thread";
+    color="#88a5bd"; style=rounded;
+    turn [label="Foreground turn\nValidate, approve, admit\nReturn one launch receipt"];
+    job [label="Job service\nOwn handle, poll, commit outcome"];
+    status [label="Status query\nResolve job ID on active path"];
+    store [label="Guarded session snapshot\nIntent → accepted → terminal", fillcolor="#e5f2df"];
+    turn -> store [label="intent + STARTED, then\nreceipt + closed call"];
+    turn -> job [label="retain owned handle"];
+    job -> store [label="outcome only"];
+    store -> status [label="committed state"];
+    status -> turn [label="separate call ID", constraint=false];
+  }
+  subgraph cluster_process {
+    label="Owned Linux process boundary";
+    color="#87729c"; style=dashed;
+    helper [label="Workspace helper\nControl socket + pidfd", fillcolor="#eee6f6"];
+    commands [label="Process group\nBounded output and reap", fillcolor="#eee6f6"];
+    helper -> commands [label="spawn, signal, reap"];
+  }
+  host -> turn [label="next prompt"];
+  host -> job [label="cancel or drain"];
+  provider -> turn [label="complete tool call"];
+  turn -> provider [label="correlated result", constraint=false];
+  job -> helper [dir=both, label="control, output, exit"];
+}

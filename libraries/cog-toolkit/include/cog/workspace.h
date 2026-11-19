@@ -65,6 +65,26 @@ cog_result_t cog_workspace_free(cog_workspace_t *workspace);
  * The application may choose descriptors from this static table; no registration.
  */
 extern const cog_tool_table_t cog_workspace_tools;
+/** @brief Exact opt-in asynchronous command descriptor for background jobs.
+ * Name start_background; identical command/cwd schema and environment, root,
+ * process-group and descendant ownership rules as run_command. The runtime
+ * wraps this descriptor in guarded job admission. Its output and exit facts
+ * remain the execution's terminal result. Standalone blocking paths refuse it.
+ *
+ * Linux V1 creates the helper and its CLOEXEC pidfd atomically (CLONE_PIDFD).
+ * Reserve the control/output/report channels before helper creation; no fallible
+ * parent acquisition may remain after a successful spawn. The helper cannot
+ * start a command without an established control channel. Lack of atomic
+ * pidfd support returns UNSUPPORTED without creating a helper; no numeric-PID
+ * fallback. Report UNSUPPORTED/IO as a verified no-effect failure of this
+ * descriptor's start. The numeric PID is diagnostic only. Cancellation
+ * sends TERM/KILL controls to the helper supervising its owned process group.
+ * Parent never signals a detached group using a stored numeric PID. Reap the
+ * exact helper once using its pidfd (waitid P_PIDFD), drain bounded output
+ * and report channels, and close the
+ * pidfd before publishing terminal status. No PID/fd enters model or store data.
+ */
+extern const cog_tool_t cog_workspace_start_background_tool;
 #ifdef __cplusplus
 }
 #endif

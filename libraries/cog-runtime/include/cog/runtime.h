@@ -87,19 +87,38 @@ typedef struct cog_runtime_provider_config {
  * internal singleton static tables; including them never grants a policy
  * implicitly. Copies of their descriptors do not preserve their identity.
  * The exact cog_runtime_delegation_tools members are also builtins; runtime
- * supplies their private bridge userdata and enforces parent/child roles. */
+ * supplies their private bridge userdata and enforces parent/child roles.
+ * Enabled background bindings use the exact workspace start and runtime status
+ * singleton descriptors. The same resolved binding array drives declaration
+ * and dispatch; scope/configuration checks cannot substitute another descriptor.
+ * Validate configured schemas when preparing that array, before advertising. */
 typedef struct cog_runtime_tool_config {
     const cog_tool_table_t *table;
     void *user;
     const cog_prompt_tool_binding_t *bindings;
     size_t binding_count;
 } cog_runtime_tool_config_t;
+
+/** @brief Exact builtin for model status queries, with no new external effects.
+ * Name background_status. Strict schema has one required bounded string
+ * job_id; the runtime additionally enforces the token grammar in tool_job.h.
+ * Lookup shares the active-context visibility check used by cog_runtime_job.
+ * It returns compact JSON with job_id and state (running, completed, failed,
+ * cancelled, or unknown_outcome for an explicitly acknowledged unknown).
+ * FINISHED maps OK to completed, ABORTED to cancelled and other failures
+ * (including TIMEOUT) to failed. Terminal verified results include status,
+ * text, truncation, possible effects and optional exit status. Unknown or inaccessible IDs yield the
+ * same identified NOT_FOUND, with no branch existence disclosure. The
+ * query's own call ID receives one result. Exact descriptor identity grants
+ * no policy; the host supplies explicit effective bindings for both tools.
+ */
+extern const cog_tool_t cog_runtime_background_status_tool;
 /** @brief Static mapping from original descriptor to declared scope property.
  * Paths are top-level JSON string fields checked by ordinary strict validation.
  * A descriptor may have several rows for multiple targets; V1 requires all
  * resolved directory scopes equal or returns UNSUPPORTED before effects. Unmapped external
- * tools are refused when instruction scope enforcement is configured; the two
- * instruction controls are exempt. NULL path_key uses explicit default_scope.
+ * tools are refused when instruction scope enforcement is configured. The
+ * instruction controls and exact background status descriptor are exempt. NULL path_key uses explicit default_scope.
  */
 typedef struct cog_runtime_scope_binding {
     const cog_tool_t *descriptor;
@@ -199,11 +218,25 @@ typedef struct cog_runtime_config {
        workspace scope/resource access. No implicit home/source discovery. */
     cog_instruction_limits_t instruction_limits;
     const cog_runtime_workers_t *workers;
+    /** Zero disables new background jobs. Positive is a launch-to-drain
+     * timeout in monotonic milliseconds before cancellation is requested
+     * (cleanup may take longer). V1 permits one active job on an embedded
+     * root; explicitly enabled workspace commands, exact start/status
+     * descriptors and cwd scope mapping, owned V4 store, and nonzero
+     * session job reservations are required. Both original descriptors are
+     * runtime-resolved singleton tables. No implicit policy or enablement
+     * from instructions. Headless/CLI and delegated workers do not opt in
+     * to this profile. Startup proves bounded receipt and worst-case status
+     * encoding fit the configured tool-result and provider history limits.
+     * Recovery/inspection accept job reservations with no timeout or tools.
+     */
+    uint32_t background_job_timeout_ms;
 } cog_runtime_config_t;
 /** @brief Slice status, returned even after valid-call driver error. Continue
  * stepping to drain, preserve first failure. done does not imply effect undo. */
 typedef struct cog_runtime_step_info {
-    bool done, input_ready, publication_pending;
+    bool done, input_ready, publication_pending; /**< input_ready may coexist
+       with a supervised job. done requires all owned jobs drained. */
     size_t dispatched;
     uint64_t next_deadline_ms; /**< UINT64_MAX if none. */
     uint32_t max_wait_ms; /**< Caller must not sleep beyond this finite bound. */
@@ -235,6 +268,11 @@ typedef struct cog_runtime_view_info {
     const cog_runtime_policy_t *policy;
     cog_result_t outcome;
     bool continuation_required;
+    /** Whole-session job records only in authorized offline INSPECT/RECOVER.
+     * Same retained borrow lifetime as items. Live lookup uses runtime_job.
+     */
+    const cog_tool_job_record_t *offline_jobs;
+    size_t offline_job_count;
 } cog_runtime_view_t;
 
 /** @brief Construct quiescent owner, without model/tool work.
@@ -244,7 +282,9 @@ typedef struct cog_runtime_view_info {
  * NOMEM; IO; PROTOCOL malformed context; AGAIN competing owner; INDETERMINATE.
  * PINNED NEW commits initial empty session+binding before publication. RESUME validates
  * retained context/template/tools without source reread. RECOVER is guard-fenced
- * offline recovery only; INSPECT never acquires execution authority. Failed
+ * offline recovery only; INSPECT never acquires execution authority. RECOVER
+ * loads V4 uncertain jobs via INSPECT and refuses unsafe legacy history.
+ * Validate the owned V4 snapshot before reconciliation and grant no replay. Failed
  * checkpoint freezes rather than guessing/retrying a new identity. Partial
  * resources unwind once. Offline modes expose retained view without begin.
  */
@@ -260,6 +300,14 @@ cog_result_t cog_runtime_begin(cog_runtime_t *runtime);
  * preparation boundary; reader/tool poll functions never allocate. Errors freeze admission and request drain: keep stepping
  * until done, then close. Publication backpressure never blocks cancel/deadlines
  * or overwrites retained output. Each executor gets its fixed round-robin quantum.
+ * Service the owned job even with an idle foreground turn, provider backpressure,
+ * pending view ACK or queued input. Merge its service deadline into step timing.
+ * While a job is unresolved, additional workspace mutations, child admission
+ * and scope-changing calls yield identified no-effect refusals. Read-only tools
+ * and same-path model turns remain eligible under ordinary policy. Persist
+ * terminal job output before exposing it to status; this never appends
+ * a message or makes a provider request. A job save fault freezes admission and
+ * drains ownership; only committed outcomes may be returned as durable.
  */
 cog_result_t cog_runtime_step(cog_runtime_t *runtime, cog_runtime_step_t *step);
 /** @brief Copy fresh explicit input exactly once; queue retains for later turn.
@@ -269,15 +317,20 @@ cog_result_t cog_runtime_step(cog_runtime_t *runtime, cog_runtime_step_t *step);
  * publication/context change; INVALID_STATE offline/shutdown; INDETERMINATE.
  * Prior queued input cannot authorize failed/cancelled continuation. Fresh
  * queue=false selects safe ancestor and retains original failed aggregate.
+ * An ACCEPTED job alone permits fresh input on the current path. A submission
+ * that would abandon its receipt's branch returns AGAIN until job closure.
  */
 cog_result_t cog_runtime_submit(cog_runtime_t *runtime, const char *text, size_t bytes, bool queue);
 /** @brief Cancel current turn, retaining accepted output/results.
  * @param[in,out] runtime Owner. @return OK; NULL_PTR; INVALID_STATE offline/ended;
- * OVERFLOW queue. No fresh input, automatic replay or promise of effect undo. */
+ * OVERFLOW queue. No fresh input, automatic replay or promise of effect undo.
+ * After its receipt is committed a background job survives a turn interrupt;
+ * use job_cancel or runtime_shutdown to drain it. */
 cog_result_t cog_runtime_cancel(cog_runtime_t *runtime);
 /** @brief Freeze admission and request drain, also valid before begin.
  * @param[in,out] runtime Owner. @return OK; NULL_PTR. Idempotent, owner-thread
- * only, not signal-safe. Pre-begin shutdown completes without launching work. */
+ * only, not signal-safe. Pre-begin shutdown completes without launching work.
+ * Cancel/drain all owned jobs, including accepted work from prior turns. */
 cog_result_t cog_runtime_shutdown(cog_runtime_t *runtime);
 /** @brief Borrow retained complete view; no implicit approval.
  * @param[in] runtime Owner. @param[out] view Borrowed immutable data.
@@ -311,6 +364,9 @@ cog_result_t cog_runtime_answer(cog_runtime_t *runtime, const cog_runtime_policy
  * UNSUPPORTED compatibility; provider preflight/cleanup errors. Failed candidate
  * leaves old generation unless cleanup failure freezes admission. Successful
  * candidate endpoint borrows persist until close; failed borrow ends at return.
+ * Refuse AGAIN before preparing a candidate while a job is unresolved.
+ * A pending candidate prevents new job admission. No reload wait gates
+ * unrelated input on the active job's branch.
  * Current whole turn stays pinned. Prepare the provider and matching snapshot
  * as ONE candidate; pure preflight uses that pair, never current context with a
  * future model. At safe idle, checkpoint the replacement context binding first,
@@ -325,7 +381,7 @@ cog_result_t cog_runtime_reload(cog_runtime_t *runtime,
     const cog_instruction_snapshot_t *instructions);
 /** @brief Select safe same-session fork point and its historical context.
  * @param[in,out] runtime Owner. @param[in] node_id Existing ID,0 active leaf.
- * @return OK; NULL_PTR; NOT_FOUND; AGAIN active/queued/view/change; INVALID_STATE
+ * @return OK; NULL_PTR; NOT_FOUND; AGAIN active/queued/view/change/job; INVALID_STATE
  * unsafe/offline; INDETERMINATE. No ancestor rewrite or new branch until fresh input.
  */
 cog_result_t cog_runtime_fork(cog_runtime_t *runtime, uint64_t node_id);
@@ -339,6 +395,43 @@ cog_result_t cog_runtime_fork(cog_runtime_t *runtime, uint64_t node_id);
  */
 cog_result_t cog_runtime_reconcile(cog_runtime_t *runtime, uint64_t node_id,
     const char *call_id, cog_tool_execution_state_t outcome, const char *evidence, size_t bytes);
+/** @brief Read one committed job through the live authorized host.
+ * @param[in] runtime Begun local owner.
+ * @param[in] id Nonzero exact session-local identity.
+ * @param[out] record Borrowed immutable data until next runtime mutation.
+ * @return OK; NULL_PTR; INVALID_ARG zero ID; INVALID_STATE offline/ended;
+ * NOT_FOUND absent or inaccessible; INDETERMINATE uncertain checkpoint.
+ * @note Owner thread. Require the launch receipt on the active path, exact
+ * origin context binding and an eligible current status descriptor. This
+ * is an authorized host query; model queries must pass tool policy. No PID,
+ * waiting, policy changes, allocations, new effects or implicit publication.
+ */
+cog_result_t cog_runtime_job(const cog_runtime_t *runtime, cog_tool_job_id_t id,
+    cog_tool_job_record_t *record);
+
+/** @brief Request cancellation of one existing job by authorized host.
+ * @param[in,out] runtime Begun local owner.
+ * @param[in] id Exact job ID visible to this owner.
+ * @return OK (idempotent for an already requested or visible closed job);
+ * NULL_PTR; INVALID_ARG zero ID; NOT_FOUND absent/inaccessible; INVALID_STATE
+ * offline/ended. Owner thread, no wait. Poll continues through publication
+ * backpressure; completion is durable only after verified drain and save.
+ */
+cog_result_t cog_runtime_job_cancel(cog_runtime_t *runtime, cog_tool_job_id_t id);
+
+/** @brief Reconcile an uncertain job under the restricted offline owner.
+ * @param[in,out] runtime RECOVER owner with prior processes fenced/reaped.
+ * @param[in] id Exact ID from offline view.
+ * @param[in] outcome Verified terminal data, or NULL to close as unknown.
+ * @param[in] evidence UTF-8 evidence. @param[in] bytes Evidence length 1..4095.
+ * @return OK after durable reconciliation; NULL_PTR; INVALID_ARG; NOT_FOUND;
+ * INVALID_STATE wrong mode/phase; LIMIT; IO; INDETERMINATE.
+ * @note Reconciles its unclosed launch in the same save if needed. No replay,
+ * new authority, PID restoration, or effect. Resume remains explicit.
+ */
+cog_result_t cog_runtime_job_reconcile(cog_runtime_t *runtime, cog_tool_job_id_t id,
+    const cog_tool_output_t *outcome, const char *evidence, size_t bytes);
+
 /** @brief Bind an explicit named role/skill choice to one proposed child task.
  * Requires the original runtime delegation descriptor and non-DENY effective
  * binding. ASK permits preparing a choice but never bypasses policy approval.
@@ -380,7 +473,7 @@ cog_result_t cog_runtime_instruction_prepare(cog_runtime_instruction_change_t **
     cog_runtime_t *runtime, const cog_instruction_snapshot_t *snapshot);
 /** @brief Publish prepared replacement after closing old proposal group.
  * @param[in,out] runtime Matching owner. @param[in,out] change Consumed/NULL on OK.
- * @return OK; NULL_PTR; AGAIN active effect/provider/unclosed group/view;
+ * @return OK; NULL_PTR; AGAIN active effect/provider/unclosed group/view/job;
  * INVALID_STATE stale branch/generation/context; LIMIT; IO/INDETERMINATE freezes
  * admission. Validate before writes; terminal result/ledger/new context binding
  * save atomically. Admitted effects keep old context; next bounded continuation
@@ -397,6 +490,7 @@ cog_result_t cog_runtime_instruction_change_free(cog_runtime_instruction_change_
  * NULL_PTR; INVALID_STATE undrained. Late guard-release refusal can retain a
  * cleanup-only nonNULL owner, never executable. Detach consumed resources once;
  * all endpoint/transport/tool/store borrows end only at complete consumption.
+ * Active or undrained jobs refuse close; shutdown and step first.
  * No blocking wait, replay, signal changes or logging to terminal.
  */
 cog_result_t cog_runtime_close(cog_runtime_t **runtime, cog_result_t primary);

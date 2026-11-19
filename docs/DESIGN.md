@@ -633,11 +633,55 @@ separate gates. Details and independent reviews are tracked under `32b5102`.
 | [P01](scenarios/P01-instruction-support.md), [03](scenarios/03-subagent-lifecycle.md) | Unchanged and changed scope, restricted children, local/native parity | Check prior results survive scope replacement, unstarted suffix calls never launch, and native continuation waits for verified publication. |
 | [06](scenarios/06-parallel-tools.md), [R09](scenarios/R09-process-timeout.md) | Sequential runtime over existing async toolkit and process supervisor | Keep the explicit toolkit batch and command cleanup contracts covered independently. |
 
-The later header pass must settle the bounded toolkit validation interface or
-reuse an existing contract, the headless approval detail and compatibility
-contract, and exact error classification for expired answers and fatal validation
-errors. The diagram review establishes ownership and ordering. The evidence table
-records the expected behavior for later contract and delivery tests.
+The background-job header phase specifies a reusable bounded toolkit
+validator for pre-approval and pre-scope checks. Full headless approval detail
+and compatibility remain a separate contract change. The validator rejects
+malformed or mismatched arguments with INVALID_ARG, unsupported schema
+semantics with UNSUPPORTED, and reservation exhaustion with LIMIT. Runtime
+returns an identified no-effect result for model input errors; a malformed
+configured schema is an admission/configuration failure.
+
+### Background tool jobs · draft public contracts
+
+The [background-job diagram](background-tool-jobs.svg) and
+[R10 scenario](scenarios/R10-background-tool-jobs.md) extend the existing
+foreground-call lifecycle. The [PoC](../pocs/tool-use/README.md) verified that a
+real model could choose a launch template, answer an unrelated prompt during
+execution, and retrieve an outcome with a separate status call.
+
+- **One call result, one independent job.** Commit the assistant and PROPOSED
+  call, then STARTED and job INTENT together. At supervisor acceptance commit
+  the correlated launch receipt, terminal call ledger, and job ACCEPTED together.
+  The runtime retains the toolkit handle under the same guard. It can service
+  later foreground turns while the job is live. On completion only the job
+  record changes. A status call has its own provider call ID.
+- **One owner and bounded service.** The initial profile opts in one active
+  job per embedded root using exact static start/status descriptors and an
+  owned V4 store. While admitted, a job pins the workspace and context binding.
+  Block additional workspace mutations and child admission until it drains.
+  A tool that would replace scope receives an identified refusal before
+  effects. Reload returns AGAIN before retaining a new candidate so it cannot
+  suppress otherwise admissible input. Fork and handoff require durable drain.
+  CLI, detached controllers and delegated workers keep their existing profile.
+- **Own the helper and its descendants.** Acquire the helper and its pidfd in
+  one Linux operation with CLONE_PIDFD. Use pidfd readiness and waitid for the
+  exact helper; existing helper-side process-group controls and subreaping own
+  the command's descendants within their supported profile. Missed/uncertain
+  reap is an indeterminate outcome. The parent does not signal using a
+  previously recorded numeric PID. [Linux clone contract](https://www.man7.org/linux/man-pages/man2/clone.2.html)
+- **Recover intent without inventing outcomes.** V4 stores typed job records
+  in the same guarded snapshot, with no process IDs or handles in the payload.
+  Restore converts unresolved jobs to indeterminate and refuses ordinary
+  ownership. Offline recovery requires verified prior process fencing. Preserve
+  a committed receipt; if one was never committed, resolve the matching call
+  and job together. Retain all terminal states and reserve their storage before
+  launch. V1–V3 snapshots load with no job records.
+
+The first header pass established descriptor, call and job identities. The
+second traced foreground responsiveness, process ownership and cancellation.
+The third checked committed-prefix preservation, capacity and recovery across
+the pre-receipt and post-receipt crash windows. R10 records the expected
+observations for each pass.
 
 ## Sessions, persistence and recovery
 

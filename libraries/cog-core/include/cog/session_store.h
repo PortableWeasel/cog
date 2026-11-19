@@ -36,8 +36,10 @@ extern "C" {
 #define COG_STORE_FORMAT_V2 2u
 /** @brief Draft context-bearing snapshot format; v1/v2 remain readable. */
 #define COG_STORE_FORMAT_V3 3u
+#define COG_STORE_FORMAT_V4 4u /**< Typed background job records. */
 /** @brief Static promise: exact context preservation and atomic v3 saves. */
 #define COG_STORE_CAP_CONTEXT_V3 UINT64_C(1)
+#define COG_STORE_CAP_TOOL_JOBS_V4 UINT64_C(2) /**< Guarded atomic job profile. */
 
 /**
  * @brief Literal portable v3 snapshot suffix (draft before implementation).
@@ -75,6 +77,29 @@ extern "C" {
  * opaque namespace data; instruction runtime requires a supported format or
  * explicit safe legacy adoption, never implicit pending-call rebase.
  */
+/**
+ * @brief Portable V4 job snapshot suffix (draft).
+ *
+ * Use eight-byte magic COGSNAP4, followed by the V3 fields in the same order
+ * and then u64 tool_job_count. Each row in increasing job ID order encodes:
+ * u64 id, u64 assistant_node_id, string call_id, u64 receipt_node_id,
+ * u64 state (0..4), string evidence. FINISHED adds i64 status, u64 flags,
+ * i64 exit_status, string output in that order. u64 and two's-complement i64
+ * are eight-byte little-endian. Flags bit 0 is truncated, bit 1 possible
+ * effects, bit 2 known exit status; reject other bits. Exit status is zero
+ * when unknown; otherwise it fits int. Status is a recognized terminal
+ * cog_result_t. Use V3 string grammar. Evidence is absent until reconciliation
+ * and present/nonempty when recorded. FINISHED output is present even if
+ * empty; its exact byte count is output_len. Other phases have no outcome
+ * bytes. Reject trailing bytes, malformed or incoherent data with PROTOCOL;
+ * no native layouts, timestamps, process IDs or descriptors.
+ *
+ * Use the same COGGEN2 envelope and owner transaction; checksum includes all
+ * job bytes. Choose V4 whenever any retained job exists. V1–V3 load no jobs.
+ * V4 load validates bounded rows and derives constructor reservations before
+ * restore. Writer admission preserves sufficient max_record_bytes capacity
+ * for all unresolved jobs' reserved terminal state, audit and result overhead.
+ */
 /** @brief File load policy: unsafe legacy records require explicit inspection. */
 typedef enum cog_store_load_mode {
     COG_STORE_LOAD_REPLAY = 0,
@@ -83,7 +108,7 @@ typedef enum cog_store_load_mode {
 /** @brief Facts returned by version-aware load; never stored credentials. */
 typedef struct cog_store_load_report {
     uint32_t source_version;
-    uint64_t checkpoint_generation; /**< Exact v2/v3 immutable generation; 0 for v1. */
+    uint64_t checkpoint_generation; /**< Exact v2–V4 immutable generation; 0 for v1. */
     bool migrated_in_memory;
     bool recovered_truncated_tail;
     size_t discarded_tail_bytes;
@@ -95,6 +120,8 @@ typedef struct cog_store_load_report {
        inspection verifier may distinguish that synthetic tail by sequence above
        this watermark and exact previous/next states; it never grants execution.
        Context-capable custom backends must report this factual source value. */
+    size_t indeterminate_jobs; /**< V4 job uncertainty after projection; job
+       count is independent of indeterminate_tools. Zero on older formats. */
 } cog_store_load_report_t;
 
 /** @brief Immutable checkpoint identity scoped by store+session; 0 is absent. */
@@ -275,6 +302,11 @@ typedef struct cog_store_vtable {
     /** Static bits: zero is legacy v2; CONTEXT_V3 promises exact data/bindings/
      * node associations/high-water on ALL load/save/checkpoint paths, atomic
      * with messages/ledger. Unknown bits are rejected at construction. This
+     * TOOL_JOBS_V4 additionally requires CONTEXT_V3 and fenced callbacks.
+     * It preserves typed job records and the call/receipt/evidence associations
+     * on every path; custom implementations enforce the guarded diff and restore
+     * rules documented on save/acquire. V1–V3 readers restore an empty job ledger;
+     * a backend without V4 must refuse V4 data rather than discard it. This
      * layout extension requires custom backend recompilation; no binary ABI
      * compatibility with a shorter pre-extension table is promised. */
     uint64_t capabilities;
@@ -420,6 +452,18 @@ void cog_store_free(cog_store_t *store);
  * any context records/bindings/high-water/cursor/node bindings exist but backend
  * lacks CONTEXT_V3, regardless of configured required_capabilities. Failed or
  * uncertain save grants no use of the new context.
+ * A nonempty job ledger requires a TOOL_JOBS_V4 backend and a live
+ * matching guard; reject UNSUPPORTED before invoking an incapable backend.
+ * Commit job edges through ordinary save, atomically with launch call/result
+ * changes in the same generation. Preserve all committed jobs, their identity,
+ * launch association, existing receipt and terminal data/evidence. Compare
+ * legal transitions under the lock; pending job intent on restored data never
+ * grants permission to accept a receipt or effect. Constructor reservations
+ * must preserve space for admitted jobs' terminal data in the store codec,
+ * independently of later foreground messages. Under the live owner, ACCEPTED
+ * alone does not restrict ordinary append/send; INDETERMINATE blocks admission.
+ * Handoff checkpoint and owner transfer require no INTENT/ACCEPTED job plus
+ * no unresolved effects; recovery epoch changes after fencing remain possible.
  * Only documented monotonic ledger transitions are allowed: PROPOSED->STARTED/
  * DENIED and STARTED->SUCCEEDED/FAILED/CANCELLED/INDETERMINATE, with valid
  * associated results; final outcomes/results are immutable. Only a recovery
@@ -447,6 +491,9 @@ cog_result_t cog_store_save(cog_store_t *store,
  * Unsafe legacy tool identity fails UNSUPPORTED with *out=NULL. Outstanding
  * STARTED v2 entries become INDETERMINATE in memory; never rerun. The caller
  * inspects/reconciles them before continuation; ordinary history building fails.
+ * V4 restore projects job INTENT/ACCEPTED to INDETERMINATE before granting
+ * replay; REPLAY refuses such a snapshot. INSPECT exposes the projected job
+ * and any unchanged receipt; no live handles are reconstructed.
  *
  * @param[in]  store Store instance.
  * @param[in]  id    Session id to load.
@@ -469,13 +516,17 @@ cog_result_t cog_store_load(cog_store_t *store,
  * @param[out] out Owned session, matched by cog_session_free; NULL on failure.
  * @param[out] report Required evidence; unchanged on failure.
  * @return COG_OK; NULL_PTR; INVALID_ARG; NOT_FOUND; UNSUPPORTED for version or
- * unsafe REPLAY migration; LIMIT/NOMEM; IO/PROTOCOL for corruption. Missing
+ * unsafe legacy REPLAY migration; INDETERMINATE for V4 job uncertainty; LIMIT/NOMEM; IO/PROTOCOL for corruption. Missing
  * index may be rebuilt from the validated log in reserved workspace; a corrupt
  * authoritative generation is never silently replaced with another branch.
  * @note REPLAY validates that all unresolved tool/result state lies on the
  * one active path; off-active unresolved state fails PROTOCOL, never silent
  * branch selection or dropped evidence. INSPECT grants no execution/recovery
  * bypass. Recovery is enabled only by recover_truncated_tail; no disk writes.
+ * V4 load projects persisted INTENT/ACCEPTED jobs to INDETERMINATE. Reject
+ * off-path unresolved jobs with PROTOCOL. REPLAY fails INDETERMINATE; INSPECT
+ * retains read-only evidence, including receipts, and counts uncertainty
+ * in indeterminate_jobs. No process handles can be restored.
  * Exact opaque data and call associations survive save/load/fork round trips.
  */
 cog_result_t cog_store_load_ex(cog_store_t *store, const char *id,
@@ -579,6 +630,7 @@ cog_result_t cog_store_checkpoint_save(cog_store_t *store,
  * @return Same load_ex errors, NOT_FOUND for absent generation/zero token;
  * no disk writes, activation, effects or ordinary replay of unresolved history.
  * @note Target loads STAGED while source is quiescent; exact bytes/ledger checked.
+ * V4 uses the same uncertainty projection/refusal and report as load_ex.
  */
 cog_result_t cog_store_checkpoint_load(cog_store_t *store, const char *id,
                                         cog_store_checkpoint_t checkpoint,
@@ -656,6 +708,8 @@ cog_result_t cog_store_owner_compare_exchange(cog_store_t *store, const char *id
  * close in fork child. The OS releases it on owner death. Restart first fences/
  * reaps prior owned processes; unverified child effects remain INDETERMINATE,
  * never automatic failover/replay. A new incarnation requires a fresh epoch.
+ * Unresolved job INTENT/ACCEPTED/INDETERMINATE data also refuses normal
+ * acquisition, even if its launch call and result are terminal.
  * Unresolved intent is inspectable/reconcilable only through the explicitly
  * restricted owner_acquire_recovery path, never an automatic mode downgrade.
  */
@@ -677,7 +731,11 @@ cog_result_t cog_store_owner_acquire(cog_store_t *store, const char *id,
  * ordinary acquire, but may hold unresolved ledger entries. It grants no model,
  * tool, child or input admission; guard_borrow fails INVALID_STATE. The only
  * permitted save changes are atomic reconcile_tool results/final states plus
- * their audit evidence; existing message bytes/node identity/parentage/opaque/
+ * their audit evidence; V4 permits explicit job reconciliations with the
+ * same process fencing precondition. When a receipt exists, only job
+ * terminal data/evidence may change; without one, atomically close the
+ * matching indeterminate launch. Restore normalization is allowed without
+ * approximating an outcome. Existing message bytes/node identity/parentage/opaque/
  * usage stay unchanged (only matching new result nodes may be appended), and
  * no new user/assistant/tool-call work may be added. save validates this monotonic
  * diff against the locked generation; conservative restored STARTED->

@@ -126,7 +126,9 @@ typedef struct cog_tool_output {
  * Every callback is owner-thread only, nonrecursive and returns NULL_PTR for
  * required NULLs. new_ returns NOMEM/LIMIT/INVALID_ARG/UNSUPPORTED before effects
  * and sets *out_handle=NULL on failure. start returns INVALID_STATE on repeat;
- * if an effect starts, it returns OK and poll/result expose any ensuing error.
+ * A background workspace supervisor start may also return UNSUPPORTED/IO
+ * for known, effect-free launch refusal. If an effect starts or owned
+ * cleanup remains, start returns OK and poll/result expose ensuing errors.
  * poll returns OK with done/deadline (UINT64_MAX if none), INVALID_ARG on a
  * backwards clock, or driver error requiring cancellation. result returns
  * AGAIN until terminal then OK even when output.status is failure. cancel and
@@ -151,7 +153,9 @@ typedef cog_result_t (*cog_tool_async_new_fn)(cog_core_t *core,
  * @brief Begin effects once after policy and persistence; see table contract.
  * @param[in,out] handle Prepared tool state.
  * @param[in] now_ms Monotonic time.
- * @return OK, NULL_PTR, INVALID_ARG or INVALID_STATE; failure has no effects.
+ * @return OK, NULL_PTR, INVALID_ARG or INVALID_STATE; the background workspace
+ * descriptor may also return UNSUPPORTED/IO for effect-free spawn failure.
+ * Any failure leaves no owned work to drain.
  * @note Owner thread, nonblocking; effects begun imply OK and retained outcome.
  */
 typedef cog_result_t (*cog_tool_async_start_fn)(void *handle, uint64_t now_ms);

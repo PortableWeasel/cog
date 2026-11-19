@@ -23,6 +23,7 @@
 #include <cog/event.h>
 #include <cog/message.h>
 #include <cog/result.h>
+#include <cog/tool_job.h>
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -99,6 +100,11 @@ typedef struct cog_session_config {
     size_t max_context_bindings;
     size_t max_context_bytes; /**< Sum of copied namespace bytes including NUL
        and data bytes; context/binding descriptor arrays are reserved separately. */
+    size_t max_tool_jobs; /**< Zero disables job storage; total retained slots,
+       including terminal records. No eviction or reuse. */
+    size_t max_tool_job_output_bytes; /**< Nonzero iff max_tool_jobs is nonzero.
+       Excludes the terminator. Each slot also reserves up to 4095 evidence bytes;
+       both products checked at construction, independent of message payload. */
 } cog_session_config_t;
 
 /* ------------------------------------------------------------------ */
@@ -381,6 +387,17 @@ typedef struct cog_session_snapshot {
     uint64_t context_high_water;
     uint64_t context_binding_high_water;
     uint64_t selected_context_binding_id;
+    /** Job records in increasing ID order. Validate exact STARTED audit
+     * sequence, originating call and receipt associations. A receipt is the
+     * unique correlated COMPLETE TOOL node whose exact text is the canonical
+     * compact JSON {"job_id":"job-HEX","state":"accepted"} (HEX is 16 digits).
+     * With no receipt, INTENT pairs with STARTED, INDETERMINATE with the
+     * uncertain launch, and terminal records with their closed launch ledger.
+     * With receipt, the launch call is permanently SUCCEEDED. Unresolved
+     * jobs must originate on the active path. No job rows in V1–V3 snapshots.
+     */
+    const cog_tool_job_record_t *tool_jobs;
+    size_t tool_job_count;
 } cog_session_snapshot_t;
 
 /* ------------------------------------------------------------------ */
@@ -414,13 +431,16 @@ cog_result_t cog_session_new(cog_session_t **out,
  * A recovery LIMIT may be retried by snapshot_view then a larger restore,
  * retaining the old session until construction succeeds; no in-place growth.
  * @param[in] snapshot Complete borrowed records/ledger/audit/active/high-water;
- * all transitive bytes are copied before return into constructor reservations.
+ * all transitive bytes (including job records) are copied before return into
+ * constructor reservations. Nonempty jobs require explicit job reservations.
  * @return OK; NULL_PTR; INVALID_ARG invalid capacity/ID agreement; LIMIT capacity
  * or checked identity/audit exhaustion; NOMEM reservation; PROTOCOL malformed
  * IDs/parent order/cycles/duplicate keys/associations/audit chain/high-water or
- * off-active unresolved state; UNSUPPORTED unsafe legacy tools outside inspection.
+ * off-active unresolved call or job; UNSUPPORTED unsafe legacy tools outside inspection.
  * @post Preserves sparse explicit node IDs, branch/sibling order, selected leaf,
- * every existing audit/evidence byte and allocator high-water. STARTED restores
+ * every existing audit/evidence byte and allocator high-water. Job INTENT/
+ * ACCEPTED restore as INDETERMINATE regardless of the launch call state.
+ * Ordinary STARTED restores
  * conservatively as INDETERMINATE with an appended recovery audit transition;
  * it never authorizes a rerun. inspection_only permits forensic observation,
  * never provider history or effect admission. No private layout or dummy nodes.
@@ -462,7 +482,7 @@ cog_result_t cog_session_context_add(cog_session_t *session,
  * @param[in] binding ID above high-water, previous equals selected cursor,
  * anchor equals active leaf ID (zero iff empty), existing context_id.
  * @return OK; NULL_PTR; INVALID_ARG ID/anchor/previous; NOT_FOUND context;
- * INVALID_STATE inspection, unresolved calls/results or incomplete active path;
+ * INVALID_STATE inspection, unresolved calls/results/jobs or incomplete active path;
  * LIMIT reserved binding/identity capacity. Failure changes nothing.
  * @post Copies record and advances high-water/selected cursor atomically; no
  * node is rebound. No allocation, disk write or execution grant. Runtime must
@@ -483,7 +503,7 @@ cog_result_t cog_session_context_publish(cog_session_t *session,
  * Zero requires zero recorded binding; no latest-ID heuristic is used.
  * @return OK; NULL_PTR session; NOT_FOUND binding; INVALID_ARG foreign/nonleaf
  * node or cross-branch/older cursor; INVALID_STATE inspection, ANY unresolved
- * call/result or incomplete selected path. Failure changes nothing.
+ * call/result/job or incomplete selected path. Failure changes nothing.
  * @post Selects leaf/cursor without node rebinding/allocation/disk effects.
  * To rebase to older context bytes, publish a NEW revision referencing that
  * context; selecting an ancestor of the leaf's recorded binding is refused.
@@ -652,7 +672,11 @@ const cog_node_data_t *cog_node_data(const cog_session_node_t *node);
  * leaf may be inserted; any ancestor/sibling/other parent, new user/assistant
  * work or implicit branch switch returns INVALID_STATE. INDETERMINATE requires
  * atomic reconcile_tool instead of ordinary insertion. This also binds append.
- * Once all calls/results are final, ordinary safe branching is available.
+ * An ACCEPTED job permits ordinary extension of the current active leaf.
+ * While any job is INTENT/ACCEPTED, an insertion that switches branch is
+ * INVALID_STATE. INDETERMINATE jobs prevent ordinary insertion and history
+ * building even when all provider calls/results are closed.
+ * Once all calls/results and jobs are final, ordinary safe branching is available.
  * Returns INVALID_ARG for invalid association/duplicate result, LIMIT if
  * reserved node/payload/ledger capacity is exhausted; failure is atomic.
  * Binding assignment is atomic with insertion. Extending the active leaf uses
@@ -753,7 +777,7 @@ cog_result_t cog_session_add_tool_result(cog_session_t *session,
  * Refuses INVALID_STATE while ANY session call/result is unresolved, even if
  * the selected target is an older safe sibling/ancestor. Unresolved calls stay
  * on one active path until their results/reconciliation finish; branching away
- * cannot strand recovery. Also refuses an incomplete selected path. Text-only
+ * cannot strand recovery. Also refuses any unresolved job or an incomplete selected path. Text-only
  * incomplete turns without identified ledger may explicitly fork from their
  * last safe ancestor. Forking never authorizes repeating ancestor effects.
  * Marks @p node and its ancestors immutable and returns that same shared fork
@@ -818,7 +842,9 @@ cog_result_t cog_session_get_history(const cog_session_t *session,
  * @param[out] out_count Required entries on success/OVERFLOW.
  * @return COG_OK; OVERFLOW writes count only and no entries; NULL_PTR;
  * INVALID_ARG for foreign node; INVALID_STATE for incomplete/uncorrelated
- * history or unresolved/indeterminate tools. No implicit context pruning.
+ * history, unresolved/indeterminate calls, or any indeterminate job. An
+ * ACCEPTED job under the live intact owner does not block ordinary history.
+ * No implicit context pruning.
  * @note No allocation. Array caller-owned; nested views session-owned until
  * mutation/reset/free. Owner thread only. Empty history succeeds with count 0.
  */
@@ -897,6 +923,92 @@ cog_result_t cog_session_tool_state(const cog_session_t *session,
                                     const cog_session_node_t *assistant,
                                     const char *call_id,
                                     cog_tool_execution_state_t *out_state);
+
+/** @brief Reserve one job and transition its launch PROPOSED -> STARTED atomically.
+ * @param[in,out] session Owner with job slots reserved.
+ * @param[in] assistant Exact private assistant on the active path.
+ * @param[in] call_id Exact launch call in that group.
+ * @param[out] id New job ID, unchanged on failure.
+ * @return OK; NULL_PTR; NOT_FOUND; INVALID_STATE stale/off-path/already admitted
+ * or another job unresolved; LIMIT slots/audit capacity. No execution or save.
+ * @pre Strict validation and policy completed. This mutation reserves the
+ * required result node, bounded result payload and launch audit tail for
+ * success, known failure or reconciliation. Later writes cannot consume these
+ * reservations. Caller proves store-codec capacity and saves before effects.
+ * @note Owner thread. Ordinary call transition/result APIs refuse to mutate a
+ * job-associated launch; all launch mutations use the matching job transaction.
+ */
+cog_result_t cog_session_tool_job_intent(cog_session_t *session,
+    cog_session_node_t *assistant, const char *call_id, cog_tool_job_id_t *id);
+
+/** @brief Append the canonical launch receipt and close the call atomically.
+ * @param[in,out] session Owner at the launch group's active leaf.
+ * @param[in] id The INTENT job.
+ * @return OK; NULL_PTR; NOT_FOUND; INVALID_STATE wrong phase/path; LIMIT
+ * receipt node/payload/audit capacity. No mutation on failure.
+ * @pre A live supervisor accepted the execution. Atomically append its
+ * correlated receipt, transition the launch to SUCCEEDED and job to ACCEPTED.
+ * Caller saves all three before exposing the receipt or continuing. A fast
+ * worker can already have terminated; the receipt still means accepted.
+ */
+cog_result_t cog_session_tool_job_accept(cog_session_t *session, cog_tool_job_id_t id);
+
+/** @brief Record an owned job outcome without another launch receipt.
+ * @param[in,out] session Owner.
+ * @param[in] id The ACCEPTED or INTENT job.
+ * @param[in] outcome Verified bounded final result after owned cleanup.
+ * AGAIN and INDETERMINATE are invalid terminal status values.
+ * @param[in] launch_failure COMPLETE correlated TOOL failure, required for
+ * INTENT with verified no invocation and NULL for ACCEPTED.
+ * @return OK; NULL_PTR; NOT_FOUND; INVALID_ARG payload/status; INVALID_STATE
+ * wrong phase or missing proof; LIMIT reserved storage. Failure is atomic.
+ * @note Owner thread. INTENT closure appends the failure and transitions the
+ * call to FAILED/CANCELLED in the same mutation. ACCEPTED closure changes
+ * only the job. The caller saves before exposing the outcome. An indeterminate
+ * disposition uses cog_session_tool_job_mark_uncertain instead.
+ */
+cog_result_t cog_session_tool_job_finish(cog_session_t *session, cog_tool_job_id_t id,
+    const cog_tool_output_t *outcome, const cog_message_t *launch_failure);
+
+/** @brief Conservatively mark unresolved work uncertain, without execution.
+ * @param[in,out] session Owner.
+ * @param[in] id The INTENT or ACCEPTED job.
+ * @return OK (same uncertain ID is idempotent); NULL_PTR; NOT_FOUND;
+ * INVALID_STATE terminal phase; LIMIT reserved call audit.
+ * @note INTENT also changes the STARTED launch to INDETERMINATE atomically;
+ * ACCEPTED preserves the receipt and its terminal launch state. Store restore
+ * applies this projection to every persisted INTENT/ACCEPTED before replay.
+ * Current owner must still drain every live handle; uncertainty halts admission.
+ */
+cog_result_t cog_session_tool_job_mark_uncertain(cog_session_t *session, cog_tool_job_id_t id);
+
+/** @brief Reconcile one uncertain job after fencing prior processes.
+ * @param[in,out] session Session in explicit offline recovery.
+ * @param[in] id Exact INDETERMINATE job.
+ * @param[in] outcome Verified terminal result, or NULL to acknowledge unknown.
+ * @param[in] evidence UTF-8 operator evidence, without credentials or secrets.
+ * @param[in] bytes Exact evidence length, 1..4095.
+ * @return OK; NULL_PTR; INVALID_ARG invalid evidence or outcome; NOT_FOUND;
+ * INVALID_STATE phase/path; LIMIT reservation exhausted. No mutation on failure.
+ * @pre Prior owned processes are fenced/reaped. Atomically close the job
+ * with evidence and, if no receipt exists, close its indeterminate launch with
+ * a bounded identified recovery summary. Store full evidence in the job
+ * record; the matching launch audit/result may refer to that job ID. A
+ * preexisting receipt and launch state survive unchanged. This does not
+ * authorize execution. Caller durably saves using the recovery guard.
+ */
+cog_result_t cog_session_tool_job_reconcile(cog_session_t *session, cog_tool_job_id_t id,
+    const cog_tool_output_t *outcome, const char *evidence, size_t bytes);
+
+/** @brief Query a job for session owner/store inspection.
+ * @param[in] session Owner.
+ * @param[in] id Nonzero session-local identity.
+ * @param[out] record Borrowed view until session mutation/reset/free.
+ * @return OK; NULL_PTR; INVALID_ARG zero ID; NOT_FOUND absent; output unchanged
+ * on failure. Owner thread; caller enforces branch and policy visibility.
+ */
+cog_result_t cog_session_tool_job(const cog_session_t *session, cog_tool_job_id_t id,
+    cog_tool_job_record_t *record);
 
 /* ------------------------------------------------------------------ */
 /* Timing and billing                                                  */
