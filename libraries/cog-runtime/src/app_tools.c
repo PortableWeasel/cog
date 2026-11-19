@@ -43,6 +43,15 @@ cog_result_t cli_tools_binding(const cog_cli_app_t *app, const char *name,
                 if(user!=NULL)*user=app->headless->delegation;
                 *table=&cog_cli_delegation_tools;return COG_OK;
             }
+            const cog_tool_table_t *job_table=cli_runtime_job_table(b->descriptor);
+            if(job_table!=NULL){
+                if(app->runtime_owner==NULL || app->runtime_config.background_job_timeout_ms==0U)
+                    return COG_ERROR_NOT_FOUND;
+                if(user!=NULL)*user=b->descriptor==&cog_runtime_background_status_tool ?
+                    (void *)app->runtime_owner : configured->user;
+                *table=job_table;
+                return COG_OK;
+            }
             const cog_tool_table_t *builtin=cli_runtime_instruction_table(b->descriptor);
             if(user!=NULL) {
                 *user=builtin!=NULL ? (void *)app->runtime_owner : configured->user;
@@ -173,6 +182,8 @@ static cog_result_t record_result(cog_cli_app_t *app, cog_result_t status,
         "status=%s; truncated=%s; side_effects_possible=%s; exit_status=%s%d\n",
         cog_cli_result_name(status), truncated ? "true" : "false", effects ? "true" : "false",
         exit_known ? "" : "unknown:", exit_status);
+    if (status==COG_OK && app->runtime_config.background_job_timeout_ms!=0U &&
+        strcmp(call->name,"background_status")==0)n=0;
     if (n < 0 || (size_t)n >= 384U || length > app->result_capacity - (size_t)n - 1U)
         return COG_ERROR_LIMIT;
     memmove(app->result_storage + (size_t)n, output, length);
@@ -209,6 +220,41 @@ static cog_result_t record_result(cog_cli_app_t *app, cog_result_t status,
     app->policy_decision = COG_TOOLKIT_POLICY_UNDECIDED;
     return COG_OK;
 }
+static cog_result_t finish_launch(cog_cli_app_t *app,cog_result_t disposition,cog_state_t *next)
+{
+    cog_runtime_t *r=app->runtime_owner;
+    const cog_message_tool_call_t *call=&app->call_views[app->tool_index];
+    cog_result_t rc;
+    if(disposition==COG_OK){
+        r->background_execution=app->execution;
+        app->execution=NULL;
+        app->effects=true;
+        rc=cog_session_tool_job_accept(app->session,r->background_id);
+    }else{
+        const char *why=cog_cli_result_name(disposition);
+        cog_message_t failure={.role=COG_MESSAGE_ROLE_TOOL,.name=call->name,.tool_call_id=call->id,
+            .content=why,.content_len=strlen(why)};
+        cog_tool_output_t outcome={.status=disposition,.output=why,.output_len=strlen(why)};
+        rc=cog_session_tool_job_finish(app->session,r->background_id,&outcome,&failure);
+        cog_result_t released=cog_toolkit_execution_free(app->execution);
+        if(released==COG_OK)app->execution=NULL;
+        if(rc==COG_OK)rc=released;
+        r->background_id=0U;
+    }
+    if(rc==COG_OK)rc=cog_cli_save(app);
+    if(rc!=COG_OK){
+        app->recovery=true;
+        r->job_save_failed=true;
+        return rc;
+    }
+    cog_cli_observation_tool_end(app,disposition,disposition==COG_OK,false);
+    app->display_sequence++;
+    app->tool_index++;
+    app->policy_prompt=false;
+    app->policy_decision=COG_TOOLKIT_POLICY_UNDECIDED;
+    return cli_execution_barrier(app,CLI_AFTER_TOOL_SAVE,CLI_POLICY,next);
+}
+
 cog_result_t cog_cli_tools_step(cog_cli_app_t *app, cog_state_t *next)
 {
     *next = CLI_POLICY;
@@ -261,6 +307,22 @@ cog_result_t cog_cli_tools_step(cog_cli_app_t *app, cog_state_t *next)
     bool denied = app->cancelling || app->shutdown || binding != COG_OK ||
         app->store == NULL || effective_policy == COG_CLI_TOOL_POLICY_DENY;
     if (app->policy_decision == COG_TOOLKIT_POLICY_DENY) denied = true;
+    cog_runtime_t *runtime=app->runtime_owner;
+    const cog_tool_t *descriptor=NULL;
+    bool launch=binding==COG_OK && table==cli_runtime_job_table(&cog_workspace_start_background_tool);
+    if(!denied && runtime!=NULL && runtime->validator!=NULL){
+        cog_result_t valid=cog_tool_table_lookup(table,call->name,&descriptor);
+        if(valid==COG_OK)valid=cog_toolkit_validate(runtime->validator,descriptor,call->arguments,call->arguments_len);
+        if(valid!=COG_OK){
+            const char *why=cog_cli_result_name(valid);
+            cog_result_t saved=record_result(app,valid,why,strlen(why),false,false,false,0,COG_TOOL_EXECUTION_PROPOSED);
+            return saved==COG_OK?cli_execution_barrier(app,CLI_AFTER_TOOL_SAVE,CLI_POLICY,next):saved;
+        }
+        if(runtime->background_id!=0U && !(launch && app->execution!=NULL) &&
+           ((descriptor->flags & COG_TOOL_SIDE_EFFECTING)!=0U ||
+            table==&cog_cli_delegation_tools || cli_runtime_instruction_table(descriptor)!=NULL))denied=true;
+        if(launch && runtime->future_provider!=NULL)denied=true;
+    }
     if (!denied && effective_policy == COG_CLI_TOOL_POLICY_ASK &&
         app->policy_decision != COG_TOOLKIT_POLICY_ALLOW) {
         if (app->headless != NULL && app->headless->kind != COG_CLI_EXECUTION_LOCAL_CHILD &&
@@ -302,6 +364,8 @@ cog_result_t cog_cli_tools_step(cog_cli_app_t *app, cog_state_t *next)
         cog_tool_execution_state_t state = COG_TOOL_EXECUTION_PROPOSED;
         cog_result_t rc = cog_session_tool_state(app->session, app->assistant, call->id, &state);
         if (rc != COG_OK) return rc;
+        if(launch && state==COG_TOOL_EXECUTION_STARTED && runtime->background_id!=0U)
+            return finish_launch(app,COG_ERROR_ABORTED,next);
         if (app->execution != NULL && !app->tool_execution_started) {
             rc = cog_toolkit_execution_free(app->execution);
             if (rc != COG_OK) return rc;
@@ -325,6 +389,10 @@ cog_result_t cog_cli_tools_step(cog_cli_app_t *app, cog_state_t *next)
             .max_json_depth = 64U, .codec_workspace_bytes = CLI_CODEC_BYTES,
             .timeout_ms = app->opts.max_tool_ms, .terminate_grace_ms = 100U,
             .user = userdata, .owner_guard = app->guard};
+        if(launch){
+            config.max_output_bytes=runtime->config.session.max_tool_job_output_bytes;
+            config.timeout_ms=runtime->config.background_job_timeout_ms;
+        }
         cog_result_t rc = cog_toolkit_execution_new(&app->execution, app->core, table,
             call->id, call->name, call->arguments, call->arguments_len, &config);
         if (rc != COG_OK) {
@@ -356,14 +424,24 @@ cog_result_t cog_cli_tools_step(cog_cli_app_t *app, cog_state_t *next)
                 return rc == COG_OK ? cli_execution_barrier(app, CLI_AFTER_TOOL_SAVE, CLI_POLICY, next) : rc;
             }
         }
-        rc = cog_session_tool_transition(app->session, app->assistant, call->id,
-            COG_TOOL_EXECUTION_PROPOSED, COG_TOOL_EXECUTION_STARTED);
+        rc = launch ? cog_session_tool_job_intent(app->session,app->assistant,call->id,&runtime->background_id) :
+            cog_session_tool_transition(app->session, app->assistant, call->id,
+                COG_TOOL_EXECUTION_PROPOSED, COG_TOOL_EXECUTION_STARTED);
+        if(launch && rc==COG_ERROR_LIMIT){
+            cog_result_t released=cog_toolkit_execution_free(app->execution);
+            if(released!=COG_OK)return released;
+            app->execution=NULL;
+            const char *why=cog_cli_result_name(rc);
+            rc=record_result(app,rc,why,strlen(why),false,false,false,0,COG_TOOL_EXECUTION_PROPOSED);
+            return rc==COG_OK?cli_execution_barrier(app,CLI_AFTER_TOOL_SAVE,CLI_POLICY,next):rc;
+        }
         if (rc == COG_OK) rc = cog_cli_save(app);
         if (rc != COG_OK) { app->recovery = true; return rc; }
         if (app->headless != NULL) return cli_execution_barrier(app, CLI_AFTER_CONTROL, CLI_PREPARE, next);
     } else if (state != COG_TOOL_EXECUTION_STARTED || app->tool_execution_started) return COG_ERROR_INVALID_STATE;
     rc = cog_cli_observation_tool_begin(app);
     if (rc == COG_OK) rc = cog_toolkit_execution_start(app->execution, COG_TOOLKIT_POLICY_ALLOW, app->now);
+    if(launch)return finish_launch(app,rc,next);
     if (rc != COG_OK) {
         /* The dispatcher guarantees start failure has no effects. Preserve the
            durable intent and an explicit failed result rather than retrying. */

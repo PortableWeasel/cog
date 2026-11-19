@@ -24,6 +24,7 @@ add_library(cog-runtime STATIC
     src/projection.c
     src/projection_codec.c
     src/runtime.c
+    src/runtime_jobs.c
     src/runtime_instructions.c
     src/worker_host.c
 )
