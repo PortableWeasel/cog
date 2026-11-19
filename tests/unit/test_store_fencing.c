@@ -164,6 +164,84 @@ static void process_crash(const char *exe,const char *base)
     CHECK(cog_store_delete(s,"process")==COG_ERROR_UNSUPPORTED);
     cog_session_free(conversation);cog_store_free(s);
 }
+/* Release the guard at each durable edge to simulate loss of the live owner. */
+static void recover_background_job(const char *base, bool accepted)
+{
+    const char *id = accepted ? "receipt-job" : "intent-job";
+    cog_store_t *st = store(base, true);
+    cog_store_owner_t owner = {1U, 11U}, replacement = {2U, 12U};
+    cog_store_checkpoint_t cp = {0U};
+    cog_store_owner_guard_t *guard = NULL;
+    CHECK(cog_store_owner_compare_exchange(st, id, (cog_store_owner_t){0}, owner, cp) == COG_OK);
+    CHECK(cog_store_owner_acquire(st, id, owner, &guard) == COG_OK);
+    cog_session_t *conversation = NULL;
+    const cog_session_config_t cfg = {.id = id, .max_nodes = 12U, .max_payload_bytes = 32768U,
+        .max_tool_jobs = 2U, .max_tool_job_output_bytes = 256U};
+    CHECK(cog_session_new(&conversation, &cfg) == COG_OK);
+    const cog_message_tool_call_t call = {.id = "launch", .name = "start_background",
+        .arguments = "{}", .arguments_len = 2U};
+    const cog_message_t assistant = {.role = COG_MESSAGE_ROLE_ASSISTANT, .tool_calls = &call,
+        .tool_call_count = 1U};
+    cog_session_node_t *node = NULL;
+    CHECK(cog_session_append(conversation, &assistant, &node) == COG_OK);
+    CHECK(cog_store_save(st, conversation) == COG_OK);
+    cog_tool_job_id_t job_id = 0U;
+    CHECK(cog_session_tool_job_intent(conversation, node, "launch", &job_id) == COG_OK);
+    CHECK(cog_store_save(st, conversation) == COG_OK);
+    uint64_t receipt = 0U;
+    if (accepted) {
+        CHECK(cog_session_tool_job_accept(conversation, job_id) == COG_OK);
+        CHECK(cog_store_save(st, conversation) == COG_OK);
+        cog_tool_job_record_t job;
+        CHECK(cog_session_tool_job(conversation, job_id, &job) == COG_OK);
+        receipt = job.receipt_node_id;
+        CHECK(receipt != 0U);
+        const cog_message_t next = {.role = COG_MESSAGE_ROLE_USER,
+            .content = "unrelated", .content_len = 9U};
+        CHECK(cog_session_append(conversation, &next, NULL) == COG_OK);
+        CHECK(cog_store_save(st, conversation) == COG_OK);
+    }
+    CHECK(cog_store_checkpoint_save(st, conversation, guard, &cp) == COG_ERROR_INDETERMINATE);
+    CHECK(cog_store_owner_release(guard) == COG_OK);
+    cog_session_free(conversation);
+    CHECK(cog_store_owner_read(st, id, &owner, &cp) == COG_OK);
+    CHECK(cog_store_owner_compare_exchange(st, id, owner, replacement, cp) == COG_OK);
+    CHECK(cog_store_owner_acquire(st, id, replacement, &guard) == COG_ERROR_INDETERMINATE);
+    CHECK(cog_store_owner_acquire_recovery(st, id, replacement, &guard) == COG_OK);
+    cog_store_load_report_t report;
+    CHECK(cog_store_load_ex(st, id, COG_STORE_LOAD_REPLAY, &conversation, &report) == COG_ERROR_INDETERMINATE);
+    CHECK(conversation == NULL);
+    CHECK(cog_store_checkpoint_load(st, id, cp, COG_STORE_LOAD_INSPECT, &conversation, &report) == COG_OK);
+    CHECK(report.indeterminate_jobs == 1U && report.indeterminate_tools == (accepted ? 0U : 1U));
+    CHECK(!report.replay_safe && report.source_version == 4U);
+    cog_tool_job_record_t job;
+    CHECK(cog_session_tool_job(conversation, job_id, &job) == COG_OK);
+    CHECK(job.state == COG_TOOL_JOB_INDETERMINATE && job.receipt_node_id == receipt);
+    cog_session_snapshot_t restored;
+    CHECK(cog_session_snapshot_view(conversation, &restored) == COG_OK);
+    size_t nodes_before = restored.node_count;
+    const cog_tool_output_t outcome = {.status = COG_ERROR_IO, .output = "x", .output_len = 1U,
+        .side_effects_possible = true, .exit_status = 3, .exit_status_known = true};
+    CHECK(cog_session_tool_job_reconcile(conversation, job_id, accepted ? &outcome : NULL,
+        "fenced", 6U) == COG_OK);
+    CHECK(cog_store_save(st, conversation) == COG_OK);
+    CHECK(cog_store_owner_release(guard) == COG_OK);
+    cog_session_free(conversation);
+    CHECK(cog_store_load_ex(st, id, COG_STORE_LOAD_REPLAY, &conversation, &report) == COG_OK);
+    CHECK(report.indeterminate_jobs == 0U && report.replay_safe);
+    CHECK(cog_session_snapshot_view(conversation, &restored) == COG_OK);
+    CHECK(restored.node_count == nodes_before + (accepted ? 0U : 1U));
+    CHECK(cog_session_tool_job(conversation, job_id, &job) == COG_OK);
+    CHECK(job.receipt_node_id == receipt && strcmp(job.evidence, "fenced") == 0);
+    if (accepted) {
+        CHECK(job.state == COG_TOOL_JOB_FINISHED && job.outcome != NULL);
+        CHECK(job.outcome->exit_status_known && job.outcome->exit_status == 3);
+        CHECK(job.outcome->status == COG_ERROR_IO && strcmp(job.outcome->output, "x") == 0);
+    } else CHECK(job.state == COG_TOOL_JOB_ACKNOWLEDGED);
+    cog_session_free(conversation);
+    cog_store_free(st);
+}
+
 static void save_faults(bool crash)
 {
     /* Each intercepted boundary is a real write/fsync/link/rename operation.
@@ -374,6 +452,8 @@ int main(int argc,char **argv)
     allocation_oracle_control();
     char exe[1024];ssize_t n=readlink("/proc/self/exe",exe,sizeof(exe)-1U);CHECK(n>0);exe[(size_t)n]='\0';
     char base[]="/tmp/cog-store-process-XXXXXX";CHECK(mkdtemp(base)!=NULL);
+    recover_background_job(base, false);
+    recover_background_job(base, true);
     process_crash(exe,base);cleanup(base);bounded_allocations();session_limit_race();stale_temp_checkpoint();base_parent_durability();save_faults(false);save_faults(true);cas_faults(false);cas_faults(true);
     (void)puts("test_store_fencing: ok");return 0;
 }

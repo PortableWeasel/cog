@@ -306,8 +306,21 @@ static cog_result_t legacy_read(cog_store_t *s, int dir, const char *id,
     return cog_store_codec_decode_v1(id, s->write_buffer, mn, s->read_buffer, nn,
         mode, s->recover_tail, &w, v, report);
 }
+static bool job_pending(cog_tool_job_state_t state)
+{
+    return state == COG_TOOL_JOB_INTENT || state == COG_TOOL_JOB_ACCEPTED ||
+        state == COG_TOOL_JOB_INDETERMINATE;
+}
+static size_t pending_jobs(const cog_session_snapshot_t *v)
+{
+    size_t count = 0U;
+    for (size_t i = 0U; i < v->tool_job_count; ++i)
+        if (job_pending(v->tool_jobs[i].state)) ++count;
+    return count;
+}
 static bool uncertainty(const cog_session_snapshot_t *v)
 {
+    if (pending_jobs(v) != 0U) return true;
     for (size_t i = 0U; i < v->ledger_count; ++i)
         if (v->ledger[i].state == COG_TOOL_EXECUTION_STARTED ||
             v->ledger[i].state == COG_TOOL_EXECUTION_INDETERMINATE) return true;
@@ -407,6 +420,14 @@ static cog_result_t context_monotonic(const cog_session_snapshot_t *old,
     if (recovery && (now->context_count != old->context_count ||
         now->context_high_water != old->context_high_water ||
         now->context_binding_high_water != old->context_binding_high_water)) return COG_ERROR_INVALID_STATE;
+    if (pending_jobs(old) != 0U) {
+        if (now->selected_context_binding_id != old->selected_context_binding_id ||
+            now->context_binding_count != old->context_binding_count) return COG_ERROR_INVALID_STATE;
+        const cog_node_data_t *ancestor = node_find(now, now->active_node_id);
+        while (ancestor != NULL && ancestor->node_id != old->active_node_id)
+            ancestor = node_find(now, ancestor->parent_id);
+        if (ancestor == NULL) return COG_ERROR_INVALID_STATE;
+    }
     bool old_unresolved_remains = false;
     for (size_t i = 0U; i < old->ledger_count; ++i) {
         const cog_tool_ledger_record_t *l = &old->ledger[i];
@@ -422,9 +443,58 @@ static cog_result_t context_monotonic(const cog_session_snapshot_t *old,
     return COG_OK;
 }
 
-static cog_result_t monotonic(cog_store_t *s, const cog_session_snapshot_t *old,
-    const cog_session_snapshot_t *now, bool recovery)
+static bool same_outcome(const cog_tool_output_t *a, const cog_tool_output_t *b)
 {
+    if (a == NULL || b == NULL) return a == b;
+    return a->status == b->status && a->exit_status == b->exit_status &&
+        a->exit_status_known == b->exit_status_known && a->truncated == b->truncated &&
+        a->side_effects_possible == b->side_effects_possible &&
+        bytes_eq(a->output, a->output_len, b->output, b->output_len);
+}
+
+static cog_result_t job_monotonic(const cog_session_snapshot_t *old,
+    const cog_session_snapshot_t *now, bool recovery, bool append)
+{
+    if (now->tool_job_count < old->tool_job_count ||
+        ((recovery || append) && old->tool_job_count != now->tool_job_count))
+        return COG_ERROR_INVALID_STATE;
+    for (size_t i = 0U; i < old->tool_job_count; ++i) {
+        const cog_tool_job_record_t *a = &old->tool_jobs[i], *b = &now->tool_jobs[i];
+        if (a->id != b->id || a->assistant_node_id != b->assistant_node_id ||
+            !str_eq(a->call_id, b->call_id)) return COG_ERROR_INVALID_STATE;
+        bool accept = a->state == COG_TOOL_JOB_INTENT && b->state == COG_TOOL_JOB_ACCEPTED;
+        if (a->receipt_node_id != b->receipt_node_id && (!accept || recovery || append))
+            return COG_ERROR_INVALID_STATE;
+        if (a->state == b->state) {
+            if (!same_outcome(a->outcome, b->outcome) ||
+                !bytes_eq(a->evidence, a->evidence_bytes, b->evidence, b->evidence_bytes))
+                return COG_ERROR_INVALID_STATE;
+            continue;
+        }
+        if (!job_pending(a->state) || append) return COG_ERROR_INVALID_STATE;
+        bool uncertain = b->state == COG_TOOL_JOB_INDETERMINATE;
+        bool finish = b->state == COG_TOOL_JOB_FINISHED;
+        if (recovery) {
+            if (!uncertain && (!(finish || b->state == COG_TOOL_JOB_ACKNOWLEDGED) ||
+                b->evidence_bytes == 0U)) return COG_ERROR_INVALID_STATE;
+        } else if (a->state == COG_TOOL_JOB_INDETERMINATE || (!accept && !finish && !uncertain) ||
+            b->evidence_bytes != 0U) return COG_ERROR_INVALID_STATE;
+    }
+    for (size_t i = old->tool_job_count; i < now->tool_job_count; ++i) {
+        const cog_tool_job_record_t *j = &now->tool_jobs[i];
+        const cog_tool_ledger_record_t *entry = ledger_find(old, j->assistant_node_id, j->call_id);
+        if (j->state != COG_TOOL_JOB_INTENT || j->id <= old->audit_high_water ||
+            entry == NULL || entry->state != COG_TOOL_EXECUTION_PROPOSED)
+            return COG_ERROR_INVALID_STATE;
+    }
+    return COG_OK;
+}
+
+static cog_result_t monotonic(cog_store_t *s, const cog_session_snapshot_t *old,
+    const cog_session_snapshot_t *now, bool recovery, bool append)
+{
+    cog_result_t job_rc = job_monotonic(old, now, recovery, append);
+    if (job_rc != COG_OK) return job_rc;
     if (!str_eq(old->session_id, now->session_id) || !str_eq(old->parent_session_id, now->parent_session_id) ||
         old->inspection_only != now->inspection_only || now->node_id_high_water < old->node_id_high_water ||
         now->audit_high_water < old->audit_high_water) return COG_ERROR_INVALID_STATE;
@@ -585,6 +655,8 @@ static bool session_contains(const cog_session_t *s, const cog_session_node_t *w
 }
 static bool indeterminate(const cog_session_snapshot_t *v)
 {
+    for (size_t i = 0U; i < v->tool_job_count; ++i)
+        if (v->tool_jobs[i].state == COG_TOOL_JOB_INDETERMINATE) return true;
     for (size_t i = 0U; i < v->ledger_count; ++i)
         if (v->ledger[i].state == COG_TOOL_EXECUTION_INDETERMINATE) return true;
     return false;
@@ -612,7 +684,7 @@ static cog_result_t file_commit(cog_store_t *s, const cog_session_t *session,
     if (s->require_owner && (guard == NULL || guard->store != s || strcmp(guard->id, v.session_id) != 0))
         return COG_ERROR_INVALID_STATE;
     if (guard != NULL && (append || checkpoint) && guard->recovery) return COG_ERROR_INVALID_STATE;
-    if (checkpoint && (unresolved(&v) || v.inspection_only || !complete_path(&v))) return COG_ERROR_INDETERMINATE;
+    if (checkpoint && (pending_jobs(&v) != 0U || unresolved(&v) || v.inspection_only || !complete_path(&v))) return COG_ERROR_INDETERMINATE;
     int dir = -1, lock = -1, admission_base = -1, admission_domain = -1;
     if (guard != NULL) {
         if (guard->store != s || find_guard(s, v.session_id) != guard) return COG_ERROR_INVALID_STATE;
@@ -636,7 +708,7 @@ static cog_result_t file_commit(cog_store_t *s, const cog_session_t *session,
         if (append && (node == NULL || node_find(&old, cog_node_data(node)->node_id) != NULL)) {
             rc = COG_ERROR_INVALID_STATE; goto done;
         }
-        rc = monotonic(s, &old, &v, guard != NULL && guard->recovery);
+        rc = monotonic(s, &old, &v, guard != NULL && guard->recovery, append);
         if (rc != COG_OK) goto done;
         if (append && v.node_count != old.node_count + 1U) { rc = COG_ERROR_INVALID_STATE; goto done; }
         if (append) for (size_t i = 0U; i < old.ledger_count; ++i) {
@@ -647,6 +719,7 @@ static cog_result_t file_commit(cog_store_t *s, const cog_session_t *session,
             }
         }
     } else {
+        if (v.tool_job_count != 0U) { rc = COG_ERROR_INVALID_STATE; goto done; }
         cog_store_legacy_files_t files;
         rc = cog_store_file_legacy_probe(dir, &files);
         if (rc != COG_OK) goto done;
@@ -658,7 +731,7 @@ static cog_result_t file_commit(cog_store_t *s, const cog_session_t *session,
             if (rc == COG_ERROR_UNSUPPORTED && v.inspection_only)
                 rc = legacy_read(s, dir, v.session_id, COG_STORE_LOAD_INSPECT, &old, &report);
             if (rc == COG_OK) rc = validate(&old, v.session_id);
-            if (rc == COG_OK) rc = monotonic(s, &old, &v, false);
+            if (rc == COG_OK) rc = monotonic(s, &old, &v, false, append);
             if (rc != COG_OK) goto done;
         }
         if (s->max_sessions != 0U && !file_exists(s, v.session_id)) {
@@ -677,6 +750,32 @@ static cog_result_t file_commit(cog_store_t *s, const cog_session_t *session,
     size_t n = 0U;
     rc = cog_store_codec_encode(&v, s->write_buffer + GEN_SIZE, s->capacity - GEN_SIZE, &n);
     if (rc != COG_OK) goto done;
+    /* Keep room for the pending job even when foreground history keeps growing.
+     * V4 stores job output once, and a pre-receipt TOOL message repeats its
+     * text in three V2 fields. Fixed budgets include 4095 evidence bytes,
+     * two audit rows, summary, node scalars, binding and wire string headers.
+     */
+    size_t remaining = s->capacity - GEN_SIZE - n;
+    for (size_t i = 0U; i < v.tool_job_count; ++i) {
+        const cog_tool_job_record_t *job = &v.tool_jobs[i];
+        if (!job_pending(job->state)) continue;
+        const size_t output = session->max_tool_job_output_bytes;
+        const size_t terminal_overhead = 4095U + 64U;
+        if (remaining < terminal_overhead || remaining - terminal_overhead < output) {
+            rc = COG_ERROR_LIMIT; goto done;
+        }
+        remaining -= terminal_overhead + output;
+        if (job->receipt_node_id == 0U) {
+            size_t id_bytes = strlen(job->call_id);
+            const size_t message_overhead = 1024U;
+            size_t text_max = output < 128U ? 128U : output;
+            if (remaining < message_overhead || remaining - message_overhead < id_bytes ||
+                (remaining - message_overhead - id_bytes) / 3U < text_max) {
+                rc = COG_ERROR_LIMIT; goto done;
+            }
+            remaining -= message_overhead + id_bytes + 3U * text_max;
+        }
+    }
     rc = next_generation(dir, m.generation, &m.generation);
     if (rc != COG_OK) goto done;
     unsigned char *p = s->write_buffer;
@@ -728,7 +827,7 @@ static cog_result_t file_load_common(cog_store_t *s, const char *id, uint64_t ex
     if (rc == COG_OK && (exact != 0U || m.generation != 0U)) {
         uint64_t g = exact != 0U ? exact : m.generation;
         rc = generation_read(s, dir, g, g == m.generation ? &m : NULL, &v);
-        r.source_version = rc == COG_OK && s->read_buffer[GEN_SIZE + 7U] == '3' ? 3U : 2U;
+        if (rc == COG_OK) r.source_version = (uint32_t)(s->read_buffer[GEN_SIZE + 7U] - '0');
         r.checkpoint_generation = g;
     } else if (rc == COG_OK) rc = legacy_read(s, dir, id, mode, &v, &r);
     (void)close(dir);
@@ -754,9 +853,22 @@ static cog_result_t file_load_common(cog_store_t *s, const char *id, uint64_t ex
         }
         if (cfg.max_context_bytes == 0U) cfg.max_context_bytes = 1U;
     }
+    if (v.tool_job_count != 0U) {
+        rc = validate(&v, id);
+        if (rc != COG_OK) return rc;
+        r.indeterminate_jobs = pending_jobs(&v);
+        if (mode == COG_STORE_LOAD_REPLAY && r.indeterminate_jobs != 0U) return COG_ERROR_INDETERMINATE;
+        cfg.max_tool_jobs = v.tool_job_count;
+        cfg.max_tool_job_output_bytes = 1U;
+        for (size_t i = 0U; i < v.tool_job_count; ++i) {
+            const cog_tool_output_t *o = v.tool_jobs[i].outcome;
+            if (o != NULL && o->output_len > cfg.max_tool_job_output_bytes)
+                cfg.max_tool_job_output_bytes = o->output_len;
+        }
+    }
     rc = cog_session_restore(out, &cfg, &v);
     if (rc != COG_OK) return rc;
-    r.replay_safe = !v.inspection_only;
+    r.replay_safe = !v.inspection_only && r.indeterminate_jobs == 0U;
     for (size_t i = 0U; i < v.ledger_count; ++i)
         if (v.ledger[i].state == COG_TOOL_EXECUTION_STARTED || v.ledger[i].state == COG_TOOL_EXECUTION_INDETERMINATE)
             ++r.indeterminate_tools;
@@ -1003,7 +1115,7 @@ const cog_store_vtable_t cog_store_file_backend = {
     .checkpoint_save = file_checkpoint_save, .checkpoint_load = file_checkpoint_load,
     .owner_read = file_owner_read, .owner_compare_exchange = file_owner_cas,
     .owner_acquire = file_acquire, .owner_release = file_release, .owner_acquire_recovery = file_acquire_recovery,
-    .capabilities = COG_STORE_CAP_CONTEXT_V3
+    .capabilities = COG_STORE_CAP_CONTEXT_V3 | COG_STORE_CAP_TOOL_JOBS_V4
 };
 const cog_store_vtable_t cog_store_null_backend = {
     .name = "null", .save = null_save, .load = null_load, .append = null_append,
@@ -1022,8 +1134,10 @@ cog_result_t cog_store_new(cog_store_t **out, const cog_store_config_t *config)
     *out = NULL;
     cog_store_config_t c = config == NULL ? (cog_store_config_t){0} : *config;
     const cog_store_vtable_t *v = c.backend == NULL ? &cog_store_file_backend : c.backend;
-    if ((v->capabilities & ~COG_STORE_CAP_CONTEXT_V3) != 0U ||
+    if ((v->capabilities & ~(COG_STORE_CAP_CONTEXT_V3 | COG_STORE_CAP_TOOL_JOBS_V4)) != 0U ||
         (c.required_capabilities & ~v->capabilities) != 0U) return COG_ERROR_UNSUPPORTED;
+    if ((v->capabilities & COG_STORE_CAP_TOOL_JOBS_V4) != 0U &&
+        ((v->capabilities & COG_STORE_CAP_CONTEXT_V3) == 0U || !fenced(v))) return COG_ERROR_UNSUPPORTED;
     if (v->save == NULL || v->load == NULL || v->append == NULL || v->delete_ == NULL ||
         v->list == NULL || v->exists == NULL) return COG_ERROR_INVALID_ARG;
     bool any_fenced = v->checkpoint_save != NULL || v->checkpoint_load != NULL || v->owner_read != NULL ||
@@ -1058,11 +1172,15 @@ void cog_store_free(cog_store_t *s)
 }
 static cog_result_t context_capability(const cog_store_t *s, const cog_session_t *session)
 {
-    if ((s->backend->capabilities & COG_STORE_CAP_CONTEXT_V3) != 0U) return COG_OK;
     cog_session_snapshot_t snapshot;
     cog_result_t rc = cog_session_snapshot_view(session, &snapshot);
     if (rc != COG_OK) return rc;
-    return context_history(&snapshot) ? COG_ERROR_UNSUPPORTED : COG_OK;
+    if (snapshot.tool_job_count != 0U) {
+        if ((s->backend->capabilities & COG_STORE_CAP_TOOL_JOBS_V4) == 0U) return COG_ERROR_UNSUPPORTED;
+        if (!s->require_owner) return COG_ERROR_INVALID_STATE;
+    }
+    return context_history(&snapshot) && (s->backend->capabilities & COG_STORE_CAP_CONTEXT_V3) == 0U ?
+        COG_ERROR_UNSUPPORTED : COG_OK;
 }
 /** @brief Dispatch a monotonic durable save. */
 cog_result_t cog_store_save(cog_store_t *s, const cog_session_t *session)

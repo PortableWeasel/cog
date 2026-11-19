@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <float.h>
+#include <limits.h>
 #include <math.h>
 #include <stdalign.h>
 #include <stdint.h>
@@ -227,6 +228,59 @@ static void ledger(wire_t *w, cog_tool_ledger_record_t *l)
         audit(w, &a); if (w->input != NULL) records[k] = a;
     }
 }
+/* V4 signed scalars use two's complement little endian, independent of the
+ * host signed representation. Reject non-representable values before casting. */
+static void signed_int(wire_t *w, int *value)
+{
+    uint64_t raw = (uint64_t)(int64_t)*value;
+    u64(w, &raw);
+    if (w->input == NULL || w->error != COG_OK) return;
+    if (raw <= (uint64_t)INT_MAX) *value = (int)raw;
+    else if (raw >= (uint64_t)(int64_t)INT_MIN) *value = -1 - (int)(UINT64_MAX - raw);
+    else w->error = COG_ERROR_PROTOCOL;
+}
+
+static void job_record(wire_t *w, cog_tool_job_record_t *j)
+{
+    uint64_t state = (uint64_t)j->state;
+    u64(w, &j->id); u64(w, &j->assistant_node_id); string(w, &j->call_id);
+    u64(w, &j->receipt_node_id); u64(w, &state); string(w, &j->evidence);
+    if (w->error != COG_OK) return;
+    if (j->id == 0U || j->assistant_node_id == 0U || j->call_id == NULL || *j->call_id == 0 ||
+        state > COG_TOOL_JOB_ACKNOWLEDGED || (j->evidence != NULL && *j->evidence == 0)) {
+        w->error = COG_ERROR_PROTOCOL; return;
+    }
+    j->state = (cog_tool_job_state_t)state;
+    size_t evidence_len = j->evidence == NULL ? 0U : strlen(j->evidence);
+    if (evidence_len > 4095U || (w->input == NULL && evidence_len != j->evidence_bytes)) {
+        w->error = COG_ERROR_PROTOCOL; return;
+    }
+    j->evidence_bytes = evidence_len;
+    if (j->state != COG_TOOL_JOB_FINISHED) {
+        if (j->outcome != NULL) w->error = COG_ERROR_PROTOCOL;
+        return;
+    }
+    if (w->input == NULL && j->outcome == NULL) { w->error = COG_ERROR_PROTOCOL; return; }
+    cog_tool_output_t o = w->input == NULL ? *j->outcome : (cog_tool_output_t){0};
+    int status = (int)o.status;
+    uint64_t flags = (o.truncated ? 1U : 0U) | (o.side_effects_possible ? 2U : 0U) |
+        (o.exit_status_known ? 4U : 0U);
+    signed_int(w, &status); u64(w, &flags); signed_int(w, &o.exit_status); string(w, &o.output);
+    if (w->error != COG_OK) return;
+    if (status > COG_OK || status <= COG_ERROR_INDETERMINATE || status == COG_ERROR_AGAIN ||
+        flags > 7U || ((flags & 4U) == 0U && o.exit_status != 0) || o.output == NULL ||
+        (w->input == NULL && strlen(o.output) != o.output_len)) {
+        w->error = COG_ERROR_PROTOCOL; return;
+    }
+    if (w->input != NULL) {
+        o.status = (cog_result_t)status;
+        o.truncated = (flags & 1U) != 0U; o.side_effects_possible = (flags & 2U) != 0U;
+        o.exit_status_known = (flags & 4U) != 0U; o.output_len = strlen(o.output);
+        cog_tool_output_t *out = array(w, 1U, sizeof(*out));
+        if (out != NULL) { *out = o; j->outcome = out; }
+    }
+}
+
 static void snapshot(wire_t *w, cog_session_snapshot_t *s)
 {
     unsigned char magic[8] = {'C','O','G','S','N','A','P','2'};
@@ -236,14 +290,15 @@ static void snapshot(wire_t *w, cog_session_snapshot_t *s)
             s->selected_context_binding_id != 0U;
         for (size_t i = 0U; s->nodes != NULL && i < s->node_count && !context; ++i)
             context = s->nodes[i].context_binding_id != 0U;
-        if (context) magic[7] = '3';
+        if (s->tool_job_count != 0U) magic[7] = '4';
+        else if (context) magic[7] = '3';
     }
     bytes(w, magic, sizeof(magic));
     if (w->error != COG_OK) return;
-    if (memcmp(magic, "COGSNAP", 7U) != 0 || (magic[7] != '2' && magic[7] != '3')) {
+    if (memcmp(magic, "COGSNAP", 7U) != 0 || (magic[7] < '2' || magic[7] > '4')) {
         w->error = COG_ERROR_UNSUPPORTED; return;
     }
-    const bool v3 = magic[7] == '3';
+    const bool v3 = magic[7] >= '3';
     string(w, &s->session_id); string(w, &s->parent_session_id);
     u64(w, &s->active_node_id); u64(w, &s->node_id_high_water); u64(w, &s->audit_high_water);
     boolean(w, &s->inspection_only); count(w, &s->node_count);
@@ -303,6 +358,24 @@ static void snapshot(wire_t *w, cog_session_snapshot_t *s)
         if (node_id != s->nodes[k].node_id) { w->error = COG_ERROR_PROTOCOL; return; }
         if (w->input != NULL) nodes[k].context_binding_id = binding_id;
     }
+    if (magic[7] != '4' || w->error != COG_OK) return;
+    count(w, &s->tool_job_count);
+    if (w->error != COG_OK) return;
+    if (s->tool_job_count == 0U || (w->input == NULL && s->tool_jobs == NULL)) {
+        w->error = COG_ERROR_PROTOCOL; return;
+    }
+    cog_tool_job_record_t *jobs = w->input == NULL ? NULL : array(w, s->tool_job_count, sizeof(*jobs));
+    if (w->input != NULL) s->tool_jobs = jobs;
+    uint64_t previous_id = 0U;
+    for (size_t i = 0U; i < s->tool_job_count && w->error == COG_OK; ++i) {
+        cog_tool_job_record_t j = w->input == NULL ? s->tool_jobs[i] : (cog_tool_job_record_t){0};
+        job_record(w, &j);
+        if (w->error != COG_OK) return;
+        if (j.id <= previous_id) { w->error = COG_ERROR_PROTOCOL; return; }
+        if (w->input != NULL) jobs[i] = j;
+        previous_id = j.id;
+    }
+
 }
 
 cog_result_t cog_store_codec_encode(const cog_session_snapshot_t *s,
