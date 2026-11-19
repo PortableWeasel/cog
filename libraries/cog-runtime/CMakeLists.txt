@@ -24,6 +24,7 @@ add_library(cog-runtime STATIC
     src/projection.c
     src/projection_codec.c
     src/runtime.c
+    src/runtime_jobs.c
     src/runtime_instructions.c
     src/worker_host.c
 )
@@ -43,6 +44,8 @@ if(BUILD_TESTING)
  add_executable(test_runtime tests/test_runtime.c)
  target_link_libraries(test_runtime PRIVATE cog::runtime)
  target_enable_warnings(test_runtime)
+ add_test(NAME scenario-R10-background-tool-jobs COMMAND test_runtime background-job)
+ set_tests_properties(scenario-R10-background-tool-jobs PROPERTIES LABELS scenario TIMEOUT 30)
  add_test(NAME runtime-headless COMMAND test_runtime)
  set_tests_properties(runtime-headless PROPERTIES LABELS "runtime;integration")
 endif()

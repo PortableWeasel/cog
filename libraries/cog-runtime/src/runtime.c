@@ -240,8 +240,8 @@ static cog_result_t validate_config(const cog_runtime_config_t *c) {
       return COG_ERROR_UNSUPPORTED;
   }
   if (c->instruction_mode == COG_RUNTIME_INSTRUCTIONS_DISABLED) {
-    if (c->instructions != NULL || c->sources != NULL || c->scopes != NULL ||
-        c->scope_count != 0U || c->workspace_root_id != NULL)
+    if (c->instructions != NULL || c->sources != NULL || ((c->scopes != NULL ||
+        c->scope_count != 0U) && c->background_job_timeout_ms == 0U) || c->workspace_root_id != NULL)
       return COG_ERROR_INVALID_ARG;
   } else {
     if (!c->store.require_owner || c->store.backend == &cog_store_null_backend)
@@ -261,6 +261,7 @@ static cog_result_t validate_config(const cog_runtime_config_t *c) {
     return COG_ERROR_NULL_PTR;
   if(c->tools.table!=NULL && c->tools.table->count!=0U && c->tools.table->tools==NULL)
     return COG_ERROR_INVALID_ARG;
+  bool start_bound=false,status_bound=false;
   for (size_t i = 0U; i < c->tools.binding_count; i++) {
     if(c->tools.bindings[i].policy<COG_PROMPT_TOOL_ALLOW ||
         c->tools.bindings[i].policy>COG_PROMPT_TOOL_DENY)return COG_ERROR_INVALID_ARG;
@@ -268,6 +269,12 @@ static cog_result_t validate_config(const cog_runtime_config_t *c) {
     bool found = false;
     if (d == NULL || d->name == NULL || d->async == NULL)
       return COG_ERROR_INVALID_ARG;
+    if (cli_runtime_job_table(d) != NULL) {
+      found=true;
+      if(c->background_job_timeout_ms==0U || c->workers!=NULL)return COG_ERROR_UNSUPPORTED;
+      if(d==&cog_workspace_start_background_tool)start_bound=true;
+      else status_bound=true;
+    }
     if (cli_runtime_instruction_table(d) != NULL)
       found = true;
     for (size_t j = 0U; c->tools.table != NULL && j < c->tools.table->count;
@@ -293,6 +300,24 @@ static cog_result_t validate_config(const cog_runtime_config_t *c) {
     for (size_t j = 0U; j < i; j++)
       if (strcmp(d->name, c->tools.bindings[j].descriptor->name) == 0)
         return COG_ERROR_INVALID_ARG;
+  }
+  if(c->background_job_timeout_ms!=0U) {
+    if(!c->store.require_owner || (c->store.backend!=NULL &&
+       (c->store.backend->capabilities & COG_STORE_CAP_TOOL_JOBS_V4)==0U))
+      return COG_ERROR_UNSUPPORTED;
+    if(!start_bound || !status_bound || c->tools.user==NULL || c->session.max_tool_jobs==0U ||
+       c->session.max_tool_job_output_bytes==0U || c->scopes==NULL)return COG_ERROR_INVALID_ARG;
+    size_t cap=c->limits.max_tool_output_bytes;
+    if(cap>c->limits.max_context_bytes)cap=c->limits.max_context_bytes;
+    if(cap<256U || c->session.max_tool_job_output_bytes>(cap-256U)/6U)return COG_ERROR_LIMIT;
+    bool scope=false;
+    for(size_t i=0U;i<c->scope_count;i++){
+      const cog_runtime_scope_binding_t *b=&c->scopes[i];
+      if(b->descriptor==&cog_workspace_start_background_tool && b->path_key!=NULL &&
+         strcmp(b->path_key,"cwd")==0 && !b->file_target && b->default_scope!=NULL &&
+         b->default_scope[0]=='\0')scope=true;
+    }
+    if(!scope)return COG_ERROR_INVALID_ARG;
   }
   if(c->workers!=NULL && c->instruction_mode!=COG_RUNTIME_INSTRUCTIONS_DISABLED) {
     if(c->scope_count!=0U && c->scopes==NULL)return COG_ERROR_NULL_PTR;
@@ -361,6 +386,18 @@ cog_result_t cli_runtime_new_admitted(cog_runtime_t **out,
     goto fail;
   }
   if (config->tools.binding_count != 0U) {
+    cog_tool_async_config_t validation={.max_argument_bytes=CLI_ARGUMENT_BYTES,.max_schema_bytes=CLI_SCHEMA_BYTES,
+        .max_json_depth=64U,.codec_workspace_bytes=CLI_CODEC_BYTES};
+    rc=cog_toolkit_validator_new(&r->validator,&validation);
+    if(rc!=COG_OK)goto fail;
+    for(size_t i=0U;i<config->tools.binding_count;i++){
+      rc=cog_toolkit_validate_schema(r->validator,config->tools.bindings[i].descriptor);
+      if(rc!=COG_OK)goto fail;
+    }
+    if(config->background_job_timeout_ms!=0U){
+      r->background_output=malloc(config->session.max_tool_job_output_bytes+1U);
+      if(r->background_output==NULL){rc=COG_ERROR_NOMEM;goto fail;}
+    }
     r->bindings = calloc(config->tools.binding_count, sizeof(*r->bindings));
     if (r->bindings == NULL) {
       rc = COG_ERROR_NOMEM;
@@ -393,7 +430,7 @@ cog_result_t cli_runtime_new_admitted(cog_runtime_t **out,
         }
     }
     if (total > config->limits.max_instruction_bytes ||
-        config->scope_count > config->instruction_limits.max_tools) {
+        (config->instruction_mode!=COG_RUNTIME_INSTRUCTIONS_DISABLED && config->scope_count > config->instruction_limits.max_tools)) {
       rc = COG_ERROR_LIMIT;
       goto fail;
     }
@@ -593,6 +630,17 @@ cog_result_t cog_runtime_step(cog_runtime_t *r, cog_runtime_step_t *step) {
     return COG_ERROR_NULL_PTR;
   if (!r->begun || r->in_call)
     return COG_ERROR_INVALID_STATE;
+  uint64_t job_deadline;
+  cog_result_t job_rc=cli_runtime_job_service(r,&job_deadline);
+  if(job_rc!=COG_OK){
+    if(r->primary==COG_OK)r->primary=job_rc;
+    (void)cog_runtime_shutdown(r);
+  }
+  if(r->foreground_done){
+    *step=(cog_runtime_step_t){.done=r->background_execution==NULL,.next_deadline_ms=job_deadline,
+      .max_wait_ms=1U,.outcome=r->primary};
+    return job_rc;
+  }
   cog_result_t activated = cli_runtime_activate(r);
   if (activated != COG_OK && activated != COG_ERROR_AGAIN)
     return activated;
@@ -613,6 +661,12 @@ cog_result_t cog_runtime_step(cog_runtime_t *r, cog_runtime_step_t *step) {
   r->in_call = false;
   if (rc != COG_OK && rc != COG_ERROR_AGAIN && r->primary == COG_OK)
     r->primary = rc;
+  r->foreground_done=info.done;
+  if(r->background_execution!=NULL){
+    info.done=false;
+    if(info.max_wait_ms>1U)info.max_wait_ms=1U;
+    if(job_deadline<info.next_deadline_ms)info.next_deadline_ms=job_deadline;
+  }
   *step = (cog_runtime_step_t){info.done,
                                !r->app->active && !r->shutdown,
                                r->app->headless->publication_pending,
@@ -620,7 +674,7 @@ cog_result_t cog_runtime_step(cog_runtime_t *r, cog_runtime_step_t *step) {
                                info.next_deadline_ms,
                                info.max_wait_ms,
                                r->primary};
-  return rc;
+  return job_rc!=COG_OK?job_rc:rc;
 }
 cog_result_t cog_runtime_submit(cog_runtime_t *r, const char *text,
                                 size_t bytes, bool queue) {
@@ -632,6 +686,7 @@ cog_result_t cog_runtime_submit(cog_runtime_t *r, const char *text,
     return COG_ERROR_LIMIT;
   if (r->app->headless->publication_pending || r->future_provider!=NULL || r->control_change!=NULL)
     return COG_ERROR_AGAIN;
+  if(r->background_id!=0U && r->app->continuation_required && !queue)return COG_ERROR_AGAIN;
   size_t used = 0U;
   for (size_t i = 0U; i < CLI_INPUTS; i++)
     if (r->app->inputs[i].used)
@@ -698,6 +753,13 @@ cog_result_t cog_runtime_view(const cog_runtime_t *owner,
       .item_count = old.item_count,
       .outcome = r->primary,
       .continuation_required = r->app->continuation_required};
+  if(r->offline){
+    cog_session_snapshot_t state;
+    rc=cog_session_snapshot_view(r->app->session,&state);
+    if(rc!=COG_OK)return rc;
+    r->view.offline_jobs=state.tool_jobs;
+    r->view.offline_job_count=state.tool_job_count;
+  }
   if (r->app->headless != NULL && r->app->headless->policy_pending) {
     const cog_message_tool_call_t *call =
         &r->app->call_views[r->app->tool_index];
@@ -774,7 +836,7 @@ cog_result_t cog_runtime_answer(cog_runtime_t *r,
 cog_result_t cog_runtime_fork(cog_runtime_t *r, uint64_t node_id) {
   if (r == NULL)
     return COG_ERROR_NULL_PTR;
-  if ((r->app->headless != NULL && r->app->headless->publication_pending) ||
+  if (r->background_id!=0U || (r->app->headless != NULL && r->app->headless->publication_pending) ||
       r->future_provider!=NULL || r->control_change!=NULL || r->instruction_job!=NULL)
     return COG_ERROR_AGAIN;
   cog_result_t rc = cog_cli_app_fork(r->app, node_id);
@@ -797,6 +859,7 @@ cog_result_t cog_runtime_close(cog_runtime_t **owner, cog_result_t primary) {
   cog_runtime_t *r = *owner;
   if (r == NULL)
     return primary;
+  if(r->background_execution!=NULL)return COG_ERROR_INVALID_STATE;
   if(r->host!=NULL) {
     cog_result_t closed=cog_cli_host_runtime_close(&r->host,primary);
     if(r->host!=NULL)return closed;
@@ -834,6 +897,8 @@ cog_result_t cog_runtime_close(cog_runtime_t **owner, cog_result_t primary) {
   cog_result_t rc = cog_instruction_source_reader_free(r->reader);
   if (primary == COG_OK)
     primary = rc;
+  cog_toolkit_validator_free(r->validator);
+  free(r->background_output);
   free(r->scope_bindings);
   free(r->scope_strings);
   free(r->bindings);
@@ -1079,7 +1144,7 @@ cog_runtime_reload(cog_runtime_t *r,
     return COG_ERROR_NULL_PTR;
   if (r->offline || r->shutdown || r->app->recovery)
     return COG_ERROR_INVALID_STATE;
-  if (r->future_provider != NULL)
+  if (r->background_id!=0U || r->future_provider != NULL)
     return COG_ERROR_AGAIN;
   if (provider->endpoint->generation <= r->app->configuration_generation)
     return COG_ERROR_INVALID_ARG;

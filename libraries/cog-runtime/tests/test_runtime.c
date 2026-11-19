@@ -10,6 +10,8 @@
 #include <fcntl.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
+#include <cog/workspace.h>
 
 static bool contains(const char *text,size_t bytes,const char *needle) {
   size_t n=strlen(needle);
@@ -401,7 +403,177 @@ static void local_delegation(bool pinned,bool control) {
   assert(cog_runtime_close(&r,COG_OK)==COG_OK);
   cog_instruction_snapshot_free(denied_snapshot);cog_instruction_snapshot_free(snapshot);cog_instruction_catalog_free(catalog);
 }
-int main(void) {
+static cog_result_t background_connect(const cog_endpoint_t *endpoint, cog_provider_t **out)
+{
+  (void)endpoint;
+  static const char start[] = "{\"command\":\"while test ! -f release; do sleep 0.02; done; printf job-output\"}";
+  static const char status[] = "{\"job_id\":\"job-0000000000000001\"}";
+  static const cog_provider_delta_t turns[] = {
+    {.kind=COG_PROVIDER_DELTA_TOOL_BEGIN,.tool_call_id="launch",.tool_name="start_background"},
+    {.kind=COG_PROVIDER_DELTA_TOOL_ARGUMENTS,.tool_call_id="launch",.data=start,.data_len=sizeof(start)-1U},
+    {.kind=COG_PROVIDER_DELTA_TOOL_END,.tool_call_id="launch"},
+    {.kind=COG_PROVIDER_DELTA_FINISH,.finish_reason=COG_FINISH_REASON_TOOL_CALLS},
+    {.kind=COG_PROVIDER_DELTA_TEXT,.data="job accepted",.data_len=12U},
+    {.kind=COG_PROVIDER_DELTA_FINISH,.finish_reason=COG_FINISH_REASON_STOP},
+    {.kind=COG_PROVIDER_DELTA_TEXT,.data="unrelated answer",.data_len=16U},
+    {.kind=COG_PROVIDER_DELTA_FINISH,.finish_reason=COG_FINISH_REASON_STOP},
+    {.kind=COG_PROVIDER_DELTA_TOOL_BEGIN,.tool_call_id="lookup",.tool_name="background_status"},
+    {.kind=COG_PROVIDER_DELTA_TOOL_ARGUMENTS,.tool_call_id="lookup",.data=status,.data_len=sizeof(status)-1U},
+    {.kind=COG_PROVIDER_DELTA_TOOL_END,.tool_call_id="lookup"},
+    {.kind=COG_PROVIDER_DELTA_FINISH,.finish_reason=COG_FINISH_REASON_TOOL_CALLS},
+    {.kind=COG_PROVIDER_DELTA_TEXT,.data="job checked",.data_len=11U},
+    {.kind=COG_PROVIDER_DELTA_FINISH,.finish_reason=COG_FINISH_REASON_STOP}
+  };
+  return cog_mock_provider_new_deltas(turns, sizeof(turns)/sizeof(turns[0]), out);
+}
+
+static void background_job_round(bool cancel)
+{
+  static const cog_provider_vtable_t provider = {background_connect,cog_provider_disconnect,
+      cog_provider_send,cog_provider_receive,cog_provider_poll,cog_provider_cancel,
+      cog_provider_next,cog_provider_get_error,cog_provider_preflight};
+  static const cog_model_t model = {.id="fixture",.capabilities=COG_MODEL_CAPABILITY_STREAMING|COG_MODEL_CAPABILITY_TOOLS};
+  static const cog_model_table_t models = {&model,1U};
+  cog_endpoint_t endpoint = {.name="fixture",.vtable=&provider,.models=&models,.generation=1U};
+  cog_runtime_config_t c = config(&endpoint);
+  char directory[] = "runtime-job-XXXXXX";
+  assert(mkdtemp(directory) != NULL);
+  cog_workspace_config_t wc = {.root=directory,.max_file_bytes=4096U,
+    .max_search_entries=64U,.service_quantum=4U,.enable_commands=true};
+  cog_workspace_t *workspace = NULL;
+  assert(cog_workspace_new(&workspace,&wc) == COG_OK);
+  const cog_prompt_tool_binding_t bindings[] = {
+    {&cog_workspace_start_background_tool,COG_PROMPT_TOOL_ALLOW},
+    {&cog_runtime_background_status_tool,COG_PROMPT_TOOL_ALLOW}};
+  const cog_runtime_scope_binding_t scope = {&cog_workspace_start_background_tool,"cwd","",false};
+  cog_provider_prompt_template_t templ = cog_openrouter_prompt_template;
+  templ.provider = &provider;
+  c.provider.prompt_template = &templ;
+  c.provider.compiler_limits = (cog_provider_prompt_limits_t){64,64,16,32,65536,262144,65536};
+  c.store.backend = &cog_store_file_backend;
+  c.store.base_dir = directory;
+  c.store.require_owner = true;
+  c.store.required_capabilities = COG_STORE_CAP_CONTEXT_V3 | COG_STORE_CAP_TOOL_JOBS_V4;
+  c.scopes = &scope;
+  c.scope_count = 1U;
+  c.tools.bindings = bindings;
+  c.tools.binding_count = 2U;
+  c.tools.user = workspace;
+  c.session.max_tool_jobs = 2U;
+  c.session.max_tool_job_output_bytes = 64U;
+  c.background_job_timeout_ms = 15000U;
+  cog_runtime_t *runtime = NULL;
+  assert(cog_runtime_new(&runtime,&c) == COG_OK);
+  assert(cog_runtime_begin(runtime) == COG_OK);
+  unsigned submitted = 0U;
+  bool receipt = false, unrelated = false, lookup = false, final = false, released = false;
+  cog_runtime_step_t step = {0};
+  for (unsigned i = 0U; i < 12000U && !step.done; i++) {
+    cog_runtime_view_t view;
+    cog_result_t rc = cog_runtime_view(runtime,&view);
+    if (rc == COG_OK) {
+      for (size_t j = 0U; j < view.item_count; j++) {
+        const cog_runtime_view_item_t *item = &view.items[j];
+        if (item->role == COG_MESSAGE_ROLE_TOOL) {
+          receipt |= contains(item->text,item->text_bytes,"job-0000000000000001") &&
+              contains(item->text,item->text_bytes,"accepted");
+          lookup |= contains(item->text,item->text_bytes,cancel ? "\"cancelled\"" : "job-output");
+        }
+        if (item->role == COG_MESSAGE_ROLE_ASSISTANT) {
+          unrelated |= contains(item->text,item->text_bytes,"unrelated answer");
+          final |= contains(item->text,item->text_bytes,"job checked");
+        }
+      }
+      assert(cog_runtime_ack(runtime,view.serial) == COG_OK);
+    } else assert(rc == COG_ERROR_AGAIN);
+    rc = cog_runtime_step(runtime,&step);
+    assert(rc == COG_OK || rc == COG_ERROR_AGAIN);
+    if (step.input_ready && !step.publication_pending && submitted == 0U) {
+      assert(cog_runtime_submit(runtime,"launch",6U,false) == COG_OK);
+      submitted++;
+    } else if (step.input_ready && !step.publication_pending && submitted == 1U && receipt) {
+      cog_tool_job_record_t job;
+      assert(cog_runtime_job(runtime,1U,&job) == COG_OK && job.state == COG_TOOL_JOB_ACCEPTED);
+      assert(cog_runtime_fork(runtime,0U) == COG_ERROR_AGAIN);
+      cog_store_t *inspection = NULL;
+      cog_session_t *loaded = NULL;
+      cog_store_load_report_t load;
+      assert(cog_store_new(&inspection,&c.store) == COG_OK);
+      assert(cog_store_load_ex(inspection,c.session_id,COG_STORE_LOAD_REPLAY,&loaded,&load)
+             == COG_ERROR_INDETERMINATE);
+      assert(loaded == NULL);
+      assert(cog_store_load_ex(inspection,c.session_id,COG_STORE_LOAD_INSPECT,&loaded,&load) == COG_OK);
+      assert(load.indeterminate_jobs == 1U && load.indeterminate_tools == 0U);
+      cog_tool_job_record_t projected;
+      assert(cog_session_tool_job(loaded,1U,&projected) == COG_OK);
+      assert(projected.state == COG_TOOL_JOB_INDETERMINATE && projected.receipt_node_id == job.receipt_node_id);
+      cog_session_free(loaded);
+      cog_store_free(inspection);
+      assert(cog_runtime_submit(runtime,"another prompt",14U,false) == COG_OK);
+      submitted++;
+    } else if (unrelated && !released) {
+      cog_tool_job_record_t job;
+      assert(cog_runtime_job(runtime,1U,&job) == COG_OK && job.state == COG_TOOL_JOB_ACCEPTED);
+      if (cancel) {
+        assert(cog_runtime_job_cancel(runtime,1U) == COG_OK);
+        assert(cog_runtime_job_cancel(runtime,1U) == COG_OK);
+      } else {
+        int root = open(directory,O_RDONLY|O_DIRECTORY);
+        assert(root >= 0);
+        int gate = openat(root,"release",O_WRONLY|O_CREAT|O_EXCL,0600);
+        assert(gate >= 0 && close(gate) == 0 && close(root) == 0);
+      }
+      released = true;
+    } else if (released && submitted == 2U && step.input_ready && !step.publication_pending) {
+      cog_tool_job_record_t job;
+      assert(cog_runtime_job(runtime,1U,&job) == COG_OK);
+      if (job.state == COG_TOOL_JOB_FINISHED) {
+        assert(job.outcome != NULL && job.outcome->status == (cancel ? COG_ERROR_ABORTED : COG_OK));
+        if (!cancel) assert(strcmp(job.outcome->output,"job-output") == 0);
+        assert(cog_runtime_submit(runtime,"check",5U,false) == COG_OK);
+        submitted++;
+      }
+    }
+    if (final && lookup) assert(cog_runtime_shutdown(runtime) == COG_OK);
+    if (!step.done) (void)nanosleep(&(struct timespec){0,1000000L},NULL);
+  }
+  assert(step.done && submitted == 3U && receipt && unrelated && lookup && final);
+  assert(cog_runtime_close(&runtime,COG_OK) == COG_OK);
+  assert(cog_workspace_free(workspace) == COG_OK);
+
+  cog_store_t *store = NULL;
+  cog_session_t *session = NULL;
+  cog_store_load_report_t report;
+  cog_session_snapshot_t saved;
+  assert(cog_store_new(&store,&c.store) == COG_OK);
+  assert(cog_store_load_ex(store,c.session_id,COG_STORE_LOAD_REPLAY,&session,&report) == COG_OK);
+  assert(report.source_version == COG_STORE_FORMAT_V4 && report.indeterminate_jobs == 0U);
+  assert(cog_session_snapshot_view(session,&saved) == COG_OK && saved.tool_job_count == 1U);
+  const cog_tool_job_record_t *job = &saved.tool_jobs[0];
+  assert(job->state == COG_TOOL_JOB_FINISHED && job->outcome != NULL);
+  assert(job->outcome->status == (cancel ? COG_ERROR_ABORTED : COG_OK));
+  if (!cancel) assert(strcmp(job->outcome->output,"job-output") == 0);
+  size_t launches = 0U, lookups = 0U;
+  for (size_t i = 0U; i < saved.node_count; i++) {
+    const cog_message_t *msg = saved.nodes[i].message;
+    if (msg == NULL || msg->role != COG_MESSAGE_ROLE_TOOL) continue;
+    if (strcmp(msg->tool_call_id,"lookup") == 0) lookups++;
+    if (strcmp(msg->tool_call_id,"launch") == 0) {
+      launches++;
+      assert(job->receipt_node_id == saved.nodes[i].node_id);
+    }
+  }
+  assert(launches == 1U && lookups == 1U);
+  cog_session_free(session);
+  cog_store_free(store);
+}
+
+int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1],"background-job") == 0) {
+    background_job_round(false);
+    background_job_round(true);
+    return 0;
+  }
   stream_without_terminal();
   close_before_begin();
   pinned_resume();

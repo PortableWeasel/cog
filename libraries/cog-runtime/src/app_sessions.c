@@ -162,12 +162,13 @@ cog_result_t cog_cli_sessions_open(cog_cli_app_t *app)
         if (rc != COG_OK) return rc;
     }
     if (checkpoint.generation == 0U) return COG_ERROR_NOT_FOUND;
-    rc = cog_store_checkpoint_load(app->store, id, checkpoint, COG_STORE_LOAD_REPLAY,
+    bool recovery = app->opts.session_action == COG_CLI_SESSION_RECOVER;
+    rc = cog_store_checkpoint_load(app->store, id, checkpoint, recovery?COG_STORE_LOAD_INSPECT:COG_STORE_LOAD_REPLAY,
         &loaded, &report);
     if (rc != COG_OK) return rc;
-    bool recovery = app->opts.session_action == COG_CLI_SESSION_RECOVER;
-    if (report.indeterminate_tools != 0U && (!recovery || owner.epoch == 0U)) rc = COG_ERROR_INDETERMINATE;
-    else if (recovery && report.indeterminate_tools == 0U) rc = COG_ERROR_INVALID_STATE;
+    bool unresolved=report.indeterminate_tools!=0U || report.indeterminate_jobs!=0U;
+    if (unresolved && (!recovery || owner.epoch == 0U)) rc = COG_ERROR_INDETERMINATE;
+    else if (recovery && !unresolved) rc = COG_ERROR_INVALID_STATE;
     else if (owner.epoch == 0U && !app->opts.previous_processes_fenced) rc = COG_ERROR_DENIED;
     if (rc == COG_OK) rc = restore_capacity(app, loaded);
     cog_session_free(loaded);
