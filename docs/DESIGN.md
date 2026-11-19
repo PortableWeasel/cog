@@ -29,7 +29,9 @@ summarization and a broad provider matrix remain outside this release scope.
 
 ## Blocks and ownership
 
-![System block diagram](diagram.svg)
+The [original block diagram](diagram.svg) records the mock-client milestone.
+The [tool-use block diagram](tool-use-blocks.svg) follows the active runtime
+boundaries and highlights the proposed binding refinement.
 
 | Block | Owns | Contract |
 |---|---|---|
@@ -41,12 +43,14 @@ summarization and a broad provider matrix remain outside this release scope.
 | `cog-net` | Explicit HTTP lifecycle, bounded service, retained body delivery, cancellation and connection facts | [Net contract](../libraries/cog-net/contracts/CONTRACT.md) |
 | `cog-obs` | Static structured fields/sinks, span stack and connection diagnostic snapshots | [Public obs API](../libraries/cog-obs/include/cog/obs.h) |
 | `cog-orchestrator` | Managed worker identity, authenticated readiness, health, placement, stop/reap and advisory routes | [Orchestrator contract](../libraries/cog-orchestrator/contracts/CONTRACT.md) |
-| `cog-cli` | Application state machine, configuration generations, policy, retries, durable tool turns, UI/worker/handoff composition | [App contract](../applications/cog-cli/CONTRACT.md), [public app API](../applications/cog-cli/include/cog_cli/cli.h) |
+| `cog-instructions` | Bounded source loading, catalogs, prompt composition and immutable snapshots | [Public instructions API](../libraries/cog-instructions/include/cog/instructions.h) |
+| `cog-runtime` | Turn scheduling, configuration generations, tool policy and durable admission, controller views, and local/native worker composition | [Public runtime API](../libraries/cog-runtime/include/cog/runtime.h) |
+| `cog-cli` | Command-line options, terminal and headless-client adapters, compatibility fixtures | [App contract](../applications/cog-cli/CONTRACT.md), [public app API](../applications/cog-cli/include/cog_cli/cli.h) |
 
 The link graph stays acyclic. Core links IPC and obs; those use the header-only
 `cog::result` contract. Provider and toolkit link core; provider's OpenRouter
-composition also uses net. Orchestrator links core/IPC. The application joins
-these libraries. Core only borrows forward-declared provider types and does
+composition also uses net. Orchestrator links core/IPC. Runtime joins
+these libraries and the instruction loader. The CLI links runtime. Core only borrows forward-declared provider types and does
 not link provider, toolkit or net implementations.
 
 ## Invariants and resource lifecycle
@@ -90,8 +94,9 @@ A normal turn follows this sequence:
    bounded application state. Display updates are distinct from durable history.
 4. A completed model turn forms one assistant message with text, identified
    calls, continuation metadata and explicitly available usage.
-5. For tools, validate complete arguments and policy, durably save STARTED,
-   execute, then save the correlated result and terminal ledger state before
+5. For tools, require complete arguments, policy approval and schema validation,
+   then durably save STARTED. Execute and save the correlated result and
+   terminal ledger state before
    another model request.
 6. Finish or preserve an explicit incomplete/failed/cancelled branch. Earlier
    queued input does not authorize continuation of failed work; fresh input
@@ -551,6 +556,88 @@ does not provide an OS sandbox; group escape is outside this cancellation scope.
 Synchronous compatibility calls retain one 64 KiB capture and invoke their
 handler at most once. Output copy retry never reinvokes it. These blocking paths
 refuse fenced owner stores and do not run in the real-client service loop.
+
+### Tool-use blueprint refinement
+
+This proposal covers the existing sequential runtime tool loop in embedded,
+terminal, detached-controller and native-child use. It preserves the static descriptor model, guarded
+session ledger and toolkit execution boundary.
+
+| Goal | Responsible blocks | Observable behavior |
+|---|---|---|
+| Advertise the tools the executor can consider | Runtime bindings and provider compiler | Declarations and dispatch resolve the same original descriptor and schema. Tools unavailable to the executor are omitted, including tools that require guarded admission in a store-disabled executor. Eligible ASK tools remain visible to the model. |
+| Admit only a complete, authorized call | Provider, runtime and toolkit | Terminal wire validation precedes the proposal. Strict descriptor argument validation precedes ASK or scoped context work. An approval names one immutable proposal and expires with it. |
+| Bound effects and preserve outcomes | Runtime, core/store and toolkit | STARTED is durable before any invocation. A correlated result and terminal state are saved together before the next call or provider request. Cancellation drains owned work within the supported process profile. |
+| Restore safely across interruption | Runtime, core/store and provider | A restored PROPOSED call gets fresh admission after pending-history preflight. A restored uncertain invocation requires explicit reconciliation. Already closed siblings are reused. |
+
+The [ownership diagram](tool-use-blocks.svg) and [admission and recovery
+diagram](tool-use-lifecycle.svg) share the following boundaries.
+
+1. **Resolve eligibility once per pinned execution context.** Runtime projects the
+   original immutable descriptor, effective policy, executor role, store/workspace
+   availability and instruction context into one bounded view. Both declaration
+   encoding and runtime dispatch consume that view. The provider still owns wire
+   encoding. The runtime must also prove name lookup resolves to that exact
+   table member. A guard still has to be live at effect admission. Legacy
+   adapters and deterministic fixture profiles keep their documented entry
+   points. Their observable parity with the resolved path is a header-stage trace.
+2. **Validate arguments before asking or resolving scope.** Today, coarse
+   eligibility can lead to ASK and a scope probe before the toolkit constructor
+   validates the descriptor schema. Move the pure toolkit check ahead of both so
+   a schema-invalid call yields an identified no-effect result without prompting,
+   allocating an execution handle or publishing a scope change. Keep the toolkit
+   execution API safe for standalone callers. Runtime still checks current
+   policy, cancellation, deadlines and the owner guard before admission.
+3. **Keep delivery, consent and durability separate.** The runtime retains one
+   ASK with session/assistant/call identity, exact name and argument bytes,
+   configuration and instruction identity, a serial and deadline. An authorized
+   controller must see the actionable proposal and answer that same proposal.
+   The embedded runtime already exposes exact approval bytes and an acknowledged
+   view. Legacy headless projection carries the tool name and an identity tuple.
+   The contract pass must choose how authorized controllers obtain bounded
+   argument details across that transport, with the existing watcher/replay
+   exposure preserved. A delivery acknowledgement never authorizes a call.
+4. **Separate a scope probe from tool execution.** After policy allows a
+   validated proposal, a matching scope or exempt descriptor proceeds to
+   no-effect preparation. A changed scope closes the current and remaining
+   unstarted calls and commits the replacement binding with those denials.
+   Earlier results stay intact. Native context publication uses the existing
+   verified COMMIT/READY join. The model can propose new calls under the new
+   context. An approval for the previous proposal carries no authority forward.
+5. **Keep the three checkpoints visible.** Save the assistant and PROPOSED group
+   before admission. Save STARTED before launch, including before a headless
+   publication pause that may still prevent launch. Save the TOOL result and
+   terminal ledger together before continuing, including any paired context change.
+   Cancellation retires outstanding approvals and closes unstarted proposals.
+   A live executor cancelled at the post-STARTED publication gate closes the
+   admitted call without launching it if it can verify launch never occurred.
+   In-flight execution is drained. A crash after STARTED and before terminal commit
+   requires reconciliation even if invocation might never have begun. A retained
+   result can be copied again without another invocation.
+
+#### Diagram iterations and scenario cross-check
+
+The first pass traced compiled ownership and found the mock-era diagram had
+placed runtime responsibilities in the CLI. The second followed a completed
+provider turn through ASK, schema, scope and dispatch. It exposed the split
+declaration paths and the current ordering of ASK, scope and schema validation.
+The third followed interruption, checkpoint faults and native scope replacement.
+It made publication, exact authorization and the three durable checkpoints
+separate gates. Details and independent reviews are tracked under `32b5102`.
+
+| Trace | Diagram check | Evidence needed for the refinement |
+|---|---|---|
+| [15](scenarios/15-multi-turn-tools.md), [R04](scenarios/R04-tool-round.md) | Complete FINISH, sequential calls, result before continuation | Compare advertised names/schemas with exact dispatch identity across roles and context modes. Count one invocation per admitted call and check durable history at next send. |
+| [R05](scenarios/R05-tool-denial.md), [20](scenarios/20-interrupt-and-queue.md) | No-store, schema-invalid, stale approval, cancel before launch | Verify no dispatch or STARTED on ineligible calls and on cancellation before durable admission. A schema-invalid eligible call never prompts or publishes a replacement scope. A duplicate or late answer never reopens a proposal. |
+| [R04](scenarios/R04-tool-round.md), [13](scenarios/13-session-persistence.md), [L01](scenarios/L01-terminal-reconcile-identity.md) | Restored PROPOSED versus uncertain STARTED, including the post-save publication gap | Verify pure preflight and fresh admission for PROPOSED, zero re-invocations for uncertain STARTED, and no continuation on a result-save fault. |
+| [P01](scenarios/P01-instruction-support.md), [03](scenarios/03-subagent-lifecycle.md) | Unchanged and changed scope, restricted children, local/native parity | Check prior results survive scope replacement, unstarted suffix calls never launch, and native continuation waits for verified publication. |
+| [06](scenarios/06-parallel-tools.md), [R09](scenarios/R09-process-timeout.md) | Sequential runtime over existing async toolkit and process supervisor | Keep the explicit toolkit batch and command cleanup contracts covered independently. |
+
+The later header pass must settle the bounded toolkit validation interface or
+reuse an existing contract, the headless approval detail and compatibility
+contract, and exact error classification for expired answers and fatal validation
+errors. The diagram review establishes ownership and ordering. The evidence table
+records the expected behavior for later contract and delivery tests.
 
 ## Sessions, persistence and recovery
 
