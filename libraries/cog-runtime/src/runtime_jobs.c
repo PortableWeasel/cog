@@ -163,13 +163,76 @@ cog_result_t cog_runtime_job_cancel(cog_runtime_t *r,cog_tool_job_id_t id)
     rc=cog_cli_clock(&now);
     return rc==COG_OK?cog_toolkit_execution_cancel(r->background_execution,now):rc;
 }
+/* RECOVER can change a job while its previous view is still borrowed.
+ * Reserve space once, including the largest future reconciliation for each job. */
+cog_result_t cli_runtime_job_view_reserve(cog_runtime_t *r)
+{
+    cog_session_snapshot_t state;
+    cog_result_t rc=cog_session_snapshot_view(r->app->session,&state);
+    if(rc!=COG_OK || state.tool_job_count==0U)return rc;
+    size_t bytes=0U;
+    for(size_t i=0U;i<state.tool_job_count;i++){
+        const cog_tool_job_record_t *job=&state.tool_jobs[i];
+        size_t output=job->outcome==NULL?0U:job->outcome->output_len;
+        if(job->state==COG_TOOL_JOB_INDETERMINATE && output<r->config.session.max_tool_job_output_bytes)
+            output=r->config.session.max_tool_job_output_bytes;
+        size_t call_len=strlen(job->call_id);
+        if(call_len>SIZE_MAX-bytes-1U)return COG_ERROR_LIMIT;
+        bytes+=call_len+1U;
+        if(bytes>SIZE_MAX-4097U || output>SIZE_MAX-bytes-4097U)return COG_ERROR_LIMIT;
+        bytes+=output+4097U;
+    }
+    r->offline_jobs=calloc(state.tool_job_count,sizeof(*r->offline_jobs));
+    r->offline_outcomes=calloc(state.tool_job_count,sizeof(*r->offline_outcomes));
+    r->offline_job_bytes=malloc(bytes);
+    if(r->offline_jobs==NULL || r->offline_outcomes==NULL || r->offline_job_bytes==NULL)
+        return COG_ERROR_NOMEM;
+    r->offline_job_capacity=bytes;
+    return COG_OK;
+}
+static cog_result_t copy_job_text(cog_runtime_t *r,const char *source,size_t length,
+    size_t *used,const char **target)
+{
+    if(length>=r->offline_job_capacity-*used)return COG_ERROR_LIMIT;
+    char *destination=r->offline_job_bytes+*used;
+    memcpy(destination,source,length);
+    destination[length]='\0';
+    *target=destination;
+    *used+=length+1U;
+    return COG_OK;
+}
+cog_result_t cli_runtime_job_view_copy(cog_runtime_t *r)
+{
+    cog_session_snapshot_t state;
+    cog_result_t rc=cog_session_snapshot_view(r->app->session,&state);
+    if(rc!=COG_OK)return rc;
+    size_t used=0U;
+    for(size_t i=0U;i<state.tool_job_count;i++){
+        cog_tool_job_record_t *job=&r->offline_jobs[i];
+        *job=state.tool_jobs[i];
+        rc=copy_job_text(r,job->call_id,strlen(job->call_id),&used,&job->call_id);
+        if(rc==COG_OK && job->evidence!=NULL)
+            rc=copy_job_text(r,job->evidence,job->evidence_bytes,&used,&job->evidence);
+        if(rc==COG_OK && job->outcome!=NULL){
+            cog_tool_output_t *out=&r->offline_outcomes[i];
+            *out=*job->outcome;
+            rc=copy_job_text(r,out->output,out->output_len,&used,&out->output);
+            job->outcome=out;
+        }
+        if(rc!=COG_OK)return rc;
+    }
+    r->view.offline_jobs=r->offline_jobs;
+    r->view.offline_job_count=state.tool_job_count;
+    return COG_OK;
+}
+
 cog_result_t cog_runtime_job_reconcile(cog_runtime_t *r,cog_tool_job_id_t id,
     const cog_tool_output_t *outcome,const char *evidence,size_t bytes)
 {
     if(r==NULL || evidence==NULL)return COG_ERROR_NULL_PTR;
     if(r->config.mode!=COG_RUNTIME_RECOVER || !r->config.previous_processes_fenced ||
        r->app->guard==NULL || r->app->recovery_write_failed)return COG_ERROR_INVALID_STATE;
-    if(r->view.serial!=r->acknowledged)return COG_ERROR_AGAIN;
+
     cog_result_t rc=cog_session_tool_job_reconcile(r->app->session,id,outcome,evidence,bytes);
     if(rc!=COG_OK)return rc;
     rc=cog_cli_save(r->app);

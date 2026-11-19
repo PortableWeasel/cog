@@ -15,6 +15,10 @@ struct cog_runtime {
   cog_toolkit_execution_t *background_execution;
   cog_tool_job_id_t background_id;
   char *background_output;
+  cog_tool_job_record_t *offline_jobs;
+  cog_tool_output_t *offline_outcomes;
+  char *offline_job_bytes;
+  size_t offline_job_capacity;
   bool foreground_done, job_save_failed;
   cog_cli_host_runtime_t *host;
   bool host_root_owner; /**< Root facade owns host construction even before host
@@ -75,6 +79,8 @@ struct cog_runtime_instruction_change {
 };
 cog_result_t cli_runtime_json_field(const char *json, size_t bytes, const char *wanted,
     char *storage, size_t capacity, const char **value);
+cog_result_t cli_runtime_job_view_reserve(cog_runtime_t *runtime);
+cog_result_t cli_runtime_job_view_copy(cog_runtime_t *runtime);
 cog_result_t cli_runtime_job_service(cog_runtime_t *runtime, uint64_t *deadline);
 const cog_tool_table_t *cli_runtime_job_table(const cog_tool_t *tool);
 cog_result_t cli_runtime_new_admitted(cog_runtime_t **out,

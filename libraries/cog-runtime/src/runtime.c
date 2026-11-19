@@ -365,6 +365,8 @@ cog_result_t cli_runtime_new_admitted(cog_runtime_t **out,
   cog_runtime_t *r = calloc(1U, sizeof(*r));
   if (r == NULL) { cog_cli_configuration_free(supplied); return COG_ERROR_NOMEM; }
   r->config = *config;
+  if(config->background_job_timeout_ms!=0U)
+    r->config.store.required_capabilities |= COG_STORE_CAP_TOOL_JOBS_V4;
   r->snapshot_capacity = config->session.max_contexts;
   if (r->snapshot_capacity != 0U) {
     r->snapshots = calloc(r->snapshot_capacity, sizeof(*r->snapshots));
@@ -555,6 +557,10 @@ cog_result_t cli_runtime_new_admitted(cog_runtime_t **out,
     rc=cli_host_pin_instructions(r->host,r->instructions);
     if(rc!=COG_OK)goto fail;
   }
+  if(r->offline){
+    rc=cli_runtime_job_view_reserve(r);
+    if(rc!=COG_OK)goto fail;
+  }
   *out = r;
   return COG_OK;
 fail:
@@ -722,6 +728,7 @@ cog_result_t cog_runtime_view(const cog_runtime_t *owner,
     *view = r->view;
     return COG_OK;
   }
+  if(r->offline && r->app->recovery_write_failed)return COG_ERROR_INDETERMINATE;
   cog_cli_display_snapshot_t old;
   uint64_t serial = 0U;
   cog_result_t rc = r->offline
@@ -758,11 +765,8 @@ cog_result_t cog_runtime_view(const cog_runtime_t *owner,
       .outcome = r->primary,
       .continuation_required = r->app->continuation_required};
   if(r->offline){
-    cog_session_snapshot_t state;
-    rc=cog_session_snapshot_view(r->app->session,&state);
-    if(rc!=COG_OK)return rc;
-    r->view.offline_jobs=state.tool_jobs;
-    r->view.offline_job_count=state.tool_job_count;
+    rc=cli_runtime_job_view_copy(r);
+    if(rc!=COG_OK){r->view.serial=0U;return rc;}
   }
   if (r->app->headless != NULL && r->app->headless->policy_pending) {
     const cog_message_tool_call_t *call =
@@ -903,6 +907,9 @@ cog_result_t cog_runtime_close(cog_runtime_t **owner, cog_result_t primary) {
     primary = rc;
   cog_toolkit_validator_free(r->validator);
   free(r->background_output);
+  free(r->offline_jobs);
+  free(r->offline_outcomes);
+  free(r->offline_job_bytes);
   free(r->scope_bindings);
   free(r->scope_strings);
   free(r->bindings);
@@ -1425,7 +1432,7 @@ cog_result_t cog_runtime_child_select(cog_runtime_t *r, uint64_t node_id,
   for(size_t i=0U;i<parent_prompt.tool_count;i++) {
     child_bindings[i]=parent_prompt.tools[i];
     const cog_tool_t *d=child_bindings[i].descriptor;
-    if(d==&cog_runtime_delegation_tools.tools[0] || child_bindings[i].policy==COG_PROMPT_TOOL_ASK)
+    if(d==&cog_runtime_delegation_tools.tools[0] || cli_runtime_job_table(d)!=NULL || child_bindings[i].policy==COG_PROMPT_TOOL_ASK)
       child_bindings[i].policy=COG_PROMPT_TOOL_DENY;
     if(r->config.workers!=NULL)for(size_t j=0U;j<cog_workspace_tools.count;j++)
       if(d==&cog_workspace_tools.tools[j]) {
