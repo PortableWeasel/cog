@@ -1,8 +1,9 @@
 # R10 · Background job across foreground prompts
 
-Header-stage trace for `5f60ee4`. The [standalone PoC](../../pocs/tool-use/README.md)
-verified the provider round trip and Linux direct-child behavior. The future
-runtime tests exercise guarded durability and the workspace helper.
+Runtime and persistence trace for `be72f95` and `8108988`. The [standalone PoC](../../pocs/tool-use/README.md)
+verified the provider round trip and Linux direct-child behavior. The executable
+`scenario-R10-background-tool-jobs` drives the embedded C runtime with a scripted
+provider, a guarded file store and a real workspace process.
 
 ```mermaid
 sequenceDiagram
@@ -48,4 +49,12 @@ sequenceDiagram
 | 3 | Crash before receipt or after terminal save, [17](17-session-migration.md) | Uncertain intent resolves atomically with the unclosed launch. A terminal job restores without re-execution. Handoff requires quiescence; V1–V3 records restore with zero jobs. |
 | 3 | Capacity and storage fault | Exhaust job, output, evidence, audit or serialized checkpoint capacity before launch. Later foreground writes cannot consume terminal-commit reservation. On terminal-save failure, retain the evidence, freeze new admission and never expose the candidate as durable. |
 
-The new runtime scenarios are executable-test requirements for the writer phase.
+The executable R10 scenario holds a workspace command open until an unrelated
+prompt completes. It exercises both normal completion and host cancellation,
+performs a second model status call, then reopens the V4 store and checks the
+job outcome and exact launch/status result counts. During execution it also
+reads the committed snapshot through a separate inspection handle. The
+`unit-session` and `unit-store-fencing` tests cover the pre-receipt and
+post-receipt crash windows, reconciliation and committed evidence.
+
+From a configured build, run `ctest --test-dir build -R 'scenario-R10|unit-store-fencing|^unit-session$' --output-on-failure`.

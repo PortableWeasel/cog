@@ -641,7 +641,7 @@ semantics with UNSUPPORTED, and reservation exhaustion with LIMIT. Runtime
 returns an identified no-effect result for model input errors; a malformed
 configured schema is an admission/configuration failure.
 
-### Background tool jobs · draft public contracts
+### Embedded background tool jobs
 
 The [background-job diagram](background-tool-jobs.svg) and
 [R10 scenario](scenarios/R10-background-tool-jobs.md) extend the existing
