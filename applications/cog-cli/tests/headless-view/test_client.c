@@ -96,8 +96,10 @@ static void setup(fixture_t *f, const char *path, bool watch)
     cog_ipc_endpoint_config_t ep = {0}; ep.max_frame_bytes = 70000U;
     OK(cog_ipc_endpoint_new_ex(&f->listener, &ep));
     OK(cog_ipc_endpoint_listen(f->listener, path));
-    cog_cli_host_client_config_t config = {path, watch, false, f->output, f->output,
-        f->input[0], -1, 4096U, 1000U};
+    cog_cli_host_client_config_t config = {
+        .socket_path = path, .watch = watch, .output = f->output, .diagnostic = f->output,
+        .input_fd = f->input[0], .signal_fd = -1, .projection_bytes = 4096U, .reconnect_ms = 1000U
+    };
     OK(cog_cli_host_client_new(&f->client, &config));
 }
 static void handshake(fixture_t *f)
