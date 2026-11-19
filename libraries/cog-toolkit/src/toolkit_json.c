@@ -1,5 +1,6 @@
 /** @file toolkit_json.c @brief Strict constructor-bounded JSON/schema subset. */
 #include "toolkit_json.h"
+#include <cog/toolkit_exec.h>
 #include <errno.h>
 #include <math.h>
 #include <stdint.h>
@@ -370,15 +371,28 @@ static cog_result_t parse(cog_toolkit_json_t *json, const char *text,
     return strict_value(yyjson_doc_get_root(*out));
 }
 
-cog_result_t cog_toolkit_json_new(cog_toolkit_json_t *json,
-    const char *arguments, size_t arguments_len, const char *schema,
-    const cog_tool_async_config_t *config)
+struct cog_toolkit_validator {
+    cog_toolkit_json_t json;
+    size_t argument_limit;
+    size_t schema_limit;
+};
+
+static size_t byte_limit(size_t configured)
 {
-    size_t arg_max = config->max_argument_bytes != 0U ? config->max_argument_bytes : 65536U;
-    size_t schema_max = config->max_schema_bytes != 0U ? config->max_schema_bytes : 65536U;
-    size_t schema_len = schema != NULL ? strlen(schema) : 0U;
-    memset(json, 0, sizeof(*json));
-    if (arguments_len >= arg_max || schema_len >= schema_max) { return COG_ERROR_LIMIT; }
+    return configured != 0U ? configured : 65536U;
+}
+
+static size_t schema_length(const char *schema, size_t limit)
+{
+    size_t length = 0U;
+    if (schema != NULL) {
+        while (length < limit && schema[length] != '\0') { length++; }
+    }
+    return length;
+}
+
+static cog_result_t reserve_pool(cog_toolkit_json_t *json, const cog_tool_async_config_t *config)
+{
     json->pool_bytes = config->codec_workspace_bytes != 0U ? config->codec_workspace_bytes : 1048576U;
     json->max_depth = config->max_json_depth != 0U ? config->max_json_depth : 64U;
     if (json->max_depth > 256U) { return COG_ERROR_LIMIT; }
@@ -388,13 +402,48 @@ cog_result_t cog_toolkit_json_new(cog_toolkit_json_t *json,
         cog_toolkit_json_free(json);
         return COG_ERROR_LIMIT;
     }
-    cog_result_t r = parse(json, arguments, arguments_len, &json->arguments);
-    if (r == COG_OK && !yyjson_is_obj(yyjson_doc_get_root(json->arguments))) { r = COG_ERROR_INVALID_ARG; }
+    return COG_OK;
+}
+
+static cog_result_t check_documents(cog_toolkit_json_t *json, const char *arguments,
+    size_t arguments_len, const char *schema, size_t schema_len)
+{
+    cog_result_t r = COG_OK;
+    if (arguments != NULL) {
+        r = parse(json, arguments, arguments_len, &json->arguments);
+        if (r == COG_OK && !yyjson_is_obj(yyjson_doc_get_root(json->arguments))) {
+            return COG_ERROR_INVALID_ARG;
+        }
+    }
     if (r == COG_OK && schema_len != 0U) {
         r = parse(json, schema, schema_len, &json->schema);
         if (r == COG_OK) { r = schema_check(yyjson_doc_get_root(json->schema)); }
-        if (r == COG_OK) { r = schema_apply(yyjson_doc_get_root(json->arguments), yyjson_doc_get_root(json->schema)); }
+        if (r == COG_OK && arguments != NULL) {
+            r = schema_apply(yyjson_doc_get_root(json->arguments), yyjson_doc_get_root(json->schema));
+        }
     }
+    return r;
+}
+
+static void release_documents(cog_toolkit_json_t *json)
+{
+    yyjson_doc_free(json->arguments);
+    yyjson_doc_free(json->schema);
+    json->arguments = NULL;
+    json->schema = NULL;
+}
+
+cog_result_t cog_toolkit_json_new(cog_toolkit_json_t *json,
+    const char *arguments, size_t arguments_len, const char *schema,
+    const cog_tool_async_config_t *config)
+{
+    size_t schema_max = byte_limit(config->max_schema_bytes);
+    size_t schema_len = schema_length(schema, schema_max);
+    memset(json, 0, sizeof(*json));
+    if (arguments_len >= byte_limit(config->max_argument_bytes) ||
+        schema_len >= schema_max) { return COG_ERROR_LIMIT; }
+    cog_result_t r = reserve_pool(json, config);
+    if (r == COG_OK) { r = check_documents(json, arguments, arguments_len, schema, schema_len); }
     if (r != COG_OK) { cog_toolkit_json_free(json); }
     return r;
 }
@@ -402,10 +451,64 @@ cog_result_t cog_toolkit_json_new(cog_toolkit_json_t *json,
 void cog_toolkit_json_free(cog_toolkit_json_t *json)
 {
     if (json == NULL) { return; }
-    yyjson_doc_free(json->arguments);
-    yyjson_doc_free(json->schema);
+    release_documents(json);
     free(json->pool);
     memset(json, 0, sizeof(*json));
+}
+
+cog_result_t cog_toolkit_validator_new(cog_toolkit_validator_t **out,
+    const cog_tool_async_config_t *config)
+{
+    if (out == NULL) { return COG_ERROR_NULL_PTR; }
+    *out = NULL;
+    if (config == NULL) { return COG_ERROR_NULL_PTR; }
+    cog_toolkit_validator_t *validator = calloc(1U, sizeof(*validator));
+    if (validator == NULL) { return COG_ERROR_NOMEM; }
+    cog_result_t r = reserve_pool(&validator->json, config);
+    if (r != COG_OK) {
+        free(validator);
+        return r;
+    }
+    validator->argument_limit = byte_limit(config->max_argument_bytes);
+    validator->schema_limit = byte_limit(config->max_schema_bytes);
+    *out = validator;
+    return COG_OK;
+}
+
+static cog_result_t validate(cog_toolkit_validator_t *validator, const cog_tool_t *descriptor,
+    const char *arguments, size_t bytes)
+{
+    if (validator == NULL || descriptor == NULL) { return COG_ERROR_NULL_PTR; }
+    const char *schema = descriptor->input_schema;
+    size_t schema_len = schema_length(schema, validator->schema_limit);
+    if (schema_len >= validator->schema_limit || bytes >= validator->argument_limit) {
+        return COG_ERROR_LIMIT;
+    }
+    cog_result_t r = check_documents(&validator->json, arguments, bytes, schema, schema_len);
+    release_documents(&validator->json);
+    return r;
+}
+
+cog_result_t cog_toolkit_validate_schema(cog_toolkit_validator_t *validator,
+    const cog_tool_t *descriptor)
+{
+    return validate(validator, descriptor, NULL, 0U);
+}
+
+cog_result_t cog_toolkit_validate(cog_toolkit_validator_t *validator,
+    const cog_tool_t *descriptor, const char *arguments, size_t bytes)
+{
+    if (arguments == NULL) { return COG_ERROR_NULL_PTR; }
+    return validate(validator, descriptor, arguments, bytes);
+}
+
+cog_result_t cog_toolkit_validator_free(cog_toolkit_validator_t *validator)
+{
+    if (validator != NULL) {
+        cog_toolkit_json_free(&validator->json);
+        free(validator);
+    }
+    return COG_OK;
 }
 
 /* Legacy validator has no constructor/config parameter. Automatic local storage

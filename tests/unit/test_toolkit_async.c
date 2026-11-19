@@ -210,8 +210,26 @@ static void invalid_vtable(void)
         assert(execution == NULL && counter.constructed == 0U);
     }
 }
+static void reusable_validator(void)
+{
+    const cog_tool_async_config_t config = { .max_argument_bytes = 12U };
+    const cog_tool_t descriptor = { .input_schema = "{\"required\":[\"x\"]}" };
+    const cog_tool_t unsupported = { .input_schema = "{\"pattern\":\"x\"}" };
+    cog_toolkit_validator_t *validator = NULL;
+    assert(cog_toolkit_validator_new(&validator, &config) == COG_OK);
+    for (size_t i = 0U; i < 64U; i++) {
+        assert(cog_toolkit_validate_schema(validator, &descriptor) == COG_OK);
+        assert(cog_toolkit_validate_schema(validator, &unsupported) == COG_ERROR_UNSUPPORTED);
+        assert(cog_toolkit_validate(validator, &descriptor, "{}", 2U) == COG_ERROR_INVALID_ARG);
+        assert(cog_toolkit_validate(validator, &descriptor, "{\"x\":123456}", 12U) == COG_ERROR_LIMIT);
+        assert(cog_toolkit_validate(validator, &descriptor, "{\"x\":1}", 7U) == COG_OK);
+    }
+    assert(cog_toolkit_validator_free(validator) == COG_OK);
+}
+
 int main(void)
 {
+    reusable_validator();
     toolkit_core_create();
     schema_cases(); bounded_cases(); policy_and_retention(); invalid_vtable();
     toolkit_core_destroy();
