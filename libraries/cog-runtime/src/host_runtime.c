@@ -1530,7 +1530,7 @@ static cog_result_t host_local_admit(cog_cli_host_runtime_t *r, cli_executor_slo
         if(child_bindings==NULL)return COG_ERROR_NOMEM;
         for(size_t i=0U;i<child_config.tools.binding_count;i++) {
             child_bindings[i]=child_config.tools.bindings[i];
-            if(child_bindings[i].policy==COG_PROMPT_TOOL_ASK ||
+            if(cli_runtime_job_table(child_bindings[i].descriptor)!=NULL || child_bindings[i].policy==COG_PROMPT_TOOL_ASK ||
                child_bindings[i].descriptor==&cog_runtime_delegation_tools.tools[0])
                 child_bindings[i].policy=COG_PROMPT_TOOL_DENY;
             if(owner->config.workers!=NULL)for(size_t j=0U;j<cog_workspace_tools.count;j++)

@@ -45,7 +45,8 @@ cog_result_t cli_tools_binding(const cog_cli_app_t *app, const char *name,
             }
             const cog_tool_table_t *job_table=cli_runtime_job_table(b->descriptor);
             if(job_table!=NULL){
-                if(app->runtime_owner==NULL || app->runtime_config.background_job_timeout_ms==0U)
+                if(app->runtime_owner==NULL || app->runtime_config.background_job_timeout_ms==0U ||
+                   (app->headless!=NULL && app->headless->kind!=COG_CLI_EXECUTION_ROOT))
                     return COG_ERROR_NOT_FOUND;
                 if(user!=NULL)*user=b->descriptor==&cog_runtime_background_status_tool ?
                     (void *)app->runtime_owner : configured->user;
