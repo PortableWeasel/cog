@@ -164,6 +164,41 @@ static void process_crash(const char *exe,const char *base)
     CHECK(cog_store_delete(s,"process")==COG_ERROR_UNSUPPORTED);
     cog_session_free(conversation);cog_store_free(s);
 }
+static void job_admission_capacity(const char *base)
+{
+    const char *id = "job-capacity";
+    cog_store_t *st = NULL;
+    const cog_store_config_t sc = {.base_dir = base, .require_owner = true, .max_record_bytes = 8192U};
+    CHECK(cog_store_new(&st, &sc) == COG_OK);
+    const cog_store_owner_t owner = {1U, 11U};
+    cog_store_owner_guard_t *guard = NULL;
+    CHECK(cog_store_owner_compare_exchange(st, id, (cog_store_owner_t){0}, owner,
+        (cog_store_checkpoint_t){0}) == COG_OK);
+    CHECK(cog_store_owner_acquire(st, id, owner, &guard) == COG_OK);
+    const cog_session_config_t cfg = {.id = id, .max_nodes = 8U, .max_payload_bytes = 32768U,
+        .max_tool_jobs = 1U, .max_tool_job_output_bytes = 8192U};
+    cog_session_t *conversation = NULL;
+    CHECK(cog_session_new(&conversation, &cfg) == COG_OK);
+    const cog_message_tool_call_t call = {.id = "launch", .name = "start_background",
+        .arguments = "{}", .arguments_len = 2U};
+    const cog_message_t assistant = {.role = COG_MESSAGE_ROLE_ASSISTANT, .tool_calls = &call,
+        .tool_call_count = 1U};
+    cog_session_node_t *node = NULL;
+    CHECK(cog_session_append(conversation, &assistant, &node) == COG_OK);
+    CHECK(cog_store_save(st, conversation) == COG_OK);
+    cog_tool_job_id_t job_id;
+    CHECK(cog_session_tool_job_intent(conversation, node, "launch", &job_id) == COG_OK);
+    CHECK(cog_store_save(st, conversation) == COG_ERROR_LIMIT);
+    cog_store_owner_t read_owner;
+    cog_store_checkpoint_t cp;
+    CHECK(cog_store_owner_read(st, id, &read_owner, &cp) == COG_OK && cp.generation == 1U);
+    CHECK(cog_store_owner_release(guard) == COG_OK);
+    cog_session_free(conversation);
+    CHECK(cog_store_owner_acquire(st, id, owner, &guard) == COG_OK);
+    CHECK(cog_store_owner_release(guard) == COG_OK);
+    cog_store_free(st);
+}
+
 /* Release the guard at each durable edge to simulate loss of the live owner. */
 static void recover_background_job(const char *base, bool accepted)
 {
@@ -238,6 +273,21 @@ static void recover_background_job(const char *base, bool accepted)
         CHECK(job.outcome->exit_status_known && job.outcome->exit_status == 3);
         CHECK(job.outcome->status == COG_ERROR_IO && strcmp(job.outcome->output, "x") == 0);
     } else CHECK(job.state == COG_TOOL_JOB_ACKNOWLEDGED);
+    /* A replacement session with the same identity cannot overwrite operator
+     * evidence, even under a freshly admitted normal owner. */
+    CHECK(cog_store_owner_read(st, id, &replacement, &cp) == COG_OK);
+    const cog_store_owner_t next_owner = {3U, 13U};
+    CHECK(cog_store_owner_compare_exchange(st, id, replacement, next_owner, cp) == COG_OK);
+    CHECK(cog_store_owner_acquire(st, id, next_owner, &guard) == COG_OK);
+    cog_tool_job_record_t altered = restored.tool_jobs[0];
+    altered.evidence = "forged";
+    altered.evidence_bytes = 6U;
+    restored.tool_jobs = &altered;
+    cog_session_t *forged = NULL;
+    CHECK(cog_session_restore(&forged, &cfg, &restored) == COG_OK);
+    CHECK(cog_store_save(st, forged) == COG_ERROR_INVALID_STATE);
+    CHECK(cog_store_owner_release(guard) == COG_OK);
+    cog_session_free(forged);
     cog_session_free(conversation);
     cog_store_free(st);
 }
@@ -452,6 +502,7 @@ int main(int argc,char **argv)
     allocation_oracle_control();
     char exe[1024];ssize_t n=readlink("/proc/self/exe",exe,sizeof(exe)-1U);CHECK(n>0);exe[(size_t)n]='\0';
     char base[]="/tmp/cog-store-process-XXXXXX";CHECK(mkdtemp(base)!=NULL);
+    job_admission_capacity(base);
     recover_background_job(base, false);
     recover_background_job(base, true);
     process_crash(exe,base);cleanup(base);bounded_allocations();session_limit_race();stale_temp_checkpoint();base_parent_durability();save_faults(false);save_faults(true);cas_faults(false);cas_faults(true);
