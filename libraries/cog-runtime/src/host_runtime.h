@@ -26,6 +26,13 @@ typedef struct cog_cli_host_runtime cog_cli_host_runtime_t;
  * are startup/explicit host inputs, never model arguments or live reload keys.
  * No child profile may increase them or acquire resolver/caller callback power.
  */
+/** @remark Draft job-enabled primary host. Resolve the ordinary CLI job
+ * limits once at startup into the public runtime config. Validate live
+ * primary ownership, V4 store, workspace, command policy and frame bounds.
+ * Preserve the embedded launch/lookup identity, guarded checkpoints and
+ * idle service contract. A detached host continues to step jobs after UI EOF.
+ * Child profiles and remote root handoff cannot carry the live handle.
+ */
 typedef struct cog_cli_host_runtime_config {
     const cog_cli_options_t *root_options; /**< Borrowed until new returns;
        NEW/RESUME/FORK execution only, durable store required, socket_path=NULL.

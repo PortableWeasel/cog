@@ -134,7 +134,10 @@ typedef enum cog_cli_option_bit {
     COG_CLI_OPT_RETRY_MS = 1u << 13,
     COG_CLI_OPT_STORE_MODE = 1u << 14,
     COG_CLI_OPT_STORE_DIR = 1u << 15,
-    COG_CLI_OPT_BASE_URL = 1u << 16
+    COG_CLI_OPT_BASE_URL = 1u << 16,
+    COG_CLI_OPT_JOB_TIMEOUT = 1u << 17,
+    COG_CLI_OPT_JOB_COUNT = 1u << 18,
+    COG_CLI_OPT_JOB_OUTPUT = 1u << 19
 } cog_cli_option_bit_t;
 
 /**
@@ -232,6 +235,26 @@ typedef struct cog_cli_options {
     uint32_t explicit_options; /**< cog_cli_option_bit_t bits set by parse for
        supplied flags. Programmatic callers set bits for intended overrides;
        otherwise environment/config/defaults apply, even if parse filled defaults. */
+    /** Draft opt-in for REAL standalone and headless primary owners.
+     * --job-timeout-ms N / COG_JOB_TIMEOUT_MS / jobs.timeout-ms. Zero disables
+     * new launches. Positive uint32_t milliseconds selects the runtime's
+     * launch-to-cancel deadline. No foreground turn timeout extension.
+     */
+    uint32_t background_job_timeout_ms;
+    /** --max-jobs N / COG_MAX_JOBS / jobs.max-retained. Default 8 when
+     * enabled; reserve 1..64 session-lifetime slots, including terminal rows.
+     * Live concurrency stays one job per primary root.
+     */
+    size_t max_tool_jobs;
+    /** --job-output-bytes N / COG_JOB_OUTPUT_BYTES / jobs.output-bytes.
+     * Default 4096 when enabled; explicit range 1..65536 bytes per job.
+     * Reserve separately from the ordinary tool reply buffer. Configuration
+     * must fit worst-case escaped output, receipt, history and store budgets.
+     * Each field follows explicit_options precedence. Explicit zero timeout
+     * overrides inherited enablement. Zero capacity from a present source
+     * is INVALID_ARG; omitted capacities are dormant while disabled.
+     */
+    size_t max_tool_job_output_bytes;
 } cog_cli_options_t;
 
 /**

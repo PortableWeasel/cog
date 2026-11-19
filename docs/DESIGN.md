@@ -683,6 +683,17 @@ The third checked committed-prefix preservation, capacity and recovery across
 the pre-receipt and post-receipt crash windows. R10 records the expected
 observations for each pass.
 
+### Terminal and detached job controls · draft
+
+The [frontend trace](scenarios/R11-background-job-frontends.md) specifies
+explicit primary configuration and status/cancel commands for standalone and
+attached terminals. The host maps these operations to the same runtime job
+identity, branch visibility and cancellation path as the embedded profile.
+The detached path binds private status and approval details to a negotiated
+controller lease. Watchers receive the ordinary conversation projection with
+job TOOL rows summarized. A disconnected client leaves the server responsible
+for continued supervision and durable completion.
+
 ## Sessions, persistence and recovery
 
 The session is a bounded tree of structured messages and immutable shared
