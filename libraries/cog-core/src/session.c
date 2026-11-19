@@ -110,6 +110,20 @@ static void arena_free(cog_session_t *s, void *ptr)
     }
 }
 
+/* Release the unused part of an intent reservation once its result is sized. */
+static void shrink_launch_payload(cog_session_t *s, void *payload, size_t bytes)
+{
+    arena_block_t *block = (arena_block_t *)payload - 1;
+    size_t used = sizeof(*block) + aligned(bytes);
+    size_t remainder = block->info.size - used;
+    if (remainder >= sizeof(*block) + alignof(max_align_t)) {
+        arena_block_t *tail = (arena_block_t *)(void *)((unsigned char *)block + used);
+        block->info.size = used;
+        tail->info.size = remainder;
+        arena_free(s, tail + 1);
+    }
+}
+
 static void copy_message(pack_t *p, const cog_message_t *src, cog_message_t *dst)
 {
     cog_message_t m = *src;
@@ -190,6 +204,31 @@ static cog_session_node_t *result_for(const cog_session_t *s,
     return NULL;
 }
 
+static bool open_job(const cog_tool_job_record_t *job)
+{
+    return job->state == COG_TOOL_JOB_INTENT || job->state == COG_TOOL_JOB_ACCEPTED ||
+        job->state == COG_TOOL_JOB_INDETERMINATE;
+}
+
+static const cog_tool_job_record_t *pending_job(const cog_session_t *s)
+{
+    if (s->job_count == 0U) return NULL;
+    const cog_tool_job_record_t *last = &s->jobs[s->job_count - 1U];
+    return open_job(last) ? last : NULL;
+}
+
+static cog_tool_job_record_t *find_job(const cog_session_t *s, uint64_t id)
+{
+    for (size_t i = 0U; i < s->job_count; ++i)
+        if (s->jobs[i].id == id) return &s->jobs[i];
+    return NULL;
+}
+
+static bool is_job_call(const cog_session_t *s, const cog_tool_ledger_record_t *call)
+{
+    return call->audit_count > 0U && find_job(s, call->audit[0].sequence) != NULL;
+}
+
 static bool unresolved(const cog_session_t *s)
 {
     for (size_t i = 0U; i < s->ledger_count; ++i) {
@@ -265,6 +304,7 @@ static void link_node(cog_session_t *s, cog_session_node_t *parent,
 
 typedef enum insertion_mode {
     INSERT_MESSAGE,
+    INSERT_JOB_RESULT,
     INSERT_RECONCILIATION,
     INSERT_LEGACY_INSPECTION
 } insertion_mode_t;
@@ -272,7 +312,8 @@ typedef enum insertion_mode {
 static cog_result_t insert(cog_session_t *s, cog_session_node_t *parent,
     const cog_message_t *m, cog_session_node_t **out, insertion_mode_t mode)
 {
-    const bool reconciliation = mode == INSERT_RECONCILIATION;
+    const bool job_result = mode == INSERT_JOB_RESULT;
+    const bool reconciliation = mode == INSERT_RECONCILIATION || job_result;
     pack_t measure = {0};
     cog_session_node_t *n = NULL;
     cog_tool_ledger_record_t *associated = NULL;
@@ -281,6 +322,11 @@ static cog_result_t insert(cog_session_t *s, cog_session_node_t *parent,
     if (s->inspection_only || (!reconciliation && indeterminate(s))) return COG_ERROR_INVALID_STATE;
     if (parent != NULL && !contains(s, parent)) return COG_ERROR_NOT_FOUND;
     if (parent == NULL) parent = s->root;
+    const cog_tool_job_record_t *pending = pending_job(s);
+    if (pending != NULL && (parent != s->active ||
+        (!reconciliation && pending->state == COG_TOOL_JOB_INDETERMINATE))) return COG_ERROR_INVALID_STATE;
+    if (!job_result && s->launch_payload != NULL &&
+        (s->max_nodes - s->node_count <= 1U || s->next_node_id >= UINT64_MAX - 1U)) return COG_ERROR_LIMIT;
     if (m->tool_call_count > s->max_calls || m->tool_call_count > s->ledger_capacity - s->ledger_count ||
         s->node_count == s->max_nodes || s->next_node_id == UINT64_MAX) return COG_ERROR_LIMIT;
     if (m->tool_call_count > SIZE_MAX / sizeof(cog_message_tool_call_t) ||
@@ -295,6 +341,7 @@ static cog_result_t insert(cog_session_t *s, cog_session_node_t *parent,
         if (a == NULL || m->status != COG_MESSAGE_COMPLETE) return COG_ERROR_INVALID_ARG;
         associated = find_call(s, a, m->tool_call_id);
         if (associated == NULL || result_for(s, a, m->tool_call_id) != NULL) return COG_ERROR_INVALID_ARG;
+        if (!job_result && is_job_call(s, associated)) return COG_ERROR_INVALID_STATE;
         if (!reconciliation && associated->state == COG_TOOL_EXECUTION_INDETERMINATE)
             return COG_ERROR_INVALID_STATE;
         if (!reconciliation && associated->state == COG_TOOL_EXECUTION_PROPOSED)
@@ -305,8 +352,14 @@ static cog_result_t insert(cog_session_t *s, cog_session_node_t *parent,
     if (measure.failed) return COG_ERROR_LIMIT;
     for (size_t i = 0U; i < s->max_nodes; ++i) if (!s->nodes[i].used) { n = &s->nodes[i]; break; }
     if (n == NULL) return COG_ERROR_LIMIT;
-    void *payload = arena_alloc(s, measure.used == 0U ? 1U : measure.used);
+    if (job_result && measure.used > s->launch_capacity) return COG_ERROR_LIMIT;
+    void *payload = job_result ? s->launch_payload : arena_alloc(s, measure.used == 0U ? 1U : measure.used);
     if (payload == NULL) return COG_ERROR_LIMIT;
+    if (job_result) {
+        shrink_launch_payload(s, payload, measure.used);
+        s->launch_payload = NULL;
+        s->launch_capacity = 0U;
+    }
     (void)memset(n, 0, sizeof(*n));
     pack_t p = {payload, 0U, false};
     copy_message(&p, m, &n->message);
@@ -405,7 +458,7 @@ cog_result_t cog_session_context_view(const cog_session_t *s, uint64_t id, cog_s
 cog_result_t cog_session_context_publish(cog_session_t *s, const cog_session_context_binding_t *b)
 {
     if (s == NULL || b == NULL) return COG_ERROR_NULL_PTR;
-    if (s->inspection_only || unresolved(s) || !path_complete(s, s->active, false)) return COG_ERROR_INVALID_STATE;
+    if (s->inspection_only || pending_job(s) != NULL || unresolved(s) || !path_complete(s, s->active, false)) return COG_ERROR_INVALID_STATE;
     if (s->context_binding_high_water == UINT64_MAX) return COG_ERROR_LIMIT;
     if (b->binding_id == 0U || b->binding_id <= s->context_binding_high_water ||
         b->previous_binding_id != s->selected_context_binding_id ||
@@ -423,7 +476,7 @@ cog_result_t cog_session_context_select(cog_session_t *s, cog_session_node_t *le
     if (s == NULL) return COG_ERROR_NULL_PTR;
     if ((leaf == NULL && s->node_count != 0U) ||
         (leaf != NULL && (!contains(s, leaf) || leaf->child_count != 0U))) return COG_ERROR_INVALID_ARG;
-    if (s->inspection_only || unresolved(s) || !path_complete(s, leaf, false)) return COG_ERROR_INVALID_STATE;
+    if (s->inspection_only || pending_job(s) != NULL || unresolved(s) || !path_complete(s, leaf, false)) return COG_ERROR_INVALID_STATE;
     if (id != 0U && context_binding_find(s->context_bindings, s->context_binding_count, id) == NULL)
         return COG_ERROR_NOT_FOUND;
     if (!context_chain_at(s->context_bindings, s->context_binding_count, id,
@@ -495,6 +548,25 @@ cog_result_t cog_session_new(cog_session_t **out, const cog_session_config_t *co
             cog_session_free(s); return COG_ERROR_NOMEM;
         }
     }
+    if (config != NULL && (config->max_tool_jobs == 0U) != (config->max_tool_job_output_bytes == 0U)) {
+        cog_session_free(s); return COG_ERROR_INVALID_ARG;
+    }
+    if (config != NULL && config->max_tool_jobs != 0U) {
+        s->max_tool_jobs = config->max_tool_jobs;
+        s->max_tool_job_output_bytes = config->max_tool_job_output_bytes;
+        if (s->max_tool_job_output_bytes > SIZE_MAX - 4097U ||
+            s->max_tool_jobs > SIZE_MAX / (4097U + s->max_tool_job_output_bytes) ||
+            s->max_tool_jobs > SIZE_MAX / sizeof(*s->jobs) ||
+            s->max_tool_jobs > SIZE_MAX / sizeof(*s->job_outputs)) {
+            cog_session_free(s); return COG_ERROR_LIMIT;
+        }
+        s->jobs = calloc(s->max_tool_jobs, sizeof(*s->jobs));
+        s->job_outputs = calloc(s->max_tool_jobs, sizeof(*s->job_outputs));
+        s->job_storage = malloc(s->max_tool_jobs * (4097U + s->max_tool_job_output_bytes));
+        if (s->jobs == NULL || s->job_outputs == NULL || s->job_storage == NULL) {
+            cog_session_free(s); return COG_ERROR_NOMEM;
+        }
+    }
     s->next_node_id = 1U;
     s->history_capacity = s->max_nodes;
     *out = s;
@@ -504,6 +576,7 @@ cog_result_t cog_session_new(cog_session_t **out, const cog_session_config_t *co
 void cog_session_free(cog_session_t *s)
 {
     if (s == NULL) return;
+    free(s->jobs); free(s->job_outputs); free(s->job_storage);
     free(s->nodes); free(s->arena); free(s->history); free(s->snapshot_nodes);
     free(s->contexts); free(s->context_bindings); free(s->context_data);
     free(s->ledger); free(s->audits); free(s->id); free(s);
@@ -568,6 +641,8 @@ cog_result_t cog_session_copy_history(const cog_session_t *s, const cog_session_
     if (s == NULL || count == NULL || (messages == NULL && cap != 0U)) return COG_ERROR_NULL_PTR;
     if (n == NULL) n = s->active;
     if (n != NULL && !contains(s, n)) return COG_ERROR_INVALID_ARG;
+    const cog_tool_job_record_t *pending = pending_job(s);
+    if (pending != NULL && pending->state == COG_TOOL_JOB_INDETERMINATE) return COG_ERROR_INVALID_STATE;
     if (s->inspection_only || unresolved(s) || !path_complete(s, n, false)) return COG_ERROR_INVALID_STATE;
     for (const cog_session_node_t *a = n; a != NULL; a = a->parent) {
         if (a->data.message == NULL || a->message.status != COG_MESSAGE_COMPLETE) return COG_ERROR_INVALID_STATE;
@@ -594,6 +669,7 @@ cog_result_t cog_session_fork(cog_session_t *s, cog_session_node_t *n, cog_sessi
     size_t count;
     if (s == NULL || n == NULL) return COG_ERROR_NULL_PTR;
     if (!contains(s, n)) return COG_ERROR_NOT_FOUND;
+    if (pending_job(s) != NULL) return COG_ERROR_INVALID_STATE;
     if (cog_session_copy_history(s, n, s->history, s->history_capacity, &count) != COG_OK)
         return COG_ERROR_INVALID_STATE;
     /* Fork names a shared immutable ancestor; children create divergent branches.
@@ -645,6 +721,9 @@ cog_result_t cog_session_tool_transition(cog_session_t *s, cog_session_node_t *n
     if (!contains(s, n)) return COG_ERROR_INVALID_ARG;
     cog_tool_ledger_record_t *l = find_call(s, n, id);
     if (l == NULL) return COG_ERROR_NOT_FOUND;
+    const cog_tool_job_record_t *pending = pending_job(s);
+    if (is_job_call(s, l) || (pending != NULL && pending->state == COG_TOOL_JOB_INDETERMINATE)) return COG_ERROR_INVALID_STATE;
+    if (s->launch_payload != NULL && s->audit_high_water >= UINT64_MAX - 2U) return COG_ERROR_LIMIT;
     if (s->inspection_only || indeterminate(s) || n->shared || n->message.status != COG_MESSAGE_COMPLETE ||
         !on_path(s->active, n) || l->state != expected || !legal_transition(expected, next))
         return COG_ERROR_INVALID_STATE;
@@ -661,6 +740,7 @@ cog_result_t cog_session_reconcile_tool(cog_session_t *s, cog_session_node_t *n,
     if (!contains(s, n)) return COG_ERROR_INVALID_ARG;
     cog_tool_ledger_record_t *l = find_call(s, n, id);
     if (l == NULL) return COG_ERROR_NOT_FOUND;
+    if (is_job_call(s, l)) return COG_ERROR_INVALID_STATE;
     if (n->shared || !on_path(s->active, n) || l->state != COG_TOOL_EXECUTION_INDETERMINATE)
         return COG_ERROR_INVALID_STATE;
     if ((resolution != COG_TOOL_EXECUTION_SUCCEEDED && resolution != COG_TOOL_EXECUTION_FAILED &&
@@ -674,6 +754,209 @@ cog_result_t cog_session_reconcile_tool(cog_session_t *s, cog_session_node_t *n,
     rc = audit_add(s, l, resolution, true, r->message.content, r->message.content_len);
     if (out != NULL) *out = r;
     return rc;
+}
+
+static bool valid_text(const char *text, size_t bytes)
+{
+    const cog_message_t message = {.role = COG_MESSAGE_ROLE_USER, .content = text, .content_len = bytes};
+    return text != NULL && cog_message_validate(&message) == COG_OK;
+}
+
+static bool valid_outcome(const cog_tool_output_t *out)
+{
+    return out != NULL && out->status <= COG_OK && out->status > COG_ERROR_INDETERMINATE &&
+        out->status != COG_ERROR_AGAIN && out->output_len != SIZE_MAX &&
+        valid_text(out->output, out->output_len) && out->output[out->output_len] == '\0';
+}
+
+static bool launch_call(const cog_message_t *assistant, const char *id)
+{
+    if (assistant == NULL) return false;
+    for (size_t i = 0U; i < assistant->tool_call_count; ++i) {
+        const cog_message_tool_call_t *call = &assistant->tool_calls[i];
+        if (strcmp(call->id, id) == 0) return strcmp(call->name, "start_background") == 0;
+    }
+    return false;
+}
+
+static cog_result_t reserve_launch(cog_session_t *s, const char *id)
+{
+    size_t text = s->max_tool_job_output_bytes < 128U ? 128U : s->max_tool_job_output_bytes;
+    const cog_message_t m = {.role = COG_MESSAGE_ROLE_TOOL, .tool_call_id = id,
+        .name = "start_background", .content = "", .content_len = text};
+    pack_t measure = {0};
+    copy_message(&measure, &m, NULL);
+    if (measure.failed || s->node_count >= s->max_nodes || s->next_node_id == UINT64_MAX ||
+        s->launch_payload != NULL) return COG_ERROR_LIMIT;
+    s->launch_payload = arena_alloc(s, measure.used);
+    if (s->launch_payload == NULL) return COG_ERROR_LIMIT;
+    s->launch_capacity = measure.used;
+    return COG_OK;
+}
+
+static void copy_job_data(cog_session_t *s, cog_tool_job_record_t *job,
+    const cog_tool_output_t *outcome, const char *evidence, size_t bytes)
+{
+    size_t index = (size_t)(job - s->jobs);
+    char *output = s->job_storage + index * (4097U + s->max_tool_job_output_bytes);
+    char *proof = output + s->max_tool_job_output_bytes + 1U;
+    if (outcome != NULL) {
+        memmove(output, outcome->output, outcome->output_len + 1U);
+        s->job_outputs[index] = *outcome;
+        s->job_outputs[index].output = output;
+        if (!outcome->exit_status_known) s->job_outputs[index].exit_status = 0;
+        job->outcome = &s->job_outputs[index];
+    }
+    if (evidence != NULL) {
+        memmove(proof, evidence, bytes);
+        proof[bytes] = '\0';
+        job->evidence = proof;
+        job->evidence_bytes = bytes;
+    }
+}
+
+static void receipt_text(char *buffer, size_t capacity, uint64_t id)
+{
+    (void)snprintf(buffer, capacity, "{\"job_id\":\"job-%016llx\",\"state\":\"accepted\"}",
+        (unsigned long long)id);
+}
+
+cog_result_t cog_session_tool_job(const cog_session_t *s, cog_tool_job_id_t id,
+    cog_tool_job_record_t *out)
+{
+    if (s == NULL || out == NULL) return COG_ERROR_NULL_PTR;
+    if (id == 0U) return COG_ERROR_INVALID_ARG;
+    const cog_tool_job_record_t *job = find_job(s, id);
+    if (job == NULL) return COG_ERROR_NOT_FOUND;
+    *out = *job;
+    return COG_OK;
+}
+
+cog_result_t cog_session_tool_job_intent(cog_session_t *s, cog_session_node_t *n,
+    const char *id, cog_tool_job_id_t *out)
+{
+    if (s == NULL || n == NULL || id == NULL || out == NULL) return COG_ERROR_NULL_PTR;
+    if (!contains(s, n)) return COG_ERROR_INVALID_ARG;
+    cog_tool_ledger_record_t *l = find_call(s, n, id);
+    if (l == NULL) return COG_ERROR_NOT_FOUND;
+    if (s->inspection_only || indeterminate(s) || n->shared || !on_path(s->active, n) ||
+        n->message.status != COG_MESSAGE_COMPLETE || !launch_call(&n->message, id) ||
+        l->state != COG_TOOL_EXECUTION_PROPOSED || pending_job(s) != NULL) return COG_ERROR_INVALID_STATE;
+    if (s->job_count >= s->max_tool_jobs || s->audit_high_water > UINT64_MAX - 3U) return COG_ERROR_LIMIT;
+    cog_result_t rc = reserve_launch(s, id);
+    if (rc != COG_OK) return rc;
+    rc = audit_add(s, l, COG_TOOL_EXECUTION_STARTED, false, NULL, 0U);
+    if (rc != COG_OK) {
+        arena_free(s, s->launch_payload);
+        s->launch_payload = NULL;
+        return rc;
+    }
+    s->jobs[s->job_count++] = (cog_tool_job_record_t){.id = s->audit_high_water,
+        .assistant_node_id = n->data.node_id, .call_id = l->call_id, .state = COG_TOOL_JOB_INTENT};
+    *out = s->audit_high_water;
+    return COG_OK;
+}
+
+static cog_result_t close_launch(cog_session_t *s, cog_tool_job_record_t *job,
+    const cog_message_t *m, cog_tool_execution_state_t next, bool recovery, cog_session_node_t **out)
+{
+    cog_session_node_t *assistant = find_node(s, job->assistant_node_id);
+    cog_tool_ledger_record_t *l = find_call(s, assistant, job->call_id);
+    if (l->audit_count >= AUDITS_PER_CALL || s->audit_high_water == UINT64_MAX) return COG_ERROR_LIMIT;
+    if (m->role != COG_MESSAGE_ROLE_TOOL || m->tool_call_id == NULL || strcmp(m->tool_call_id, job->call_id) != 0)
+        return COG_ERROR_INVALID_ARG;
+    cog_session_node_t *result = NULL;
+    cog_result_t rc = insert(s, s->active, m, &result, INSERT_JOB_RESULT);
+    if (rc != COG_OK) return rc;
+    if (out != NULL) *out = result;
+    return audit_add(s, l, next, recovery, recovery ? result->message.content : NULL,
+        recovery ? result->message.content_len : 0U);
+}
+
+cog_result_t cog_session_tool_job_accept(cog_session_t *s, cog_tool_job_id_t id)
+{
+    if (s == NULL) return COG_ERROR_NULL_PTR;
+    cog_tool_job_record_t *job = find_job(s, id);
+    if (job == NULL) return COG_ERROR_NOT_FOUND;
+    if (job->state != COG_TOOL_JOB_INTENT || indeterminate(s)) return COG_ERROR_INVALID_STATE;
+    char receipt[128];
+    receipt_text(receipt, sizeof(receipt), id);
+    const cog_message_t m = {.role = COG_MESSAGE_ROLE_TOOL, .content = receipt,
+        .content_len = strlen(receipt), .tool_call_id = job->call_id};
+    cog_session_node_t *node = NULL;
+    cog_result_t rc = close_launch(s, job, &m, COG_TOOL_EXECUTION_SUCCEEDED, false, &node);
+    if (rc == COG_OK) {
+        job->receipt_node_id = node->data.node_id;
+        job->state = COG_TOOL_JOB_ACCEPTED;
+    }
+    return rc;
+}
+
+static cog_tool_execution_state_t outcome_state(const cog_tool_output_t *out)
+{
+    if (out == NULL) return COG_TOOL_EXECUTION_ACKNOWLEDGED;
+    if (out->status == COG_OK) return COG_TOOL_EXECUTION_SUCCEEDED;
+    if (out->status == COG_ERROR_ABORTED) return COG_TOOL_EXECUTION_CANCELLED;
+    return COG_TOOL_EXECUTION_FAILED;
+}
+
+cog_result_t cog_session_tool_job_finish(cog_session_t *s, cog_tool_job_id_t id,
+    const cog_tool_output_t *outcome, const cog_message_t *failure)
+{
+    if (s == NULL || outcome == NULL) return COG_ERROR_NULL_PTR;
+    cog_tool_job_record_t *job = find_job(s, id);
+    if (job == NULL) return COG_ERROR_NOT_FOUND;
+    if (job->state != COG_TOOL_JOB_INTENT && job->state != COG_TOOL_JOB_ACCEPTED) return COG_ERROR_INVALID_STATE;
+    if (outcome->output_len > s->max_tool_job_output_bytes) return COG_ERROR_LIMIT;
+    if (!valid_outcome(outcome)) return COG_ERROR_INVALID_ARG;
+    if (job->state == COG_TOOL_JOB_INTENT) {
+        if (failure == NULL || outcome->side_effects_possible || outcome->status == COG_OK)
+            return COG_ERROR_INVALID_STATE;
+        cog_result_t rc = close_launch(s, job, failure, outcome_state(outcome), false, NULL);
+        if (rc != COG_OK) return rc;
+    } else if (failure != NULL) return COG_ERROR_INVALID_ARG;
+    copy_job_data(s, job, outcome, NULL, 0U);
+    job->state = COG_TOOL_JOB_FINISHED;
+    return COG_OK;
+}
+
+cog_result_t cog_session_tool_job_mark_uncertain(cog_session_t *s, cog_tool_job_id_t id)
+{
+    if (s == NULL) return COG_ERROR_NULL_PTR;
+    cog_tool_job_record_t *job = find_job(s, id);
+    if (job == NULL) return COG_ERROR_NOT_FOUND;
+    if (!open_job(job)) return COG_ERROR_INVALID_STATE;
+    if (job->state == COG_TOOL_JOB_INTENT) {
+        cog_tool_ledger_record_t *l = find_call(s, find_node(s, job->assistant_node_id), job->call_id);
+        cog_result_t rc = audit_add(s, l, COG_TOOL_EXECUTION_INDETERMINATE, false, NULL, 0U);
+        if (rc != COG_OK) return rc;
+    }
+    job->state = COG_TOOL_JOB_INDETERMINATE;
+    return COG_OK;
+}
+
+cog_result_t cog_session_tool_job_reconcile(cog_session_t *s, cog_tool_job_id_t id,
+    const cog_tool_output_t *outcome, const char *evidence, size_t bytes)
+{
+    if (s == NULL || evidence == NULL) return COG_ERROR_NULL_PTR;
+    cog_tool_job_record_t *job = find_job(s, id);
+    if (job == NULL) return COG_ERROR_NOT_FOUND;
+    if (job->state != COG_TOOL_JOB_INDETERMINATE) return COG_ERROR_INVALID_STATE;
+    if (outcome != NULL && outcome->output_len > s->max_tool_job_output_bytes) return COG_ERROR_LIMIT;
+    if (bytes == 0U || bytes > 4095U || !valid_text(evidence, bytes) ||
+        (outcome != NULL && !valid_outcome(outcome))) return COG_ERROR_INVALID_ARG;
+    if (job->receipt_node_id == 0U) {
+        char summary[128];
+        (void)snprintf(summary, sizeof(summary), "job-%016llx: %s", (unsigned long long)id,
+            outcome == NULL ? "unknown outcome acknowledged" : "verified outcome recorded");
+        const cog_message_t m = {.role = COG_MESSAGE_ROLE_TOOL, .content = summary,
+            .content_len = strlen(summary), .tool_call_id = job->call_id};
+        cog_result_t rc = close_launch(s, job, &m, outcome_state(outcome), true, NULL);
+        if (rc != COG_OK) return rc;
+    }
+    copy_job_data(s, job, outcome, evidence, bytes);
+    job->state = outcome == NULL ? COG_TOOL_JOB_ACKNOWLEDGED : COG_TOOL_JOB_FINISHED;
+    return COG_OK;
 }
 
 cog_result_t cog_session_discard_node(cog_session_t *s, cog_session_node_t *n)
@@ -797,7 +1080,8 @@ cog_result_t cog_session_snapshot_view(const cog_session_t *s, cog_session_snaps
         .context_bindings = s->context_bindings, .context_binding_count = s->context_binding_count,
         .context_high_water = s->context_high_water,
         .context_binding_high_water = s->context_binding_high_water,
-        .selected_context_binding_id = s->selected_context_binding_id};
+        .selected_context_binding_id = s->selected_context_binding_id,
+        .tool_jobs = s->jobs, .tool_job_count = s->job_count};
     *out = snapshot;
     return COG_OK;
 }
@@ -959,6 +1243,28 @@ static cog_result_t restore_ledger(cog_session_t *s, const cog_session_snapshot_
     return COG_OK;
 }
 
+static cog_result_t restore_jobs(cog_session_t *s, const cog_session_snapshot_t *view)
+{
+    if (view->tool_job_count > s->max_tool_jobs) return COG_ERROR_LIMIT;
+    for (size_t i = 0U; i < view->tool_job_count; ++i) {
+        const cog_tool_job_record_t *src = &view->tool_jobs[i];
+        if (src->outcome != NULL && src->outcome->output_len > s->max_tool_job_output_bytes)
+            return COG_ERROR_LIMIT;
+        cog_tool_job_record_t *job = &s->jobs[s->job_count++];
+        *job = *src;
+        job->call_id = find_call(s, find_node(s, src->assistant_node_id), src->call_id)->call_id;
+        copy_job_data(s, job, src->outcome, src->evidence, src->evidence_bytes);
+        if (open_job(job)) {
+            job->state = COG_TOOL_JOB_INDETERMINATE;
+            if (job->receipt_node_id == 0U) {
+                cog_result_t rc = reserve_launch(s, job->call_id);
+                if (rc != COG_OK) return rc;
+            }
+        }
+    }
+    return COG_OK;
+}
+
 cog_result_t cog_session_restore(cog_session_t **out, const cog_session_config_t *config,
     const cog_session_snapshot_t *snapshot)
 {
@@ -1007,6 +1313,7 @@ cog_result_t cog_session_restore(cog_session_t **out, const cog_session_config_t
         rc = COG_ERROR_PROTOCOL; goto fail;
     }
     rc = restore_ledger(s, snapshot);
+    if (rc == COG_OK) rc = restore_jobs(s, snapshot);
     if (rc != COG_OK) goto fail;
     *out = s;
     return COG_OK;
@@ -1139,6 +1446,61 @@ static cog_result_t snapshot_contexts(const cog_session_snapshot_t *s)
     return COG_OK;
 }
 
+static cog_result_t snapshot_jobs(const cog_session_snapshot_t *s)
+{
+    if (s->tool_job_count > s->ledger_count || (s->tool_job_count != 0U && s->tool_jobs == NULL))
+        return COG_ERROR_PROTOCOL;
+    uint64_t prior = 0U;
+    for (size_t i = 0U; i < s->tool_job_count; ++i) {
+        const cog_tool_job_record_t *job = &s->tool_jobs[i];
+        if (job->call_id == NULL || job->id <= prior || job->state < COG_TOOL_JOB_INTENT ||
+            job->state > COG_TOOL_JOB_ACKNOWLEDGED) return COG_ERROR_PROTOCOL;
+        prior = job->id;
+        const cog_tool_ledger_record_t *call = snapshot_call(s, job->assistant_node_id, job->call_id);
+        const cog_node_data_t *assistant = snapshot_node(s, job->assistant_node_id);
+        if (call == NULL || assistant == NULL || !launch_call(assistant->message, job->call_id) ||
+            call->audit_count == 0U || call->audit[0].next != COG_TOOL_EXECUTION_STARTED ||
+            call->audit[0].sequence != job->id) return COG_ERROR_PROTOCOL;
+        bool evidence = job->evidence_bytes != 0U;
+        if ((job->evidence != NULL) != evidence || job->evidence_bytes > 4095U ||
+            (evidence && !valid_text(job->evidence, job->evidence_bytes)) ||
+            (evidence && open_job(job)) || (job->state == COG_TOOL_JOB_ACKNOWLEDGED && !evidence) ||
+            ((job->outcome != NULL) != (job->state == COG_TOOL_JOB_FINISHED)) ||
+            (job->outcome != NULL && !valid_outcome(job->outcome))) return COG_ERROR_PROTOCOL;
+        if (open_job(job) && (i + 1U != s->tool_job_count ||
+            !snapshot_path(s, s->active_node_id, assistant->node_id) ||
+            s->selected_context_binding_id != assistant->context_binding_id)) return COG_ERROR_PROTOCOL;
+        if (job->receipt_node_id != 0U) {
+            const cog_node_data_t *node = snapshot_node(s, job->receipt_node_id);
+            char receipt[128];
+            receipt_text(receipt, sizeof(receipt), job->id);
+            if (job->state == COG_TOOL_JOB_INTENT || call->state != COG_TOOL_EXECUTION_SUCCEEDED ||
+                node == NULL || node->message == NULL || node->message->role != COG_MESSAGE_ROLE_TOOL ||
+                snapshot_assistant(s, node->parent_id) != assistant ||
+                strcmp(node->message->tool_call_id, job->call_id) != 0 ||
+                node->message->content_len != strlen(receipt) ||
+                memcmp(node->message->content, receipt, strlen(receipt)) != 0 ||
+                (open_job(job) && !snapshot_path(s, s->active_node_id, node->node_id))) return COG_ERROR_PROTOCOL;
+        } else {
+            cog_tool_execution_state_t expected;
+            switch (job->state) {
+                case COG_TOOL_JOB_INTENT: expected = COG_TOOL_EXECUTION_STARTED; break;
+                case COG_TOOL_JOB_INDETERMINATE: expected = COG_TOOL_EXECUTION_INDETERMINATE; break;
+                case COG_TOOL_JOB_ACKNOWLEDGED:
+                case COG_TOOL_JOB_FINISHED:
+                    expected = outcome_state(job->outcome);
+                    if (evidence != call->audit[call->audit_count - 1U].explicit_reconciliation ||
+                        (!evidence && (expected == COG_TOOL_EXECUTION_SUCCEEDED || job->outcome->side_effects_possible)))
+                        return COG_ERROR_PROTOCOL;
+                    break;
+                default: return COG_ERROR_PROTOCOL;
+            }
+            if (call->state != expected) return COG_ERROR_PROTOCOL;
+        }
+    }
+    return COG_OK;
+}
+
 cog_result_t cog_session_snapshot_validate(const cog_session_snapshot_t *s)
 {
     if (s == NULL || s->session_id == NULL) return COG_ERROR_NULL_PTR;
@@ -1247,7 +1609,8 @@ cog_result_t cog_session_snapshot_validate(const cog_session_snapshot_t *s)
         if (a == NULL || n->message->status != COG_MESSAGE_COMPLETE ||
             snapshot_call(s, a->node_id, n->message->tool_call_id) == NULL) return COG_ERROR_PROTOCOL;
     }
-    return snapshot_contexts(s);
+    cog_result_t rc = snapshot_contexts(s);
+    return rc == COG_OK ? snapshot_jobs(s) : rc;
 }
 
 void cog_session_mark_committed(const cog_session_t *session)
