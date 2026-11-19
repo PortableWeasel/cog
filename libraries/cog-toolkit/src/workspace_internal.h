@@ -61,6 +61,8 @@ typedef struct workspace_execution {
     int output_fd;
     int report_fd;
     pid_t helper;
+    int helper_pidfd;
+    bool background;
     workspace_report_t report;
     size_t report_bytes;
     uint64_t now;
