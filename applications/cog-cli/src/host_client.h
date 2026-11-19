@@ -19,6 +19,10 @@ typedef struct cog_cli_host_client_config {
     size_t projection_bytes; /**< Finite startup bound, max16MiB; server may
        exceed client capacity only by explicit LIMIT, no partial view installed. */
     uint32_t reconnect_ms; /**< Finite default3000, does not extend on retries. */
+    /** --job-control opts an attaching controller into HELLO v2. Never
+     * accepted for a watcher. No automatic downgrade or command replay
+     * after failed capability negotiation. */
+    bool job_control;
 } cog_cli_host_client_config_t;
 /** @brief Reserve client decode/render/pending command arenas, connect no wait.
  * @param[out] out NULL on failure; @param[in] config Copied except borrows.
