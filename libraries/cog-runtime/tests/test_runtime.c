@@ -520,6 +520,31 @@ static void background_job_round(void)
   assert(step.done && submitted == 3U && receipt && unrelated && lookup && final);
   assert(cog_runtime_close(&runtime,COG_OK) == COG_OK);
   assert(cog_workspace_free(workspace) == COG_OK);
+
+  cog_store_t *store = NULL;
+  cog_session_t *session = NULL;
+  cog_store_load_report_t report;
+  cog_session_snapshot_t saved;
+  assert(cog_store_new(&store,&c.store) == COG_OK);
+  assert(cog_store_load_ex(store,c.session_id,COG_STORE_LOAD_REPLAY,&session,&report) == COG_OK);
+  assert(report.source_version == COG_STORE_FORMAT_V4 && report.indeterminate_jobs == 0U);
+  assert(cog_session_snapshot_view(session,&saved) == COG_OK && saved.tool_job_count == 1U);
+  const cog_tool_job_record_t *job = &saved.tool_jobs[0];
+  assert(job->state == COG_TOOL_JOB_FINISHED && job->outcome != NULL);
+  assert(strcmp(job->outcome->output,"job-output") == 0);
+  size_t launches = 0U, lookups = 0U;
+  for (size_t i = 0U; i < saved.node_count; i++) {
+    const cog_message_t *msg = saved.nodes[i].message;
+    if (msg == NULL || msg->role != COG_MESSAGE_ROLE_TOOL) continue;
+    if (strcmp(msg->tool_call_id,"lookup") == 0) lookups++;
+    if (strcmp(msg->tool_call_id,"launch") == 0) {
+      launches++;
+      assert(job->receipt_node_id == saved.nodes[i].node_id);
+    }
+  }
+  assert(launches == 1U && lookups == 1U);
+  cog_session_free(session);
+  cog_store_free(store);
 }
 
 int main(int argc, char **argv) {
