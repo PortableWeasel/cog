@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <linux/sched.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -140,7 +141,32 @@ cog_result_t cog_workspace_process_start(workspace_execution_t *execution)
     if (syscall(SYS_close_range, 4U, 3U, 0U) < 0 && errno != EINVAL) {
         result = COG_ERROR_UNSUPPORTED; goto cleanup;
     }
-    pid_t helper = fork();
+    pid_t helper;
+    if (execution->background) {
+#ifdef SYS_clone3
+        /* The control socket is a valid fd of the wrong type. EBADF establishes
+           P_PIDFD support before a helper can exist. */
+        siginfo_t probe;
+        if (waitid(P_PIDFD, (id_t)control[0], &probe, WEXITED | WNOHANG) == 0 || errno != EBADF) {
+            result = COG_ERROR_UNSUPPORTED;
+            goto cleanup;
+        }
+        struct clone_args args = {
+            .flags = CLONE_PIDFD,
+            .pidfd = (uint64_t)(uintptr_t)&execution->helper_pidfd,
+            .exit_signal = SIGCHLD
+        };
+        helper = (pid_t)syscall(SYS_clone3, &args, sizeof(args));
+        if (helper < 0 && (errno == ENOSYS || errno == EINVAL || errno == EPERM)) {
+            result = COG_ERROR_UNSUPPORTED;
+        }
+#else
+        result = COG_ERROR_UNSUPPORTED;
+        goto cleanup;
+#endif
+    } else {
+        helper = fork();
+    }
     if (helper < 0) { goto cleanup; }
     if (helper == 0) { process_helper(execution, control[1], output[1], report[1], cwd); }
     execution->helper = helper;
@@ -216,7 +242,23 @@ cog_result_t cog_workspace_process_poll(workspace_execution_t *execution)
         else if (count == 0) { execution->report_eof = true; }
         else if (errno != EINTR && errno != EAGAIN) { execution->report_eof = true; }
     }
-    if (!execution->helper_reaped) {
+    if (!execution->helper_reaped && execution->background) {
+        siginfo_t info = {0};
+        int r = waitid(P_PIDFD, (id_t)execution->helper_pidfd, &info, WEXITED | WNOHANG);
+        if (r == 0 && info.si_pid != 0) {
+            execution->helper_reaped = true;
+            if (info.si_code != CLD_EXITED || info.si_status != 0) {
+                execution->output.status = COG_ERROR_INDETERMINATE;
+            }
+        } else if (r < 0 && errno != EINTR) {
+            execution->helper_reaped = true;
+            execution->output.status = COG_ERROR_INDETERMINATE;
+        }
+        if (execution->helper_reaped) {
+            (void)close(execution->helper_pidfd);
+            execution->helper_pidfd = -1;
+        }
+    } else if (!execution->helper_reaped) {
         int status;
         pid_t reaped = waitpid(execution->helper, &status, WNOHANG);
         if (reaped == execution->helper) {
@@ -235,7 +277,7 @@ cog_result_t cog_workspace_process_poll(workspace_execution_t *execution)
         (execution->report_bytes == sizeof(execution->report) || execution->report_eof)) {
         cog_result_t status = execution->output.status;
         if (execution->report_bytes != sizeof(execution->report)) { status = COG_ERROR_INDETERMINATE; }
-        else if (execution->report.status != COG_OK) { status = (cog_result_t)execution->report.status; }
+        else if (execution->report.status != COG_OK && status != COG_ERROR_INDETERMINATE) { status = (cog_result_t)execution->report.status; }
         else {
             execution->output.exit_status_known = execution->report.shell_known;
             int shell_status = execution->report.shell_status;

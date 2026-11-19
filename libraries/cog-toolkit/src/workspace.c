@@ -274,6 +274,7 @@ static cog_result_t workspace_new(cog_core_t *core, const char *request, size_t 
     execution->workspace = workspace;
     workspace->borrowers++;
     execution->operation = operation;
+    execution->helper_pidfd = -1;
     execution->config = *config;
     execution->fd = -1; execution->parent_fd = -1; execution->temporary_fd = -1;
     execution->control_fd = -1; execution->output_fd = -1; execution->report_fd = -1;
@@ -329,6 +330,17 @@ WORKSPACE_NEW(search_new, WORKSPACE_SEARCH)
 WORKSPACE_NEW(edit_new, WORKSPACE_EDIT)
 WORKSPACE_NEW(command_new, WORKSPACE_COMMAND)
 
+static cog_result_t background_new(cog_core_t *core, const char *request, size_t length,
+    const cog_tool_async_config_t *config, void **out)
+{
+    cog_result_t r = command_new(core, request, length, config, out);
+    if (r == COG_OK) {
+        workspace_execution_t *execution = *out;
+        execution->background = true;
+    }
+    return r;
+}
+
 static cog_result_t clock_update(workspace_execution_t *execution, uint64_t now)
 {
     if (execution->clock_set && now < execution->now) { return COG_ERROR_INVALID_ARG; }
@@ -379,7 +391,10 @@ static cog_result_t workspace_start(void *handle, uint64_t now)
             memcpy(execution->current_path, execution->path, strlen(execution->path) + 1U);
         }
     }
-    if (r != COG_OK) { cog_workspace_finish(execution, r); }
+    if (r != COG_OK) {
+        cog_workspace_finish(execution, r);
+        if (execution->background) { return r; }
+    }
     return COG_OK;
 }
 
@@ -600,9 +615,11 @@ WORKSPACE_OPS(read_ops, read_new);
 WORKSPACE_OPS(search_ops, search_new);
 WORKSPACE_OPS(edit_ops, edit_new);
 WORKSPACE_OPS(command_ops, command_new);
+WORKSPACE_OPS(background_ops, background_new);
 #define OBJECT_BEGIN "{\"type\":\"object\",\"additionalProperties\":false,\"properties\":{"
 #define STRING_SCHEMA "{\"type\":\"string\"}"
 #define PATH_SCHEMA "{\"type\":\"string\",\"minLength\":1,\"maxLength\":4095}"
+static const char command_schema[] = OBJECT_BEGIN "\"command\":{\"type\":\"string\",\"minLength\":1},\"cwd\":" PATH_SCHEMA "},\"required\":[\"command\"]}";
 static const cog_tool_t workspace_descriptors[] = {
     { .name = "read_file", .description = "Read bounded text from a workspace file.",
       .input_schema = OBJECT_BEGIN "\"path\":" PATH_SCHEMA "},\"required\":[\"path\"]}", .async = &read_ops },
@@ -612,7 +629,12 @@ static const cog_tool_t workspace_descriptors[] = {
       .input_schema = OBJECT_BEGIN "\"path\":" PATH_SCHEMA ",\"old\":{\"type\":\"string\",\"minLength\":1},\"new\":" STRING_SCHEMA "},\"required\":[\"path\",\"old\",\"new\"]}",
       .async = &edit_ops, .flags = COG_TOOL_SIDE_EFFECTING },
     { .name = "run_command", .description = "Run an explicitly allowed shell command; this is not OS confinement.",
-      .input_schema = OBJECT_BEGIN "\"command\":{\"type\":\"string\",\"minLength\":1},\"cwd\":" PATH_SCHEMA "},\"required\":[\"command\"]}",
+      .input_schema = command_schema,
       .async = &command_ops, .flags = COG_TOOL_SIDE_EFFECTING }
 };
 const cog_tool_table_t cog_workspace_tools = { workspace_descriptors, sizeof(workspace_descriptors) / sizeof(workspace_descriptors[0]) };
+const cog_tool_t cog_workspace_start_background_tool = {
+    .name = "start_background",
+    .description = "Start a workspace command in the background and return its job ID.",
+    .input_schema = command_schema, .async = &background_ops, .flags = COG_TOOL_SIDE_EFFECTING
+};

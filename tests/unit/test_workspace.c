@@ -37,7 +37,9 @@ static cog_toolkit_execution_t *prepare(cog_workspace_t *workspace, const char *
     cog_toolkit_execution_t *execution = NULL;
     cog_tool_async_config_t config = { .max_output_bytes = max_output, .timeout_ms = timeout,
         .terminate_grace_ms = 20U, .user = workspace };
-    cog_result_t r = cog_toolkit_execution_new(&execution, toolkit_test_core, &cog_workspace_tools,
+    static const cog_tool_table_t background = { &cog_workspace_start_background_tool, 1U };
+    const cog_tool_table_t *table = strcmp(name, "start_background") == 0 ? &background : &cog_workspace_tools;
+    cog_result_t r = cog_toolkit_execution_new(&execution, toolkit_test_core, table,
         "workspace-call", name, arguments, strlen(arguments), &config);
     if (r != COG_OK) { fprintf(stderr, "prepare %s failed %d: %s\n", name, (int)r, arguments); abort(); }
     return execution;
@@ -224,8 +226,9 @@ static void process_cleanup(cog_workspace_t *workspace, const char *root)
        The helper must adopt/reap it; parent must remain responsive and cancellable. */
     static const char command[] = "{\"command\":\"sleep 30 & echo $!; printf %s $$ > shell-pid; printf ready > ready; exit 0\"}";
     char output[4096];
-    for (size_t mode = 0U; mode < 3U; mode++) {
-        cog_toolkit_execution_t *execution = prepare(workspace, "run_command", command, 128U, mode == 0U ? 40U : 5000U);
+    for (size_t mode = 0U; mode < 4U; mode++) {
+        const char *tool = mode == 3U ? "start_background" : "run_command";
+        cog_toolkit_execution_t *execution = prepare(workspace, tool, command, 128U, mode == 0U ? 40U : 5000U);
         /* Hold polling until readiness, then exercise an expired deadline. */
         uint64_t start = monotonic_ms();
         assert(cog_toolkit_execution_start(execution, COG_TOOLKIT_POLICY_ALLOW,
@@ -299,6 +302,15 @@ int main(void)
     assert(cog_workspace_new(&workspace, &config) == COG_OK);
     memset(environment_value, 'x', sizeof(environment_value) - 1U);
     file_cases(workspace, root); refusal_cases(workspace, root); command_cases(workspace, root);
+    char answer[64];
+    cog_toolkit_result_t background = run(workspace, "start_background",
+        "{\"command\":\"printf completed\"}", answer, sizeof(answer));
+    assert(background.status == COG_OK && strcmp(answer, "completed") == 0);
+    assert(background.exit_status_known && background.exit_status == 0);
+    cog_toolkit_execution_t *refused = prepare(workspace, "start_background",
+        "{\"command\":\"true\",\"cwd\":\"missing-dir\"}", 64U, 1000U);
+    assert(cog_toolkit_execution_start(refused, COG_TOOLKIT_POLICY_ALLOW, monotonic_ms()) == COG_ERROR_IO);
+    assert(cog_toolkit_execution_free(refused) == COG_OK);
     process_cleanup(workspace, root);
     assert(cog_workspace_free(workspace) == COG_OK);
     limit_cases(root);
